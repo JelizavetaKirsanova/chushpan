@@ -9,7 +9,8 @@ import shutil
 import time
 
 from backend.config import Settings
-from backend.tools.registry import Tool, ToolError
+from backend.permissions import instruction
+from backend.tools.registry import Tool, ToolError, user_text
 
 TIMEOUT_S = 5
 
@@ -32,7 +33,13 @@ async def run(*cmd: str) -> tuple[int, str]:
     except TimeoutError as exc:
         proc.kill()
         raise ToolError(f"{cmd[0]} timed out") from exc
-    return proc.returncode or 0, out.decode(errors="replace").strip()
+    text = out.decode(errors="replace").strip()
+    if proc.returncode and cmd[0] == "osascript":
+        if "-1743" in text or "Not authorized" in text:
+            raise ToolError(instruction("automation"))
+        if "assistive access" in text or "-1719" in text:
+            raise ToolError(instruction("accessibility"))
+    return proc.returncode or 0, text
 
 
 def parse_battery(text: str) -> dict | None:
@@ -123,6 +130,15 @@ async def _volume_settings() -> dict:
 
 
 async def set_volume(level: int | None = None, mute: bool | None = None) -> dict:
+    said = (user_text.get() or "").casefold()
+    if re.search(r"музык|песн|трек|youtube|spotify", said) and not re.search(
+        r"\bmac\b|маке|мака|системн|компьютер", said
+    ):
+        direction = "down" if re.search(r"тише|убав|уменьш|сниз", said) else "up"
+        raise ToolError(
+            "Это громкость Mac. Для музыки вызови media_volume, "
+            f"direction={direction!r}; level передавай только при явном проценте."
+        )
     if level is None and mute is None:
         raise ToolError("give a level (0-100) or mute true/false")
     before = await _volume_settings()
@@ -143,7 +159,14 @@ async def set_volume(level: int | None = None, mute: bool | None = None) -> dict
     code, out = await run("osascript", *(arg for line in script for arg in ("-e", line)))
     if code:
         raise ToolError(out or "could not change the volume")
-    return {"ok": True, **await _volume_settings()}
+    after = await _volume_settings()
+    if (
+        not after
+        or (level is not None and after.get("volume_percent") != level)
+        or (mute is not None and after.get("muted") != mute)
+    ):
+        raise ToolError("macOS не подтвердила запрошенную громкость. Проверь текущий звук.")
+    return {"ok": True, **after}
 
 
 async def open_app(name: str) -> dict:
@@ -157,14 +180,90 @@ async def open_app(name: str) -> dict:
 
 
 def system_tools(s: Settings) -> list[Tool]:
+    async def set_requested_volume(level: int | None = None, mute: bool | None = None) -> dict:
+        said = (user_text.get() or "").casefold()
+        if (
+            s.media.provider == "youtube_music"
+            and "media" in s.tools.enabled
+            and s.media.youtube_music.enabled
+            and re.search(r"музык|песн|трек|youtube", said)
+            and not re.search(r"\bmac\b|маке|мака|системн|компьютер", said)
+        ):
+            from backend.tools.media import MediaService
+
+            direction = ""
+            if re.search(r"тише|убав|уменьш|сниз", said):
+                direction = "down"
+            elif re.search(r"громче|прибав|увелич|повысь", said):
+                direction = "up"
+            number = re.search(r"\b(\d{1,3})\s*(?:%|процент)", said)
+            if number:
+                level, direction = int(number[1]), ""
+            if re.search(r"выключи.{0,15}(?:звук|музык)|заглуши", said):
+                level, direction = 0, ""
+            return await MediaService(s).media_volume(direction=direction, level=level)
+        return await set_volume(level, mute)
+
+    async def open_requested(name: str) -> dict:
+        if name.strip().casefold() in ("youtube music", "ютуб музыка", "ютуб мьюзик"):
+            if not s.media.youtube_music.enabled:
+                raise ToolError("YouTube Music отключён в настройках.")
+            from backend.media.safari import SafariMusic
+
+            app = SafariMusic(s)
+            await app.launch()
+            await app.snapshot()
+            return {"ok": True, "opened": "YouTube Music"}
+        return await open_app(name)
+
     cap = {
+        "ru": "проверять состояние компьютера, менять громкость и открывать приложения",
         "pt": "ver bateria, memória, disco e volume do computador, ajustar o volume e abrir apps",
         "en": "check the computer's battery, memory, disk and volume, set the volume and open apps",
     }
+
+    def status_reply(result: dict) -> str:
+        pieces = []
+        if battery := result.get("battery"):
+            if isinstance(battery, dict):
+                suffix = " Заряжается." if battery.get("charging") else ""
+                pieces.append(f"Заряд {battery['percent']} процентов." + suffix)
+            else:
+                pieces.append("Батарея не обнаружена.")
+        if "cpu_load_percent" in result:
+            pieces.append(f"Оценка нагрузки процессора {result['cpu_load_percent']} процентов.")
+        if memory := result.get("memory"):
+            pieces.append(f"Свободно памяти {memory['free_percent']} процентов.")
+        if disk := result.get("disk"):
+            pieces.append(f"На диске свободно {disk['free_gb']} гигабайт.")
+        if uptime := result.get("uptime"):
+            match = re.fullmatch(r"(\d+)d (\d+)h (\d+)min", uptime)
+            if match:
+                days, hours, minutes = map(int, match.groups())
+                pieces.append(
+                    "Время работы: "
+                    + s.locale.format_duration((days * 24 * 60 + hours * 60 + minutes) * 60)
+                    + "."
+                )
+        if sound := result.get("sound"):
+            pieces.append(volume_reply(sound))
+        return " ".join(pieces) or "macOS не вернула запрошенные сведения."
+
+    def volume_reply(result: dict) -> str:
+        if "volume" in result:  # Existing music-routing handler.
+            return f"Громкость музыки {result['volume']} процентов."
+        if result.get("muted"):
+            return "Звук выключен."
+        if result.get("volume_percent") is not None:
+            return f"Громкость Mac {result['volume_percent']} процентов."
+        return "Текущий уровень звука не прочитан."
+
     return [
         Tool(
             name="get_system_status",
             description=(
+                "Громкость всего Mac. Если названа музыка, песня или трек — используй "
+                "media_volume. «Сделай музыку потише» → media_volume(direction=down). "
                 "Status of this Mac: battery, CPU load, memory, free disk space, uptime and "
                 "sound volume. Use for questions about the computer itself."
             ),
@@ -180,6 +279,7 @@ def system_tools(s: Settings) -> list[Tool]:
             },
             required=["topic"],
             capability=cap,
+            reply=status_reply if s.locale.lang == "ru" else None,
         ),
         Tool(
             name="set_volume",
@@ -192,19 +292,27 @@ def system_tools(s: Settings) -> list[Tool]:
                 "level only when the user says a number or asks for louder/quieter. For the "
                 "music alone ('abaixa a música'), use media_volume."
             ),
-            handler=set_volume,
+            handler=set_requested_volume,
             parameters={
                 "level": {"type": "integer", "description": "Volume from 0 to 100"},
                 "mute": {"type": "boolean", "description": "true to mute, false to unmute"},
             },
             capability=cap,
+            reply=volume_reply if s.locale.lang == "ru" else None,
         ),
         Tool(
             name="open_app",
-            description="Open (or bring to front) a Mac application by name, e.g. 'Safari'.",
-            handler=open_app,
+            description=(
+                "Open (or bring to front) any installed Mac application by name, e.g. "
+                "'Safari' or 'Spotify'. Opening an app works regardless of the selected "
+                "music provider; it does not start music playback."
+            ),
+            handler=open_requested,
             parameters={"name": {"type": "string", "description": "Application name"}},
             required=["name"],
             capability=cap,
+            reply=(lambda r: f"Запрос на открытие {r['opened']} передан macOS.")
+            if s.locale.lang == "ru"
+            else None,
         ),
     ]

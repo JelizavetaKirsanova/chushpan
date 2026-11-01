@@ -25,57 +25,205 @@ def _run(coro) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="jarvis")
+    parser = argparse.ArgumentParser(prog="чушпан")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("doctor", help="check Ollama, model, voice and location")
-    sub.add_parser("config", help="print the effective configuration")
-    chat = sub.add_parser("chat", help="text chat in the terminal")
-    chat.add_argument("-r", "--resume", action="store_true", help="resume the last conversation")
-    chat.add_argument("-s", "--speak", action="store_true", help="read replies aloud")
-    voice = sub.add_parser("voice", help="talk to Jarvis with your voice")
-    voice.add_argument("-r", "--resume", action="store_true", help="resume the last conversation")
-    voice.add_argument(
-        "--no-wake", action="store_true", help="always listen, without the wake word"
+    latency_check = sub.add_parser(
+        "latency-check", help="замер задержек без записи и воспроизведения"
     )
-    voice.add_argument("--no-briefing", action="store_true", help="skip the weather and news")
-    voice.add_argument("--no-hud", action="store_true", help="no holographic interface")
+    latency_check.add_argument(
+        "--live", action="store_true", help="нейтральный тестовый запрос модели"
+    )
+    latency_check.add_argument(
+        "--tts", action="store_true", help="синтез в RAM без воспроизведения"
+    )
+    latency_check.add_argument("--runs", type=int, choices=range(1, 6), default=1)
+    latency_check.add_argument(
+        "--stream", action="store_true", help="текстовый поток вместо буферизации"
+    )
+    latency_check.add_argument("--label", choices=["before", "after", "sample"], default="sample")
+    latency_check.add_argument("--stt-file", help="явно выбранный mono PCM16 WAV; без микрофона")
+    sub.add_parser("doctor", help="проверить Ollama, модель, голос и местоположение")
+    mac_check = sub.add_parser(
+        "mac-check", help="безопасная диагностика Mac и доступных инструментов"
+    )
+    mac_check.add_argument("--json", action="store_true", help="вывести структурированный отчёт")
+    permissions = sub.add_parser(
+        "permissions", help="проверить разрешения macOS без запросов доступа"
+    )
+    permissions.add_argument(
+        "--automation",
+        action="append",
+        default=[],
+        choices=["com.spotify.client", "com.apple.systemevents", "com.apple.Safari"],
+        help="проверить Automation для уже работающего приложения",
+    )
+    night_check = sub.add_parser(
+        "night-check", help="проверить ночной сценарий без запуска и записи памяти"
+    )
+    night_check.add_argument(
+        "--json", action="store_true", help="все проверки и причины блокировки"
+    )
+    night_check.add_argument(
+        "--pid", type=int, help="цепочка PID без чтения аргументов и TCC другого процесса"
+    )
+    music_check = sub.add_parser("music-check", help="проверить YouTube Music без запуска музыки")
+    music_check.add_argument("--library", action="store_true", help="также прочитать плейлисты")
+    music_check.add_argument("--json", action="store_true", help="безопасный диагностический отчёт")
+    music_check.add_argument(
+        "--request-access",
+        action="store_true",
+        help="явно запросить Automation Safari чтением числа окон; без музыки",
+    )
+    music_check.add_argument(
+        "--live", metavar="COMMAND", help="явно выполнить музыкальную команду; может включить звук"
+    )
+    tts_check = sub.add_parser(
+        "tts-check", help="диагностика речевой копии без микрофона и воспроизведения"
+    )
+    tts_check.add_argument(
+        "--sample", choices=["calendar", "abbreviations", "mixed"], default="calendar"
+    )
+    tts_check.add_argument("--text-file", help="свой текст; по умолчанию содержание не выводится")
+    tts_check.add_argument(
+        "--show-text", action="store_true", help="явно показать свой текст после удаления секретов"
+    )
+    tts_check.add_argument(
+        "--synthesize", action="store_true", help="синтезировать WAV без воспроизведения"
+    )
+    tts_check.add_argument("--output-dir", default="docs/audio/tts-regression")
+    sub.add_parser("config", help="показать текущие настройки")
+    chat = sub.add_parser("chat", help="текстовый чат в терминале")
+    chat.add_argument("-r", "--resume", action="store_true", help="продолжить последний разговор")
+    chat.add_argument("-s", "--speak", action="store_true", help="озвучивать ответы")
+    voice = sub.add_parser("voice", help="говорить с Чушпаном голосом")
+    voice.add_argument("-r", "--resume", action="store_true", help="продолжить последний разговор")
+    voice.add_argument(
+        "--no-wake", action="store_true", help="слушать постоянно, без фразы активации"
+    )
+    voice.add_argument("--no-briefing", action="store_true", help="пропустить погоду и новости")
+    voice.add_argument("--no-hud", action="store_true", help="не открывать интерфейс")
     voice.add_argument("--at-login", action="store_true", help=argparse.SUPPRESS)
-    autostart = sub.add_parser("autostart", help="launch Jarvis at login (macOS LaunchAgent)")
+    autostart = sub.add_parser("autostart", help="запускать Чушпана при входе в macOS")
     autostart.add_argument(
         "action",
         nargs="?",
         choices=["status", "install", "uninstall", "start", "stop"],
         default="status",
     )
-    autostart.add_argument("--no-briefing", action="store_true", help="no briefing at login")
-    autostart.add_argument("--no-hud", action="store_true", help="no HUD at login")
-    briefing = sub.add_parser("briefing", help="print the activation briefing, with timings")
-    briefing.add_argument("-s", "--speak", action="store_true", help="read it aloud too")
-    demo = sub.add_parser("hud-demo", help="show the HUD with a scripted conversation (no mic)")
-    demo.add_argument("--sample", action="store_true", help="fixed panels, no network")
-    window = sub.add_parser("hud-window", help="open the HUD in a native window")
-    window.add_argument("--url", help="default: the configured server address")
+    autostart.add_argument("--no-briefing", action="store_true", help="не читать сводку при входе")
+    autostart.add_argument("--no-hud", action="store_true", help="не открывать интерфейс при входе")
+    briefing = sub.add_parser("briefing", help="показать сводку и время её подготовки")
+    briefing.add_argument("-s", "--speak", action="store_true", help="также озвучить")
+    demo = sub.add_parser("hud-demo", help="демонстрация интерфейса без микрофона")
+    demo.add_argument("--sample", action="store_true", help="тестовые данные без интернета")
+    window = sub.add_parser("hud-window", help="открыть интерфейс в отдельном окне")
+    window.add_argument("--url", help="по умолчанию: адрес сервера из настроек")
     window.add_argument("--parent", type=int, help=argparse.SUPPRESS)  # close when it exits
-    sub.add_parser("wake-test", help="show live wake word scores to tune the threshold")
-    sub.add_parser("echo-test", help="measure how well echo cancellation works in this room")
-    memory = sub.add_parser("memory", help="list or forget what Jarvis remembers about you")
-    memory.add_argument("action", nargs="?", choices=["list", "forget", "clear"], default="list")
-    memory.add_argument("id", nargs="?", type=int, help="the memory to forget (see `memory`)")
-    sub.add_parser("prompt", help="print the current system prompt")
-    sub.add_parser("footprint", help="memory held by the running Jarvis and its model")
-    bench = sub.add_parser("bench", help="compare LLM latency across models")
-    bench.add_argument("models", nargs="*", help="Ollama models (default: the configured one)")
-    bench_stt = sub.add_parser("bench-stt", help="compare Whisper models on one recorded phrase")
-    bench_stt.add_argument("models", nargs="*", help="Hugging Face repos (default: 3 sizes)")
+    sub.add_parser("wake-test", help="проверить чувствительность фразы активации")
+    sub.add_parser("echo-test", help="проверить эхоподавление в помещении")
+    memory = sub.add_parser("memory", help="посмотреть или удалить сохранённые факты")
+    memory.add_argument(
+        "action", nargs="?", choices=["list", "show", "forget", "clear"], default="list"
+    )
+    memory.add_argument("id", nargs="?", type=int, help="номер факта для удаления (см. memory)")
+    night = sub.add_parser(
+        "night", help="посмотреть или сбросить журнал ночного сценария; без запуска"
+    )
+    night.add_argument("action", nargs="?", choices=["status", "reset"], default="status")
+    night.add_argument(
+        "--confirm-stopped", action="store_true", help="Youtube sleep уже остановлен вручную"
+    )
+    sub.add_parser("prompt", help="показать системную инструкцию ассистента")
+    sub.add_parser("footprint", help="показать потребление памяти ассистентом и моделью")
+    bench = sub.add_parser("bench", help="сравнить время отклика языковых моделей")
+    bench.add_argument("models", nargs="*", help="модели Ollama (по умолчанию: из настроек)")
+    stt_check = sub.add_parser("stt-check", help="диагностика STT без записи по умолчанию")
+    stt_check.add_argument("--record", action="store_true", help="одна запись до 20 с в RAM")
+    stt_check.add_argument("--models", nargs="+", help="сравнить модели на одной записи")
+    bench_stt = sub.add_parser("bench-stt", help="сравнить модели Whisper на одной записи")
+    bench_stt.add_argument(
+        "models", nargs="*", help="модели Hugging Face (по умолчанию: три размера)"
+    )
     args = parser.parse_args(argv)
 
     settings = get_settings()
     setup_logging(settings.log_level)
+    if args.command == "latency-check":
+        from backend.latency_check import run
+
+        return _run(
+            run(
+                settings,
+                live=args.live,
+                tts=args.tts,
+                runs=args.runs,
+                label=args.label,
+                stream=args.stream,
+                stt_file=args.stt_file,
+            )
+        )
+
+    if args.command == "stt-check":
+        from backend.stt_check import run
+
+        return _run(run(settings, args.record, args.models))
+
+    if args.command == "permissions":
+        from backend.permissions import run
+
+        return _run(run(tuple(args.automation)))
+
+    if args.command == "night-check":
+        from backend.mac import MacDesktop
+        from backend.night import BetterDisplay
+        from backend.night_preflight import NightPreflight
+        from backend.shortcuts import ShortcutsService
+
+        report = _run(
+            NightPreflight(
+                settings, BetterDisplay(MacDesktop(settings)), ShortcutsService(settings)
+            ).check()
+        )
+        if args.pid is not None:
+            from backend.permissions import process_chain
+
+            report["requested_process_chain"] = _run(process_chain(args.pid))
+            report["requested_process_note"] = (
+                "TCC выбранного PID извне не проверяется. Статусы относятся к процессу диагностики."
+            )
+        if args.json:
+            import json
+
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            print(report["message"])
+        return 0 if report["ok"] else 1
+
+    if args.command == "mac-check":
+        from backend.mac_check import run
+
+        return _run(run(settings, json_output=args.json))
 
     if args.command == "doctor":
         from backend import doctor
 
         return doctor.run()
+    if args.command == "music-check":
+        from backend.media.cli import check_music
+
+        return _run(
+            check_music(
+                settings,
+                args.library,
+                json_output=args.json,
+                live=args.live,
+                request_access=args.request_access,
+            )
+        )
+    if args.command == "tts-check":
+        from backend.tts_check import run
+
+        return run(settings, args)
     if args.command == "chat":
         from backend.chat import run_chat
 
@@ -146,6 +294,10 @@ def main(argv: list[str] | None = None) -> int:
         from backend.memory.cli import run_memory
 
         return run_memory(settings, args.action, args.id)
+    if args.command == "night":
+        from backend.night import run_night_cli
+
+        return run_night_cli(settings, args.action, args.confirm_stopped)
     if args.command in {"prompt", "config"}:
         import asyncio
 

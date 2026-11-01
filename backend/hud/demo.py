@@ -8,6 +8,7 @@ and the same every time: screenshots).
 from __future__ import annotations
 
 import asyncio
+import copy
 import math
 import random
 import re
@@ -28,6 +29,19 @@ console = Console(highlight=False)
 FRAME_S = 0.032  # one microphone frame
 WORD_S = 0.22  # demo speech: seconds per word
 SCRIPT = {
+    "ru": [
+        (
+            "Напомни через 10 минут достать пирог из духовки.",
+            "set_timer",
+            "Хорошо. Через 10 минут напомню достать пирог из духовки.",
+        ),
+        (
+            "Какая сейчас погода?",
+            "get_weather",
+            "Сейчас на улице 14 градусов и переменная облачность. "
+            "Завтра вероятен дождь, стоит взять с собой зонт.",
+        ),
+    ],
     "pt": [
         (
             "Me lembre em 10 minutos de tirar o bolo do forno.",
@@ -138,6 +152,30 @@ SAMPLE_PANELS = [
 ]
 
 
+def sample_panels(language: str) -> list[dict]:
+    panels = copy.deepcopy(SAMPLE_PANELS)
+    if language == "ru":
+        weather, news, _ = panels
+        weather["place"] = "Лондон, Великобритания"
+        weather["now"]["conditions"] = "переменная облачность"
+        for day, label, conditions in zip(
+            weather["days"],
+            ("сегодня", "завтра", "среда"),
+            ("пасмурно", "небольшой дождь", "ясно"),
+            strict=True,
+        ):
+            day.update(day=label, conditions=conditions)
+        headlines = (
+            "Модели с открытыми весами сокращают отставание в тестах на рассуждение",
+            "Распознавание речи на ноутбуках становится быстрее",
+            "Исследователи предложили новый тест для ИИ с инструментами",
+            "Небольшие языковые модели находят применение в домашних помощниках",
+        )
+        for item, title in zip(news["items"], headlines, strict=True):
+            item.update(title=title, source="Демонстрация")
+    return panels
+
+
 class Demo:
     def __init__(self, s: Settings, bus: HudBus) -> None:
         self.s = s
@@ -174,7 +212,8 @@ class Demo:
         self.bus.publish({"type": "tool", "name": tool})
         if tool == "set_timer":
             ends = round((time.time() + 600) * 1000)
-            item = {"id": 1, "label": "bolo" if self.s.locale.lang == "pt" else "cake"}
+            labels = {"ru": "пирог", "pt": "bolo", "en": "cake"}
+            item = {"id": 1, "label": labels.get(self.s.locale.lang, "cake")}
             self.bus.publish(
                 {"type": "timers", "items": [{**item, "seconds": 600, "ends_at_ms": ends}]}
             )
@@ -221,7 +260,9 @@ async def run_demo(s: Settings, sample: bool = False) -> int:
     bus = HudBus()
     server = HudServer(s, bus)
     if not await server.start():
-        console.print(f"[red]Port {s.server.port} is busy: is Jarvis already running?[/]")
+        console.print(
+            f"[red]Порт {s.server.port} занят. Возможно, {s.assistant_name} уже запущен.[/]"
+        )
         return 1
     bus.publish(
         {
@@ -233,18 +274,19 @@ async def run_demo(s: Settings, sample: bool = False) -> int:
             "place": s.location.display_name,
             "tools": ["get_weather", "get_ai_news", "get_system_status", "set_timer"],
             "wake_word": True,
+            "wake_phrase": s.wakeword.phrase or f"Hey {s.assistant_name}",
         }
     )
-    console.print(f"[bold cyan]HUD demo[/] · {server.url} · Ctrl+C to quit")
+    console.print(f"[bold cyan]Демонстрация интерфейса[/] · {server.url} · Ctrl+C — выход")
     # The HUD's buttons answer, but nothing on this Mac changes: no LaunchAgent, no file.
     bus.publish({"type": "autostart", "enabled": True})
     bus.handle("autostart", lambda on: bus.publish({"type": "autostart", "enabled": bool(on)}))
     bus.handle(
-        "export", lambda _: bus.publish({"type": "exported", "error": "not saved in the demo"})
+        "export", lambda _: bus.publish({"type": "exported", "error": "в деморежиме недоступно"})
     )
     if sample:
         tasks = []
-        for panel in [*SAMPLE_PANELS, SAMPLE_FOOTPRINT]:
+        for panel in [*sample_panels(s.locale.lang), SAMPLE_FOOTPRINT]:
             bus.publish(panel)
     else:
         news = NewsService(s) if s.news.feeds else None

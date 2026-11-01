@@ -98,7 +98,13 @@ class Clock:
 
 def clock_tools(s: Settings, now: Callable[[], datetime] | None = None) -> list[Tool]:
     clock = Clock(s, now)
+
+    async def current_time():
+        value = clock._now().strftime("%H:%M")
+        return {"time": value, "message": f"Сейчас {value}."}
+
     return [
+        Tool("current_time", "Текущее местное время.", current_time, reply=lambda r: r["message"]),
         Tool(
             name="time_until",
             description=(
@@ -118,8 +124,9 @@ def clock_tools(s: Settings, now: Callable[[], datetime] | None = None) -> list[
                 },
             },
             capability={
+                "ru": "вычислять, сколько времени осталось до указанного времени или даты",
                 "pt": "calcular quanto tempo falta até um horário ou uma data",
                 "en": "work out how long until a time or a date",
             },
-        )
+        ),
     ]

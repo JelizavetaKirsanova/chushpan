@@ -23,14 +23,21 @@ DIST_DIR = ROOT_DIR / "frontend" / "dist"
 DEV_PORT = 5173  # `npm run dev` (Vite)
 COMMANDS = {"wake", "sleep"}
 # Requests answered by handlers registered on the bus, and the type of their value.
-REQUESTS: dict[str, type] = {"autostart": bool, "export": type(None)}
+REQUESTS: dict[str, type] = {
+    "music_settings": str,
+    "autostart": bool,
+    "export": type(None),
+    "history": int,
+    "dialogue_settings": dict,
+}
 RECONNECT_S = 1.5  # an already open HUD page reconnects within this; then no new tab
 
-NOT_BUILT = """<!doctype html><meta charset="utf-8"><title>Jarvis HUD</title>
+NOT_BUILT = """<!doctype html><html lang="ru"><meta charset="utf-8">
+<title>Чушпан · Ассистент</title>
 <body style="background:#02050a;color:#7af4ff;font:16px ui-monospace,monospace;padding:3rem">
-<p>The HUD has not been built yet. Run:</p>
+<p>Интерфейс ещё не собран. Выполните:</p>
 <pre>npm --prefix frontend install && npm --prefix frontend run build</pre>
-<p>then reload this page.</p></body>"""
+<p>Затем обновите страницу.</p></body></html>"""
 
 
 def allowed_origins(host: str, port: int) -> set[str]:
@@ -72,7 +79,7 @@ def create_app(bus: HudBus, origins: set[str], dist: Path = DIST_DIR) -> FastAPI
                 kind = msg.get("type")
                 if kind in COMMANDS:
                     bus.command(kind)
-                elif kind in REQUESTS and isinstance(msg.get("value"), REQUESTS[kind]):
+                elif kind in REQUESTS and type(msg.get("value")) is REQUESTS[kind]:
                     bus.request(kind, msg.get("value"))
 
         tasks = [asyncio.create_task(send()), asyncio.create_task(receive())]

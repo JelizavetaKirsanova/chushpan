@@ -16,6 +16,12 @@ from backend.memory.store import MemoryStore
 console = Console(highlight=False)
 
 SCRIPT = {
+    "ru": [
+        "Привет, как дела?",
+        "Расскажи интересный факт о космосе.",
+        "А за сколько времени солнечный свет доходит до нас?",
+        "Спасибо, это всё.",
+    ],
     "pt": [
         "Olá, tudo bem?",
         "Me conte uma curiosidade sobre o espaço.",
@@ -41,26 +47,26 @@ async def run_bench(s: Settings, models: list[str]) -> int:
     installed = {m["name"] for m in httpx.get(f"{s.llm.host}/api/tags", timeout=5).json()["models"]}
     script = SCRIPT.get(s.locale.lang, SCRIPT["en"])
 
-    table = Table(title="LLM latency per turn")
-    for col in ("Model", "Turn", "First word", "tok/s", "Reply"):
+    table = Table(title="Время отклика модели по сообщениям")
+    for col in ("Модель", "Сообщение", "Первое слово", "ток/с", "Ответ"):
         table.add_column(col, overflow="fold")
 
     for model in models:
         if model not in installed and f"{model}:latest" not in installed:
-            console.print(f"[yellow]Skipping {model}: run `ollama pull {model}`[/]")
+            console.print(f"[yellow]Пропускаю {model}: запустите `ollama pull {model}`[/]")
             continue
         llm = OllamaClient(s.llm.model_copy(update={"model": model}))
         conv = Conversation(s, llm, MemoryStore(":memory:"))
-        with console.status(f"Loading {model}..."):
+        with console.status(f"Загрузка {model}…"):
             t0 = time.perf_counter()
             await conv.prime()
             load_s = time.perf_counter() - t0
         for i, prompt in enumerate(script, 1):
-            with console.status(f"{model} · turn {i}/{len(script)}"):
+            with console.status(f"{model} · сообщение {i}/{len(script)}"):
                 reply = "".join([t async for t in conv.reply(prompt)]).strip()
             st = conv.last_stats
             table.add_row(
-                f"{model}\n[dim]load + prime {load_s:.1f}s[/]" if i == 1 else "",
+                f"{model}\n[dim]загрузка и подготовка {load_s:.1f}s[/]" if i == 1 else "",
                 str(i),
                 f"{st.first_token_s:.2f}s" if st.first_token_s else "-",
                 f"{st.tokens_per_second:.0f}" if st.tokens_per_second else "-",
@@ -72,7 +78,7 @@ async def run_bench(s: Settings, models: list[str]) -> int:
 
     console.print(table)
     console.print(
-        "[dim]First word is what you wait for before Jarvis starts talking. Models whose "
-        "prompt cache works stay well under 1 s on every turn.[/]"
+        "[dim]Первое слово — задержка до начала ответа ассистента. Модели с рабочим "
+        "кешем контекста обычно укладываются в секунду на каждом сообщении.[/]"
     )
     return 0

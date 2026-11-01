@@ -304,8 +304,13 @@ def test_quitting_the_hud_window_quits_jarvis(tmp_path, code, quits):
     win.on_quit = lambda: quit_calls.append(True)
 
     async def scenario():
-        assert await win.open() is True
-        await asyncio.sleep(0.6)
+        try:
+            assert await win.open() is True
+            await asyncio.wait_for(win._watch, 3)
+        finally:
+            await win.close()
+            if win._drain:
+                await asyncio.gather(win._drain, return_exceptions=True)
 
     asyncio.run(scenario())
     assert quit_calls == ([True] if quits else [])  # Cmd+Q exits 0; a crash does not

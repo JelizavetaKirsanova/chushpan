@@ -45,7 +45,7 @@ def executable(s: Settings) -> Path:
 
 
 def _exe_name(s: Settings) -> str:
-    return re.sub(r"[^\w.-]", "", s.assistant_name) or "Jarvis"
+    return re.sub(r"[^\w.-]", "", s.assistant_name) or "Чушпан"
 
 
 def python_env() -> dict[str, str]:
@@ -86,12 +86,13 @@ def info_plist(s: Settings) -> dict:
         "NSHighResolutionCapable": True,
         # Required: without it, macOS ends a bundled app that opens the microphone.
         "NSMicrophoneUsageDescription": (
-            f'{s.assistant_name} listens for "Hey {s.assistant_name}" and for your requests, '
-            "and transcribes them on this Mac."
+            f"{s.assistant_name} распознаёт фразу «{s.wakeword.phrase or s.assistant_name}» "
+            "и ваши запросы "
+            "на этом Mac."
         ),
         # Without it, macOS denies AppleScript to a bundled app without asking (Spotify).
         "NSAppleEventsUsageDescription": (
-            f"{s.assistant_name} controls Spotify when you ask it to play or pause music."
+            f"{s.assistant_name} управляет Spotify по вашей просьбе включить или остановить музыку."
         ),
     }
 

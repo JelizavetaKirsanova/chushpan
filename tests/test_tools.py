@@ -243,8 +243,9 @@ def test_conversation_stops_after_max_rounds(tmp_path, monkeypatch):
     async def go():
         return [t async for t in conv.reply("loop")]
 
-    assert asyncio.run(go()) == []
+    assert asyncio.run(go()) == [s.locale.no_reply]
     assert calls[0] == 3  # max_rounds tool rounds + the last chance to answer
+    assert conv.store.transcript(conv.id)[-1]["content"] == s.locale.no_reply
 
 
 def test_prompt_lists_tools_instead_of_not_installed():
@@ -611,6 +612,29 @@ def test_blank_reply_is_retried_once(tmp_path):
 
     assert asyncio.run(go()) == "Oitenta por cento."
     assert turn[0] == 2
+
+
+def test_repeated_blank_reply_is_spoken_and_persisted_as_failure(tmp_path):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        line = {"message": {"content": ""}, "done": True, "eval_count": 24}
+        return httpx.Response(200, text=json.dumps(line))
+
+    s = Settings(language="ru-RU")
+    client = httpx.AsyncClient(base_url="http://o", transport=httpx.MockTransport(handler))
+    store = MemoryStore(tmp_path / "t.db")
+    conv = Conversation(s, OllamaClient(s.llm, client=client), store, tools=make_registry())
+
+    async def go():
+        return "".join([part async for part in conv.reply("Сколько будет 17 на 24?")])
+
+    answer = asyncio.run(go())
+    assert len(requests) == 2
+    assert answer == s.locale.no_reply
+    assert store.transcript(conv.id)[-1]["content"] == answer
+    assert not conv.last_stats.quiet
 
 
 def test_system_status_topic_limits_the_report(monkeypatch):

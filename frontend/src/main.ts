@@ -1,18 +1,24 @@
 import "./style.css";
+import "./workspace.css";
+import { Workspace } from "./workspace";
 
 import { Core, type Mode } from "./core";
 import { fill, stringsFor } from "./i18n";
 import { Panels } from "./panels";
 import { Link } from "./socket";
 import type { AutostartEvent, BootEvent, ExportedEvent, Hello, HudEvent } from "./types";
+import { RequestEvents } from "./workspace_state";
+
+const requestEvents = new RequestEvents();
 
 const hud = document.querySelector<HTMLElement>(".hud")!;
 const byId = (id: string) => document.getElementById(id)!;
 
-let t = stringsFor(navigator.language);
+let t = stringsFor(document.documentElement.lang);
 let hello: Hello | null = null;
 let mode: Mode = "offline";
 let toolTimer = 0;
+const workspace = new Workspace(id => link.history(id), value => link.dialogue(value), () => link.send("sleep"), value => link.music(value));
 
 const panels = new Panels(t);
 panels.setStrings(t);
@@ -27,17 +33,23 @@ const core = new Core(byId("core") as HTMLCanvasElement, tap);
 function setMode(next: Mode): void {
   mode = next;
   hud.dataset.state = next;
+  hud.dataset.activity = next;
   core.setMode(next);
   const label = t.states[next];
   byId("state-label").textContent = label;
   byId("caption-state").textContent = label;
-  const name = hello?.name ?? "Jarvis";
+  const name = hello?.name ?? "Чушпан";
   let hint = "";
-  if (next === "sleeping") hint = hello?.wake_word === false ? "" : fill(t.hints.sleeping, { name });
+  if (next === "sleeping") {
+    const phrase = hello?.wake_phrase ?? (hello ? `Hey ${name}` : "эй Чушпан");
+    hint = hello?.wake_word === false ? "" : fill(t.hints.sleeping, { phrase });
+  }
   else if (next === "listening") hint = t.hints.listening;
   else if (next === "offline") hint = t.hints.offline;
   byId("caption-hint").textContent = hint;
   if (next !== "thinking") showTool(null);
+  byId("listen-control").textContent = next === "sleeping" ? "Начать разговор" : next === "offline" ? "Нет соединения" : "Завершить разговор";
+  (byId("listen-control") as HTMLButtonElement).disabled = next === "offline" || next === "booting";
 }
 
 function showTool(name: string | null): void {
@@ -128,12 +140,13 @@ autostartButton.addEventListener("click", () => {
 
 function greet(h: Hello): void {
   hello = h;
-  t = stringsFor(h.language);
+  t = { ...stringsFor(h.language), jarvisMemory: h.name };
   document.documentElement.lang = h.language;
   panels.setStrings(t);
   byId("name").textContent = h.name.toUpperCase();
   byId("model").textContent = h.model;
-  document.title = `${h.name} HUD`;
+  document.title = fill(t.windowTitle, { name: h.name });
+  byId("core").setAttribute("aria-label", t.coreLabel);
   byId("autostart-label").textContent = t.autostart;
   exportButton.textContent = `⇩ ${t.exportChat}`;
   showBoot();
@@ -143,7 +156,14 @@ function greet(h: Hello): void {
 }
 
 function onEvent(e: HudEvent): void {
+  if (e.type === "hello") requestEvents.reset();
+  if (!requestEvents.accept(e)) return;
+  workspace.receive(e);
   switch (e.type) {
+    case "notice":
+      hud.dataset.activity = "error";
+      return note(e.message, e.error);
+    case "ai_status": case "settings_info": case "history": case "activity": case "session": case "dialogue_settings_result": case "addressee": case "music_settings": return;
     case "hello":
       return greet(e);
     case "state":
@@ -184,15 +204,18 @@ function onEvent(e: HudEvent): void {
 }
 
 const link = new Link(onEvent, (online) => {
+  workspace.connection(online);
+  exportButton.disabled = !online;
   if (!online) {
     setMode("offline");
     autostartButton.hidden = true;
   }
 });
+byId("listen-control").addEventListener("click", tap);
 
 function tickClock(): void {
   const now = new Date();
-  const lang = hello?.language ?? navigator.language;
+  const lang = hello?.language ?? document.documentElement.lang;
   byId("time").textContent = now.toLocaleTimeString(lang, { hour: "2-digit", minute: "2-digit" });
   byId("date").textContent = now.toLocaleDateString(lang, {
     weekday: "long",

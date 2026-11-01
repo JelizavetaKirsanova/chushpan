@@ -26,11 +26,13 @@ class Resources:
         conv,
         stt,
         on_change: Callable[[bool], None] | None = None,
+        keep_stt_loaded: bool = False,
     ) -> None:
         self.s = s
         self.conv = conv
         self.stt = stt
         self.on_change = on_change  # True = loaded
+        self.keep_stt_loaded = keep_stt_loaded
         self.loaded = True
         self._timer: asyncio.Task | None = None
         self._work: asyncio.Task | None = None
@@ -68,14 +70,15 @@ class Resources:
             if not self.loaded:
                 return
             await self.conv.settle()  # a warm-up landing after the unload would reload it
-            results = await asyncio.gather(
-                self.conv.llm.unload(), self.stt.unload(), return_exceptions=True
-            )
-            for part, result in zip(("model", "whisper"), results, strict=True):
+            work = {"model": self.conv.llm.unload()}
+            if not self.keep_stt_loaded:
+                work["whisper"] = self.stt.unload()
+            results = await asyncio.gather(*work.values(), return_exceptions=True)
+            for part, result in zip(work, results, strict=True):
                 if isinstance(result, Exception):
                     log.warning("Could not unload the %s: %s", part, result)
             self.loaded = False
-            log.info("Asleep: model and Whisper unloaded")
+            log.info("Asleep: model unloaded; Whisper retained: %s", self.keep_stt_loaded)
         self._changed()
 
     async def reload(self) -> None:
@@ -85,10 +88,11 @@ class Resources:
                 return
             self.loaded = True  # set first: a reply needs no further reload
             self._changed()
-            results = await asyncio.gather(
-                self.stt.warmup(), self.conv.warm(), return_exceptions=True
-            )
-            for part, result in zip(("whisper", "model"), results, strict=True):
+            work = {"model": self.conv.warm()}
+            if not self.keep_stt_loaded:
+                work["whisper"] = self.stt.warmup()
+            results = await asyncio.gather(*work.values(), return_exceptions=True)
+            for part, result in zip(work, results, strict=True):
                 if isinstance(result, Exception):
                     log.warning("Could not reload the %s: %s", part, result)
 

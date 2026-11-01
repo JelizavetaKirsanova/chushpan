@@ -11,6 +11,7 @@ export interface Hello {
   place: string | null;
   tools: string[];
   wake_word: boolean;
+  wake_phrase?: string | null;
 }
 
 export interface StateEvent {
@@ -25,6 +26,7 @@ export interface LevelEvent {
 }
 
 export interface TranscriptLine {
+  timestamp?: string;
   role: "user" | "assistant";
   text: string;
   open: boolean;
@@ -77,6 +79,11 @@ export interface Timer {
 
 export interface StatsEvent {
   type: "stats";
+  response_s?: number | null;
+  tts_s?: number;
+  model_used?: boolean;
+  stages?: Record<string, number>;
+  attempts?: {stage: string; seconds: number; outcome: string}[];
   stt_s: number | null;
   first_token_s: number | null;
   voice_s: number | null;
@@ -112,7 +119,16 @@ export interface ExportedEvent {
   error?: string;
 }
 
-export type HudEvent =
+type HudPayload =
+  | {type: "music_settings"; current: string | null; saved: string | null; restart_required: boolean; error: string | null}
+  | {type: "addressee"; state: "direct" | "continuation" | "waiting" | "task" | "task_running" | "ambiguous"}
+  | {type: "dialogue_settings_result"; ok: boolean}
+  | {type: "session"; active: boolean; listening: boolean; requires_wake: boolean; remaining_s: number; enabled: boolean; duration_s: number; nameless_interruptions: boolean; nameless_ready: boolean; interrupted: boolean; reason: string; addressee_strictness: "contextual" | "addressed"}
+  | {type: "ai_status"; phase: string; provider: string | null; model: string | null; reason?: string | null; models: {model: string; provider: string; status: string; retry_in_s: number; successes: number; failures: number; latency_s: number | null; error: string | null}[]}
+  | {type: "settings_info"; items: Record<string, string>}
+  | {type: "activity"; phase: string}
+  | {type: "notice"; message: string; error: boolean}
+  | {type: "history"; selected: number; conversations: {id: number; started_at: string; messages: number}[]; messages: {role: string; content: string; created_at: string}[]; error?: string}
   | Hello
   | StateEvent
   | LevelEvent
@@ -130,3 +146,5 @@ export type HudEvent =
   | { type: "reply"; delta: string; duration_s?: number }
   | { type: "reply_end"; cut?: boolean }
   | { type: "tool"; name: string };
+
+export type HudEvent = HudPayload & {request_id?: number};

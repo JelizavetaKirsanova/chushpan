@@ -1,5 +1,9 @@
 import sqlite3
+from dataclasses import replace
 
+import pytest
+
+from backend.context import DeviceContext, RequestContext
 from backend.memory.store import MemoryStore
 
 
@@ -61,3 +65,41 @@ def test_old_database_is_migrated(tmp_path):
         {"role": "user", "content": "antiga"},
         {"role": "tool", "content": "{}", "tool_name": "echo"},
     ]
+
+
+def test_multiple_devices_share_one_store_with_message_provenance(tmp_path):
+    path = tmp_path / "shared.db"
+    store = MemoryStore(path)
+    conv = store.new_conversation()
+    local = DeviceContext.local_mac()
+    phone = replace(
+        local, device_id="paired-phone", device_type="iphone", session_id="phone-session"
+    )
+    for device, text in ((local, "С Mac"), (phone, "С телефона")):
+        store.add(conv, "user", text, source=RequestContext(device, text))
+    rows = [
+        dict(row)
+        for row in store.db.execute(
+            "SELECT device_id, device_type, session_id, request_id FROM messages ORDER BY id"
+        )
+    ]
+    assert [row["device_id"] for row in rows] == ["local-mac", "paired-phone"]
+    assert rows[1]["session_id"] == "phone-session"
+    assert len({row["request_id"] for row in rows}) == 2
+    assert [m["content"] for m in store.recent(conv, 10)] == ["С Mac", "С телефона"]
+    store.close()
+    reopened = MemoryStore(path)
+    assert reopened.count(conv) == 2
+    assert len(list(tmp_path.glob("*.db"))) == 1
+
+
+def test_fact_correction_rolls_back_if_insert_fails(tmp_path):
+    store = MemoryStore(tmp_path / "rollback.db")
+    fact, _ = store.add_fact("Исходный факт")
+    store.db.executescript(
+        "CREATE TRIGGER reject_fact BEFORE INSERT ON facts BEGIN "
+        "SELECT RAISE(ABORT, 'test failure'); END;"
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        store.replace_fact(fact, "Новый факт")
+    assert store.facts() == [(fact, "Исходный факт")]

@@ -20,6 +20,7 @@ from backend.brain.conversation import Conversation
 from backend.brain.llm import LLMError
 from backend.brain.prompts import build_context_note, build_greeting
 from backend.config import Settings
+from backend.i18n import noun_form
 from backend.tools.news import NewsService
 from backend.tools.registry import ToolError
 from backend.tools.weather import WeatherService
@@ -48,12 +49,23 @@ def mark_given(s: Settings, today: date | None = None) -> None:
 # The headlines go in as the result of a get_ai_news call made by code: asked to retell
 # headlines pasted into the user message, qwen3:8b called get_ai_news 3 times in 3.
 REQUEST = {
+    "ru": "Утренняя сводка: приветствие и погода уже прозвучали. Какие новости "
+    "об искусственном интеллекте сегодня самые важные?",
     "pt": "Briefing de ativação: a saudação e o tempo já foram ditos. Quais são as notícias "
     "mais importantes de inteligência artificial?",
     "en": "Activation briefing: the greeting and the weather have already been said. What "
     "are the most important artificial intelligence news items?",
 }
 HOW_TO_REPLY = {
+    "ru": "Ответ для озвучки: не более {n} коротких предложений на естественном русском "
+    "языке об одной или двух самых важных новостях искусственного интеллекта. Начните "
+    "с короткого перехода, например «В новостях искусственного интеллекта». Каждую "
+    "новость перескажите отдельным предложением: кто и что сделал. Иностранные "
+    "заголовки переведите на русский, сохраняя названия компаний и продуктов. Не "
+    "объединяйте разные события и не добавляйте сведений, которых нет в заголовке. "
+    "Пропускайте новости не об искусственном интеллекте. Без приветствия, погоды, "
+    "списков, нумерации и вводных фраз вроде «стоит отметить». Сохрани характер и "
+    "обращение из системной инструкции; точность важнее шутки.",
     "pt": "Resposta falada, como um mordomo que conta as novidades do dia: no máximo {n} "
     "frases curtas, em português natural do Brasil, com as uma ou duas manchetes mais "
     "importantes sobre inteligência artificial. Comece com uma transição curta, como "
@@ -160,6 +172,20 @@ async def fetch(
 # How the sky is right now, as the end of "It is 22 degrees ...": matched by keyword, so
 # "garoa forte" and "garoa" both read "e está garoando". First match wins.
 NOW_PHRASES = {
+    "ru": [
+        ("гроз", "с грозой"),
+        ("град", "с градом"),
+        ("снег", "и идёт снег"),
+        ("морось", "и моросит дождь"),
+        ("лив", "и идёт ливень"),
+        ("дожд", "и идёт дождь"),
+        ("туман", "и туман"),
+        ("пасмурно", "и пасмурно"),
+        ("переменная облачность", "и переменная облачность"),
+        ("облачно", "и облачно"),
+        ("облачность", "и небольшая облачность"),
+        ("ясно", "и ясно"),
+    ],
     "pt": [
         ("trovoada", "e há trovoadas"),
         ("granizo", "e está caindo granizo"),
@@ -197,10 +223,14 @@ def _sky_now(conditions: str | None, lang: str) -> str | None:
     for key, phrase in NOW_PHRASES[lang]:
         if key in conditions.lower():
             return phrase
+    if lang == "ru":
+        return f"и {conditions}"
     return f"com {conditions}" if lang == "pt" else f"with {conditions}"
 
 
 def _degrees(n: int, lang: str) -> str:
+    if lang == "ru":
+        return f"{n} {noun_form(n, ('градус', 'градуса', 'градусов'))}"
     if lang == "pt":
         return f"{n} grau" if abs(n) == 1 else f"{n} graus"
     return f"{n} degree" if abs(n) == 1 else f"{n} degrees"
@@ -219,11 +249,13 @@ def weather_sentence(conv: Conversation, data: BriefingData, now: datetime | Non
     temp = current.get("temperature")
     if temp is None:
         return ""
-    lang = "pt" if conv.s.locale.lang == "pt" else "en"
+    lang = conv.s.locale.lang if conv.s.locale.lang in NOW_PHRASES else "en"
     pt = lang == "pt"
     now = now or datetime.now(conv.s.location.tz)
 
-    if pt:
+    if lang == "ru":
+        text = f"Сейчас на улице {_degrees(temp, lang)}"
+    elif pt:
         verb = "está" if abs(temp) == 1 else "estão"
         text = f"Lá fora {verb} {_degrees(temp, lang)}"
     else:
@@ -231,14 +263,21 @@ def weather_sentence(conv: Conversation, data: BriefingData, now: datetime | Non
     if sky := _sky_now(current.get("conditions"), lang):
         text += f" {sky}"
     if (feels := current.get("feels_like")) is not None and abs(feels - temp) >= 3:
-        text += f", com sensação de {feels}" if pt else f", though it feels like {feels}"
+        if lang == "ru":
+            text += f", ощущается как {_degrees(feels, lang)}"
+        else:
+            text += f", com sensação de {feels}" if pt else f", though it feels like {feels}"
     sentences = [f"{text}."]
 
     low, high = today.get("min"), today.get("max")
     later = today.get("conditions")
     changes = later and later != current.get("conditions")
     if now.hour < EVENING_HOUR and low is not None and high is not None:
-        if pt:
+        if lang == "ru":
+            unit = noun_form(high, ("градуса", "градусов", "градусов"))
+            span = f"от {low} до {high} {unit}"
+            day = f"Днём {later}, температура {span}." if changes else f"Днём ожидается {span}."
+        elif pt:
             span = f"entre {low} e {_degrees(high, lang)}"
             day = (
                 f"Ao longo do dia, a previsão é de {later}, com a temperatura {span}."
@@ -253,7 +292,13 @@ def weather_sentence(conv: Conversation, data: BriefingData, now: datetime | Non
         sentences.append(day)
 
     rain = today.get("rain_chance_percent")
-    if rain is not None and rain >= RAIN_LIKELY:
+    if lang == "ru" and rain is not None and rain >= RAIN_WORTH_SAYING:
+        if rain >= RAIN_LIKELY:
+            sentences.append("Стоит взять с собой зонт.")
+        else:
+            unit = noun_form(rain, ("процент", "процента", "процентов"))
+            sentences.append(f"Вероятность осадков — {rain} {unit}.")
+    elif rain is not None and rain >= RAIN_LIKELY:
         sentences.append("É bom ter o guarda-chuva à mão." if pt else "An umbrella would be wise.")
     elif rain is not None and rain >= RAIN_WORTH_SAYING:
         sentences.append(
@@ -268,7 +313,7 @@ def build_messages(
     conv: Conversation, data: BriefingData, now: datetime | None = None
 ) -> list[dict[str, Any]]:
     s = conv.s
-    lang = "pt" if s.locale.lang == "pt" else "en"
+    lang = s.locale.lang if s.locale.lang in REQUEST else "en"
     call = {"function": {"name": "get_ai_news", "arguments": {}}}
     result = {
         "items": data.news,

@@ -1,405 +1,307 @@
 <div align="center">
 
-<img src="docs/assets/banner.svg" width="100%" alt="JARVIS: a fully local voice assistant">
+<img src="docs/assets/banner.svg" width="100%" alt="Чушпан — локальный голосовой помощник">
 
-<br>
+**Русский** · [Português (Brasil)](README.pt-BR.md)
 
-![macOS](https://img.shields.io/badge/macOS-Apple_Silicon-00e5ff?style=for-the-badge&logo=apple&logoColor=00e5ff&labelColor=0a1420)
-![Python](https://img.shields.io/badge/Python-3.12+-00e5ff?style=for-the-badge&logo=python&logoColor=00e5ff&labelColor=0a1420)
-![Ollama](https://img.shields.io/badge/LLM-Ollama-00e5ff?style=for-the-badge&logo=ollama&logoColor=00e5ff&labelColor=0a1420)
-![Status](https://img.shields.io/badge/Phase-9_in_progress-3dffb0?style=for-the-badge&labelColor=0a1420)
-![License](https://img.shields.io/badge/License-MIT-3dffb0?style=for-the-badge&labelColor=0a1420)
+**Голосовой помощник, который работает на вашем Mac.**
 
-**English** · [Português (Brasil)](README.pt-BR.md)
+Whisper, голос Silero и фраза активации работают локально. Основная LLM — Gemini Flash; Ollama сохранена для локального режима и резерва.
 
-**A voice assistant that lives on your Mac, not in someone else's data center.**<br>
-Language model, speech recognition and voice all run on-device: no API keys, no tokens, no cloud.
-
-[Overview](#-overview) · [Features](#-features) · [HUD](#-hud) · [Architecture](#-architecture) · [Quick start](#-quick-start) · [Configuration](#-configuration) · [Performance](#-performance) · [Roadmap](#-roadmap)
-
-<br>
-
-<img src="docs/assets/demo.gif" width="100%" alt="Animated demo of the Jarvis HUD: the core wakes from sleep, listens, turns amber while it thinks and pulses while it speaks; the user asks for a 10-minute cake timer, which appears in the timers panel, then asks about the weather, and the replies are typed in step with the voice">
-
-<sub>The HUD running a scripted conversation (<code>hud-demo --sample</code>): wake, set a timer, ask for the weather.</sub>
+<img src="docs/assets/demo.gif" width="100%" alt="Демонстрация интерфейса Чушпан: активация, таймер и вопрос о погоде">
 
 </div>
 
-<br>
+## Возможности
 
-## ◈ Overview
+Скажите **«эй Чушпан»**, затем задайте вопрос или дайте команду по-русски. Чушпан — умный, язвительный приятель с сухим юмором: обращается к тебе на «ты», умеет спорить и подкалывать, а в серьёзном разговоре становится спокойным и внимательным. Русский выбран по умолчанию для интерфейса, ответов, распознавания речи, дат, таймеров, новостей и сводки.
 
-Jarvis is a personal assistant you talk to. Say **"Hey Jarvis"**, ask a question or give an instruction, and it answers out loud in about a second, in the manner of a British butler. It checks the weather and the AI news, plays music on Spotify, sets timers, controls the Mac and remembers what you ask it to, while a holographic HUD shows what it is doing.
+- **Голосовое общение.** Фраза активации, определение речи, распознавание Whisper и синтез речи работают на устройстве. Ответ озвучивается по предложениям по мере генерации.
+- **Погода.** Текущая температура, прогноз, осадки, влажность, ветер, восход и закат через Open-Meteo.
+- **Новости искусственного интеллекта.** Заголовки из RSS; по умолчанию используется русскоязычная лента Google News. Иностранные заголовки в голосовом ответе пересказываются по-русски.
+- **Утренняя сводка.** При первом запуске за день Чушпан приветствует вас, сообщает погоду и одну-две главные новости.
+- **Музыка.** YouTube Music через установленное Safari Web App: свой плейлист,
+  пауза, переключение, повтор, библиотека и музыкальные сценарии. Spotify сохранён.
+  [Настройка и ограничения](docs/youtube-music.md).
+- **Видео YouTube в Safari.** Пауза и продолжение ролика в активной вкладке, включая полноэкранный режим; управление отделено от музыки.
+- **Управление Mac.** Состояние батареи, памяти, диска и громкости; изменение громкости и открытие приложений.
+- **Таймеры и время.** Создание, изменение и отмена таймеров с голосовым уведомлением; расчёт времени до указанного часа или даты.
+- **Долговременная память.** Сохранение фактов по вашей просьбе, исправление и удаление записей.
+- **Прерывание голосом.** Эхоподавление убирает голос ассистента из микрофона, позволяя перебить его без наушников.
+- **Автозапуск и экономия памяти.** Запуск при входе в macOS и выгрузка моделей во время ожидания.
 
-Everything that understands or produces language runs locally on Apple Silicon:
+Распознавание речи и голос работают без интернета на установленных моделях. Gemini отправляет текущий диалог в Google; выбранные изображения — только по явной просьбе и подтверждению. Ollama позволяет общаться и анализировать изображения локально, если установленная модель поддерживает vision. Погода, RSS и музыкальные сервисы используют сеть. Личные настройки находятся в `.env`, который исключён из Git.
 
-| Stage | Runs on | Model |
-|---|---|---|
-| Wake word | CPU (ONNX) | openWakeWord `hey_jarvis` |
-| Speech detection | CPU | Silero VAD |
-| Transcription | GPU (MLX) | `whisper-small` |
-| Reasoning and tools | GPU (Metal, via Ollama) | `qwen3:8b` |
-| Voice | CPU | Piper (`en_GB-alan` · `pt_BR-faber`) |
+### Gemini, зрение и Apple Shortcuts
 
-Only weather (Open-Meteo) and news (RSS) reach the internet, through free APIs that need no key, plus Spotify when you ask for music. Personal settings live in a git-ignored `.env`.
+Gemini настроен как основной провайдер, но API включается только после добавления `GEMINI_API_KEY` и `JARVIS_GEMINI__FREE_TIER_CONFIRMED=true` в **существующий** `.env`. Проверь Free tier проекта в AI Studio и отсутствие подключённого Billing; не копируй пример поверх своих настроек. Для полностью локального режима укажи `JARVIS_LLM__PROVIDER=ollama`. Без ключа используется локальный резерв; его ошибка не считается успешным ответом. Учитывай [региональные условия Google](https://ai.google.dev/gemini-api/terms): для предоставления API-клиента пользователям ЕЭЗ указан Paid Services. Платный тариф приложение не включает; доступность бесплатного проекта требует отдельной проверки.
 
-## ◈ Features
+Резервная цепочка: `gemini-3.8-flash → gemini-3.5-flash → Ollama`. Один реальный короткий запрос к 3.5 вернул HTTP 200; фактически API ответила моделью `gemini-3.6-flash`. Переключение — при 429/500/502/503/504 и сетевых сбоях, по одной попытке каждой модели, 15 с на облачную попытку. Ошибки авторизации и конфигурации остаются явными. [Проверки и ограничения](docs/CHUSHPAN_GEMINI_FALLBACK.md).
 
-<table>
-  <tr>
-    <td width="33%" valign="top">
-      <h3>🎙️ Voice-first</h3>
-      Wake word, speech recognition and a natural voice, all on-device. Replies are spoken sentence by sentence while the rest is still being generated.
-    </td>
-    <td width="33%" valign="top">
-      <h3>🔒 Private by design</h3>
-      Conversations, memory and audio never leave your Mac. No accounts, no API keys, no telemetry.
-    </td>
-    <td width="33%" valign="top">
-      <h3>🎩 A butler's manners</h3>
-      Formal, polite and dry-witted. Addresses you by the name and title you choose, with correct grammatical gender.
-    </td>
-  </tr>
-  <tr>
-    <td valign="top">
-      <h3>🌦️ Daily briefing</h3>
-      On the day's first start, a loading screen fetches the local weather and the AI headlines that matter, and Jarvis speaks the whole briefing at 100%. Later starts open quietly.
-    </td>
-    <td valign="top">
-      <h3>🎵 Music by voice</h3>
-      "Play Stray Kids on Spotify" starts the song in about 3 seconds, with no account or API key. Pause, skip, ask what's playing, turn it up or down.
-    </td>
-    <td valign="top">
-      <h3>🛰️ Holographic HUD</h3>
-      An original interface in its own window: rings that react to both voices, replies typed in step with speech, and live panels for weather, news, system, timers and latency.
-    </td>
-  </tr>
-  <tr>
-    <td valign="top">
-      <h3>🧠 Long-term memory</h3>
-      Ask it to remember something and it knows it in every conversation after that. List or delete what it keeps at any time.
-    </td>
-    <td valign="top">
-      <h3>🗣️ Interruptible</h3>
-      Echo cancellation removes Jarvis's own voice from the microphone, so you can cut in mid-sentence without headphones.
-    </td>
-    <td valign="top">
-      <h3>🔁 Always there, lightly</h3>
-      Starts with your Mac and waits for "Hey Jarvis". Asleep, it releases the models: about 0.5 GB instead of 7 GB.
-    </td>
-  </tr>
-</table>
+«Что у меня на экране?» использует `analyze_screen`; «Посмотри error.png в загрузках» — `analyze_image`. Для снимка нужен Screen Recording приложению запуска. PNG/JPEG/WebP ограничены 8 МиБ и 16 млн пикселей; временный снимок удаляется, выбранный файл сохраняется. Перед облачным анализом скрой секреты и личные данные.
 
-## ◈ HUD
+`list_shortcuts` показывает существующие Команды, `run_shortcut` запускает только проверенный ID из `shortcuts.allowed` и всегда требует свежего кода. На этом Mac разрешён только проверенный `Youtube sleep`. [Настройка и сценарии](docs/CHUSHPAN_SHORTCUTS.md).
 
-<div align="center">
-<img src="docs/assets/hud.png" width="100%" alt="The Jarvis HUD: a glowing core of rings in the centre, weather and AI news on the left, system with Jarvis's and the model's memory, timers and latency on the right, the conversation below with copy and export buttons, and the launch-at-login switch in the bottom bar">
-</div>
+### Персональная память и ночной сценарий
 
-<br>
+Чушпан сохраняет явные нечувствительные сведения об учёбе, стиле общения и проектах из текущей реплики. «Что ты обо мне помнишь?» показывает записи; исправление, удаление и постоянные изменения характера требуют кода. «Отвечай короче», «Поменьше мата», «Хватит меня подкалывать» меняют сохраняемые параметры поверх прежней личности. В запрос к модели попадает ограниченная релевантная память. [Описание и ручная проверка](docs/CHUSHPAN_STAGE5_REPORT.md).
 
-When `voice` starts, the HUD opens in its own window. It is served by Jarvis itself at <http://127.0.0.1:8765>, so it also works in a browser tab, on another monitor or in full screen.
+«Чушпан, я спать» после свежего кода задаёт встроенному экрану 10%, выбранному HISENSE 25% по общей шкале BetterDisplay и запускает существующий `Youtube sleep`. Он ждёт окончания видео в активной вкладке Safari, затем усыпляет Mac. Ошибки отдельных шагов сообщаются явно; повтор не запускает второй watcher. `uv run python -m backend night status` только показывает журнал.
 
-| Element | What it does |
-|---|---|
-| **Loading screen** | Shows each startup step as it really finishes (models, location, weather, news, briefing), then fades out at 100% as Jarvis speaks |
-| **Core** | Dim while asleep, cyan while listening, amber and fast while thinking, bright while speaking; the bar ring follows the loudness of each voice |
-| **Transcript** | Your words, and the reply typed letter by letter in step with the voice, with the tool in use ("checking the weather") |
-| **Panels** | Weather, clickable AI headlines, battery/CPU/memory, memory held by Jarvis and its model, timers, and per-reply latency |
-| **Controls** | Copy a reply, export the conversation as Markdown, toggle launch at login |
+Отдельное приложение/PWA для iPhone/iPad отменено. Будущее управление — через Apple Shortcuts и защищённую частную сеть; мобильного сервера в этом этапе нет.
 
-Click the core or press <kbd>Space</kbd> to wake Jarvis (or send it back to sleep), <kbd>F</kbd> for full screen, and <kbd>⌘</kbd><kbd>Q</kbd> to quit Jarvis along with the window.
+## Интерфейс
 
-<div align="center">
-<img src="docs/assets/boot.png" width="70%" alt="The loading screen: 39%, with language engine, location, internet, weather, news, voice, speech recognition and wake word ready, the language model loading, and the briefing and its audio still to come">
-</div>
+<img src="docs/assets/hud.png" width="100%" alt="Интерфейс Чушпан: ядро по центру, погода и новости слева, система, таймеры и время отклика справа">
 
-To try the interface without a microphone or models, run `uv run python -m backend hud-demo` (`--sample` uses fixed, offline panel data).
+Команда `voice` открывает отдельное окно. Интерфейс также доступен в браузере по адресу [http://127.0.0.1:8765](http://127.0.0.1:8765).
 
-## ◈ Architecture
+- Экран запуска показывает готовность моделей, местоположения, погоды, новостей и сводки.
+- Ядро тускнеет в ожидании, светится голубым при прослушивании и янтарным при обработке запроса. Кольца реагируют на громкость речи.
+- Текст ответа появляется синхронно с озвучкой. Рядом отображается текущая операция, например «узнаю погоду».
+- Панели показывают погоду, новости со ссылками, состояние системы, память Чушпан и модели, таймеры и время отклика.
+- Ответ можно скопировать, разговор — сохранить в Markdown. Переключатель внизу управляет автозапуском.
 
-```mermaid
-flowchart LR
-    MIC(["🎙️ Microphone"]) --> WAKE["Wake word<br/><sub>openWakeWord</sub>"]
-    WAKE --> VAD["Speech detection<br/><sub>Silero VAD</sub>"]
-    VAD --> STT["Transcription<br/><sub>mlx-whisper</sub>"]
-    STT --> LLM{{"🧠 Brain<br/><sub>Ollama · qwen3</sub>"}}
-    LLM <--> TOOLS["Tools<br/><sub>weather · news · system · timers · music</sub>"]
-    LLM <--> MEM[("Memory<br/><sub>SQLite</sub>")]
-    LLM --> TTS["Voice<br/><sub>Piper</sub>"]
-    TTS --> SPK(["🔊 Speaker"])
-    TTS -. reference .-> AEC["Echo cancellation<br/><sub>WebRTC AEC3</sub>"]
-    MIC --> AEC
-    AEC -. barge-in .-> VAD
-    LLM -. WebSocket .-> HUD[["🛰️ HUD<br/><sub>window · browser</sub>"]]
+Нажатие на ядро или **Пробел** активирует ассистента либо переводит его в ожидание. **F** включает полноэкранный режим, **⌘Q** закрывает окно и Чушпан.
 
-    classDef core fill:#0a1420,stroke:#00e5ff,color:#eafcff,stroke-width:2px
-    classDef io fill:#02050a,stroke:#ffb340,color:#ffd59a
-    class WAKE,VAD,STT,TOOLS,MEM,TTS,AEC,HUD core
-    class LLM core
-    class MIC,SPK io
-```
-
-A single asyncio process runs the whole pipeline, driven by a state machine (`sleeping → listening → thinking → speaking`). The model's output is split into sentences and synthesized while it is still generating, which is what brings the first spoken word under the 2-second target. The HUD server (FastAPI) runs on the same event loop and receives events over an in-process bus; the native window is a pywebview child process.
-
-Design choices that keep a small local model reliable:
-
-- **Code decides what must be exact.** The weather sentence of the briefing, time arithmetic, goodbyes and memory writes are handled in code; the model chooses tools and phrases replies.
-- **Latency is engineered, not hoped for.** The system prompt is pre-loaded, the prompt cache is warmed after each turn, and a spoken "One moment" covers slow tools.
-- **Measure before choosing.** Models were picked by benchmarks on the target hardware, not by reputation (`bench`, `bench-stt`).
-
-```
-backend/
-├── audio/       capture, wake word, VAD, Whisper, Piper, echo cancellation
-├── brain/       Ollama client, conversation and tool loop, persona, briefing
-├── tools/       weather, news, system, timers, clock, memory, Spotify
-├── hud/         event bus, FastAPI server, panel feeds, native window, demo
-├── memory/      SQLite history and long-term facts, Markdown export
-└── voice.py     the voice loop and startup
-frontend/        HUD: Vite + TypeScript, canvas 2D, no framework
-tests/           pytest suite (no microphone or models needed)
-```
-
-## ◈ Quick start
-
-> [!NOTE]
-> Requires macOS on Apple Silicon (16 GB of memory recommended) and [Homebrew](https://brew.sh). uv installs Python 3.12 automatically. Developed and tested on a MacBook Air M4, 16 GB, macOS 26.
+Для демонстрации без микрофона и моделей:
 
 ```bash
-git clone https://github.com/MichelleBudri/my-jarvis.git && cd my-jarvis
-cp .env.example .env            # your name, city and language
-./scripts/setup.sh              # installs uv and Ollama, pulls the models and voice, runs a health check
-uv run python -m backend voice  # say "Hey Jarvis", then ask
+uv run python -m backend hud-demo --sample
 ```
 
-The setup downloads the language model (`qwen3:8b`, about 5.2 GB), the speech recognition model (`whisper-small`, about 0.5 GB), the Piper voice for your language and the wake word model (about 4 MB), installs Node.js if needed and builds the HUD. On the first run, macOS asks for microphone access.
+## Быстрый старт
 
-### Commands
-
-| Command | What it does |
-|---|---|
-| `uv run python -m backend voice` | Voice conversation with the HUD; briefing on the day's first start (`--no-briefing`, `--no-hud`, `--no-wake` to always listen, `-r` to resume) |
-| `uv run python -m backend chat` | Text chat with streaming replies (`-s` reads them aloud, `-r` resumes) |
-| `uv run python -m backend autostart install` | Launch at login in the background (`status`, `stop`, `start`, `uninstall`) |
-| `uv run python -m backend memory` | List what Jarvis remembers (`memory forget 3`, `memory clear`) |
-| `uv run python -m backend doctor` | Health check: Ollama, models, voice, wake word, microphone, location, Spotify |
-| `uv run python -m backend hud-demo` | The HUD with a scripted conversation, no microphone or models |
-| `uv run python -m backend hud-window` | Reopen the HUD window while Jarvis runs |
-| `uv run python -m backend briefing` | Print the briefing with its timings (`-s` reads it aloud) |
-| `uv run python -m backend footprint` | Memory held by Jarvis and by its model |
-| `uv run python -m backend wake-test` | Live wake word scores, to tune the threshold |
-| `uv run python -m backend echo-test` | Measure how much of Jarvis's own voice the microphone still hears |
-| `uv run python -m backend bench [models...]` | Compare LLM latency across Ollama models |
-| `uv run python -m backend bench-stt [models...]` | Compare Whisper models on one recorded phrase |
-| `uv run python -m backend prompt` · `config` | Print the system prompt · the effective configuration |
-
-## ◈ Configuration
-
-Personal settings live in `.env`, which is never committed (see [`.env.example`](.env.example)). Project defaults live in [`config.yaml`](config.yaml); any key can be overridden with an environment variable, using `__` between sections (`JARVIS_LLM__MODEL=qwen3.5:4b`).
-
-| Variable | Example | Effect |
-|---|---|---|
-| `JARVIS_LANGUAGE` | `en-GB` · `en-US` · `pt-BR` · `es` | Persona, dates, titles, voice and transcription |
-| `JARVIS_OWNER_NAME` | `Ada` | Your name |
-| `JARVIS_OWNER_GENDER` | `female` · `male` · `neutral` | Default title (madam / sir) and grammatical agreement |
-| `JARVIS_OWNER_TITLE` | `madam` · `Dr. Smith` | How Jarvis addresses you; empty uses the default for language and gender |
-| `JARVIS_CITY` | `London, England, United Kingdom` | Weather, timezone and season |
-| `JARVIS_LATITUDE` · `_LONGITUDE` · `_TIMEZONE` | `51.51` · `-0.13` · `Europe/London` | Optional: skips the city lookup |
-
-<details>
-<summary><b>Languages and location</b></summary>
-<br>
-
-English and Portuguese are fully supported, including dates, seasons by hemisphere and voices; in English, Jarvis uses the British voice `en_GB-alan-medium`. Other languages use the English prompt with an instruction to reply in the chosen language; set a compatible [Piper voice](https://huggingface.co/rhasspy/piper-voices) in `JARVIS_TTS__VOICE`.
-
-The city is resolved to coordinates and a timezone with the [Open-Meteo geocoding API](https://open-meteo.com/en/docs/geocoding-api) and cached in `data/location.json`. Adding the state or country helps when city names repeat.
-
-</details>
-
-<details>
-<summary><b>Tools</b></summary>
-<br>
-
-Jarvis calls tools on its own when a request needs live data or an action:
-
-| Tool | Ask things like | Source |
-|---|---|---|
-| Weather | "How's the weather?" · "Will it rain tomorrow?" · "And in Lisbon?" | [Open-Meteo](https://open-meteo.com) (free, no key) |
-| AI news | "Any AI news?" · "Anything about robots?" | RSS feeds in `news.feeds` |
-| System | "How much battery is left?" · "Set the volume to 30" · "Open Safari" | macOS (`pmset`, `osascript`, `open`) |
-| Timers | "Remind me in 10 minutes to take the cake out" · "Make it 15" · "Cancel the timer" | Local; announced when they end |
-| Clock | "How long until 6 pm?" · "How many days until Christmas?" | Local; computed in code |
-| Memory | "Remember that I take my coffee black" · "Actually, with milk" · "Forget that" | Local (`data/jarvis.db`) |
-| Music | "Play Stray Kids on Spotify" · "Next" · "Pause" · "What's playing?" · "Turn the music up" | The Spotify app |
-
-Slow tools are covered by a spoken "One moment". Goodbyes ("that's all", "you can rest") and a plain "thank you" are answered by code, and goodbyes send Jarvis back to sleep. Enable or disable tools with `tools.enabled` (`JARVIS_TOOLS__ENABLED='["weather", "timers"]'`). Timers are kept in memory and cleared when Jarvis quits.
-
-</details>
-
-<details>
-<summary><b>Music (Spotify)</b></summary>
-<br>
-
-Spotify's AppleScript can play, pause, skip and set the volume, but it cannot search. Jarvis therefore opens the app's own search page, locates the green play button of the top result in a screenshot of the window, clicks it, returns the pointer to where it was and confirms through AppleScript that playback started. No Spotify account linking or API key is involved. The top result is Spotify's choice, so name the artist when it matters ("Bohemian Rhapsody by Queen").
-
-| Behaviour | Setting |
-|---|---|
-| A requested song starts at 75% of Spotify's volume, and Jarvis goes back to sleep without describing it, so the music is heard at once | `media.play_volume` (`null` keeps the current volume) |
-| While Jarvis listens and speaks, the music drops to 20% and comes back when it sleeps | `media.duck_to` (`0` turns it off) |
-| "Turn the music up/down" moves Spotify's volume by 20; "turn the volume down" changes the Mac's | — |
-
-The first song asks for three permissions for the app running Jarvis, under **System Settings → Privacy & Security**: **Automation** (Spotify and System Events), **Accessibility** (the click) and **Screen Recording** (the screenshot). While a song is being found, Spotify comes to the front for a moment.
-
-</details>
-
-<details>
-<summary><b>Voice, wake word and interruptions</b></summary>
-<br>
-
-Jarvis sleeps until it hears **"Hey Jarvis"** (a rising chime confirms it; "Ei Jarvis" works too). You can ask in the same breath or wait for the chime. After each reply it keeps listening for 8 seconds, so follow-ups need no wake word; a falling chime means it went back to sleep.
-
-```
-sleeping ──"Hey Jarvis"──▶ listening ──speech──▶ thinking ──▶ speaking
-    ▲                       │     ▲                              │
-    └── silence (6 s) ──────┘     └──── reply done (8 s window) ─┘
-```
-
-If it misses you or wakes by itself, run `wake-test` and adjust `JARVIS_WAKEWORD__THRESHOLD` (default 0.5; lower is more sensitive). `JARVIS_WAKEWORD__CHIME=false` silences the chimes.
-
-By default Jarvis is half duplex. `JARVIS_AUDIO__BARGE_IN=true` lets you interrupt it mid-sentence; echo cancellation (WebRTC AEC3) removes everything Jarvis plays from the microphone, so no headphones are needed. `echo-test` measures it in your room: on a MacBook Air at normal volume, speech detection on Jarvis's own voice dropped from 88% of frames to 0%.
-
-Other settings: `JARVIS_VAD__SILENCE_MS` (pause that ends your turn, default 700), `JARVIS_TTS__LENGTH_SCALE` (speaking speed) and `JARVIS_AUDIO__INPUT_DEVICE` / `_OUTPUT_DEVICE`.
-
-</details>
-
-<details>
-<summary><b>Briefing</b></summary>
-<br>
-
-The briefing is a greeting and today's weather, written by code from the forecast in spoken sentences ("It's 22 degrees out and drizzling... An umbrella would be wise."), followed by the one or two most relevant AI headlines, chosen and retold by the model. It is fully written and synthesized behind the loading screen, so it plays without pauses, about 25 seconds after launch with a cold model.
-
-It plays only on the day's first start (`briefing.once_a_day`), and counts once the headlines were spoken; a start without internet tries again next time. At login, Jarvis waits up to `briefing.network_wait_s` (20 s) for Wi-Fi, and any source slower than `briefing.fetch_timeout_s` (5 s) is left out. Disable it with `JARVIS_BRIEFING__ENABLED=false` or `voice --no-briefing`.
-
-</details>
-
-<details>
-<summary><b>Memory</b></summary>
-<br>
-
-Jarvis stores a fact only when explicitly asked ("remember that...", "don't forget..."). Questions such as "do you remember how I take my coffee?" never store anything: this is checked in code, because the model occasionally guessed an answer and saved the guess. Corrections replace the old fact. Up to 100 short facts go into every conversation, stored in `data/jarvis.db`. Manage them with `memory`, `memory forget <id>` and `memory clear`, or turn the feature off by removing `memory` from `tools.enabled`.
-
-</details>
-
-<details>
-<summary><b>Launch at login</b></summary>
-<br>
-
-`autostart install` builds a small `Jarvis.app` in `data/` and installs a LaunchAgent that runs `voice` through it in the background, waits up to 2 minutes for Ollama and restarts Jarvis if it crashes. The app bundle is what makes macOS show "Jarvis" with its own icon (in Activity Monitor, Login Items, the Dock and the permission prompts) instead of "python". Output goes to `data/logs/jarvis.log`. The **Launch at login** switch in the HUD turns it on or off for the next login without stopping the running Jarvis. Only one Jarvis runs at a time. After updating Python (`uv python upgrade`), run `autostart install` again.
-
-</details>
-
-<details>
-<summary><b>HUD and network access</b></summary>
-<br>
-
-Settings: `hud.enabled`, `hud.window` (`false` opens a browser tab instead), `hud.open_on_start`, and `server.host` / `server.port` (default `127.0.0.1:8765`). If the port is busy, Jarvis runs without the HUD and says so.
-
-The WebSocket accepts only pages served from this address (or the Vite dev server), so other websites open in your browser cannot read the conversation. To open the HUD from another device, set `JARVIS_SERVER__HOST` to the Mac's address; anyone on that network can then open it too.
-
-</details>
-
-<details>
-<summary><b>Memory use</b></summary>
-<br>
-
-Awake, Jarvis holds about 1.3 GB (speech recognition, voice, wake word and the HUD window) plus about 5.4 GB for `qwen3:8b` in Ollama. `resources.profile` decides what is released while it sleeps:
-
-| Profile | Behaviour |
-|---|---|
-| `performance` | Everything stays loaded; the first answer is always fast |
-| `balanced` (default) | The model and Whisper are unloaded after `resources.idle_minutes` asleep (10) |
-| `economy` | They are unloaded as soon as Jarvis goes to sleep |
-
-Unloaded, Jarvis holds about 0.5 GB and the model nothing. Reloading starts the moment it hears "Hey Jarvis"; Whisper is back in 0.3 s, while the model's first answer takes about 15 s longer. Check the numbers with `footprint` or in the HUD.
-
-</details>
-
-## ◈ Performance
-
-Measured on a MacBook Air M4 (16 GB) with `qwen3:8b` and `whisper-small`:
-
-| Metric | Result |
-|---|---|
-| End of speech → transcription | 0.3 s |
-| Transcription → model's first word | 0.3 – 1.0 s (prompt cache warm) |
-| End of speech → first spoken word, plain reply | 1.0 – 1.4 s |
-| Wake word detection | ~1.2 ms per 80 ms of audio, on CPU |
-| "Play …" → music playing | ~3 s (~4 s with Spotify closed) |
-| Launch → briefing spoken (cold model) | ~25 s |
-| Memory awake · asleep (`economy`) | ~6.7 GB · ~0.5 GB |
-
-Replies that need a network tool take longer (weather ~2 s for the request alone), so Jarvis says "One moment" first. Reproduce the language model and Whisper numbers with `bench` and `bench-stt`.
-
-## ◈ Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| Jarvis does not hear you | Allow the microphone for Jarvis (or your terminal) in **Privacy & Security → Microphone**; the log reports when it receives only silence |
-| It misses "Hey Jarvis" or wakes by itself | Tune `JARVIS_WAKEWORD__THRESHOLD` with `wake-test` |
-| Music does not start | Grant Automation, Accessibility and Screen Recording; after installing launch at login before the music feature, run `autostart install` again |
-| No HUD | Another process is using port 8765, or the frontend is not built (`npm --prefix frontend run build`) |
-| Anything else | `uv run python -m backend doctor`, then `data/logs/jarvis.log` |
-
-## ◈ Development
+Нужны macOS на Apple Silicon и [Homebrew](https://brew.sh). Рекомендуется 16 ГБ памяти. `uv` устанавливает Python 3.12 автоматически. Исходные измерения проекта выполнены на MacBook Air M4 с 16 ГБ памяти и macOS 26.
 
 ```bash
-uv run pytest                      # test suite: no microphone, models or network needed
-uv run ruff check . && uv run ruff format --check .
-npm --prefix frontend run dev      # HUD with hot reload at http://localhost:5173 (with voice or hud-demo running)
+git clone https://github.com/MichelleBudri/my-jarvis.git
+cd my-jarvis
+cp .env.example .env
+# Укажите имя и город в .env. Для русского языка оставьте ru-RU.
+./scripts/setup.sh
+uv run python -m backend voice
 ```
 
-External services are mocked in the tests. After changing the frontend, rebuild it with `npm --prefix frontend run build`.
+Скрипт устанавливает зависимости, скачивает `qwen3.5:9b-q4_K_M` (около 6,6 ГБ), `whisper-small` (около 0,5 ГБ), локальную модель голоса, собирает интерфейс и запускает диагностику. При первом обращении к микрофону macOS запросит разрешение.
 
-## ◈ Roadmap
+Для русской речи выбран [Silero v5.6](https://github.com/snakers4/silero-models#text-to-speech), голос `eugene` (Евгений), модель около 148 МБ. Другой мужской голос — `aidar`; выбирается через `JARVIS_TTS__SILERO_SPEAKER`. Модель работает локально на CPU и использует существующий проигрыватель, очередь предложений, прерывание и эхоподавление. Если файл отсутствует, `./scripts/setup.sh` скачает его с официального сервера Silero. Для другого языка переключите `JARVIS_TTS__ENGINE=piper` и загрузите голос выбранного языка тем же скриптом.
 
-| | Phase | Status |
-|:-:|---|---|
-| 0 | Foundation: settings, setup script, health check | ✅ Done |
-| 1 | Text chat: streaming LLM, persona, history, personalization | ✅ Done |
-| 2 | Voice in and out: VAD, Whisper, streaming Piper, barge-in | ✅ Done |
-| 3 | Wake word: "Hey Jarvis", state machine | ✅ Done |
-| 4 | Tools: weather, AI news, system, timers | ✅ Done |
-| 5 | Activation briefing | ✅ Done |
-| 6 | Holographic HUD | ✅ Done |
-| 7 | Polish: long-term memory, launch at login, echo cancellation, native HUD window | ✅ Done |
-| 8 | Loading screen, memory profiles, launch-at-login switch, typed transcript, copy and export, clickable news | ✅ Done |
-| 9 | App control: Spotify by voice, music ducking, briefing once a day; more apps next | 🚧 In progress |
+Фраза активации — **«эй, Чушпан»**, с ударением на «а»: **Чушпа́н**. Она распознаётся локально через Whisper. Можно сказать вопрос сразу после имени, например «Эй, Чушпан, какая погода?». Можно активировать ассистента нажатием на ядро или запустить `voice --no-wake`, чтобы он слушал постоянно.
 
-## ◈ Stack
+## Команды
 
-<div align="center">
+Все команды начинаются с `uv run python -m backend`:
 
-![Ollama](https://img.shields.io/badge/Ollama-0a1420?style=flat-square&logo=ollama&logoColor=00e5ff)
-![MLX Whisper](https://img.shields.io/badge/MLX_Whisper-0a1420?style=flat-square&logo=apple&logoColor=00e5ff)
-![openWakeWord](https://img.shields.io/badge/openWakeWord-0a1420?style=flat-square)
-![Silero VAD](https://img.shields.io/badge/Silero_VAD-0a1420?style=flat-square)
-![Piper](https://img.shields.io/badge/Piper_TTS-0a1420?style=flat-square)
-![Open-Meteo](https://img.shields.io/badge/Open--Meteo-0a1420?style=flat-square)
-![FastAPI](https://img.shields.io/badge/FastAPI-0a1420?style=flat-square&logo=fastapi&logoColor=00e5ff)
-![TypeScript](https://img.shields.io/badge/TypeScript-0a1420?style=flat-square&logo=typescript&logoColor=00e5ff)
-![Vite](https://img.shields.io/badge/Vite-0a1420?style=flat-square&logo=vite&logoColor=00e5ff)
-![pywebview](https://img.shields.io/badge/pywebview-0a1420?style=flat-square)
-![WebRTC AEC3](https://img.shields.io/badge/WebRTC_AEC3-0a1420?style=flat-square&logo=webrtc&logoColor=00e5ff)
-![SQLite](https://img.shields.io/badge/SQLite-0a1420?style=flat-square&logo=sqlite&logoColor=00e5ff)
-![uv](https://img.shields.io/badge/uv-0a1420?style=flat-square&logo=uv&logoColor=00e5ff)
+- `voice` — голосовой разговор с интерфейсом. Флаги: `--no-briefing`, `--no-hud`, `--no-wake`, `-r` для продолжения прошлого разговора.
+- `chat` — текстовый чат; `-s` включает озвучку, `-r` продолжает разговор. В чате: `/new`, `/help`, `/quit`.
+- `autostart install` — установить автозапуск. Также доступны `status`, `stop`, `start`, `uninstall`.
+- `memory` — список сохранённых фактов; `memory forget 3` удаляет факт с номером 3, `memory clear` очищает память.
+- `doctor` — диагностика Ollama, моделей, голоса, микрофона, местоположения, Spotify и автозапуска.
+- `hud-demo` — демонстрация без микрофона и моделей; `--sample` использует фиксированные данные без сети.
+- `hud-window` — открыть окно интерфейса уже запущенного ассистента.
+- `briefing` — показать сводку и время подготовки; `-s` озвучивает её.
+- `footprint` — показать потребление памяти Чушпан и моделью.
+- `wake-test` — проверить фразу активации и подобрать чувствительность.
+- `echo-test` — проверить эхоподавление в помещении.
+- `bench [модели...]` — сравнить время отклика моделей Ollama.
+- `bench-stt [модели...]` — сравнить модели Whisper на одной записи.
+- `prompt` — показать текущую системную инструкцию.
+- `config` — показать действующие настройки.
 
-</div>
+Имена команд, переменных окружения, моделей и ключей конфигурации сохраняются в исходном виде.
 
-## ◈ License
+## Настройки
 
-Released under the [MIT License](LICENSE). Jarvis is an independent hobby project and is not affiliated with Marvel or Disney.
+Личные настройки задаются в `.env`, образец — [`.env.example`](.env.example). Общие значения находятся в [`config.yaml`](config.yaml). Приоритет: аргументы настроек → переменные окружения → `.env` → `config.yaml`.
 
-<div align="center">
-<br>
-<sub><code>// SYSTEMS ONLINE · RUNNING ON YOUR MACHINE</code></sub>
-</div>
+```dotenv
+JARVIS_LANGUAGE=ru-RU
+JARVIS_ASSISTANT_NAME=Чушпан
+JARVIS_WAKEWORD__PHRASE=эй чушпан
+JARVIS_OWNER_NAME=
+JARVIS_OWNER_GENDER=neutral
+JARVIS_OWNER_TITLE=
+JARVIS_CITY=
+```
+
+Для русского нужен код **`ru-RU`**, а не `pt-RU`: `pt` обозначает португальский.
+
+`JARVIS_OWNER_NAME` — твоё имя. `JARVIS_OWNER_GENDER` принимает `female`, `male` или `neutral`; также распознаются русские обозначения пола. `JARVIS_OWNER_TITLE` задаёт собственное обращение. Русская личность обращается на «ты», в женском роде, без автоматического «госпожа»; другие языки сохраняют свои обращения по умолчанию.
+
+### Характер Чушпана
+
+Если ответ требует ожидания, русская реплика — «Ой, ну ща». Она произносится один раз за запрос и не сохраняется в историю.
+
+Единый характер хранится в [`personality.md`](personality.md). Он подключён через `persona.file` в `config.yaml` к существующему системному промпту. Текстовый чат, голосовой режим, сводка и диагностика модели используют один сборщик инструкций. `persona.style` и `JARVIS_PERSONA__STYLE` могут дополнять этот файл. Относительный путь к файлу считается от корня проекта.
+
+Файл перечитывается при формировании каждой новой реплики: сохранённые изменения действуют со следующего ответа без перезапуска. Настройки самого пути в `config.yaml` или `.env` применяются после перезапуска. Отсутствующий или пустой файл вызывает явную ошибку, а не возврат к старому образу дворецкого.
+
+Сарказм и редкий уместный мат разрешены, настоящие оскорбления — нет. В разговорах о здоровье, безопасности и переживаниях юмор уступает внимательному серьёзному тону. Обычные ответы короткие; `persona.max_sentences` — ориентир для простых вопросов, который не ограничивает подробные объяснения. Реплики о таймерах, ожидании и завершении разговора тоже звучат непринуждённо.
+
+Личность хранится отдельно от истории и фактов SQLite. Правка файла не меняет память о тебе; факты сохраняются только по явной просьбе. История остаётся доступной в рамках существующего `llm.context_messages`; `chat -r` и `voice -r` продолжают последний разговор. `/new` начинает новый разговор с тем же характером.
+
+Для модели явно задано `llm.num_ctx: 16384`. Полный запрос с личностью и схемами инструментов превышает 4096 токенов; маленькое окно Ollama обрезало инструкции ещё до начала разговора. Контекст одинаков для чата, прогрева, пробуждения и диагностики. Изменение этого параметра и голоса требует перезапуска. Автоматическое приветствие в русском режиме отключено: модель отвечает сразу по сути.
+
+Основная LLM — `qwen3.5:9b-q4_K_M` с `think: true`. Служебное поле `thinking` передаётся между шагами текущей команды, как требует [протокол Ollama для потоковых инструментов](https://docs.ollama.com/capabilities/tool-calling#tool-calling-with-streaming). Этот текст не озвучивается, не показывается в интерфейсе и не попадает в SQLite. Если модель дважды вернула пустой ответ, ассистент сообщает о сбое, а не молчит. Исходная `qwen3:8b` остаётся доступна для ручного переключения через `JARVIS_LLM__MODEL`.
+
+Проверка в тексте:
+
+```bash
+uv run python -m backend prompt  # посмотреть собранные инструкции
+uv run python -m backend chat   # новый разговор с текущим характером
+```
+
+Проверь бытовой разговор, ошибочное утверждение, просьбу объяснить что-либо подробно и фразу о плохом настроении. Тон должен меняться по ситуации; шутка не обязательна в каждом ответе. Не проверяй выполнение реальной команды, если не хочешь запускать соответствующее действие.
+
+Проверка голосом:
+
+```bash
+uv run python -m backend voice --no-briefing
+```
+
+Скажи «Эй, Чушпан», затем задай те же вопросы. Поддерживаются обращения «Чушпан» и «Чушпа́н» внутри разговора. Активация, ударение, распознавание и аудиоконвейер сохранены; модели генерации ответа и русской озвучки выбраны отдельно. В Silero ударение из «Чушпа́н» преобразуется в его формат «Чушп+ан» только для синтеза. Открытая демонстрация `hud-demo` показывает заранее написанные реплики и не проверяет характер модели.
+
+В `JARVIS_CITY` укажите город, регион и страну. Координаты и часовой пояс определяются через Open-Meteo и сохраняются в `data/location.json`. При необходимости задайте их напрямую:
+
+```dotenv
+JARVIS_LATITUDE=59.44
+JARVIS_LONGITUDE=24.75
+JARVIS_TIMEZONE=Europe/Tallinn
+```
+
+Вложенные настройки разделяются двойным подчёркиванием:
+
+```dotenv
+JARVIS_LLM__MODEL=qwen3.5:9b-q4_K_M
+JARVIS_LLM__NUM_CTX=16384
+JARVIS_TTS__ENGINE=silero
+JARVIS_TTS__SILERO_SPEAKER=eugene
+JARVIS_AUDIO__BARGE_IN=true
+```
+
+Русский, английский и португальский поддерживаются отдельными локализациями. Для других языков используется английская инструкция с требованием отвечать на выбранном языке; совместимый голос Piper нужно указать вручную.
+
+### Примеры запросов
+
+- «Какая сейчас погода?», «Завтра будет дождь?», «А в Таллине?»
+- «Какие новости искусственного интеллекта?», «Что нового о роботах?»
+- «Сколько осталось заряда?», «Установи громкость на 30», «Открой Safari».
+- «Напомни через 10 минут достать пирог», «Измени таймер на 15 минут», «Отмени таймер».
+- «Сколько осталось до шести вечера?», «Сколько дней до Нового года?»
+- «Запомни, что я пью кофе без сахара», «Исправь: с молоком», «Забуд эту запись».
+- «Включи Favourite Songs», «Следующий трек», «Пауза», «Что сейчас играет?»
+- «Поставь видео в Safari на паузу», «Продолжи видео», «Поставь музыку на паузу».
+- «Доброе утро, Чушпан» — погода по текущей геопозиции Mac, пять последних заголовков
+  русской версии Delfi, события Apple Календаря на сегодня и завтра, затем основной
+  любимый плейлист YouTube Music на 20%. Фраза работает и из режима ожидания.
+- «Спасибо», «Это всё, можешь отдыхать».
+
+Утренний сценарий запрашивает у macOS доступ к календарям и геопозиции от имени
+«Чушпан — утро». Подтверди два системных запроса при первом использовании.
+Он читает события, не изменяя их; геопозиция не сохраняется в память ассистента.
+Для запроса погоды координаты округляются до десятых долей градуса — погодный
+сервис получает район примерно в 10 км, а не точное положение Mac.
+Если источник недоступен, Чушпан сообщает об этом и продолжает остальные части.
+Музыка начинается после окончания речи; прерывание сводки отменяет её запуск.
+Громкость меняется в `config.yaml` → `briefing.morning_volume`.
+`voice --no-briefing` отключает сводку при запуске, но сохраняет эту голосовую команду.
+
+Перед медленным запросом Чушпан говорит «Ой, ну ща». Благодарность и завершение разговора обрабатываются кодом. При завершении ассистент переходит в ожидание. Таймеры хранятся в оперативной памяти и удаляются при выходе.
+
+Функции включаются списком `tools.enabled`; например, `JARVIS_TOOLS__ENABLED='["weather", "timers"]'` оставляет только погоду и таймеры.
+
+### Spotify
+
+Основной провайдер теперь YouTube Music. Для Spotify установи `media.provider: spotify`.
+Подробности YouTube Music: [отдельная инструкция](docs/youtube-music.md).
+
+Воспроизведение, пауза, переключение и громкость управляются через AppleScript. Для поиска Чушпан открывает поиск Spotify, находит кнопку воспроизведения на снимке окна, нажимает её и проверяет запуск через AppleScript. Выбирается верхний результат Spotify; для точности называйте исполнителя.
+
+При первом запуске музыки приложению, из которого работает Чушпан, нужны разрешения в **Системные настройки → Конфиденциальность и безопасность**: автоматизация (Spotify и System Events), универсальный доступ и запись экрана. Во время поиска Spotify ненадолго выходит на передний план.
+
+По умолчанию запрошенная песня включается на громкости 75% (`media.play_volume`; `null` сохраняет текущую). Во время разговора музыка приглушается до 20% (`media.duck_to`; `0` отключает приглушение). «Сделай музыку громче» меняет громкость Spotify, а «уменьши громкость» — громкость Mac.
+
+### Голос и прерывания
+
+После «эй Чушпан» звучит короткий сигнал. Можно сразу задать вопрос в одной фразе либо дождаться сигнала после короткой паузы. После ответа Чушпан слушает ещё 8 секунд без повторной активации. Если после активации вопрос не прозвучал за 6 секунд, ассистент возвращается в ожидание.
+
+Проверка фразы — `wake-test`: команда показывает распознанный текст и срабатывания. Произвольная фраза задаётся через `JARVIS_WAKEWORD__PHRASE`. При `wakeword.phrase: null` используется модель ONNX; только в этом режиме чувствительность задаётся через `JARVIS_WAKEWORD__THRESHOLD`. `JARVIS_WAKEWORD__CHIME=false` отключает сигналы.
+
+`JARVIS_AUDIO__BARGE_IN=true` позволяет перебивать ассистента. С голосом Piper или Silero эхоподавление WebRTC AEC3 убирает его речь из микрофона. Проверьте результат командой `echo-test`. Другие параметры: `JARVIS_VAD__SILENCE_MS` (по умолчанию 700), `JARVIS_TTS__LENGTH_SCALE` (для Piper), `JARVIS_AUDIO__INPUT_DEVICE` и `JARVIS_AUDIO__OUTPUT_DEVICE`.
+
+### Сводка и память
+
+Приветствие и погода формируются кодом по фактическим данным; модель выбирает и пересказывает новости. Текст и звук готовятся за экраном загрузки. По умолчанию сводка читается только при первом запуске за день (`briefing.once_a_day`). Если новости не загрузились, следующая попытка будет при следующем запуске. Ожидание сети — до 20 секунд, тайм-аут источника — 5 секунд. Отключение: `JARVIS_BRIEFING__ENABLED=false` или `voice --no-briefing`.
+
+Факты сохраняются по явной просьбе. Вопрос «Ты помнишь, какой кофе я пью?» сам по себе ничего не записывает. Исправление заменяет старый факт. До 100 коротких записей хранятся в `data/jarvis.db`; управление — через `memory`, `memory forget <id>` и `memory clear`.
+
+### Автозапуск, сеть и расход памяти
+
+`autostart install` создаёт `Чушпан.app` в `data/` и устанавливает LaunchAgent. При входе он ждёт Ollama до двух минут и перезапускает Чушпан после сбоя. Журнал — `data/logs/jarvis.log`. Переключатель «Запускать при входе в систему» действует со следующего входа. Одновременно работает один экземпляр. После обновления Python (`uv python upgrade`) повторите `autostart install`.
+
+Настройки интерфейса: `hud.enabled`, `hud.window`, `hud.open_on_start`, `server.host`, `server.port`. При `hud.window: false` открывается вкладка браузера. По умолчанию сервер слушает только `127.0.0.1:8765`. WebSocket принимает подключения со своего адреса и сервера разработки Vite. Если указать сетевой адрес Mac в `JARVIS_SERVER__HOST`, интерфейс станет доступен другим устройствам этой сети.
+
+Профили `resources.profile`:
+
+- `performance` — постоянно держать модели в памяти.
+- `balanced` — выгружать модель и Whisper через `resources.idle_minutes` ожидания (по умолчанию 10 минут).
+- `economy` — выгружать сразу при переходе в ожидание.
+
+Для активации произвольной фразой Whisper остаётся в памяти во время ожидания; языковая модель выгружается по выбранному профилю. Полная выгрузка Whisper доступна при активации через ONNX.
+
+Исходные измерения проекта с ONNX-активацией: около 1,3 ГБ у Чушпан и 5,4 ГБ у `qwen3:8b` в активном режиме; около 0,5 ГБ после выгрузки. Повторная загрузка может добавить примерно 15 секунд к первому ответу. Текущие значения показывают `footprint` и панель системы.
+
+## Архитектура и производительность
+
+Один процесс `asyncio` управляет цепочкой: микрофон → openWakeWord → Silero VAD → mlx-whisper → Ollama → Piper → динамики. Языковая модель вызывает инструменты и использует историю SQLite. FastAPI передаёт события интерфейсу через WebSocket; окно pywebview работает дочерним процессом.
+
+- `backend/audio/` — захват звука, активация, распознавание, синтез и эхоподавление.
+- `backend/brain/` — клиент Ollama, разговор, инструменты, характер и сводка.
+- `backend/tools/` — погода, новости, система, таймеры, время, память и музыкальные инструменты.
+- `backend/media/` — YouTube Music, адаптер Safari Web App и музыкальные предпочтения.
+- `backend/hud/` — события, сервер, данные панелей, окно и демонстрация.
+- `backend/memory/` — история, долговременные факты и экспорт Markdown.
+- `frontend/` — Vite, TypeScript и Canvas 2D.
+- `tests/` — тесты без микрофона и загруженных моделей.
+
+На исходной конфигурации MacBook Air M4 (16 ГБ), `qwen3:8b` и `whisper-small` распознавание занимало около 0,3 секунды, первый токен с прогретым кешем — 0,3–1 секунду, начало озвучки после завершения вопроса — 1–1,4 секунды. Запросы к сетевым инструментам увеличивают задержку. Эти значения не являются отдельным замером русской локализации. Сравнение на вашем Mac: `bench` и `bench-stt`.
+
+## Если что-то не работает
+
+- **Чушпан не слышит:** разрешите доступ к микрофону приложению Чушпан или терминалу. В журнале есть сообщение о тишине на входе.
+- **Не срабатывает активация или есть ложные срабатывания:** запустите `wake-test` и проверьте распознанную фразу.
+- **Музыка не включается:** проверьте разрешения автоматизации, универсального доступа и записи экрана. При необходимости повторите `autostart install`.
+- **Нет интерфейса:** проверьте порт 8765 и выполните `npm --prefix frontend run build`.
+- **Нет русского голоса:** проверьте `JARVIS_LANGUAGE=ru-RU` и повторите `./scripts/setup.sh`.
+- **Другие ошибки:** выполните `uv run python -m backend doctor`, затем проверьте `data/logs/jarvis.log`.
+
+## Разработка
+
+```bash
+uv run pytest
+uv run ruff check .
+uv run ruff format --check .
+npm --prefix frontend run dev
+```
+
+Сервер разработки интерфейса работает на [http://localhost:5173](http://localhost:5173); параллельно нужен `voice` или `hud-demo`. После изменения интерфейса соберите его командой `npm --prefix frontend run build`. В тестах внешние сервисы заменены заглушками; русская локализация проверяется в `tests/test_russian.py`.
+
+## Состояние проекта
+
+Реализованы текстовый и голосовой чат, фраза активации, инструменты, сводка, интерфейс, долговременная память, автозапуск, эхоподавление, профили памяти, экспорт, YouTube Music и Spotify. Ограничения управления YouTube Music перечислены в отдельной инструкции.
+
+## Лицензия
+
+Проект распространяется по [лицензии MIT](LICENSE). Чушпан — независимый любительский проект, не связанный с Marvel или Disney.
+
+### YouTube-плейлист для сна — этап 6
+
+Обычные YouTube-видео теперь имеют отдельный от YouTube Music плейлист,
+локальную историю Чушпана и выбор непросмотренного с фильтрами. Нужны отдельный
+ограниченный `YOUTUBE_API_KEY` и ссылка на публичный/доступный по ссылке плейлист.
+Сначала передай ссылку в чат и попроси «Какие видео есть в моём плейлисте?»;
+«Включи непросмотренное видео для сна» действительно управляет Safari.
+Автовыбор в «Я спать» выключен по умолчанию; существующий Youtube sleep сохранён.
+Настройка, разрешения, команды и ручная проверка:
+[docs/CHUSHPAN_YOUTUBE_API.md](docs/CHUSHPAN_YOUTUBE_API.md).

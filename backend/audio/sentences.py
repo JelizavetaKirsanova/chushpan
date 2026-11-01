@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from backend.i18n import noun_form
+
 _BOUNDARY = re.compile(r"[.!?…]+[\"')\]]*\s+|\n+")
 _LAST_WORD = re.compile(r"(\w+)$")
 _CLAUSE = re.compile(r"[,;:]\s+")
@@ -24,6 +26,11 @@ _ABBREVIATIONS = {
     "st",
     "vs",
     "jr",
+    "г",
+    "ул",
+    "д",
+    "им",
+    "руб",
 }
 _MARKUP = re.compile(r"[*_#`~>|]+")
 # "1. ", "2) ", "- " opening a line: news summaries come back as lists despite the prompt.
@@ -54,6 +61,23 @@ _UNIT_RES = {
 
 
 def spell_units(text: str, lang: str) -> str:
+    if lang == "ru":
+        forms = {
+            "degrees": ("градус", "градуса", "градусов"),
+            "percent": ("процент", "процента", "процентов"),
+            "wind": ("километр в час", "километра в час", "километров в час"),
+            "rain": ("миллиметр", "миллиметра", "миллиметров"),
+        }
+        units = r"(?P<degrees>°\s*[CС]\b|[°º])|(?P<percent>%)"
+        units += r"|(?P<wind>km/h\b|км/ч\b)|(?P<rain>mm\b|мм\b)"
+
+        def expand(match: re.Match) -> str:
+            number = match["number"]
+            unit = next(key for key in forms if match[key] is not None)
+            word = noun_form(float(number.replace(",", ".")), forms[unit])
+            return f"{number.replace('.', ',')} {word}"
+
+        return re.sub(rf"(?P<number>-?\d+(?:[.,]\d+)?)\s*(?:{units})", expand, text)
     for pattern, word in _UNIT_RES.get(lang, _UNIT_RES["en"]):
         text = pattern.sub(word, text)
     return text
@@ -68,9 +92,15 @@ def clean_for_speech(text: str, lang: str = "pt") -> str:
 
 class SentenceSplitter:
     def __init__(
-        self, min_chars: int = 20, first_min_chars: int = 6, first_clause_chars: int = 30
+        self,
+        min_chars: int = 20,
+        first_min_chars: int = 6,
+        first_clause_chars: int = 30,
+        *,
+        protect_literals: bool = False,
     ) -> None:
         self.min_chars = min_chars
+        self.protect_literals = protect_literals
         # A long first sentence may be cut at its first comma so the voice starts sooner.
         self.first_clause_chars = first_clause_chars
         # The first sentence goes out as soon as possible: it sets the perceived latency.
@@ -83,10 +113,14 @@ class SentenceSplitter:
         out: list[str] = []
         start = 0
         for m in _BOUNDARY.finditer(self._buf):
+            if self._protected(m.start()):
+                continue
             if m.group().startswith("."):
                 word = _LAST_WORD.search(self._buf[start : m.start()])
                 if word and word.group(1).lower() in _ABBREVIATIONS:
                     continue
+                if word and len(word.group(1)) == 1 and word.group(1).isupper():
+                    continue  # initials and spaced initialisms: А. П. И. / Д. Т. П.
             sentence = self._buf[start : m.end()].strip()
             # Very short fragments sound choppy on their own; merge with the next one.
             limit = self.min_chars if self._emitted else self.first_min_chars
@@ -98,12 +132,19 @@ class SentenceSplitter:
         self._buf = self._buf[start:]
         if not self._emitted and not out:
             for m in _CLAUSE.finditer(self._buf):
-                if m.start() >= self.first_clause_chars:
+                if m.start() >= self.first_clause_chars and not self._protected(m.start()):
                     out.append(self._buf[: m.end()].strip())
                     self._buf = self._buf[m.end() :]
                     self._emitted = True
                     break
         return out
+
+    def _protected(self, position: int) -> bool:
+        if not self.protect_literals:
+            return False
+        from backend.audio.russian import PROTECTED
+
+        return any(m.start() <= position < m.end() for m in PROTECTED.finditer(self._buf))
 
     def flush(self) -> str | None:
         rest, self._buf = self._buf.strip(), ""

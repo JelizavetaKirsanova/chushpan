@@ -16,8 +16,11 @@ log = logging.getLogger(__name__)
 class Microphone:
     def __init__(self, device: str | int | None = None, max_frames: int = 256) -> None:
         self.device = device
-        self._queue: asyncio.Queue[np.ndarray] = asyncio.Queue(maxsize=max_frames)
+        self._queue: asyncio.Queue[tuple[int, np.ndarray]] = asyncio.Queue(maxsize=max_frames)
         self._stream = None
+        self.dropped_frames = 0
+        self.input_overflows = 0
+        self._generation = 0
 
     def start(self) -> None:
         import sounddevice as sd
@@ -27,7 +30,10 @@ class Microphone:
         def callback(indata, frames, time_info, status) -> None:  # audio thread
             if status:
                 log.debug("input status: %s", status)
-            loop.call_soon_threadsafe(self._put, indata[:, 0].copy())
+                if status.input_overflow:
+                    self.input_overflows += 1
+            generation = self._generation
+            loop.call_soon_threadsafe(self._put, indata[:, 0].copy(), generation)
 
         self._stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
@@ -39,18 +45,32 @@ class Microphone:
         )
         self._stream.start()
 
-    def _put(self, frame: np.ndarray) -> None:
+    def _put(self, frame: np.ndarray, generation: int | None = None) -> None:
+        if generation is not None and generation != self._generation:
+            return
         if self._queue.full():
+            self.dropped_frames += 1
             self._queue.get_nowait()  # drop the oldest frame rather than block audio
-        self._queue.put_nowait(frame)
+        self._queue.put_nowait((self._generation, frame))
 
     def flush(self) -> None:
+        self._generation += 1
         while not self._queue.empty():
             self._queue.get_nowait()
 
     async def frames(self) -> AsyncIterator[np.ndarray]:
         while True:
-            yield await self._queue.get()
+            try:
+                generation, frame = await asyncio.wait_for(self._queue.get(), timeout=10)
+            except TimeoutError:
+                log.error("ERROR microphone_no_frames restarting_stream")
+                self.stop()
+                self.flush()
+                self.start()
+                log.info("LISTENING_RESUMED microphone_stream")
+                continue
+            if generation == self._generation:
+                yield frame
 
     def stop(self) -> None:
         if self._stream is not None:

@@ -26,6 +26,12 @@ FAR_NOTE = (
 # qwen3:8b read the result as something the user had: "A senhora está com garoa fraca,
 # temperatura de 24 graus, umidade de 70 por cento..." when asked about Santo André (D-41).
 HOW_TO_REPLY = {
+    "ru": (
+        "Расскажите о погоде в указанном месте, сначала назвав его: «Сейчас в {place} "
+        "идёт дождь, 24 градуса». Отвечайте по-русски только на вопрос: условия и "
+        "температура; осадки — если вероятны или о них спросили; влажность и ветер — "
+        "только по просьбе."
+    ),
     "pt": (
         "Fale do tempo como um fato sobre o lugar, dizendo o nome dele primeiro, por exemplo "
         '"Em {place}, está garoando e faz 24 graus." Nunca como algo que a pessoa tem '
@@ -82,12 +88,45 @@ WMO: dict[int, tuple[str, str]] = {
     99: ("trovoada com granizo forte", "thunderstorm with heavy hail"),
 }
 
-DAY_LABELS = {"pt": ("hoje", "amanhã"), "en": ("today", "tomorrow")}
+WMO_RU = {
+    0: "ясно",
+    1: "небольшая облачность",
+    2: "переменная облачность",
+    3: "пасмурно",
+    45: "туман",
+    48: "туман с изморозью",
+    51: "слабая морось",
+    53: "морось",
+    55: "сильная морось",
+    56: "слабая переохлаждённая морось",
+    57: "переохлаждённая морось",
+    61: "небольшой дождь",
+    63: "дождь",
+    65: "сильный дождь",
+    66: "небольшой ледяной дождь",
+    67: "ледяной дождь",
+    71: "небольшой снег",
+    73: "снег",
+    75: "сильный снег",
+    77: "снежные зёрна",
+    80: "небольшой ливень",
+    81: "ливень",
+    82: "сильный ливень",
+    85: "снежные заряды",
+    86: "сильные снежные заряды",
+    95: "гроза",
+    96: "гроза с градом",
+    99: "гроза с сильным градом",
+}
+
+DAY_LABELS = {"ru": ("сегодня", "завтра"), "pt": ("hoje", "amanhã"), "en": ("today", "tomorrow")}
 
 
 def describe(code: int | None, lang: str) -> str | None:
     if code is None:
         return None
+    if lang == "ru":
+        return WMO_RU.get(code, "неизвестные погодные условия")
     pt, en = WMO.get(code, ("condição desconhecida", "unknown conditions"))
     return pt if lang == "pt" else en
 
@@ -189,10 +228,19 @@ class WeatherService:
             return False
         return distance_km(loc.latitude, loc.longitude, lat, lon) > FAR_KM
 
-    async def forecast(self, city: str | None = None, days: int = 2) -> dict:
+    async def forecast(
+        self, city: str | None = None, days: int = 2, *, coordinates: dict | None = None
+    ) -> dict:
         days = max(1, min(MAX_DAYS, int(days or 2)))
         try:
-            lat, lon, tz, place = await self._where(city)
+            if coordinates is None:
+                lat, lon, tz, place = await self._where(city)
+            else:
+                # Weather needs the surrounding area, not the exact position of this Mac.
+                # Only a roughly 10 km grid reaches the public forecast service.
+                lat = round(float(coordinates["latitude"]), 1)
+                lon = round(float(coordinates["longitude"]), 1)
+                tz, place = None, "твоё текущее местоположение"
             key = (round(lat, 2), round(lon, 2), days)
             hit = self._cache.get(key)
             if hit and time.monotonic() - hit[0] < CACHE_S:
@@ -211,8 +259,9 @@ class WeatherService:
         except httpx.HTTPError as exc:
             raise ToolError(f"weather service unavailable: {exc}") from exc
         out = summarize(data, self.s, place)
-        lang = "pt" if self.s.locale.lang == "pt" else "en"
-        short = (place or "").split(",")[0].strip() or ("aqui" if lang == "pt" else "here")
+        lang = self.s.locale.lang if self.s.locale.lang in HOW_TO_REPLY else "en"
+        here = {"ru": "вашем городе", "pt": "aqui", "en": "here"}
+        short = (place or "").split(",")[0].strip() or here[lang]
         out["how_to_reply"] = HOW_TO_REPLY[lang].format(place=short)
         if city and self._far_from_home(lat, lon):
             # "Santandre" (Santo André misheard) matched only a Romanian village: saying
@@ -244,6 +293,7 @@ def weather_tools(s: Settings, service: WeatherService | None = None) -> list[To
             },
             slow=True,
             capability={
+                "ru": "узнавать текущую погоду и прогноз",
                 "pt": "consultar o clima e a previsão do tempo",
                 "en": "check the weather and forecast",
             },

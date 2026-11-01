@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import html
 import itertools
+import json
 import logging
 import re
 import time
@@ -25,9 +26,12 @@ log = logging.getLogger(__name__)
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) my-jarvis"
 MAX_AGE_H = 72  # search feeds (Google News) also return old articles
 SUMMARY_CHARS = 220
+DELFI_LATEST = "https://rus.delfi.ee/archive/latest"
 REPLY_HINT = (
-    "Spoken reply: one or two flowing sentences naming the two or three most relevant "
-    "headlines, in the reply language. No list, no numbering, no line breaks."
+    "Follow the system personality, form of address and reply language. By default, give "
+    "a brief spoken summary of the most relevant headlines. If the user asks for detail, "
+    "explain fully without a sentence limit, using only the supplied facts. "
+    "Use flowing speech, without markdown, numbering or lists."
 )
 
 _TAG = re.compile(r"<[^>]+>")
@@ -225,6 +229,66 @@ class NewsService:
             "how_to_reply": REPLY_HINT,
         }
 
+    async def delfi_headlines(self) -> list[dict]:
+        """Five latest publications from Delfi's Russian edition, never curated top stories.
+
+        The public latest page embeds its article data as Nuxt's indexed JSON payload.
+        Read only article title/date/id fields; never execute page scripts or read paywalls.
+        This intentionally bypasses the half-hour AI-news cache for each morning request.
+        """
+        try:
+            if self._client is not None:
+                response = await self._client.get(DELFI_LATEST)
+            else:
+                async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+                    response = await client.get(DELFI_LATEST)
+            response.raise_for_status()
+            return parse_delfi_latest(response.text)
+        except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as exc:
+            raise ToolError("Не удалось загрузить свежие заголовки Delfi.") from exc
+
+
+def parse_delfi_latest(page: str) -> list[dict]:
+    payload = re.search(
+        r'<script\b[^>]*\bid=["\']__NUXT_DATA__["\'][^>]*>(.*?)</script>', page, re.S
+    )
+    if not payload:
+        raise ValueError("Delfi latest data is missing")
+    data = json.loads(payload.group(1))
+    if not isinstance(data, list):
+        raise ValueError("Invalid Delfi data")
+
+    def ref(index):
+        if isinstance(index, int) and 0 <= index < len(data):
+            return data[index]
+        return None
+
+    found: dict[str, dict] = {}
+    now = datetime.now(UTC)
+    for node in data:
+        if not isinstance(node, dict) or ref(node.get("__typename")) != "Article":
+            continue
+        content = ref(node.get("content"))
+        title = ref(content.get("title")) if isinstance(content, dict) else None
+        title = ref(title.get("text")) if isinstance(title, dict) else None
+        published = ref(node.get("publishAt"))
+        published = _date(published) if isinstance(published, str) else None
+        article_id = ref(node.get("id"))
+        if not isinstance(title, str) or not title.strip() or not published or not article_id:
+            continue
+        if published > now or (now - published).total_seconds() > MAX_AGE_H * 3600:
+            continue
+        found[str(article_id)] = {
+            "title": html.unescape(_TAG.sub("", title)).strip(),
+            "published": published.isoformat(),
+            "source": "Delfi",
+            "link": f"https://rus.delfi.ee/artikkel/{article_id}",
+        }
+    items = sorted(found.values(), key=lambda item: item["published"], reverse=True)[:5]
+    if not items:
+        raise ValueError("No fresh Delfi headlines")
+    return items
+
 
 def news_tools(s: Settings, service: NewsService | None = None) -> list[Tool]:
     service = service or NewsService(s)
@@ -233,8 +297,8 @@ def news_tools(s: Settings, service: NewsService | None = None) -> list[Tool]:
             name="get_ai_news",
             description=(
                 "Latest artificial intelligence news headlines from several sources, newest "
-                "first. Headlines may be in English or Portuguese: retell them in the reply "
-                "language. Pick the two or three most relevant and summarise briefly."
+                "first. Headlines may be in different languages: retell them in the reply "
+                "language. Summarise briefly by default; provide more detail when asked."
             ),
             handler=service.headlines,
             parameters={
@@ -246,6 +310,7 @@ def news_tools(s: Settings, service: NewsService | None = None) -> list[Tool]:
             },
             slow=True,
             capability={
+                "ru": "получать последние новости искусственного интеллекта",
                 "pt": "trazer as últimas notícias de inteligência artificial",
                 "en": "fetch the latest artificial intelligence news",
             },

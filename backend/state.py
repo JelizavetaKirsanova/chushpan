@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from enum import StrEnum
+
+request_context: ContextVar[int | None] = ContextVar("voice_request", default=None)
 
 
 class State(StrEnum):
@@ -36,6 +39,18 @@ class StateMachine:
         self._clock = clock
         self.since = clock()
         self._listeners: list[Listener] = []
+        self.request_id = 0
+        self.phase = "idle" if initial is State.SLEEPING else "listening"
+
+    def begin_request(self) -> int:
+        self.request_id += 1
+        return self.request_id
+
+    def set_phase(self, phase: str, request_id: int) -> bool:
+        if request_id != self.request_id:
+            return False
+        self.phase = phase
+        return True
 
     def add_listener(self, listener: Listener) -> None:
         """Called with (old, new) on every change; the HUD will subscribe here."""
@@ -49,6 +64,12 @@ class StateMachine:
         if new not in TRANSITIONS[old]:
             raise InvalidTransition(f"{old} → {new}")
         self.state, self.since = new, self._clock()
+        self.phase = {
+            State.SLEEPING: "idle",
+            State.LISTENING: "listening",
+            State.THINKING: "processing",
+            State.SPEAKING: "speaking",
+        }[new]
         for listener in self._listeners:
             listener(old, new)
         return True

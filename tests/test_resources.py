@@ -123,3 +123,18 @@ def test_parses_top_memory_and_ollama_ps():
     ps = {"models": [{"name": "qwen3:8b", "size": 5645229096}]}
     assert model_mb(ps, "qwen3:8b") == 5383.7
     assert model_mb({"models": []}, "qwen3:8b") == 0
+
+
+def test_custom_wake_phrase_keeps_whisper_loaded_when_the_llm_sleeps():
+    async def scenario():
+        res, log, changes = make(profile="economy")
+        res.keep_stt_loaded = True
+        await res.unload()
+        assert log == ["settle", "llm unload"]
+        assert not res.loaded
+        log.clear()
+        await res.reload()
+        assert log == ["llm warm"]
+        assert res.loaded and changes == [False, True]
+
+    asyncio.run(scenario())

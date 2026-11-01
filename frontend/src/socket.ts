@@ -39,6 +39,12 @@ export class Link {
     this.post({ type, value });
   }
 
+  history(value = 0): void { this.post({type: "history", value}); }
+  music(value: string): void { this.post({type: "music_settings", value}); }
+  dialogue(value: {enabled: boolean; duration_s: number; nameless_interruptions: boolean; addressee_strictness: "contextual" | "addressed"}): void {
+    this.post({type: "dialogue_settings", value});
+  }
+
   private post(msg: object): void {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
   }

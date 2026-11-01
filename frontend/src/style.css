@@ -432,6 +432,10 @@ ul {
   letter-spacing: 0.1em;
 }
 
+:lang(ru) .meter {
+  grid-template-columns: 7em minmax(0, 1fr) auto;
+}
+
 .bar {
   position: relative;
   height: 6px;

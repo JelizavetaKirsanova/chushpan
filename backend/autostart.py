@@ -92,7 +92,7 @@ def start(agents_dir: Path = AGENTS_DIR) -> bool:
     _launchctl("bootout", f"{_domain()}/{LABEL}")  # reload if already loaded
     out = _launchctl("bootstrap", _domain(), str(path))
     if out.returncode != 0:
-        console.print(f"[red]launchctl bootstrap failed: {out.stderr.strip()}[/]")
+        console.print(f"[red]Ошибка launchctl bootstrap: {out.stderr.strip()}[/]")
     return out.returncode == 0
 
 
@@ -104,22 +104,24 @@ def stop() -> None:
 def install(s: Settings, voice_args: list[str], agents_dir: Path = AGENTS_DIR) -> int:
     agents_dir.mkdir(parents=True, exist_ok=True)
     app = app_bundle.build(s)  # shown as "Jarvis", not "python"
-    console.print(f"[green]✔[/] App: [dim]{app}[/]")
+    console.print(f"[green]✔[/] Приложение: [dim]{app}[/]")
     program = str(app_bundle.executable(s))
     path = plist_path(agents_dir)
     with path.open("wb") as f:
         plistlib.dump(build_plist(s, voice_args, program, app_bundle.python_env()), f)
-    console.print(f"[green]✔[/] Launch at login installed: [dim]{path}[/]")
+    console.print(f"[green]✔[/] Автозапуск установлен: [dim]{path}[/]")
     if not start(agents_dir):
         return 1
     console.print(
-        f"{s.assistant_name} is starting in the background now, and will on every login.\n"
-        f"[dim]Log: {log_path(s)} · stop: `autostart stop` · remove: `autostart uninstall`[/]"
+        f"{s.assistant_name} запускается в фоне и будет запускаться при каждом входе.\n"
+        f"[dim]Журнал: {log_path(s)} · остановить: `autostart stop` "
+        "· удалить: `autostart uninstall`[/]"
     )
     console.print(
-        f"[dim]The first time, macOS asks for microphone access for {s.assistant_name}. If it "
-        "does not hear you, allow it in System Settings → Privacy & Security → Microphone. "
-        "Run `autostart install` again after updating Python (`uv python upgrade`).[/]"
+        f"[dim]При первом запуске macOS запросит доступ к микрофону для {s.assistant_name}. "
+        "Если ассистент не слышит вас, разрешите доступ: Системные настройки → "
+        "Конфиденциальность и безопасность → Микрофон. "
+        "После обновления Python (uv python upgrade) повторите autostart install.[/]"
     )
     return 0
 
@@ -130,9 +132,9 @@ def uninstall(s: Settings, agents_dir: Path = AGENTS_DIR) -> int:
     path = plist_path(agents_dir)
     if path.exists():
         path.unlink()
-        console.print("[green]✔[/] Launch at login removed")
+        console.print("[green]✔[/] Автозапуск удалён")
     else:
-        console.print("[dim]Launch at login was not installed[/]")
+        console.print("[dim]Автозапуск не был установлен[/]")
     return 0
 
 
@@ -170,7 +172,7 @@ def set_enabled(s: Settings, on: bool, agents_dir: Path = AGENTS_DIR) -> bool:
 
 def run_autostart(s: Settings, action: str, voice_args: list[str]) -> int:
     if sys.platform != "darwin":
-        console.print("[red]Launch at login uses launchd and only works on macOS[/]")
+        console.print("[red]Автозапуск использует launchd и работает только на macOS[/]")
         return 1
     if action == "install":
         return install(s, voice_args)
@@ -178,20 +180,20 @@ def run_autostart(s: Settings, action: str, voice_args: list[str]) -> int:
         return uninstall(s)
     if action == "start":
         if not plist_path().exists():
-            console.print("[red]Not installed: run `autostart install` first[/]")
+            console.print("[red]Сначала установите автозапуск: autostart install[/]")
             return 1
         return 0 if start() else 1
     if action == "stop":
         stop()
-        console.print("[dim]Stopped until the next login (or `autostart start`)[/]")
+        console.print("[dim]Остановлено до следующего входа (или autostart start)[/]")
         return 0
     st = status()
     if not st.installed:
-        console.print("Launch at login: [yellow]off[/] · turn on with `autostart install`")
+        console.print("Автозапуск: [yellow]выключен[/] · включить: autostart install")
         return 0
-    state = f"[green]running[/] (pid {st.pid})" if st.pid else "[yellow]not running[/]"
+    state = f"[green]работает[/] (pid {st.pid})" if st.pid else "[yellow]не работает[/]"
     if st.pid is None and st.last_exit:
-        state += f" · last exit: {st.last_exit}"
-    console.print(f"Launch at login: [green]on[/] · {state}")
-    console.print(f"[dim]Log: {log_path(s)}[/]")
+        state += f" · код завершения: {st.last_exit}"
+    console.print(f"Автозапуск: [green]включён[/] · {state}")
+    console.print(f"[dim]Журнал: {log_path(s)}[/]")
     return 0

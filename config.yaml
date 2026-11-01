@@ -1,101 +1,148 @@
-# Project defaults. Personal data (name, city, language) goes in .env:
+# Настройки проекта. Личные данные (имя, город, язык) указываются в .env:
 #   cp .env.example .env
-# Any key can be overridden with an env var, nesting with "__":
-#   JARVIS_LLM__MODEL=qwen3.5:4b
+# Любой параметр можно переопределить переменной окружения; секции разделяются «__»:
+#   JARVIS_LLM__MODEL=qwen3.5:9b-q4_K_M
 
-assistant_name: Jarvis
-language: pt-BR             # pt-BR, pt-PT, en-GB, en-US, es...
+assistant_name: Чушпан
+language: ru-RU             # ru-RU; также pt-BR, pt-PT, en-GB, en-US и другие
 log_level: INFO
 data_dir: data
 
-# Set via JARVIS_OWNER_NAME / _GENDER / _TITLE
+# Задаются через JARVIS_OWNER_NAME / _GENDER / _TITLE
 user:
   name: null
-  gender: neutral           # female | male | neutral
-  form_of_address: null     # null = language default
+  gender: neutral           # female — женщина, male — мужчина, neutral — без указания пола
+  form_of_address: null     # null = по умолчанию для выбранного языка
 
 persona:
-  style: null               # null = British butler
-  max_sentences: 2
+  file: personality.md      # единая личность для чата, голосового режима и сводки
+  style: null               # необязательные дополнения к файлу личности
+  max_sentences: 3           # ориентир для простых вопросов; подробные ответы не ограничивает
 
-# Set via JARVIS_CITY; geocoded automatically with Open-Meteo
+# Город задаётся через JARVIS_CITY; координаты определяет Open-Meteo
 location:
   query: null
 
 llm:
+  provider: gemini           # Gemini — основной; ollama — полностью локальный режим
+  fallback: true            # при недоступности Gemini пробовать установленную локальную модель
   host: http://localhost:11434
-  model: qwen3:8b          # compare others with `python -m backend bench`
-  keep_alive: 30m           # chat and briefing commands; `voice` follows resources.profile
+  model: qwen3.5:9b-q4_K_M # проверенная локальная сборка; исходная qwen3:8b остаётся установлена
+  keep_alive: 30m           # для chat и briefing; voice использует resources.profile
   temperature: 0.6
-  think: false              # thinking mode adds seconds of latency
-  context_messages: 30      # tool calls and short results count too (~4 per tool turn)
+  think: true               # обдумывает ответ; внутренний текст не озвучивается и не сохраняется
+  num_ctx: 16384             # место для личности, инструментов и истории; 4096 их обрезает
+  context_messages: 30      # включая вызовы инструментов и короткие результаты
+
+gemini:
+  model: gemini-3.8-flash
+  fallback_model: gemini-3.5-flash # проверен: API перенаправляет на gemini-3.6-flash
+  timeout_s: 15              # общий бюджет облачной цепочки
+  attempt_timeout_s: 6       # ожидание первого результата; живой поток получает остаток бюджета
+  free_tier_confirmed: false # включать в .env после проверки Free tier проекта в AI Studio
+  context_messages: 24       # текущая сессия: сообщения, вызовы и результаты инструментов
+  context_chars: 24000       # бюджет истории; полные результаты остаются в SQLite
+
+shortcuts:
+  allowed:
+    Youtube sleep:
+      identifier: 1646EE92-B628-481D-9499-CED5B05EC32D
+      description: Ждёт окончания видео в активной вкладке Safari, затем усыпляет Mac; проверка каждые 5 секунд
+      input_type: none
+
+night:
+  external_uuid: 4F1704FB-5A9B-458D-9173-F5CE3727CF9C # проверенный HISENSE, не случайный экран
+  external_control: brightness # общая шкала BetterDisplay; компоненты сохраняются отдельно
 
 stt:
-  model: mlx-community/whisper-small-mlx   # more accurate, ~0.8 s slower: whisper-large-v3-turbo
-  language: null            # null = assistant language
+  model: mlx-community/whisper-large-v3-turbo
+  language: ru
 
 audio:
-  input_device: null        # null = system default (see `python -m sounddevice`)
+  input_device: null        # null = системное устройство (список: python -m sounddevice)
   output_device: null
-  barge_in: false           # interrupt Jarvis by speaking
-  echo_cancellation: true   # with barge_in: removes Jarvis's voice from the mic (no headphones)
+  barge_in: false           # прерывать ответ Чушпан голосом
+  echo_cancellation: true   # с barge_in: убирает голос Чушпан из микрофона; наушники не нужны
 
 vad:
   threshold: 0.5
-  silence_ms: 700           # pause that ends an utterance
+  silence_ms: 1000
+  start_ms: 64
+  min_speech_ms: 160
+  preroll_ms: 400
+  tail_ms: 256
 
 tts:
-  engine: piper             # piper | say
-  voice: null               # null = language default
+  pronunciations:
+    Чушпан: Чушпа́н         # ударение на «а» только в озвучке
+  engine: silero            # silero (русский) | piper | say
+  silero_model: silero_v5_6_ru.pt  # файл в voices_dir
+  silero_speaker: eugene    # eugene | aidar — мужские голоса
+  voice: null               # null = по умолчанию для выбранного языка
   voices_dir: models/voices
   say_voice: null
-  length_scale: null        # speaking speed: < 1 faster, > 1 slower
+  length_scale: null        # скорость речи: < 1 быстрее, > 1 медленнее
 
 wakeword:
-  enabled: true             # false = always listening (or `voice --no-wake`)
-  model: hey_jarvis         # openWakeWord pre-trained model, or a path to a custom .onnx
-  threshold: 0.5            # tune with `python -m backend wake-test`
-  listen_timeout_s: 6       # after "Hey Jarvis", how long to wait for a request
-  follow_up_s: 8            # after a reply, keep listening without the wake word
-  chime: true               # short tones when waking up and going back to sleep
+  phrase: эй чушпан         # произвольная фраза; распознаётся локально через Whisper
+  enabled: true             # false = слушать постоянно (или voice --no-wake)
+  model: hey_jarvis         # используется только при phrase: null
+  threshold: 0.5            # настройка: python -m backend wake-test
+  listen_timeout_s: 6       # сколько секунд ждать вопрос после «эй чушпан»
+  follow_up_s: 8            # сколько секунд слушать после ответа без повторной активации
+  chime: true               # короткие звуки при активации и переходе в ожидание
 
 tools:
-  enabled: [weather, news, system, timers, clock, memory, media]   # remove one to hide it
-  max_rounds: 3             # tool calls the model may chain before it must answer
-  one_moment_after_s: 1.5   # say "one moment" when the model is silent this long
+  enabled: [weather, news, system, timers, clock, memory, media]   # удалите элемент, чтобы отключить функцию
+  max_rounds: 3             # максимальное число последовательных вызовов инструментов
+  one_moment_after_s: 1.5   # сказать «Ой, ну ща», если модель молчит дольше этого времени
 
-media:                      # Spotify (needs Automation, Accessibility, Screen Recording)
-  duck_to: 0.2              # music volume while Jarvis listens and speaks; 0 = off
-  search_wait_s: 6          # how long to wait for the search results
-  play_volume: 75           # Spotify's volume when a song is asked for; null = keep
+youtube_video:
+  playlist_url: https://www.youtube.com/playlist?list=PLSuZQXqwb2Uw
+  night_autoplay: true       # видео → яркость 10%/25% → громкость Mac 30% → Youtube sleep
+  preferred_screen: external
+
+media:
+  provider: youtube_music   # youtube_music | spotify
+  youtube_music:
+    enabled: true
+    bundle_id: com.apple.Safari.WebApp.5DE8E730-70F0-4F8C-9111-4112EC757B26
+    app_path: ~/Applications/Music.app
+    auth_file: null         # необязательно: библиотека читается из открытого приложения
+    timeout_s: 12
+    main_playlist:
+      id: ''               # сохраняется в памяти после проверки реального плейлиста
+      title: Favourite Songs
+    scenarios: {}          # назначаются голосом и сохраняются в существующей базе памяти
+  duck_to: 0.2              # громкость музыки во время разговора; 0 = не приглушать
+  search_wait_s: 6          # сколько секунд ждать результатов поиска
+  play_volume: 75           # громкость Spotify при запуске песни; null = не менять
 
 news:
   cache_minutes: 30
   max_items: 5
   feeds:
-    - https://news.google.com/rss/search?q=intelig%C3%AAncia+artificial&hl=pt-BR&gl=BR&ceid=BR:pt-419
-    - https://news.google.com/rss/search?q=artificial+intelligence&hl=en-US&gl=US&ceid=US:en
-    - https://www.theverge.com/rss/ai-artificial-intelligence/index.xml
-    - https://techcrunch.com/category/artificial-intelligence/feed/
+    - https://news.google.com/rss/search?q=%D0%B8%D1%81%D0%BA%D1%83%D1%81%D1%81%D1%82%D0%B2%D0%B5%D0%BD%D0%BD%D1%8B%D0%B9+%D0%B8%D0%BD%D1%82%D0%B5%D0%BB%D0%BB%D0%B5%D0%BA%D1%82&hl=ru&gl=RU&ceid=RU%3Aru
 
 briefing:
-  enabled: true             # weather and AI news on start; `voice --no-briefing` skips it
-  headlines: 6              # candidates the model picks the one or two most relevant from
-  fetch_timeout_s: 5        # a source slower than this is left out
-  network_wait_s: 20        # how long the loading screen waits for the internet
-  once_a_day: true          # only the day's first start gets it; later ones open quietly
+  enabled: true             # погода и новости ИИ при запуске; voice --no-briefing отключает
+  headlines: 6              # число заголовков для выбора одной-двух главных новостей
+  fetch_timeout_s: 5        # тайм-аут загрузки источника в секундах
+  network_wait_s: 20        # сколько секунд ждать подключения к интернету
+  once_a_day: true          # сводка только при первом запуске за день
+  morning_volume: 20        # Favourite Songs после «Доброе утро, Чушпан», 0–100
 
 resources:
-  profile: balanced         # performance: always loaded · balanced: unload after idle_minutes asleep
-                            # · economy: unload on going to sleep. Reloading costs ~15 s on waking
+  profile: balanced         # performance: держать модели в памяти; balanced: выгружать через idle_minutes
+                            # economy: выгружать сразу при ожидании; повторная загрузка занимает около 15 с
   idle_minutes: 10
-  mlx_cache_mb: 64          # cap on Whisper's reusable GPU buffers (uncapped: ~850 MB more)
+  mlx_cache_mb: 64          # лимит кеша GPU для Whisper; без лимита расходуется примерно на 850 МБ больше
 
 server:
-  host: 127.0.0.1           # the HUD: http://127.0.0.1:8765
+  host: 127.0.0.1           # интерфейс: http://127.0.0.1:8765
   port: 8765
 
 hud:
-  enabled: true             # holographic interface; `voice --no-hud` skips it
-  window: true              # native window; false = a tab in your browser
-  open_on_start: true       # open it on start, unless a HUD page is already open
+  enabled: true             # интерфейс; voice --no-hud отключает
+  window: true              # отдельное окно; false = вкладка браузера
+  open_on_start: true       # открывать при запуске, если интерфейс ещё не открыт

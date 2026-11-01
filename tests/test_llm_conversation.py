@@ -52,6 +52,7 @@ def test_conversation_streams_and_persists(tmp_path):
     payload = captured["payload"]
     assert payload["model"] == s.llm.model
     assert payload["stream"] is True and payload["think"] is False
+    assert payload["options"]["num_ctx"] == s.llm.num_ctx
     assert payload["messages"][0]["role"] == "system"
     last = payload["messages"][-1]
     assert last["role"] == "user" and last["content"].startswith("[Contexto:")
@@ -87,6 +88,98 @@ def test_prime_sends_only_the_system_prompt(tmp_path):
     payload = captured["payload"]
     assert payload["messages"] == [{"role": "system", "content": conv.system_prompt}]
     assert payload["options"]["num_predict"] == 1 and payload["stream"] is False
+    assert payload["options"]["num_ctx"] == s.llm.num_ctx
+
+
+def test_model_reload_keeps_the_configured_context_window():
+    payloads = []
+
+    def handler(request):
+        payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={"message": {"content": ""}, "done": True})
+
+    s = Settings(llm={"num_ctx": 12288})
+    client = httpx.AsyncClient(base_url="http://ollama", transport=httpx.MockTransport(handler))
+    llm = OllamaClient(s.llm, client=client)
+
+    async def go():
+        await llm.warmup()
+        await llm.prime("The shared personality", tools=[{"type": "function"}])
+        await llm.aclose()
+
+    asyncio.run(go())
+    # Sleeping/waking must not load 4K again while chat and priming use a larger window.
+    assert [p["options"]["num_ctx"] for p in payloads] == [12288, 12288]
+
+
+def test_thinking_is_not_spoken_or_saved_in_the_conversation(tmp_path):
+    captured = []
+
+    def handler(request):
+        captured.append(json.loads(request.content))
+        lines = [
+            {"message": {"thinking": "internal test marker", "content": ""}, "done": False},
+            {"message": {"content": "408."}, "done": True},
+        ]
+        return httpx.Response(200, text="\n".join(json.dumps(line) for line in lines))
+
+    s = Settings(language="ru-RU", llm={"think": True})
+    client = httpx.AsyncClient(base_url="http://o", transport=httpx.MockTransport(handler))
+    store = MemoryStore(tmp_path / "t.db")
+    conv = Conversation(s, OllamaClient(s.llm, client=client), store)
+
+    async def go():
+        return "".join([part async for part in conv.reply("17 на 24?")])
+
+    assert asyncio.run(go()) == "408."
+    assert captured[0]["think"] is True
+    assert [m["content"] for m in store.transcript(conv.id)] == ["17 на 24?", "408."]
+
+
+def test_thinking_reaches_the_tool_followup_but_never_history(tmp_path):
+    from backend.tools.registry import Tool, ToolRegistry
+
+    payloads = []
+
+    async def opened(name):
+        return {"opened": True, "app": name}
+
+    def handler(request):
+        payloads.append(json.loads(request.content))
+        if len(payloads) == 1:
+            lines = [
+                {"message": {"thinking": "private test ", "content": ""}, "done": False},
+                {
+                    "message": {
+                        "thinking": "marker",
+                        "content": "",
+                        "tool_calls": [
+                            {"function": {"name": "open_app", "arguments": {"name": "Safari"}}}
+                        ],
+                    },
+                    "done": True,
+                },
+            ]
+        else:
+            lines = [{"message": {"content": "Safari открыт."}, "done": True}]
+        return httpx.Response(200, text="\n".join(json.dumps(line) for line in lines))
+
+    s = Settings(language="ru-RU", llm={"think": True})
+    client = httpx.AsyncClient(base_url="http://o", transport=httpx.MockTransport(handler))
+    store = MemoryStore(tmp_path / "t.db")
+    registry = ToolRegistry(
+        [Tool("open_app", "Open an app", opened, parameters={"name": {"type": "string"}})]
+    )
+    conv = Conversation(s, OllamaClient(s.llm, client=client), store, tools=registry)
+
+    async def go():
+        return "".join([part async for part in conv.reply("Открой Safari")])
+
+    assert asyncio.run(go()) == "Safari открыт."
+    assert payloads[1]["messages"][-2]["thinking"] == "private test marker"
+    history = store.recent(conv.id, 10)
+    assert all("thinking" not in message for message in history)
+    assert "private test marker" not in str(history)
 
 
 WEATHER = (

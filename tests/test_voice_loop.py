@@ -1,7 +1,6 @@
 import asyncio
 
 import numpy as np
-import pytest
 
 from backend.audio import earcon
 from backend.audio.vad import UtteranceSegmenter
@@ -10,7 +9,7 @@ from backend.config import Settings, VADConfig
 from backend.state import State
 from backend.voice import VoiceLoop
 
-FRAME = np.zeros(512, dtype=np.int16)
+FRAME = (np.sin(np.arange(512) * 0.1) * 2000).astype(np.int16)
 FRAME_S = 0.032
 
 
@@ -46,6 +45,7 @@ class FakeSTT:
     def __init__(self, text):
         self.text = text
         self.calls = 0
+        self.last_speech_confident = True
 
     async def transcribe(self, audio):
         self.calls += 1
@@ -53,7 +53,7 @@ class FakeSTT:
 
 
 class Harness:
-    def __init__(self, text="", wake=True):
+    def __init__(self, text="", wake=True, phrase=None):
         self.s = Settings()
         self.now = 0.0
         self.vad = FakeVAD()
@@ -70,13 +70,14 @@ class Harness:
             wake=WakeWordDetector(self.wake_model, 0.5) if wake else None,
             chime=self.chimes.append,
             clock=lambda: self.now,
+            wake_phrase=phrase,
         )
 
     async def frames(self, n, prob=0.0):
         self.vad.prob = prob
         for _ in range(n):
             self.now += FRAME_S
-            self.loop.on_frame(FRAME)
+            self.loop.on_frame(FRAME if prob else np.zeros_like(FRAME))
             await asyncio.sleep(0)
 
     @property
@@ -96,7 +97,7 @@ def test_sleeps_until_wake_word_then_times_out():
         assert h.state is State.LISTENING
         assert h.chimes == [earcon.WAKE]
 
-        await h.frames(round(h.s.wakeword.listen_timeout_s / FRAME_S) + 1)
+        await h.frames(round(h.s.dialogue.duration_s / FRAME_S) + 1)
         assert h.state is State.SLEEPING
         assert h.chimes[-1] is earcon.SLEEP
 
@@ -113,8 +114,9 @@ def test_request_then_follow_up_window():
         assert h.stt.calls == 1
         await asyncio.sleep(0)
         assert h.state is State.LISTENING
-        follow_up = h.s.wakeword.follow_up_s
-        assert h.loop.listen_deadline == pytest.approx(h.loop.mute_until + follow_up)
+        follow_up = h.s.dialogue.duration_s
+        assert h.loop.listen_deadline == h.loop.session_deadline
+        assert follow_up - 0.5 <= h.loop.listen_deadline - h.now <= follow_up
 
         # Speech that started before the deadline is not cut off by it.
         deadline = h.loop.listen_deadline
@@ -125,7 +127,7 @@ def test_request_then_follow_up_window():
         await h.frames(30)
         await asyncio.sleep(0)
         assert h.stt.calls == 2
-        await h.frames(round(h.s.wakeword.follow_up_s / FRAME_S) + 20)
+        await h.frames(round(h.s.dialogue.duration_s / FRAME_S) + 20)
         assert h.state is State.SLEEPING
 
     asyncio.run(scenario())
@@ -201,8 +203,8 @@ def test_announcement_wakes_up_speaks_and_listens_for_follow_up():
         await asyncio.sleep(0)
         assert h.loop.speaker.said == ["Com licença, o timer de 5 minutos terminou."]
         assert h.loop.conv.notes == h.loop.speaker.said  # kept for follow-up questions
-        assert h.chimes == [earcon.ALERT]
-        assert h.state is State.LISTENING and h.loop.listen_deadline is not None
+        assert h.chimes == [earcon.ALERT, earcon.SLEEP]
+        assert h.state is State.SLEEPING and h.loop.listen_deadline is None
 
     asyncio.run(scenario())
 
@@ -255,7 +257,7 @@ def test_sleeps_after_a_quiet_tool_so_the_music_is_heard():
     asyncio.run(scenario())
 
 
-def test_filtered_thank_you_while_awake_goes_to_sleep():
+def test_filtered_thank_you_does_not_trigger_a_farewell():
     async def scenario():
         h = Harness(text="")  # Whisper's "Obrigada." is dropped as a likely hallucination
         h.stt.last_raw = " Obrigada."
@@ -265,7 +267,7 @@ def test_filtered_thank_you_while_awake_goes_to_sleep():
         await h.frames(30)
         await h.loop.task
         await asyncio.sleep(0)
-        assert h.state is State.SLEEPING and h.chimes[-1] is earcon.SLEEP
+        assert h.state is State.LISTENING
 
     asyncio.run(scenario())
 
@@ -356,3 +358,134 @@ def test_only_thanks_needs_the_whole_utterance():
     assert not only_thanks("Obrigada, e que horas são?")
     assert not only_thanks("Obrigada pela ajuda com o timer")
     assert thanks("Muito obrigado, pode descansar") and not thanks("Pode descansar.")
+
+
+def custom_harness(text):
+    h = Harness(text=text, wake=False, phrase="эй чушпан")
+    h.s.assistant_name = "Чушпан"
+    h.s.language = "ru-RU"
+    h.loop.speaker = FakeSpeaker()
+    h.loop.conv = FakeConversation("Хорошо.")
+    h.loop.conv.s = h.s
+    return h
+
+
+def test_custom_phrase_wakes_without_an_onnx_detector_and_times_out():
+    async def scenario():
+        h = custom_harness("Эй, Чушпан!")
+        assert h.state is State.SLEEPING and h.loop.wake is None
+        await h.frames(20, prob=0.9)
+        await h.frames(30)
+        await h.loop.wake_task
+        assert h.state is State.LISTENING
+        assert h.chimes == [earcon.WAKE] and h.stt.calls == 1
+        await h.frames(round(h.s.dialogue.duration_s / FRAME_S) + 1)
+        assert h.state is State.SLEEPING
+        assert h.loop.conv.notes == []
+
+    asyncio.run(scenario())
+
+
+def test_custom_phrase_ignores_unrelated_speech_and_mentions_of_the_name():
+    async def scenario():
+        h = custom_harness("Мы обсуждали имя Чушпан вчера.")
+        await h.frames(20, prob=0.9)
+        await h.frames(30)
+        await h.loop.wake_task
+        assert h.state is State.SLEEPING
+        assert h.chimes == [] and h.loop.conv.notes == []
+
+    asyncio.run(scenario())
+
+
+def test_custom_phrase_keeps_a_request_in_the_same_utterance_without_retranscribing():
+    async def scenario():
+        h = custom_harness("Эй, Чушпан, какая погода?")
+        heard = []
+
+        async def reply(text):
+            heard.append(text)
+            yield "Сейчас ясно."
+
+        h.loop.conv.reply = reply
+        await h.frames(20, prob=0.9)
+        await h.frames(30)
+        await h.loop.wake_task
+        await h.loop.task
+        await asyncio.sleep(0)
+        assert heard == ["какая погода?"] and h.stt.calls == 1
+        assert h.loop.speaker.said == ["Сейчас ясно."]
+        assert h.state is State.LISTENING
+
+    asyncio.run(scenario())
+
+
+def test_morning_greeting_wakes_and_keeps_the_full_routine_request():
+    async def scenario():
+        h = custom_harness("Доброе утро, Чушпа́н!")
+        heard = []
+
+        async def reply(text):
+            heard.append(text)
+            yield "Утренняя сводка."
+
+        h.loop.conv.reply = reply
+        await h.frames(20, prob=0.9)
+        await h.frames(30)
+        await h.loop.wake_task
+        await h.loop.task
+        await asyncio.sleep(0)
+        assert heard == ["Доброе утро, Чушпа́н!"] and h.stt.calls == 1
+        assert h.loop.speaker.said == ["Утренняя сводка."]
+
+    asyncio.run(scenario())
+
+
+def test_custom_phrase_still_supports_hud_wake_and_sleep():
+    async def scenario():
+        h = custom_harness("")
+        h.loop.command("wake")
+        assert h.state is State.LISTENING
+        h.loop.command("sleep")
+        assert h.state is State.SLEEPING
+
+    asyncio.run(scenario())
+
+
+def test_custom_phrase_recovers_after_a_transcription_failure():
+    async def scenario():
+        from unittest.mock import AsyncMock
+
+        h = custom_harness("")
+        h.stt.transcribe = AsyncMock(side_effect=[RuntimeError("test failure"), "Эй Чушпан"])
+        for expected in (State.SLEEPING, State.LISTENING):
+            await h.frames(20, prob=0.9)
+            await h.frames(30)
+            await h.loop.wake_task
+            assert h.state is expected
+        assert h.chimes == [earcon.WAKE]
+
+    asyncio.run(scenario())
+
+
+def test_hud_wake_cancels_a_pending_custom_phrase_check():
+    async def scenario():
+        h = custom_harness("Эй Чушпан")
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def transcribe(audio):
+            started.set()
+            await release.wait()
+            return "Эй Чушпан"
+
+        h.stt.transcribe = transcribe
+        await h.frames(20, prob=0.9)
+        await h.frames(30)
+        await started.wait()
+        h.loop.command("wake")
+        h.loop.command("sleep")
+        await asyncio.sleep(0)
+        assert h.loop.wake_task.cancelled()
+        assert h.state is State.SLEEPING
+
+    asyncio.run(scenario())

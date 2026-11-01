@@ -13,6 +13,7 @@ import httpx
 from rich.console import Console
 from rich.table import Table
 
+from backend.brain.prompts import build_system_prompt
 from backend.config import Settings, get_settings
 from backend.tools.geocode import resolve_location
 
@@ -42,11 +43,11 @@ def check_audio(s: Settings) -> list[Check]:
     try:
         import sounddevice as sd
     except Exception as exc:  # noqa: BLE001
-        return [Check("Audio devices", False, f"sounddevice unavailable: {exc}", required=False)]
+        return [Check("Аудиоустройства", False, f"sounddevice недоступен: {exc}", required=False)]
     checks = []
     for kind, label, device in (
-        ("input", "Microphone", s.audio.input_device),
-        ("output", "Speakers", s.audio.output_device),
+        ("input", "Микрофон", s.audio.input_device),
+        ("output", "Динамики", s.audio.output_device),
     ):
         try:
             info = sd.query_devices(device, kind=kind)
@@ -61,19 +62,19 @@ def check_speech_models(s: Settings) -> list[Check]:
     try:
         import pysilero_vad  # noqa: F401
 
-        checks.append(Check("Voice activity detection", True, "Silero VAD", required=False))
+        checks.append(Check("Обнаружение речи", True, "Silero VAD", required=False))
     except Exception as exc:  # noqa: BLE001
-        checks.append(Check("Voice activity detection", False, str(exc), required=False))
+        checks.append(Check("Обнаружение речи", False, str(exc), required=False))
     try:
         import mlx_whisper  # noqa: F401
         from huggingface_hub import try_to_load_from_cache
 
         cached = isinstance(try_to_load_from_cache(s.stt.model, "config.json"), str)
-        detail = s.stt.model if cached else "not downloaded: run ./scripts/setup.sh"
-        checks.append(Check("Speech recognition", cached, detail, required=False))
+        detail = s.stt.model if cached else "не загружено: запустите ./scripts/setup.sh"
+        checks.append(Check("Распознавание речи", cached, detail, required=False))
     except Exception as exc:  # noqa: BLE001
         checks.append(
-            Check("Speech recognition", False, f"mlx-whisper unavailable: {exc}", required=False)
+            Check("Распознавание речи", False, f"mlx-whisper недоступен: {exc}", required=False)
         )
     checks.append(check_wakeword(s))
     return checks
@@ -81,32 +82,34 @@ def check_speech_models(s: Settings) -> list[Check]:
 
 def check_wakeword(s: Settings) -> Check:
     if not s.wakeword.enabled:
-        return Check("Wake word", True, "disabled: always listening", required=False)
+        return Check("Фраза активации", True, "выключена: слушаю постоянно", required=False)
+    if s.wakeword.phrase:
+        return Check("Фраза активации", True, f"«{s.wakeword.phrase}» · Whisper", required=False)
     files = [s.wakeword_path, s.wakeword_dir / "melspectrogram.onnx"]
     files.append(s.wakeword_dir / "embedding_model.onnx")
     missing = [f.name for f in files if not f.exists()]
     if missing:
         return Check(
-            "Wake word",
+            "Фраза активации",
             False,
-            f"missing {', '.join(missing)}: run ./scripts/setup.sh",
+            f"нет файлов {', '.join(missing)}: запустите ./scripts/setup.sh",
             required=False,
         )
     try:
         import openwakeword  # noqa: F401
     except Exception as exc:  # noqa: BLE001
-        return Check("Wake word", False, f"openwakeword unavailable: {exc}", required=False)
-    detail = f"{s.wakeword_path.name} · threshold {s.wakeword.threshold}"
-    return Check("Wake word", True, detail, required=False)
+        return Check("Фраза активации", False, f"openwakeword недоступен: {exc}", required=False)
+    detail = f"{s.wakeword_path.name} · порог {s.wakeword.threshold}"
+    return Check("Фраза активации", True, detail, required=False)
 
 
 def check_ollama(s: Settings) -> list[Check]:
     checks: list[Check] = []
     try:
         version = httpx.get(f"{s.llm.host}/api/version", timeout=3).json()["version"]
-        checks.append(Check("Ollama server", True, f"v{version} at {s.llm.host}"))
+        checks.append(Check("Сервер Ollama", True, f"v{version} · {s.llm.host}"))
     except Exception as exc:  # noqa: BLE001
-        checks.append(Check("Ollama server", False, f"unreachable: {exc}"))
+        checks.append(Check("Сервер Ollama", False, f"недоступен: {exc}"))
         return checks
 
     tags = httpx.get(f"{s.llm.host}/api/tags", timeout=5).json().get("models", [])
@@ -114,24 +117,33 @@ def check_ollama(s: Settings) -> list[Check]:
     has_model = s.llm.model in names or f"{s.llm.model}:latest" in names
     checks.append(
         Check(
-            f"Model {s.llm.model}",
+            f"Модель {s.llm.model}",
             has_model,
-            "installed" if has_model else f"run: ollama pull {s.llm.model}",
+            "установлена" if has_model else f"запустите: ollama pull {s.llm.model}",
         )
     )
     if not has_model:
         return checks
 
+    try:
+        prompt = build_system_prompt(s)
+    except (OSError, ValueError) as exc:
+        checks.append(Check("Личность", False, str(exc)))
+        return checks
     payload = {
         "model": s.llm.model,
         "messages": [
-            {"role": "system", "content": f"You are {s.assistant_name}."},
-            {"role": "user", "content": "Reply with exactly: systems online."},
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": "Вычисли 2 + 2. Напиши только результат."},
         ],
         "stream": False,
-        "think": s.llm.think,
+        "think": False,  # a bounded health probe; normal conversations keep their thinking mode
         "keep_alive": s.llm.keep_alive,
-        "options": {"temperature": 0},
+        "options": {
+            "temperature": s.llm.temperature,
+            "num_ctx": s.llm.num_ctx,
+            "num_predict": 32,
+        },
     }
     start = time.perf_counter()
     try:
@@ -139,9 +151,31 @@ def check_ollama(s: Settings) -> list[Check]:
         resp.raise_for_status()
         text = resp.json()["message"]["content"].strip()
         elapsed = time.perf_counter() - start
-        checks.append(Check("LLM response", bool(text), f'"{text[:60]}" ({elapsed:.1f}s)'))
+        checks.append(Check("Ответ модели", bool(text), f'"{text[:60]}" ({elapsed:.1f}s)'))
     except Exception as exc:  # noqa: BLE001
-        checks.append(Check("LLM response", False, str(exc)))
+        checks.append(Check("Ответ модели", False, str(exc)))
+    return checks
+
+
+def check_llm(s: Settings) -> list[Check]:
+    if s.llm.provider == "ollama":
+        return check_ollama(s)
+    from backend.brain.providers import SETUP, api_key
+
+    ready = bool(api_key() and s.gemini.free_tier_confirmed)
+    checks = [
+        Check(
+            "Gemini (локальная проверка настройки)",
+            ready,
+            f"{s.gemini.model}; доступность API и квота не проверены" if ready else SETUP,
+            required=not s.llm.fallback,
+        )
+    ]
+    if s.llm.fallback:
+        local = check_ollama(s)
+        for check in local:
+            check.required = not ready
+        checks.extend(local)
     return checks
 
 
@@ -149,42 +183,46 @@ def check_language(s: Settings) -> Check:
     loc = s.locale
     detail = f"{loc.code} · {loc.language_name}"
     if not loc.native_prompt:
-        detail += " (English prompt, replies in this language)"
-    return Check("Language", True, detail, required=False)
+        detail += " (инструкция на английском, ответы на выбранном языке)"
+    return Check("Язык", True, detail, required=False)
 
 
 def check_voice(s: Settings) -> Check:
     path = s.voice_path
-    ok = path.exists() and Path(f"{path}.json").exists()
-    detail = str(path.relative_to(path.parents[2])) if ok else "run: ./scripts/setup.sh"
-    return Check(f"Piper voice {s.voice_name}", ok, detail, required=False)
+    if s.tts.engine == "say":
+        return Check("Голос macOS", True, s.tts.say_voice or "системный", required=False)
+    silero = s.tts.engine == "silero"
+    ok = path.exists() and (silero or Path(f"{path}.json").exists())
+    detail = str(path.relative_to(path.parents[2])) if ok else "запустите: ./scripts/setup.sh"
+    engine = "Silero" if silero else "Piper"
+    return Check(f"Голос {engine} {s.voice_name}", ok, detail, required=False)
 
 
 def check_owner(s: Settings) -> Check:
     u = s.user
     if not u.name and u.kind == "n":
-        return Check("Owner", False, "set JARVIS_OWNER_NAME in .env", required=False)
-    detail = f"{u.name or '-'} · addressed as: {s.owner_full_address or 'neutral'}"
-    return Check("Owner", True, detail, required=False)
+        return Check("Пользователь", False, "задайте JARVIS_OWNER_NAME в .env", required=False)
+    detail = f"{u.name or '-'} · обращение: {s.owner_full_address or 'нейтральное'}"
+    return Check("Пользователь", True, detail, required=False)
 
 
 def check_location(s: Settings) -> Check:
     loc = asyncio.run(resolve_location(s))
     if not loc.query and not loc.resolved:
-        return Check("Location", False, "set JARVIS_CITY in .env", required=False)
+        return Check("Местоположение", False, "задайте JARVIS_CITY в .env", required=False)
     if not loc.resolved:
-        return Check("Location", False, f'could not find "{loc.query}"', required=False)
+        return Check("Местоположение", False, f'не удалось найти "{loc.query}"', required=False)
     detail = f"{loc.display_name} ({loc.latitude:.4f}, {loc.longitude:.4f}) · {loc.tz_name}"
-    return Check("Location", True, detail, required=False)
+    return Check("Местоположение", True, detail, required=False)
 
 
 def check_hud(s: Settings) -> Check:
     from backend.hud.server import DIST_DIR
 
     if not s.hud.enabled:
-        return Check("HUD", True, "disabled", required=False)
+        return Check("HUD", True, "выключено", required=False)
     if not (DIST_DIR / "index.html").exists():
-        return Check("HUD", False, "not built: run ./scripts/setup.sh", required=False)
+        return Check("HUD", False, "не собран: запустите ./scripts/setup.sh", required=False)
     return Check("HUD", True, f"http://{s.server.host}:{s.server.port}", required=False)
 
 
@@ -193,28 +231,80 @@ def check_autostart() -> Check:
 
     st = autostart.status()
     if not st.installed:
-        return Check("Launch at login", True, "off · `autostart install`", required=False)
+        return Check("Автозапуск", True, "выключен · `autostart install`", required=False)
     from backend.app_bundle import executable
 
     if not executable(get_settings()).exists():
-        return Check("Launch at login", False, "app missing: `autostart install`", required=False)
+        return Check("Автозапуск", False, "нет приложения: `autostart install`", required=False)
     if st.pid:
-        return Check("Launch at login", True, f"on · running (pid {st.pid})", required=False)
-    detail = "on · not running" + (f" (last exit {st.last_exit})" if st.last_exit else "")
-    return Check("Launch at login", True, detail, required=False)
+        return Check("Автозапуск", True, f"включён · работает (pid {st.pid})", required=False)
+    detail = "включён · не работает" + (f" (код завершения {st.last_exit})" if st.last_exit else "")
+    return Check("Автозапуск", True, detail, required=False)
 
 
 def check_spotify(s: Settings) -> Check:
+    if s.media.provider == "youtube_music":
+        from backend.media.safari import SafariMusic
+        from backend.tools.registry import ToolError
+
+        if "media" not in s.tools.enabled or not s.media.youtube_music.enabled:
+            return Check("YouTube Music", True, "выключено", required=False)
+        try:
+            SafariMusic(s).discover()
+        except ToolError:
+            return Check("YouTube Music", False, "Safari Web App не найден", required=False)
+        return Check(
+            "YouTube Music",
+            True,
+            "web app найден; нужен Универсальный доступ, живое управление не проверено",
+            required=False,
+        )
     if "media" not in s.tools.enabled:
-        return Check("Spotify", True, "disabled", required=False)
+        return Check("Spotify", True, "выключено", required=False)
     found = any(
         (base / "Spotify.app").exists()
         for base in (Path("/Applications"), Path.home() / "Applications")
     )
     if not found:
-        return Check("Spotify", False, "not installed: music requests won't work", required=False)
-    detail = "installed · first song asks for Automation, Accessibility, Screen Recording"
+        return Check("Spotify", False, "не установлен: музыка недоступна", required=False)
+    detail = (
+        "установлен · для музыки нужны разрешения на автоматизацию, "
+        "универсальный доступ и запись экрана"
+    )
     return Check("Spotify", True, detail, required=False)
+
+
+def check_permissions(s: Settings) -> list[Check]:
+    from backend.permissions import PERMISSION_NAMES, diagnose, instruction
+
+    targets = ("com.spotify.client",) if s.media.provider == "spotify" else ()
+    report = asyncio.run(diagnose(targets))
+    if "error" in report:
+        return [Check("Разрешения macOS", False, report["error"], required=False)]
+    checks = []
+    for permission, label in PERMISSION_NAMES.items():
+        states = report[permission]
+        if isinstance(states, dict):
+            for target, state in states.items():
+                checks.append(
+                    Check(
+                        label,
+                        state == "granted",
+                        f"{target}: {state}. "
+                        + (instruction(permission) if state != "granted" else ""),
+                        required=False,
+                    )
+                )
+        else:
+            checks.append(
+                Check(
+                    label,
+                    states == "granted",
+                    states if states == "granted" else instruction(permission),
+                    required=False,
+                )
+            )
+    return checks
 
 
 def run() -> int:
@@ -225,19 +315,20 @@ def run() -> int:
         check_language(s),
         check_owner(s),
         check_location(s),
-        *check_ollama(s),
+        *check_llm(s),
         check_voice(s),
         *check_speech_models(s),
         *check_audio(s),
         check_hud(s),
         check_spotify(s),
+        *check_permissions(s),
         check_autostart(),
     ]
 
-    table = Table(title=f"{s.assistant_name} · doctor", show_lines=False)
+    table = Table(title=f"{s.assistant_name} · диагностика", show_lines=False)
     table.add_column("", width=2)
-    table.add_column("Item")
-    table.add_column("Detail", overflow="fold")
+    table.add_column("Проверка")
+    table.add_column("Подробности", overflow="fold")
     for c in checks:
         icon = "[green]✔[/]" if c.ok else ("[red]✘[/]" if c.required else "[yellow]![/]")
         table.add_row(icon, c.name, c.detail)
@@ -245,7 +336,13 @@ def run() -> int:
 
     failed = [c for c in checks if c.required and not c.ok]
     if failed:
-        console.print(f"[red]{len(failed)} required check(s) failed.[/]")
+        console.print(f"[red]{len(failed)} обязательных проверок не пройдено.[/]")
         return 1
-    console.print("[green]All set.[/]")
+    if any(not c.ok for c in checks):
+        console.print(
+            "[yellow]Базовые проверки пройдены. Отдельные функции требуют настройки — "
+            "см. строки с ! выше.[/]"
+        )
+    else:
+        console.print("[green]Все выполненные проверки пройдены.[/]")
     return 0

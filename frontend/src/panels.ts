@@ -14,7 +14,7 @@ import type {
 } from "./types";
 
 const SPARK_POINTS = 16;
-const SHOWN_LINES = 4;
+const SHOWN_LINES = 50;
 // A sentence is typed over this share of its spoken length, so the text never trails
 // the voice (Piper's audio ends with a short silence).
 const WRITE_SHARE = 0.9;
@@ -36,7 +36,8 @@ function el(tag: string, className = "", text = ""): HTMLElement {
   return node;
 }
 
-const gb = (mb: number) => (mb < 1024 ? `${Math.round(mb)} MB` : `${(mb / 1024).toFixed(1)} GB`);
+const gb = (mb: number, t: Strings) =>
+  mb < 1024 ? `${Math.round(mb)} ${t.mb}` : `${(mb / 1024).toFixed(1)} ${t.gb}`;
 
 const dash = (v: number | null | undefined, unit = "") => (v == null ? "--" : `${v}${unit}`);
 
@@ -113,6 +114,7 @@ export class Panels {
     this.renderTimers();
     this.renderStats();
     this.renderTranscript();
+    this.renderSystem();
   }
 
   weather(w: WeatherEvent): void {
@@ -127,7 +129,7 @@ export class Panels {
     details.replaceChildren();
     const pairs: [string, string][] = [
       [t.humidity, dash(w.now.humidity_percent, "%")],
-      [t.wind, dash(w.now.wind_kmh, " km/h")],
+      [t.wind, dash(w.now.wind_kmh, ` ${t.kmh}`)],
     ];
     if (w.sunrise && w.sunset) pairs.push([t.sun, `${w.sunrise} – ${w.sunset}`]);
     for (const [k, v] of pairs) details.append(el("dt", "", k), el("dd", "", v));
@@ -197,17 +199,17 @@ export class Panels {
     }
     rows.push(meter(t.cpu, s.cpu_percent, dash(s.cpu_percent, "%"), (s.cpu_percent ?? 0) > 85));
     const memText = s.memory_total_gb
-      ? `${dash(s.memory_percent, "%")} · ${s.memory_total_gb} GB`
+      ? `${dash(s.memory_percent, "%")} · ${s.memory_total_gb} ${t.gb}`
       : dash(s.memory_percent, "%");
     rows.push(meter(t.memory, s.memory_percent, memText, (s.memory_percent ?? 0) > 85));
     const f = this.lastFootprint;
     const totalMb = (s.memory_total_gb ?? 0) * 1024;
     const share = (mb: number | null) => (mb && totalMb ? (mb / totalMb) * 100 : null);
     if (f?.jarvis_mb != null) {
-      rows.push(meter(t.jarvisMemory, share(f.jarvis_mb), gb(f.jarvis_mb)));
+      rows.push(meter(t.jarvisMemory, share(f.jarvis_mb), gb(f.jarvis_mb, t)));
     }
     if (f?.model_mb != null) {
-      const text = f.model_mb === 0 ? t.modelResting : gb(f.model_mb);
+      const text = f.model_mb === 0 ? t.modelResting : gb(f.model_mb, t);
       rows.push(meter(t.modelMemory, share(f.model_mb), text));
     }
     $("meters").replaceChildren(...rows);
@@ -262,19 +264,23 @@ export class Panels {
 
   private renderStats(): void {
     const s = this.lastStats;
-    const readouts: [string, number | null][] = [
-      ["stt", s?.stt_s ?? null],
-      ["llm", s?.first_token_s ?? null],
-      [this.t.voice, s?.voice_s ?? null],
+    const readouts: [string, number | string | null][] = [
+      [this.t.recognition, s?.stt_s ?? null],
+      [this.t.languageModel, s?.model_used === false ? this.t.localCommand : s?.model_used === true && s.first_token_s == null ? this.t.modelError : (s?.first_token_s ?? null)],
+      [this.t.voice, s?.tts_s ?? s?.voice_s ?? null],
+      [this.t.totalResponse, s?.response_s ?? s?.voice_s ?? null],
+      ...Object.entries(s?.stages ?? {}).filter(([key]) => !key.includes("_attempt_") && !["stt", "tts_generation", "model_first_chunk"].includes(key)).map(([key, value]): [string, number] => [this.t.stageLabels[key as keyof typeof this.t.stageLabels] ?? key, value]),
+      ...(s?.attempts ?? []).map((attempt, index): [string, number] => [`${attempt.stage.replace("_attempt_", " · ")} #${index + 1}${attempt.outcome === "error" ? " !" : ""}`, attempt.seconds]),
     ];
     $("readouts").replaceChildren(
       ...readouts.map(([label, value]) => {
         const box = el("div", "readout");
-        box.append(el("span", "value", value == null ? "--" : value.toFixed(2)), el("span", "label", label));
+        box.append(el("span", "value", value == null ? "--" : typeof value === "string" ? value : value.toFixed(2)), el("span", "label", label));
         return box;
       }),
     );
-    $("tps").textContent = s?.tokens_per_second ? `${s.tokens_per_second} tok/s` : "";
+    $("tps").textContent = s?.tokens_per_second
+      ? `${s.tokens_per_second} ${this.t.tokensPerSecond}` : "";
     const max = Math.max(2, ...this.voiceTimes);
     $("spark").replaceChildren(
       ...this.voiceTimes.map((v) => {
@@ -295,7 +301,7 @@ export class Panels {
   user(text: string): void {
     this.flushWords();
     this.closeReply();
-    this.lines.push({ role: "user", text, open: false });
+    this.lines.push({ role: "user", text, open: false, timestamp: new Date().toISOString() });
     this.renderTranscript();
   }
 
@@ -321,7 +327,7 @@ export class Panels {
   private append(delta: string): void {
     const last = this.lines.at(-1);
     if (last?.role === "assistant" && last.open) last.text += delta;
-    else this.lines.push({ role: "assistant", text: delta, open: true });
+    else this.lines.push({ role: "assistant", text: delta, open: true, timestamp: new Date().toISOString() });
     this.renderTranscript();
   }
 
@@ -401,11 +407,12 @@ export class Panels {
     this.lines = this.lines.slice(-SHOWN_LINES);
     const box = $("transcript");
     box.replaceChildren(
-      ...this.lines.map((line, i) => {
+      ...this.lines.map((line) => {
         const row = el("p", `line ${line.role}`);
-        row.style.opacity = String(0.35 + (0.65 * (i + 1)) / this.lines.length);
+        row.style.opacity = "1";
         if (line.role === "user") row.append(el("span", "who", `${this.t.you} ›`));
         row.append(el("span", "text", line.text.trim()));
+        if (line.timestamp) row.append(el("time", "message-time", new Date(line.timestamp).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})));
         if (line.open) row.append(el("span", this.typing ? "cursor typing" : "cursor"));
         else if (line.role === "assistant" && line.text.trim()) row.append(this.copyButton(line));
         return row;

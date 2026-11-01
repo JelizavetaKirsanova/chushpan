@@ -98,17 +98,17 @@ def run_footprint(s: Settings) -> int:
     pid = None
     if lock.acquire():  # free: the pid written in it is from a run that has ended
         lock.release()
-        console.print("[yellow]Jarvis is not running: only the model is measured[/]")
+        console.print("[yellow]Чушпан не запущен: измеряется только память модели[/]")
     else:
         pid = lock.owner()
     fp = asyncio.run(measure(s, pid))
-    jarvis = "-" if pid is None or fp.jarvis_mb is None else f"{fp.jarvis_mb:,.0f} MB"
+    jarvis = "-" if pid is None or fp.jarvis_mb is None else f"{fp.jarvis_mb:,.0f} МБ"
     if fp.model_mb is None:
-        model = "Ollama unreachable"
+        model = "Ollama недоступен"
     elif fp.model_mb == 0:
-        model = "not loaded"
+        model = "выгружена"
     else:
-        model = f"{fp.model_mb:,.0f} MB"
-    console.print(f"Jarvis (with the HUD window): {jarvis}")
-    console.print(f"Model {fp.model}: {model}")
+        model = f"{fp.model_mb:,.0f} МБ"
+    console.print(f"Чушпан (вместе с окном интерфейса): {jarvis}")
+    console.print(f"Модель {fp.model}: {model}")
     return 0

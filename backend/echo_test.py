@@ -17,6 +17,12 @@ from backend.config import Settings
 console = Console(highlight=False)
 
 SENTENCES = {
+    "ru": [
+        "Это проверка эхоподавления.",
+        "Пожалуйста, помолчите, пока я говорю.",
+        "Проверяю, какая часть моего голоса попадает в микрофон.",
+        "Завтра будет облачно, температура до двадцати четырёх градусов.",
+    ],
     "pt": [
         "Este é um teste de cancelamento de eco.",
         "Fique em silêncio enquanto eu falo, por favor.",
@@ -64,8 +70,8 @@ async def run_echo_test(s: Settings) -> int:
     from backend.audio.capture import Microphone
     from backend.voice import make_speaker
 
-    if s.tts.engine != "piper":
-        console.print("[red]Echo cancellation needs the Piper voice (tts.engine: piper)[/]")
+    if s.tts.engine not in ("piper", "silero"):
+        console.print("[red]Для эхоподавления нужен голос Piper или Silero[/]")
         return 1
     aec = load_echo_canceller()
     if aec is None:
@@ -75,7 +81,9 @@ async def run_echo_test(s: Settings) -> int:
     speaker.on_audio = aec.play
     raw, clean = _Track(s), _Track(s)
     mic = Microphone(s.audio.input_device)
-    console.print("Stay quiet: Jarvis will speak for about 10 seconds through the speakers.")
+    console.print(
+        f"Помолчите: {s.assistant_name} будет говорить через динамики примерно 10 секунд."
+    )
 
     async def sentences():
         for text in SENTENCES.get(s.locale.lang, SENTENCES["en"]):
@@ -98,19 +106,21 @@ async def run_echo_test(s: Settings) -> int:
     n = max(1, len(raw.frames))
     reduction = _db(raw.frames) - _db(clean.frames)
     console.print(
-        f"\nMicrophone while Jarvis spoke ({n * 32 / 1000:.1f} s):\n"
-        f"  speech detected   raw {raw.speech / n:4.0%}   cleaned {clean.speech / n:4.0%}\n"
-        f"  self-interruptions raw {raw.starts:3d}   cleaned {clean.starts:3d}\n"
-        f"  echo reduced by {reduction:.0f} dB"
+        f"\nМикрофон во время речи {s.assistant_name} ({n * 32 / 1000:.1f} с):\n"
+        f"  речь обнаружена   исходно {raw.speech / n:4.0%}"
+        f"   после очистки {clean.speech / n:4.0%}\n"
+        f"  самопрерывания   исходно {raw.starts:3d}   после очистки {clean.starts:3d}\n"
+        f"  эхо уменьшено на {reduction:.0f} дБ"
     )
     if clean.starts == 0:
         console.print(
-            "[green]✔ Jarvis does not hear itself: barge-in is safe without headphones.[/]\n"
-            "[dim]Turn it on with JARVIS_AUDIO__BARGE_IN=true[/]"
+            f"[green]✔ {s.assistant_name} не слышит себя: можно прерывать его без наушников.[/]\n"
+            "[dim]Включить: JARVIS_AUDIO__BARGE_IN=true[/]"
         )
     else:
         console.print(
-            "[yellow]! Jarvis still hears itself at this volume. Lower the volume and run "
-            "this again, or use headphones for barge-in.[/]"
+            f"[yellow]! На этой громкости {s.assistant_name} слышит себя. "
+            "Уменьшите громкость и повторите "
+            "проверку или используйте наушники для прерывания голосом.[/]"
         )
     return 0

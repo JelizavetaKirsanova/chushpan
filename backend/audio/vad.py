@@ -22,6 +22,10 @@ def frames_for(ms: float) -> int:
 class SegmentEvent:
     started: bool = False
     utterance: np.ndarray | None = None
+    end_reason: str | None = None
+    onset_at_buffer_start: bool = False
+    silence_s: float = 0
+    speech_ms: float = 0
 
 
 class UtteranceSegmenter:
@@ -35,6 +39,7 @@ class UtteranceSegmenter:
         self.min_speech_frames = frames_for(cfg.min_speech_ms)
         self.silence_frames = frames_for(cfg.silence_ms)
         self.max_frames = frames_for(cfg.max_utterance_s * 1000)
+        self.tail_frames = frames_for(cfg.tail_ms) if cfg.tail_ms else 0
         self._preroll: deque[np.ndarray] = deque(
             maxlen=frames_for(cfg.preroll_ms) + self.start_frames
         )
@@ -57,7 +62,7 @@ class UtteranceSegmenter:
                 self._frames = list(self._preroll)
                 self._preroll.clear()
                 self._speech, self._silence = self._run, 0
-                return SegmentEvent(started=True)
+                return SegmentEvent(started=True, speech_ms=self._speech * FRAME_MS)
             return SegmentEvent()
 
         self._frames.append(frame)
@@ -73,8 +78,14 @@ class UtteranceSegmenter:
             self.reset()
             if speech < self.min_speech_frames:
                 return SegmentEvent()
-            keep = len(frames) - max(0, silence - 3)  # trim most of the trailing silence
-            return SegmentEvent(utterance=np.concatenate(frames[:keep]))
+            keep = len(frames) - max(0, silence - self.tail_frames)
+            return SegmentEvent(
+                utterance=np.concatenate(frames[:keep]),
+                end_reason="silence" if silence >= self.silence_frames else "max_duration",
+                onset_at_buffer_start=len(frames) == speech + silence,
+                silence_s=silence * FRAME_MS / 1000,
+                speech_ms=speech * FRAME_MS,
+            )
         return SegmentEvent()
 
 

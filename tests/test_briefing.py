@@ -190,7 +190,7 @@ def test_weather_retries_once_on_a_server_error(owner_env):
     assert len(calls) == 2 and out["now"]["temperature"] == 18
 
 
-def test_voice_loop_speaks_the_briefing_then_listens(tmp_path):
+def test_voice_loop_speaks_the_briefing_then_requires_wake(tmp_path):
     from backend.voice import speak_briefing
     from tests.test_voice_loop import FakeSpeaker, Harness
 
@@ -210,7 +210,7 @@ def test_voice_loop_speaks_the_briefing_then_listens(tmp_path):
         await h.loop.task
         await asyncio.sleep(0)
         assert h.loop.speaker.said == ["Boa noite.", "Agora faz 18 graus, nublado."]
-        assert h.state is State.LISTENING and h.loop.listen_deadline is not None
+        assert h.state is State.SLEEPING and h.loop.listen_deadline is None
 
     asyncio.run(scenario())
 

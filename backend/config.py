@@ -7,10 +7,11 @@ from datetime import tzinfo
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from dotenv import dotenv_values
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -35,6 +36,9 @@ SIMPLE_ENV: dict[str, tuple[str, str]] = {
     "JARVIS_LATITUDE": ("location", "latitude"),
     "JARVIS_LONGITUDE": ("location", "longitude"),
     "JARVIS_TIMEZONE": ("location", "timezone"),
+    "YOUTUBE_API_KEY": ("youtube_video", "api_key"),
+    "YOUTUBE_SLEEP_PLAYLIST_URL": ("youtube_video", "playlist_url"),
+    "YOUTUBE_CACHE_TTL": ("youtube_video", "cache_ttl"),
 }
 
 
@@ -74,25 +78,82 @@ class UserConfig(BaseModel):
     @property
     def kind(self) -> str:
         g = self.gender.strip().lower()
-        if g.startswith(("f", "w")):
+        if g.startswith(("f", "w", "ж")):
             return "f"
-        if g.startswith("m"):
+        if g.startswith(("m", "м")):
             return "m"
         return "n"
 
 
 class PersonaConfig(BaseModel):
-    style: str | None = None  # None = British butler, in the chosen language
-    max_sentences: int = 2
+    file: Path | None = None  # Relative to the project root, or an absolute path
+    style: str | None = None  # Optional additions to the file; otherwise locale default
+    max_sentences: int = 3
+
+
+class MacConfig(BaseModel):
+    # Trusted configuration, never roots supplied by the LLM or a remote client.
+    file_roots: dict[str, Path] = Field(
+        default_factory=lambda: {
+            "documents": Path.home() / "Documents",
+            "desktop": Path.home() / "Desktop",
+            "downloads": Path.home() / "Downloads",
+        }
+    )
 
 
 class LLMConfig(BaseModel):
+    provider: Literal["gemini", "ollama"] = "gemini"
+    fallback: bool = True
     host: str = "http://localhost:11434"
-    model: str = "qwen3:8b"
+    model: str = "qwen3.5:9b-q4_K_M"
     keep_alive: str = "30m"
     temperature: float = 0.6
-    think: bool = False
+    think: bool = True
+    num_ctx: int = Field(default=16384, ge=1024)  # persona + tools + conversation + reply
     context_messages: int = 30  # a turn with a tool call takes 4: question, call, result, answer
+
+
+class GeminiConfig(BaseModel):
+    model: Literal[
+        "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"
+    ] = "gemini-3.8-flash"
+    fallback_model: Literal["gemini-3.5-flash"] | None = None
+    # The API key cannot tell us whether Cloud Billing is linked to its project.
+    free_tier_confirmed: bool = False
+    timeout_s: float = Field(default=15, ge=5, le=120)
+    attempt_timeout_s: float = Field(default=6, ge=1, le=120)
+    max_output_tokens: int = Field(default=2048, ge=128, le=8192)
+    context_messages: int = Field(default=24, ge=0, le=30)
+    context_chars: int = Field(default=24000, ge=4000, le=100000)
+
+
+class ShortcutEntry(BaseModel):
+    model_config = {"extra": "forbid", "frozen": True}
+    identifier: str = Field(pattern=r"^[A-Fa-f0-9]{8}(?:-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$")
+    description: str = Field(min_length=1, max_length=300)
+    input_type: Literal["none", "text", "url"] = "none"
+    # All external automations require confirmation, even a nominally read-only one.
+    # Their internals can change independently of this process.
+
+
+class ShortcutsConfig(BaseModel):
+    allowed: dict[str, ShortcutEntry] = Field(default_factory=dict)
+    timeout_s: float = Field(default=30, ge=1, le=120)
+
+
+class NightConfig(BaseModel):
+    # Manual review of Shortcuts' own grants; not a claim about TCC state.
+    shortcut_permissions_reviewed: bool = False
+    external_uuid: str | None = Field(default=None, pattern=r"^[A-Fa-f0-9-]{36}$")
+    external_control: Literal["brightness", "softwareBrightness", "hardwareBrightness"] = (
+        "brightness"
+    )
+
+    @field_validator("external_uuid")
+    @classmethod
+    def valid_uuid(cls, value: str | None) -> str | None:
+        return str(UUID(value)) if value else None
 
 
 class STTConfig(BaseModel):
@@ -107,6 +168,9 @@ class TTSConfig(BaseModel):
     say_voice: str | None = None
     length_scale: float | None = None  # speaking speed: < 1 faster, > 1 slower
     sentence_min_chars: int = 20
+    pronunciations: dict[str, str] = Field(default_factory=dict)
+    silero_model: Path = Path("silero_v5_6_ru.pt")  # in voices_dir, or an absolute path
+    silero_speaker: str = "eugene"  # eugene | aidar (male); baya | kseniya | xenia (female)
 
 
 class AudioConfig(BaseModel):
@@ -124,11 +188,20 @@ class VADConfig(BaseModel):
     min_speech_ms: int = 300
     silence_ms: int = 700  # pause that ends an utterance
     preroll_ms: int = 300
+    tail_ms: int = Field(default=256, ge=0, le=2000)
     max_utterance_s: float = 30
+
+
+class DialogueConfig(BaseModel):
+    enabled: bool = True
+    duration_s: int = Field(default=45, ge=10, le=300)
+    nameless_interruptions: bool = False
+    addressee_strictness: Literal["contextual", "addressed"] = "contextual"
 
 
 class WakeWordConfig(BaseModel):
     enabled: bool = True
+    phrase: str | None = None  # Custom phrase recognized locally by Whisper; None = ONNX model
     model: str = "hey_jarvis"  # openWakeWord pre-trained name, or a path to a custom .onnx
     models_dir: Path = Path("models/wakeword")
     threshold: float = 0.5
@@ -155,7 +228,53 @@ class ToolsConfig(BaseModel):
     one_moment_after_s: float = 1.5
 
 
+class PlaylistConfig(BaseModel):
+    id: str = ""
+    title: str = ""
+
+
+class YouTubeMusicConfig(BaseModel):
+    enabled: bool = True
+    transport: Literal["safari", "webapp"] = "safari"
+    bundle_id: str | None = None  # discover Safari Web App by its manifest
+    app_path: Path | None = None
+    auth_file: Path | None = None  # optional; library otherwise read from the signed-in app
+    timeout_s: float = Field(default=12, ge=3, le=60)
+    main_playlist: PlaylistConfig = Field(default_factory=PlaylistConfig)
+    scenarios: dict[str, PlaylistConfig] = Field(default_factory=dict)
+
+
+class YouTubeVideoConfig(BaseModel):
+    api_key: SecretStr = SecretStr("")
+    playlist_url: str = ""
+    cache_ttl: int = Field(default=21600, ge=60, le=2592000)
+    timeout_s: float = Field(default=6, ge=1, le=15)
+    max_requests: int = Field(default=100, ge=3, le=500)
+    mode: Literal["random", "order", "longest", "shortest"] = "random"
+    min_seconds: int = Field(default=0, ge=0, le=86400)
+    max_seconds: int = Field(default=86400, ge=1, le=604800)
+    exclude_recent_hours: int = Field(default=24, ge=0, le=8760)
+    allow_repeat: bool = False
+    preferred_screen: Literal["external", "current"] = "external"
+    external_uuid: str | None = None  # Defaults to night.external_uuid, never a display index.
+    fullscreen: bool = True
+    night_autoplay: bool = False  # Explicit opt-in; existing night routine is preserved.
+
+    @field_validator("external_uuid")
+    @classmethod
+    def valid_uuid(cls, value: str | None) -> str | None:
+        return str(UUID(value)) if value else None
+
+    @model_validator(mode="after")
+    def duration_bounds(self) -> YouTubeVideoConfig:
+        if self.min_seconds > self.max_seconds:
+            raise ValueError("YouTube: min_seconds должен быть <= max_seconds")
+        return self
+
+
 class MediaConfig(BaseModel):
+    provider: Literal["youtube_music", "spotify"] | None = "youtube_music"
+    youtube_music: YouTubeMusicConfig = Field(default_factory=YouTubeMusicConfig)
     # Spotify's volume while Jarvis listens and speaks, as a fraction of its own; 0 = off.
     duck_to: float = 0.2
     search_wait_s: float = 6  # how long to wait for the search results to show
@@ -174,6 +293,7 @@ class BriefingConfig(BaseModel):
     fetch_timeout_s: float = 5  # a source slower than this is left out
     network_wait_s: float = 20  # at login Wi-Fi may join late; then weather and news are skipped
     once_a_day: bool = True  # later starts on the same day open quietly (D-50)
+    morning_volume: int = Field(default=20, ge=0, le=100)
 
 
 class ResourcesConfig(BaseModel):
@@ -201,8 +321,9 @@ class ResourcesConfig(BaseModel):
 
 
 class ServerConfig(BaseModel):
-    host: str = "127.0.0.1"
-    port: int = 8765
+    # Existing HUD has no network authentication. Remote API belongs to a later stage.
+    host: Literal["127.0.0.1", "localhost"] = "127.0.0.1"
+    port: int = Field(default=8765, ge=1024, le=65535)
 
 
 class HudConfig(BaseModel):
@@ -231,20 +352,26 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    assistant_name: str = "Jarvis"
-    language: str = "pt-BR"
+    assistant_name: str = "Чушпан"
+    language: str = "ru-RU"
     log_level: str = "INFO"
     data_dir: Path = Path("data")
 
     user: UserConfig = Field(default_factory=UserConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
+    mac: MacConfig = Field(default_factory=MacConfig)
     location: LocationConfig = Field(default_factory=LocationConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    gemini: GeminiConfig = Field(default_factory=GeminiConfig)
+    shortcuts: ShortcutsConfig = Field(default_factory=ShortcutsConfig)
+    night: NightConfig = Field(default_factory=NightConfig)
+    youtube_video: YouTubeVideoConfig = Field(default_factory=YouTubeVideoConfig)
     stt: STTConfig = Field(default_factory=STTConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
     vad: VADConfig = Field(default_factory=VADConfig)
     wakeword: WakeWordConfig = Field(default_factory=WakeWordConfig)
+    dialogue: DialogueConfig = Field(default_factory=DialogueConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     news: NewsConfig = Field(default_factory=NewsConfig)
     media: MediaConfig = Field(default_factory=MediaConfig)
@@ -271,7 +398,18 @@ class Settings(BaseSettings):
 
     @property
     def persona_style(self) -> str:
-        return self.persona.style or self.locale.persona
+        parts = []
+        if self.persona.file is not None:
+            path = self.persona.file
+            if not path.is_absolute():
+                path = ROOT_DIR / path
+            text = path.read_text(encoding="utf-8").strip()
+            if not text:
+                raise ValueError(f"Файл личности пуст: {path}")
+            parts.append(text)
+        if self.persona.style:
+            parts.append(self.persona.style)
+        return "\n\n".join(parts) or self.locale.persona
 
     @property
     def owner_address(self) -> str | None:
@@ -285,12 +423,17 @@ class Settings(BaseSettings):
 
     @property
     def voice_name(self) -> str:
+        if self.tts.engine == "silero":
+            return self.tts.silero_speaker
         return self.tts.voice or self.locale.voice
 
     @property
     def voice_path(self) -> Path:
         d = self.tts.voices_dir
         base = d if d.is_absolute() else ROOT_DIR / d
+        if self.tts.engine == "silero":
+            model = self.tts.silero_model
+            return model if model.is_absolute() else base / model
         return base / f"{self.voice_name}.onnx"
 
     @property
@@ -299,7 +442,10 @@ class Settings(BaseSettings):
 
     @property
     def stt_hint(self) -> str:
-        return self.locale.stt_hint.format(name=self.assistant_name)
+        hint = self.locale.stt_hint.format(name=self.assistant_name)
+        if self.stt_language == "ru":
+            hint += " YouTube, Safari, Gemini, Ollama, GitHub, BetterDisplay."
+        return hint
 
     @property
     def wakeword_dir(self) -> Path:

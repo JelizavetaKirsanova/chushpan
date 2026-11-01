@@ -12,6 +12,8 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from backend.state import request_context
+
 log = logging.getLogger(__name__)
 
 Event = dict[str, Any]
@@ -28,6 +30,12 @@ STICKY = {
     "autostart",
     "footprint",
     "boot",
+    "ai_status",
+    "settings_info",
+    "activity",
+    "session",
+    "music_settings",
+    "addressee",
 }
 TRANSCRIPT_LINES = 8
 QUEUE_SIZE = 512  # ~15 s of audio levels; a stalled client loses the oldest events
@@ -40,12 +48,31 @@ class HudBus:
         self._lines: list[dict[str, Any]] = []  # {"role", "text", "open"}
         self.on_command: Callable[[str], None] | None = None
         self._handlers: dict[str, Callable[[Any], None]] = {}
+        self.request_id = 0
 
     @property
     def clients(self) -> int:
         return len(self._clients)
 
     def publish(self, event: Event) -> None:
+        if event["type"] in {
+            "state",
+            "activity",
+            "reply",
+            "reply_end",
+            "user",
+            "stats",
+            "tool",
+            "notice",
+            "ai_status",
+            "addressee",
+        }:
+            owner = event.get("request_id", request_context.get())
+            if owner is not None:
+                if owner < self.request_id:
+                    return
+                event = {**event, "request_id": owner}
+                self.request_id = owner
         self._remember(event)
         for queue in self._clients:
             if queue.full():

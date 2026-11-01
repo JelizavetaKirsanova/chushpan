@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from backend.config import Settings
+from backend.context import DeviceContext, RequestContext, request_scope
 from backend.state import State
 from backend.tools import ToolError, build_registry
 from backend.tools import media as media_mod
@@ -239,5 +240,6 @@ def test_registered_and_told_apart_from_the_mac_volume():
     schemas = {t["function"]["name"]: t["function"] for t in reg.schemas()}
     assert "set_volume" in schemas["media_volume"]["description"]
     assert "media_volume" in schemas["set_volume"]["description"]
-    out = json.loads(asyncio.run(reg.call("media_control", {"action": "previous"})))
+    with request_scope(RequestContext(DeviceContext.local_mac(), "Previous track")):
+        out = json.loads(asyncio.run(reg.call("media_control", {"action": "previous"})))
     assert out["action"] == "previous"

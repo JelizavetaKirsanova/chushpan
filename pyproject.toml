@@ -1,7 +1,7 @@
 [project]
 name = "my-jarvis"
 version = "0.1.0"
-description = "A fully local voice assistant for macOS on Apple Silicon"
+description = "A Russian voice assistant for macOS with Gemini and local Ollama fallback"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -23,6 +23,10 @@ dependencies = [
     "pywebview>=6.2",
     "livekit>=1.0",
     "scipy>=1.13",
+    "ytmusicapi>=1.12.3,<2",
+    "torch>=2.5,<3",
+    "google-genai>=2.34,<3",
+    "pillow>=11,<14",
 ]
 
 [dependency-groups]

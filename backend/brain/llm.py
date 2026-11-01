@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 
+from backend.brain.privacy import redact
 from backend.config import LLMConfig
 
 Message = dict[str, Any]
@@ -24,11 +26,24 @@ class ChatChunk:
     done: bool = False
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     stats: dict[str, Any] = field(default_factory=dict)
+    thinking: str = field(default="", repr=False)  # transient tool-round context, never spoken
+    native_parts: list[Any] = field(default_factory=list, repr=False)
 
     @property
     def tokens_per_second(self) -> float | None:
         count, ns = self.stats.get("eval_count"), self.stats.get("eval_duration")
         return count / (ns / 1e9) if count and ns else None
+
+
+class LLMClient(Protocol):
+    def chat_stream(
+        self, messages: list[Message], tools: list | None = None
+    ) -> AsyncIterator[ChatChunk]: ...
+    async def aclose(self) -> None: ...
+    async def prime(self, system_prompt: str, tools=None, history=None) -> None: ...
+    async def warmup(self) -> None: ...
+    async def unload(self) -> None: ...
+    async def wait_ready(self, timeout_s: float, interval_s: float = 1.0) -> bool: ...
 
 
 class OllamaClient:
@@ -42,13 +57,19 @@ class OllamaClient:
         await self._client.aclose()
 
     def _payload(self, messages: list[Message], stream: bool, tools: list | None) -> dict:
+        messages = [dict(m) for m in messages]
+        for message in messages:
+            if message.get("images"):
+                message["images"] = [
+                    base64.b64encode(i.data).decode("ascii") for i in message["images"]
+                ]
         payload: dict[str, Any] = {
             "model": self.cfg.model,
-            "messages": messages,
+            "messages": redact(messages),
             "stream": stream,
             "think": self.cfg.think,
             "keep_alive": self.cfg.keep_alive,
-            "options": {"temperature": self.cfg.temperature},
+            "options": {"temperature": self.cfg.temperature, "num_ctx": self.cfg.num_ctx},
         }
         if tools:
             payload["tools"] = tools
@@ -75,7 +96,7 @@ class OllamaClient:
         """Load the model into memory (an empty message list only loads it)."""
         resp = await self._client.post(
             "/api/chat",
-            json={"model": self.cfg.model, "messages": [], "keep_alive": self.cfg.keep_alive},
+            json=self._payload([], stream=False, tools=None),
         )
         self._raise_for(resp)
 
@@ -106,6 +127,18 @@ class OllamaClient:
     async def chat_stream(
         self, messages: list[Message], tools: list | None = None
     ) -> AsyncIterator[ChatChunk]:
+        if any(m.get("images") for m in messages):
+            tags = await self._client.get("/api/tags")
+            self._raise_for(tags)
+            names = {m.get("name") for m in tags.json().get("models", [])}
+            if self.cfg.model not in names:
+                raise LLMError(
+                    "Локальная модель не установлена; автоматическая загрузка запрещена."
+                )
+            info = await self._client.post("/api/show", json={"model": self.cfg.model})
+            self._raise_for(info)
+            if "vision" not in info.json().get("capabilities", []):
+                raise LLMError("Установленная Ollama-модель не поддерживает изображения.")
         payload = self._payload(messages, stream=True, tools=tools)
         async with self._client.stream("POST", "/api/chat", json=payload) as resp:
             if resp.status_code >= 400:
@@ -117,9 +150,12 @@ class OllamaClient:
                 data = json.loads(line)
                 if "error" in data:
                     raise LLMError(data["error"])
+                if data.get("done") and data.get("done_reason") == "length":
+                    raise LLMError("Ollama достигла лимита длины; ответ не завершён.")
                 msg = data.get("message") or {}
                 chunk = ChatChunk(
                     content=msg.get("content", ""),
+                    thinking=msg.get("thinking", ""),
                     done=bool(data.get("done")),
                     tool_calls=msg.get("tool_calls") or [],
                 )

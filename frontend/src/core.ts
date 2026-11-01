@@ -15,10 +15,10 @@ interface Look {
   alpha: number;
 }
 
-const CYAN: RGB = [0, 229, 255];
-const ICE: RGB = [122, 244, 255];
-const AMBER: RGB = [255, 179, 64];
-const GREEN: RGB = [61, 255, 176];
+const CYAN: RGB = [140, 163, 212];
+const ICE: RGB = [197, 211, 242];
+const AMBER: RGB = [174, 161, 210];
+const GREEN: RGB = [152, 196, 188];
 const GREY: RGB = [84, 104, 120];
 
 const LOOKS: Record<Mode, Look> = {
@@ -33,7 +33,6 @@ const LOOKS: Record<Mode, Look> = {
 const BARS = 120; // audio bars around the ring (mirrored: 60 distinct samples)
 const IDLE_FRAME_MS = 1000 / 15; // frame interval while sleeping or offline
 const SAMPLE_MS = 33; // how often the level history advances
-const SILENT_VOICE_MS = 300; // speaking with no levels (macOS `say`): animate anyway
 const TAU = Math.PI * 2;
 const CAPTION_PX = 76; // room under the core for the state caption and hint
 
@@ -91,6 +90,7 @@ export class Core {
   }
 
   start(): void {
+    this.draw(performance.now());
     let lastDraw = 0;
     let running = false;
     const frame = (now: number) => {
@@ -99,8 +99,8 @@ export class Core {
         return;
       }
       // Asleep the core barely moves: a quarter of the frames is enough (D-37).
-      const idle = this.mode === "sleeping" || this.mode === "offline";
-      if (!idle || now - lastDraw >= IDLE_FRAME_MS) {
+      const idle = this.mode === "sleeping" || this.mode === "offline" || !this.size.w || !this.size.h;
+      if ((!idle && !this.calm) || now - lastDraw >= IDLE_FRAME_MS) {
         this.draw(now);
         lastDraw = now;
       }
@@ -131,15 +131,12 @@ export class Core {
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const free = Math.max(0, height - CAPTION_PX);
     this.size = { w: width, h: height, r: Math.min(width, free) * 0.4, cy: free / 2 };
+    this.draw(performance.now());
   }
 
   private input(now: number): number {
-    if (this.mode === "speaking" && now - this.lastFeed > SILENT_VOICE_MS) {
-      const t = now / 1000; // no real levels: a speech-like wobble
-      return 0.45 + 0.3 * Math.sin(t * 15) * Math.sin(t * 2.7) + 0.1 * Math.sin(t * 41);
-    }
+    if (now - this.lastFeed > 300) return 0;
     if (this.mode === "listening" || this.mode === "speaking") return this.raw;
-    if (this.mode === "thinking") return 0.12 + 0.08 * Math.sin(now / 90);
     return 0;
   }
 
@@ -152,7 +149,7 @@ export class Core {
     L.glow = mix(L.glow, target.glow, k);
     L.speed = mix(L.speed, target.speed, k);
     L.alpha = mix(L.alpha, target.alpha, k);
-    this.phase += dt * L.speed * (this.calm ? 0.25 : 1);
+    this.phase += dt * L.speed * (this.calm ? 0 : 1);
 
     const input = Math.max(0, Math.min(1, this.input(now)));
     // Fast attack, slower release: syllables pop, silence settles.
@@ -166,23 +163,30 @@ export class Core {
   }
 
   private draw(now: number): void {
+    if (!this.size.w || !this.size.h) return;
     const dt = Math.min(0.1, (now - this.last) / 1000);
     this.last = now;
     this.update(now, dt);
 
     const { ctx } = this;
     const { w, h, cy } = this.size;
-    const intro = Math.min(1, (now - this.born) / 1400);
+    const intro = this.calm || document.hidden || this.mode === "offline" ? 1 : Math.min(1, (now - this.born) / 1400);
     const ease = 1 - (1 - intro) ** 3;
     const R = this.size.r * (0.86 + 0.14 * ease);
     const L = this.look;
     const p = this.phase;
-    const breath = 0.5 + 0.5 * Math.sin(now / 1600);
+    const breath = this.calm ? .5 : 0.5 + 0.5 * Math.sin(now / 1600);
 
     ctx.clearRect(0, 0, w, h);
     ctx.save();
     ctx.translate(w / 2, cy);
     ctx.globalAlpha = L.alpha * ease;
+    const sphere = ctx.createRadialGradient(-R * .2, -R * .25, 0, 0, 0, R * .58);
+    sphere.addColorStop(0, rgba(L.accent, .42));
+    sphere.addColorStop(.55, rgba(L.color, .18));
+    sphere.addColorStop(1, "rgba(17,20,29,0.95)");
+    ctx.fillStyle = sphere;
+    ctx.beginPath(); ctx.arc(0, 0, R * .58, 0, TAU); ctx.fill();
 
     const halo = ctx.createRadialGradient(0, 0, R * 0.2, 0, 0, R * 1.3);
     halo.addColorStop(0, rgba(L.color, 0.16 * L.glow + 0.08 * this.level));

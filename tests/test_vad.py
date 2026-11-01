@@ -69,7 +69,7 @@ def test_stt_drops_echoed_hint_but_keeps_short_phrases():
         ]
     )
     stt._transcribe_sync = lambda audio: next(replies)
-    audio = np.zeros(16000, dtype=np.int16)
+    audio = (np.sin(np.arange(16000) * 0.1) * 2000).astype(np.int16)
     results = [asyncio.run(stt.transcribe(audio)) for _ in range(4)]
     assert results == ["", "Olá, Jarvis.", "Como está o tempo hoje?", "Olá, Jarvis, que horas são?"]
     assert stt.last_raw == "Olá, Jarvis, que horas são?"

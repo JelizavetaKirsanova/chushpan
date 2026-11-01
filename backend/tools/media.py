@@ -1,12 +1,12 @@
 """Music on Spotify: play what was asked for, pause, skip, volume, what is playing.
 
 Playback goes through Spotify's AppleScript dictionary, which has no search. To play
-"Stray Kids", Jarvis opens the app's own search page and clicks the round green play button
+"Stray Kids", Чушпан opens the app's own search page and clicks the round green play button
 of the top result, found on a screenshot of the window (D-45). The page itself is out of
 reach otherwise: Spotify shows no web content to Accessibility, and the Tab order changes
 with the state of its panels.
 
-Needs, for the app running Jarvis: Automation (control Spotify and System Events),
+Needs, for the app running Чушпан: Automation (control Spotify and System Events),
 Accessibility (the click) and Screen Recording (the screenshot).
 """
 
@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import struct
 import tempfile
 import time
@@ -25,8 +26,11 @@ from urllib.parse import quote
 import numpy as np
 
 from backend.config import Settings
+from backend.media.youtube_video import SafariYouTube
+from backend.memory.store import MemoryStore
+from backend.permissions import instruction
 from backend.state import State
-from backend.tools.registry import Tool, ToolError
+from backend.tools.registry import Tool, ToolError, user_text
 from backend.tools.system import run
 
 log = logging.getLogger(__name__)
@@ -39,7 +43,7 @@ VOLUME_STEP = 20  # "aumenta a música" with no number
 BUTTON_PT = (30, 72)
 
 NOT_ALLOWED = (
-    "macOS did not let Jarvis control {what}: allow it in System Settings → Privacy & "
+    "macOS did not let Чушпан control {what}: allow it in System Settings → Privacy & "
     "Security → {where}"
 )
 
@@ -214,7 +218,9 @@ class Spotify:
                 "screencapture", "-x", "-o", "-t", "bmp", "-R", f"{x},{y},{w},{h}", str(path)
             )
             if code or not path.exists():
-                raise ToolError(out or "could not take a screenshot of Spotify")
+                raise ToolError(
+                    "Снимок окна Spotify недоступен. " + instruction("screen_recording")
+                )
             return read_bmp(path.read_bytes())
 
     async def search_and_play(self, query: str, wait_s: float) -> Track:
@@ -243,7 +249,7 @@ class Spotify:
         else:
             raise ToolError(
                 f"found nothing to play for {query!r} on {APP}'s search page. If the window "
-                "shows results, macOS may be blocking the screenshot: allow Jarvis in System "
+                "shows results, macOS may be blocking the screenshot: allow Чушпан in System "
                 "Settings → Privacy & Security → Screen Recording"
             )
         click = CLICK_JS % (x + spot[0], y + spot[1])
@@ -260,18 +266,18 @@ class Spotify:
                 return now
         raise ToolError(
             f"clicked play on {APP}, but nothing started playing. macOS drops the click "
-            "unless Jarvis is allowed in System Settings → Privacy & Security → Accessibility"
+            "unless Чушпан is allowed in System Settings → Privacy & Security → Accessibility"
         )
 
 
-# --- Lower the music while Jarvis listens and speaks
+# --- Lower the music while Чушпан listens and speaks
 
 
 class Ducker:
-    """Spotify at a fraction of its volume while Jarvis is awake (D-46).
+    """Spotify at a fraction of its volume while Чушпан is awake (D-46).
 
     Otherwise Whisper transcribes the song along with the request, and the reply is lost in
-    it. Echo cancellation removes only Jarvis's own voice, the one signal it knows.
+    it. Echo cancellation removes only Чушпан's own voice, the one signal it knows.
     """
 
     def __init__(self, spotify: Spotify, ratio: float, wake: bool = True) -> None:
@@ -284,7 +290,7 @@ class Ducker:
         self._tasks: set[asyncio.Task] = set()
 
     def on_state(self, _: State | None, new: State) -> None:
-        # With the wake word: from "Hey Jarvis" until it sleeps again. Always listening:
+        # With the wake word: from "Hey Чушпан" until it sleeps again. Always listening:
         # only while it thinks and speaks, or the music would never come back up.
         awake = new is not State.SLEEPING if self.wake else new in (State.THINKING, State.SPEAKING)
         if awake == self.awake:
@@ -350,28 +356,100 @@ ACTIONS = {
 }
 
 
+def requested_playback_target(text: str | None) -> str | None:
+    """Explicit human wording wins over a guessed LLM target."""
+    said = (text or "").casefold()
+    if re.search(r"видео|ролик|сафари|safari|\bvideo\b", said):
+        return "video"
+    if re.search(r"музык|музон|песн|трек|плейлист|м[ьъ]?юзик|music|spotify|спотифай", said):
+        return "music"
+    if re.search(r"ютуб|youtube", said):
+        return "video"
+    return None
+
+
 class MediaService:
-    def __init__(self, s: Settings, spotify: Spotify | None = None, wake: bool = True) -> None:
+    def __init__(
+        self,
+        s: Settings,
+        spotify: Spotify | None = None,
+        wake: bool = True,
+        store: MemoryStore | None = None,
+        video: SafariYouTube | None = None,
+    ) -> None:
+        from backend.music import load_provider
+
+        load_provider(s, store)
         self.s = s
+        self.youtube = None
+        if s.media.provider == "youtube_music" and s.media.youtube_music.enabled:
+            if s.media.youtube_music.transport == "safari":
+                from backend.media.music_safari import SafariYouTubeMusic
+
+                self.youtube = SafariYouTubeMusic(s, store)
+            else:
+                from backend.media.youtube import YouTubeMusic
+
+                self.youtube = YouTubeMusic(s, store)
         self.spotify = spotify or Spotify()
+        self.video = video or SafariYouTube(s)
+        self._last_control_target: str | None = None
         self.ducker = Ducker(self.spotify, s.media.duck_to, wake)
 
     def on_state(self, old: State | None, new: State) -> None:
-        self.ducker.on_state(old, new)
+        if self.s.media.provider == "spotify":
+            self.ducker.on_state(old, new)
 
-    async def play_music(self, query: str = "") -> dict:
+    async def play_music(self, query: str = "", **kwargs) -> dict:
+        if self.s.media.provider is None:
+            raise ToolError("Музыкальный сервис не выбран.")
+        if self.s.media.provider == "youtube_music" and not self.s.media.youtube_music.enabled:
+            raise ToolError("YouTube Music отключён. Другой сервис не выбираю автоматически.")
+        if requested_playback_target(user_text.get()) == "video":
+            raise ToolError(
+                "Запрошено видео в Safari. Для паузы или продолжения используй "
+                "media_control с target=video, а не запуск музыки."
+            )
+        if self.youtube:
+            result = await self.youtube.play(query, **kwargs)
+            if result.get("ok"):
+                self._last_control_target = "music"
+            return result
         query = " ".join((query or "").split())
         if not query:
-            return await self.media_control("resume")
+            return await self.media_control("resume", target="music")
         await self.spotify.launch()
-        await self.ducker.duck(even_paused=True)  # so it never starts over Jarvis's reply
+        await self.ducker.duck(even_paused=True)  # so it never starts over Чушпан's reply
         out: dict = {"ok": True}
         if self.s.media.play_volume is not None:
             out["spotify_volume"] = await self.ducker.set_level(self.s.media.play_volume)
         track = await self.spotify.search_and_play(query, self.s.media.search_wait_s)
+        self._last_control_target = "music"
         return {**out, **track.describe()}
 
-    async def media_control(self, action: str) -> dict:
+    async def media_control(self, action: str, target: str = "auto") -> dict:
+        if target not in ("auto", "music", "video"):
+            raise ToolError("Выбери target=music для музыки или target=video для YouTube в Safari.")
+        said = user_text.get()
+        target = requested_playback_target(said) or target
+        if target == "auto":
+            if action == "resume" and self._last_control_target:
+                target = self._last_control_target
+            elif said and action in ("pause", "stop", "resume"):
+                target = "video" if await self.video.has_active_video() else "music"
+            else:
+                target = "music"
+        if target == "video":
+            result = await self.video.control(action)
+        else:
+            result = await self._music_control(action)
+        if result.get("ok"):
+            self._last_control_target = target
+        return result
+
+    async def _music_control(self, action: str) -> dict:
+        if self.youtube:
+            return await self.youtube.control(action)
         lines = ACTIONS.get(action)
         if lines is None:
             raise ToolError(f"action must be one of {', '.join(ACTIONS)}")
@@ -384,6 +462,8 @@ class MediaService:
         return {"ok": True, "action": action, **(await self.spotify.now_playing()).describe()}
 
     async def now_playing(self) -> dict:
+        if self.youtube:
+            return await self.youtube.app.now_playing()
         track = await self.spotify.now_playing()
         if track.state == "closed":
             return {"state": f"{APP} is closed"}
@@ -399,6 +479,8 @@ class MediaService:
     async def media_volume(
         self, direction: str = "", level: int | None = None, change: int | None = None
     ) -> dict:
+        if self.youtube:
+            return await self.youtube.volume(direction, level, change)
         if direction not in ("", "up", "down"):
             raise ToolError("direction must be up or down")
         if not direction and level is None and change is None:
@@ -417,67 +499,105 @@ class MediaService:
         return {"ok": True, "spotify_volume": await self.ducker.set_level(level)}
 
 
-def media_tools(s: Settings, service: MediaService | None = None) -> list[Tool]:
-    media = service or MediaService(s)
+def media_tools(
+    s: Settings, service: MediaService | None = None, store: MemoryStore | None = None
+) -> list[Tool]:
+    media = service or MediaService(s, store=store)
+    if s.media.provider is None:
+        return []
+    if s.media.provider == "youtube_music" and not s.media.youtube_music.enabled:
+        return []
+    if media.youtube:
+        return _route_playback_tools(media.youtube.tools(), media)
     cap = {
+        "ru": "включать песни, исполнителей, альбомы и плейлисты в Spotify, управлять музыкой",
         "pt": "tocar músicas, artistas, álbuns e playlists no Spotify e controlar a reprodução",
         "en": "play songs, artists, albums and playlists on Spotify and control playback",
     }
-    return [
-        Tool(
-            name="play_music",
-            description=(
-                "Open Spotify and play what the user asks for: an artist, song, album or "
-                "playlist ('toque Stray Kids', 'coloca Maniac', 'play some lo-fi'). Plays "
-                "Spotify's top search result, so put the artist in the query when the user "
-                "names one ('bohemian rhapsody queen'). With no query, resumes playback."
+    return _route_playback_tools(
+        [
+            Tool(
+                name="play_music",
+                description=(
+                    "Open Spotify and play what the user asks for: an artist, song, album or "
+                    "playlist ('toque Stray Kids', 'coloca Maniac', 'play some lo-fi'). Plays "
+                    "Spotify's top search result, so put the artist in the query when the user "
+                    "names one ('bohemian rhapsody queen'). With no query, resumes playback."
+                ),
+                handler=media.play_music,
+                parameters={
+                    "query": {
+                        "type": "string",
+                        "description": "What to search for, in the user's words, without 'play'",
+                    }
+                },
+                required=["query"],
+                capability=cap,
+                slow=True,
+                quiet=True,  # the music is the answer: Чушпан sleeps and it comes back up
             ),
-            handler=media.play_music,
-            parameters={
-                "query": {
-                    "type": "string",
-                    "description": "What to search for, in the user's words, without 'play'",
-                }
-            },
-            required=["query"],
-            capability=cap,
-            slow=True,
-            quiet=True,  # the music is the answer: Jarvis sleeps and it comes back up
-        ),
-        Tool(
-            name="media_control",
-            description=(
-                "Control Spotify's playback: pause, resume, next or previous track, shuffle "
-                "and repeat on/off ('pausa a música', 'próxima', 'volta uma')."
+            Tool(
+                name="media_control",
+                description=(
+                    "Control Spotify's playback: pause, resume, next or previous track, shuffle "
+                    "and repeat on/off ('pausa a música', 'próxima', 'volta uma')."
+                ),
+                handler=media.media_control,
+                parameters={
+                    "action": {"type": "string", "enum": list(ACTIONS)},
+                },
+                required=["action"],
+                capability=cap,
             ),
-            handler=media.media_control,
-            parameters={
-                "action": {"type": "string", "enum": list(ACTIONS)},
-            },
-            required=["action"],
-            capability=cap,
-        ),
-        Tool(
-            name="now_playing",
-            description="What Spotify is playing now: song, artist, album and position.",
-            handler=media.now_playing,
-            capability=cap,
-        ),
-        # qwen3 mixes up the Mac's volume and the music's: each description names the other.
-        Tool(
-            name="media_volume",
-            description=(
-                "Spotify's own volume, for 'abaixa a música' or 'aumenta a música'. Not the "
-                "Mac's volume: for that, or for 'abaixa o volume' with no music mentioned, use "
-                "set_volume. For 'aumenta' or 'abaixa', give direction up or down; give level "
-                "only when the person says a number, such as 'música em 60'."
+            Tool(
+                name="now_playing",
+                description="What Spotify is playing now: song, artist, album and position.",
+                handler=media.now_playing,
+                capability=cap,
             ),
-            handler=media.media_volume,
-            parameters={
-                "direction": {"type": "string", "enum": ["up", "down"]},
-                "level": {"type": "integer", "description": "Volume from 0 to 100, if said"},
-                "change": {"type": "integer", "description": "Relative change, if said"},
-            },
-            capability=cap,
-        ),
-    ]
+            # qwen3 mixes up the Mac's volume and the music's: each description names the other.
+            Tool(
+                name="media_volume",
+                description=(
+                    "Spotify's own volume, for 'abaixa a música' or 'aumenta a música'. Not the "
+                    "Mac's volume: for that, or for 'abaixa o volume' with no music mentioned, use "
+                    "set_volume. For 'aumenta' or 'abaixa', give direction up or down; give level "
+                    "only when the person says a number, such as 'música em 60'."
+                ),
+                handler=media.media_volume,
+                parameters={
+                    "direction": {"type": "string", "enum": ["up", "down"]},
+                    "level": {"type": "integer", "description": "Volume from 0 to 100, if said"},
+                    "change": {"type": "integer", "description": "Relative change, if said"},
+                },
+                capability=cap,
+            ),
+        ],
+        media,
+    )
+
+
+def _route_playback_tools(tools: list[Tool], media: MediaService) -> list[Tool]:
+    for tool in tools:
+        if tool.name == "play_music":
+            tool.handler = media.play_music
+        elif tool.name == "media_control":
+            tool.handler = media.media_control
+            tool.parameters["target"] = {
+                "type": "string",
+                "enum": ["auto", "music", "video"],
+                "description": "video — YouTube в Safari; music — музыка; auto — по контексту",
+            }
+            tool.description = (
+                "Пауза/продолжение ролика YouTube в Safari: action=pause/resume, target=video. "
+                "Это обычный YouTube, отдельно от YouTube Music. Для музыки target=music; "
+                "для коротких «пауза»/«продолжи» без уточнения — auto. "
+                "Не используй глобальные медиаклавиши. " + tool.description
+            )
+            tool.capability = {
+                "ru": "ставить видео YouTube в Safari на паузу и продолжать его воспроизведение, "
+                "отдельно управлять музыкой",
+                "en": "pause and resume YouTube videos in Safari, separately control music",
+                "pt": "pausar e retomar vídeos do YouTube no Safari, controlar música à parte",
+            }
+    return tools

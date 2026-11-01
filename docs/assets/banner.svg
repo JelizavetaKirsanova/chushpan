@@ -65,17 +65,17 @@
     <circle cx="515" cy="176" r="3" fill="#00e5ff"/>
 
     <!-- text -->
-    <text x="540" y="116" fill="#7af4ff" fill-opacity=".75" font-size="15" letter-spacing="5">// LOCAL AI ASSISTANT · v0.1</text>
-    <text x="534" y="206" fill="#eafcff" font-size="96" font-weight="700" letter-spacing="24" filter="url(#glow)">JARVIS</text>
-    <text x="540" y="250" fill="#9db7c8" font-size="18" letter-spacing="1">Voice-first · 100% local · No cloud · No tokens</text>
+    <text x="540" y="116" fill="#7af4ff" fill-opacity=".75" font-size="15" letter-spacing="3">// ЛОКАЛЬНЫЙ ПОМОЩНИК · v0.1</text>
+    <text x="534" y="206" fill="#eafcff" font-size="96" font-weight="700" letter-spacing="24" filter="url(#glow)">ЧУШПАН</text>
+    <text x="540" y="250" fill="#9db7c8" font-size="18" letter-spacing="1">Голос · локальная обработка · без облака</text>
     <rect x="540" y="272" width="560" height="1" fill="#00e5ff" fill-opacity=".25"/>
     <circle class="blink" cx="548" cy="303" r="5" fill="#3dffb0" filter="url(#glow)"/>
-    <text x="564" y="308" fill="#3dffb0" font-size="14" letter-spacing="4">SYSTEMS ONLINE</text>
+    <text x="564" y="308" fill="#3dffb0" font-size="14" letter-spacing="3">СИСТЕМЫ ГОТОВЫ</text>
     <text x="772" y="308" fill="#5d7a8e" font-size="14" letter-spacing="2">▸ LLM  ▸ STT  ▸ TTS  ▸ HUD</text>
 
     <!-- frame corners -->
     <path d="M20 54V20h34M1146 20h34v34M1180 326v34h-34M54 360H20v-34" fill="none" stroke="#00e5ff" stroke-opacity=".55" stroke-width="2"/>
-    <text x="1162" y="350" fill="#5d7a8e" font-size="11" letter-spacing="3" text-anchor="end">APPLE SILICON · OFFLINE CORE</text>
+    <text x="1162" y="350" fill="#5d7a8e" font-size="11" letter-spacing="3" text-anchor="end">APPLE SILICON · ЛОКАЛЬНАЯ ОБРАБОТКА</text>
 
     <rect class="scan" width="1200" height="140" fill="url(#scan)"/>
   </g>

@@ -179,6 +179,7 @@ class TimerManager:
 
 def timer_tools(manager: TimerManager) -> list[Tool]:
     cap = {
+        "ru": "ставить, изменять, перечислять и отменять таймеры и короткие напоминания",
         "pt": "criar, mudar, listar e cancelar timers e lembretes curtos (avisos falados)",
         "en": "set, change, list and cancel timers and short reminders (spoken alerts)",
     }

@@ -85,6 +85,16 @@ def test_remember_needs_a_request_from_the_user(tmp_path):
 
 def test_remember_replaces_and_forget(tmp_path):
     memory = LongTermMemory(MemoryStore(tmp_path / "t.db"))
+
+    async def forget(**arguments):
+        # Supply explicit intent; registry confirmations have separate integration tests.
+        target = arguments.get("id", arguments.get("text", ""))
+        token = user_text.set(f"Forget memory {target}")
+        try:
+            return await memory.forget(**arguments)
+        finally:
+            user_text.reset(token)
+
     run(memory.remember("A filha se chama Ana."))
     run(memory.remember("Prefere café sem açúcar."))
     out = run(memory.remember("A filha se chama Ana Luísa.", replaces="[1]"))  # id as text
@@ -96,13 +106,13 @@ def test_remember_replaces_and_forget(tmp_path):
     with pytest.raises(ToolError, match="no memory with id"):
         run(memory.remember("x", replaces=99))
     with pytest.raises(ToolError, match="several"):
-        run(memory.forget(text="a"))
-    assert run(memory.forget(text="CAFÉ"))["forgotten"] == "Prefere café sem açúcar."
-    assert run(memory.forget(id=3))["ok"]
+        run(forget(text="a"))
+    assert run(forget(text="CAFÉ"))["forgotten"] == "Prefere café sem açúcar."
+    assert run(forget(id=3))["ok"]
     with pytest.raises(ToolError, match="no memory matches"):
-        run(memory.forget(id=3))
+        run(forget(id=3))
     with pytest.raises(ToolError, match="which memory"):
-        run(memory.forget())
+        run(forget())
 
 
 def test_remember_limits(tmp_path):
@@ -179,7 +189,7 @@ def test_tool_sees_what_the_user_said(tmp_path):
     run(go())
     assert store.facts() == []  # a question: the model's remember was refused
     tool_msg = store.recent(conv.id, 10)[2]
-    assert "did not ask" in tool_msg["content"]
+    assert "нужна явная просьба" in tool_msg["content"]
 
 
 def test_memory_cli(tmp_path, capsys):

@@ -6,6 +6,21 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 
+def noun_form(value: float, forms: tuple[str, ...]) -> str:
+    """Choose a singular/plural form, including Russian one/few/many agreement."""
+    n = abs(value)
+    if len(forms) == 2:
+        return forms[0] if n == 1 else forms[1]
+    if n != int(n):
+        return forms[1]
+    n = int(n)
+    if 11 <= n % 100 <= 14:
+        return forms[2]
+    if n % 10 == 1:
+        return forms[0]
+    return forms[1] if 2 <= n % 10 <= 4 else forms[2]
+
+
 @dataclass(frozen=True)
 class Locale:
     code: str  # e.g. pt-BR
@@ -24,7 +39,7 @@ class Locale:
     stt_hint: str  # primes Whisper with the assistant's name and conversational style
     native_prompt: bool = True  # False: English prompt + reply-in-language rule
     # Spoken durations and timer announcements
-    units: dict[str, tuple[str, str]] = field(
+    units: dict[str, tuple[str, ...]] = field(
         default_factory=lambda: {
             "h": ("hour", "hours"),
             "m": ("minute", "minutes"),
@@ -35,6 +50,7 @@ class Locale:
     timer_done: str = "Excuse me{addr}, your {duration} timer is up."
     timer_done_label: str = "Excuse me{addr}, your {duration} timer is up: {label}."
     one_moment: str = "One moment."  # while a slow tool runs
+    no_reply: str = "I couldn't produce a reply. Please ask again."
     # Said by code when the person ends the conversation ("that's all, you can rest"):
     # the model echoed it ("Pode descansar, senhora... Disponha") (D-43).
     sign_off: str = "Very good{addr}. I shall be here."
@@ -45,6 +61,8 @@ class Locale:
         wd, month = self.weekdays[now.weekday()], self.months[now.month - 1]
         if self.lang == "pt":
             return f"{wd}, {now.day} de {month} de {now.year}, {now:%H:%M}"
+        if self.lang == "ru":
+            return f"{wd}, {now.day} {month} {now.year} года, {now:%H:%M}"
         return f"{wd}, {now.day} {month} {now.year}, {now:%H:%M}"
 
     def full_address(self, title: str | None, name: str | None) -> str | None:
@@ -52,7 +70,7 @@ class Locale:
             return name
         if not name or title == name:
             return title
-        return f"{title} {name}" if self.lang == "pt" else title
+        return f"{title} {name}" if self.lang in ("pt", "ru") else title
 
     def format_duration(self, seconds: float) -> str:
         """3725 → "1 hour, 2 minutes and 5 seconds", in words a voice can read."""
@@ -60,10 +78,8 @@ class Locale:
         h, rest = divmod(total, 3600)
         m, s = divmod(rest, 60)
         parts = [
-            f"{n} {self.units[k][0] if n == 1 else self.units[k][1]}"
-            for n, k in ((h, "h"), (m, "m"), (s, "s"))
-            if n
-        ] or [f"0 {self.units['s'][1]}"]
+            f"{n} {noun_form(n, self.units[k])}" for n, k in ((h, "h"), (m, "m"), (s, "s")) if n
+        ] or [f"0 {noun_form(0, self.units['s'])}"]
         if len(parts) == 1:
             return parts[0]
         return f"{', '.join(parts[:-1])} {self.and_word} {parts[-1]}"
@@ -118,6 +134,7 @@ PT_BR = Locale(
     timer_done="Com licença{addr}, o timer de {duration} terminou.",
     timer_done_label="Com licença{addr}, o timer de {duration} terminou: {label}.",
     one_moment="Um momento.",
+    no_reply="Não consegui formular uma resposta. Pode repetir?",
     sign_off="Pois não{addr}. Estarei por aqui.",
     sign_off_thanked="Por nada{addr}. Estarei por aqui.",
     welcome="Por nada{addr}.",
@@ -166,6 +183,59 @@ EN = Locale(
     stt_hint="Hello, {name}. What's the weather like today? Any news?",
 )
 
+RU = Locale(
+    code="ru-RU",
+    lang="ru",
+    language_name="русский",
+    weekdays=("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"),
+    months=(
+        "января",
+        "февраля",
+        "марта",
+        "апреля",
+        "мая",
+        "июня",
+        "июля",
+        "августа",
+        "сентября",
+        "октября",
+        "ноября",
+        "декабря",
+    ),
+    seasons={"spring": "весна", "summer": "лето", "autumn": "осень", "winter": "зима"},
+    periods={"dawn": "ночь", "morning": "утро", "afternoon": "день", "night": "вечер"},
+    greetings={
+        "dawn": "доброй ночи",
+        "morning": "доброе утро",
+        "afternoon": "добрый день",
+        "night": "добрый вечер",
+    },
+    titles={},
+    persona=(
+        "дерзкий саркастичный знакомый мужик лет тридцати, немного задолбавшийся; "
+        "живой разговорный русский, сухие подколы, уместный редкий мат; "
+        "обращается к пользовательнице на «ты», в женском роде, о себе в мужском; "
+        "без лести и унижения; в тяжёлых и опасных ситуациях серьёзен"
+    ),
+    voice="ru_RU-dmitri-medium",
+    you_label="Ты",
+    farewell="До связи{addr}.",
+    stt_hint="Эй, {name}. Какая сегодня погода? Какие новости? Поставь таймер.",
+    units={
+        "h": ("час", "часа", "часов"),
+        "m": ("минута", "минуты", "минут"),
+        "s": ("секунда", "секунды", "секунд"),
+    },
+    and_word="и",
+    timer_done="Таймер сработал{addr}: {duration}.",
+    timer_done_label="Таймер «{label}» сработал{addr}: {duration}.",
+    one_moment="Момент.",
+    no_reply="Не получилось сформулировать ответ. Спроси ещё раз.",
+    sign_off="Ладно{addr}. Отдыхаю.",
+    sign_off_thanked="Не за что{addr}. Отдыхаю.",
+    welcome="Не за что{addr}.",
+)
+
 OTHER_NAMES = {
     "es": "español",
     "fr": "français",
@@ -184,9 +254,11 @@ def normalize_code(code: str) -> str:
 
 
 def get_locale(code: str | None) -> Locale:
-    """pt-* and en-* are fully supported; other languages get the English prompt."""
-    code = normalize_code(code or "pt-BR")
+    """ru-*, pt-* and en-* are fully supported; others get the English prompt."""
+    code = normalize_code(code or "ru-RU")
     lang = code.split("-")[0]
+    if lang == "ru":
+        return replace(RU, code=code)
     if lang == "pt":
         return replace(PT_BR, code=code)
     if lang == "en":

@@ -15,21 +15,28 @@ def to_markdown(s: Settings, lines: list[dict[str, str]], now: datetime | None =
     tz = s.location.tz
     now = now or datetime.now(tz)
     pt = s.locale.lang == "pt"
+    ru = s.locale.lang == "ru"
     title = f"Conversa com {s.assistant_name}" if pt else f"Conversation with {s.assistant_name}"
-    stamp = now.strftime("%d/%m/%Y %H:%M" if pt else "%Y-%m-%d %H:%M")
+    if ru:
+        title = f"Разговор с {s.assistant_name}"
+    date_format = "%d.%m.%Y" if ru else ("%d/%m/%Y" if pt else "%Y-%m-%d")
+    stamp = now.strftime(f"{date_format} %H:%M")
     exported = "Exportada em" if pt else "Exported on"
+    if ru:
+        exported = "Сохранено"
     out = [f"# {title}", "", f"_{exported} {stamp}_", ""]
     day = None
     for line in lines:
         at = datetime.fromisoformat(line["created_at"]).astimezone(tz)
         if at.date() != day:
             day = at.date()
-            out += [f"## {at.strftime('%d/%m/%Y' if pt else '%Y-%m-%d')}", ""]
+            out += [f"## {at.strftime(date_format)}", ""]
         who = s.locale.you_label if line["role"] == "user" else s.assistant_name
         text = line["content"].strip().replace("\n", "  \n")
         out += [f"**{who}** · {at:%H:%M}  ", text, ""]
     if not lines:
-        out.append("_Nada foi dito ainda._" if pt else "_Nothing has been said yet._")
+        empty = "_Nada foi dito ainda._" if pt else "_Nothing has been said yet._"
+        out.append("_Разговор пока пуст._" if ru else empty)
     return "\n".join(out).rstrip() + "\n"
 
 
@@ -42,6 +49,8 @@ def export_conversation(
         folder = s.data_path / "exports"
         folder.mkdir(parents=True, exist_ok=True)
     name = "conversa" if s.locale.lang == "pt" else "conversation"
+    if s.locale.lang == "ru":
+        name = "разговор"
     path = folder / f"{s.assistant_name} - {name} {now:%Y-%m-%d %H-%M-%S}.md"
     path.write_text(to_markdown(s, store.transcript(conversation_id), now), encoding="utf-8")
     return path
