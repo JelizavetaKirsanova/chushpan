@@ -1,0 +1,99 @@
+{
+  "label": "before",
+  "microphone": false,
+  "audio_played": false,
+  "runs": [
+    {
+      "local_time_s": 0.001563624944537878,
+      "model_first_text_s": 20.85684333392419,
+      "transport": "buffered",
+      "model_total_s": 22.13359587499872,
+      "provider": "ollama",
+      "model": "qwen3:8b",
+      "stages": [
+        {
+          "stage": "local_routing",
+          "seconds": 0.00019429088570177555,
+          "outcome": "ok"
+        },
+        {
+          "stage": "tool_execution",
+          "seconds": 0.0001307909842580557,
+          "outcome": "ok"
+        },
+        {
+          "stage": "local_execution",
+          "seconds": 0.0001447082031518221,
+          "outcome": "ok"
+        },
+        {
+          "stage": "gemini_attempt_1",
+          "seconds": 14.210235540987924,
+          "outcome": "error"
+        },
+        {
+          "stage": "gemini_attempt_2",
+          "seconds": 0.7927778330631554,
+          "outcome": "error"
+        },
+        {
+          "stage": "provider_first_chunk",
+          "seconds": 5.849455290939659,
+          "outcome": "ok"
+        },
+        {
+          "stage": "ollama_attempt_3",
+          "seconds": 7.126374416053295,
+          "outcome": "ok"
+        }
+      ]
+    },
+    {
+      "local_time_s": 0.0014602921437472105,
+      "model_first_text_s": 19.604297458892688,
+      "transport": "buffered",
+      "model_total_s": 20.903884874889627,
+      "provider": "ollama",
+      "model": "qwen3:8b",
+      "stages": [
+        {
+          "stage": "local_routing",
+          "seconds": 5.641719326376915e-05,
+          "outcome": "ok"
+        },
+        {
+          "stage": "tool_execution",
+          "seconds": 0.00010574981570243835,
+          "outcome": "ok"
+        },
+        {
+          "stage": "local_execution",
+          "seconds": 0.00012666708789765835,
+          "outcome": "ok"
+        },
+        {
+          "stage": "gemini_attempt_1",
+          "seconds": 15.010017166147009,
+          "outcome": "error"
+        },
+        {
+          "stage": "gemini_budget_skipped",
+          "seconds": 0,
+          "outcome": "ok"
+        },
+        {
+          "stage": "provider_first_chunk",
+          "seconds": 4.588004999794066,
+          "outcome": "ok"
+        },
+        {
+          "stage": "ollama_attempt_3",
+          "seconds": 5.890264082932845,
+          "outcome": "ok"
+        }
+      ]
+    }
+  ],
+  "tts_load_and_warmup_s": 2.54635512502864,
+  "tts_generation_s": 0.02104516699910164
+}

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>local.chushpan.music-safari</string>
+<key>CFBundleName</key><string>Чушпан — Safari Music</string>
+<key>NSAppleEventsUsageDescription</key><string>Управление вкладкой YouTube Music в Safari по вашей музыкальной команде.</string>
+</dict></plist>

@@ -1,0 +1,26 @@
+[
+  {
+    "requested": "gemini-3.8-flash",
+    "name": "models/gemini-3.8-flash",
+    "supported_actions": [
+      "generateContent",
+      "countTokens",
+      "createCachedContent",
+      "batchGenerateContent"
+    ],
+    "input_token_limit": 1048576,
+    "output_token_limit": 65536
+  },
+  {
+    "requested": "gemini-3.5-flash",
+    "name": "models/gemini-3.5-flash",
+    "supported_actions": [
+      "generateContent",
+      "countTokens",
+      "createCachedContent",
+      "batchGenerateContent"
+    ],
+    "input_token_limit": 1048576,
+    "output_token_limit": 65536
+  }
+]

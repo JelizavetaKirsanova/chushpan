@@ -1,0 +1,18 @@
+[
+  {
+    "file": "docs/audio/foreign_estonian.wav",
+    "source": "Я учусь в TalTech. Tallinn, Tartu, Jõhvi, Kohtla-Järve.",
+    "spoken": "Я учусь в Талтэк. Таллин, Тарту, Йы́хви, Ко́хтла-Я́рве.",
+    "duration_s": 3.46,
+    "generation_s": 1.901,
+    "peak": 18253
+  },
+  {
+    "file": "docs/audio/foreign_english.wav",
+    "source": "Открой Spotify и Apple Music. Играет The Weeknd, Blinding Lights. Python, JavaScript, Next.js.",
+    "spoken": "Открой Спотифай и Эпл Мьюзик. Играет Зэ Уикэнд, Блайндинг Лайтс. Пайтон, Джаваскрипт, Некст джей эс.",
+    "duration_s": 6.04,
+    "generation_s": 0.05,
+    "peak": 19771
+  }
+]

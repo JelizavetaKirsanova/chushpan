@@ -1,0 +1,47 @@
+[
+  {
+    "sample": "calendar",
+    "engine": "silero",
+    "voice": "eugene",
+    "model": "silero_v5_6_ru.pt",
+    "source": "Сегодня в календаре: Diskreetne matemaatika. Programmeerimise algkursus. Andmebaasid. Tarkvaratehnika. Sissejuhatus infotehnoloogiasse. IT süsteemide arendus. Tallinna Tehnikaülikool.",
+    "normalized": "Сегодня в календаре: Дискре́этнэ матэма́атика. Программе́эримизэ а́лгкурсус. А́ндмэбаасид. Та́ркваратэхника. Си́ссеюхатус и́нфотэхнолоогиассе. ай ти сю́стээмидэ а́рэндус. Та́ллинна тэ́хникаюликоол.",
+    "wav": "calendar.wav",
+    "duration_s": 11.537,
+    "rate": 24000,
+    "nonzero_samples": 250605,
+    "peak": 22074,
+    "playback": false,
+    "human_pronunciation_verified": false
+  },
+  {
+    "sample": "abbreviations",
+    "engine": "silero",
+    "voice": "eugene",
+    "model": "silero_v5_6_ru.pt",
+    "source": "ДТП. ГИБДД. МЧС. МВД. API. HTML. CSS. SQL. USB. CPU.",
+    "normalized": "дэ тэ пэ. ги бэ дэ дэ. эм че эс. эм вэ дэ. эй пи ай. эйч ти эм эл. си эс эс. эс кью эл. ю эс би. си пи ю.",
+    "wav": "abbreviations.wav",
+    "duration_s": 7.875,
+    "rate": 24000,
+    "nonzero_samples": 170323,
+    "peak": 18214,
+    "playback": false,
+    "human_pronunciation_verified": false
+  },
+  {
+    "sample": "mixed",
+    "engine": "silero",
+    "voice": "eugene",
+    "model": "silero_v5_6_ru.pt",
+    "source": "Сегодня Diskreetne matemaatika в Jõhvi, завтра Kohtla-Järve. ДТП рядом с TalTech. API и IT süsteemide arendus.",
+    "normalized": "Сегодня Дискре́этнэ матэма́атика в Йы́хви, завтра Ко́хтла-Я́рве. дэ тэ пэ рядом с Талтэк. эй пи ай и ай ти сю́стээмидэ а́рэндус.",
+    "wav": "mixed.wav",
+    "duration_s": 6.95,
+    "rate": 24000,
+    "nonzero_samples": 158330,
+    "peak": 17521,
+    "playback": false,
+    "human_pronunciation_verified": false
+  }
+]

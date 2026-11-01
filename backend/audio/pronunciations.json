@@ -1,0 +1,125 @@
+{
+  "names": {
+    "TalTech": "Талтэк",
+    "Tallinn": "Таллин",
+    "Tartu": "Тарту",
+    "Jõhvi": "Йы́хви",
+    "Kohtla-Järve": "Ко́хтла-Я́рве",
+    "Pärnu": "Пярну",
+    "Põhja-Tallinn": "Пыхья-Таллин",
+    "Tõnis Mägi": "Тынис Мяги",
+    "Ülemiste": "Юлемисте",
+    "Öö": "Ёё",
+    "Spotify": "Спотифай",
+    "Apple Music": "Эпл Мьюзик",
+    "Next.js": "Некст джей эс",
+    "Node.js": "Ноуд джей эс",
+    "Adele": "Адель",
+    "The Weeknd": "Зэ Уикэнд",
+    "Taylor Swift": "Тейлор Свифт",
+    "Billie Eilish": "Билли Айлиш",
+    "Imagine Dragons": "Имэджин Дрэгонс",
+    "Linkin Park": "Линкин Парк",
+    "Stray Kids": "Стрэй Кидз",
+    "Queen": "Куин",
+    "Rammstein": "Раммштайн",
+    "Depeche Mode": "Депеш Мод",
+    "Blinding Lights": "Блайндинг Лайтс",
+    "Bohemian Rhapsody": "Боугимиэн Рэпсоди",
+    "Someone Like You": "Самуан Лайк Ю",
+    "AC/DC": "Эй си ди си",
+    "Diskreetne matemaatika": "Дискре́этнэ матэма́атика",
+    "Programmeerimise algkursus": "Программе́эримизэ а́лгкурсус",
+    "Andmebaasid": "А́ндмэбаасид",
+    "Tarkvaratehnika": "Та́ркваратэхника",
+    "Sissejuhatus infotehnoloogiasse": "Си́ссеюхатус и́нфотэхнолоогиассе",
+    "IT süsteemide arendus": "ай ти сю́стээмидэ а́рэндус",
+    "Tallinna Tehnikaülikool": "Та́ллинна тэ́хникаюликоол"
+  },
+  "abbreviations": {
+    "ДТП": {
+      "spoken": "дэ тэ пэ",
+      "kind": "letters"
+    },
+    "ГИБДД": {
+      "spoken": "ги бэ дэ дэ",
+      "kind": "letters"
+    },
+    "МЧС": {
+      "spoken": "эм че эс",
+      "kind": "letters"
+    },
+    "МВД": {
+      "spoken": "эм вэ дэ",
+      "kind": "letters"
+    },
+    "API": {
+      "spoken": "эй пи ай",
+      "kind": "letters"
+    },
+    "HTML": {
+      "spoken": "эйч ти эм эл",
+      "kind": "letters"
+    },
+    "CSS": {
+      "spoken": "си эс эс",
+      "kind": "letters"
+    },
+    "SQL": {
+      "spoken": "эс кью эл",
+      "kind": "letters"
+    },
+    "USB": {
+      "spoken": "ю эс би",
+      "kind": "letters"
+    },
+    "CPU": {
+      "spoken": "си пи ю",
+      "kind": "letters"
+    },
+    "GPU": {
+      "spoken": "джи пи ю",
+      "kind": "letters"
+    },
+    "IT": {
+      "spoken": "ай ти",
+      "kind": "letters"
+    },
+    "ООН": {
+      "spoken": "о о эн",
+      "kind": "letters"
+    },
+    "РЖД": {
+      "spoken": "эр жэ дэ",
+      "kind": "letters"
+    },
+    "США": {
+      "spoken": "эс ша а",
+      "kind": "letters"
+    },
+    "USB-C": {
+      "spoken": "ю эс би си",
+      "kind": "letters"
+    },
+    "3D": {
+      "spoken": "три ди",
+      "kind": "letters"
+    },
+    "НАТО": {
+      "spoken": "на́то",
+      "kind": "word"
+    },
+    "МИД": {
+      "spoken": "мид",
+      "kind": "word"
+    },
+    "вуз": {
+      "spoken": "вуз",
+      "kind": "word"
+    },
+    "NASA": {
+      "spoken": "на́са",
+      "kind": "word"
+    }
+  }
+}

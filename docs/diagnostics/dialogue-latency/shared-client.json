@@ -1,0 +1,60 @@
+{
+  "microphone": false,
+  "audio_played": false,
+  "same_client": true,
+  "runs": [
+    {
+      "run": 1,
+      "first_text_s": 8.628208999987692,
+      "total_s": 8.629319458035752,
+      "provider": "gemini",
+      "model": "gemini-3.6-flash",
+      "stages": [
+        {
+          "stage": "gemini_attempt_1",
+          "seconds": 6.000932791037485,
+          "outcome": "error"
+        },
+        {
+          "stage": "provider_first_chunk",
+          "seconds": 2.6272255829535425,
+          "outcome": "ok"
+        },
+        {
+          "stage": "gemini_attempt_2",
+          "seconds": 2.62834766600281,
+          "outcome": "ok"
+        }
+      ]
+    },
+    {
+      "run": 2,
+      "first_text_s": 9.213542083045468,
+      "total_s": 10.50628299987875,
+      "provider": "ollama",
+      "model": "qwen3:8b",
+      "stages": [
+        {
+          "stage": "gemini_cooldown_skipped_1",
+          "seconds": 0,
+          "outcome": "ok"
+        },
+        {
+          "stage": "gemini_attempt_2",
+          "seconds": 0.19812824996188283,
+          "outcome": "error"
+        },
+        {
+          "stage": "provider_first_chunk",
+          "seconds": 9.015275083016604,
+          "outcome": "ok"
+        },
+        {
+          "stage": "ollama_attempt_3",
+          "seconds": 10.308087582932785,
+          "outcome": "ok"
+        }
+      ]
+    }
+  ]
+}
