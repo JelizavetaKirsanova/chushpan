@@ -8,6 +8,7 @@ import functools
 import itertools
 import logging
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextvars import ContextVar
 
@@ -16,10 +17,18 @@ from rich.console import Console
 
 from backend.addressee import SpeechSignals, TaskSnapshot, choose_task, decide, discussing
 from backend.audio import earcon
+from backend.audio.activity import (
+    apply_controls,
+    controls,
+    decoder_confident,
+    echoes_output,
+    stop_requested,
+)
 from backend.audio.evidence import evidence
 from backend.audio.level import level
 from backend.audio.sentences import SentenceSplitter, clean_for_speech
 from backend.audio.stt import (
+    is_hallucination,
     is_morning_greeting,
     is_sign_off,
     is_wake_phrase,
@@ -33,13 +42,20 @@ from backend.brain.conversation import Conversation
 from backend.brain.llm import LLMError
 from backend.brain.providers import configured_label, create_llm
 from backend.config import Settings
-from backend.context import DeviceContext, voice_addressed, voice_music_command
+from backend.context import (
+    DeviceContext,
+    voice_addressed,
+    voice_control_command,
+    voice_led_command,
+    voice_music_command,
+)
 from backend.dialogue import CLOSE, CONTROLS, follow_up, normalize, private_headset
 from backend.hud import HudBus
-from backend.latency import Profile, current
+from backend.latency import Profile, current, measure
 from backend.memory.store import MemoryStore
 from backend.night import night_addressed, night_requested
 from backend.resources import Resources
+from backend.security import command_text
 from backend.state import State, StateMachine, request_context
 from backend.tools import Tool, build_registry
 from backend.tools.geocode import resolve_location
@@ -125,16 +141,30 @@ async def speak_tokens(
     splitter = SentenceSplitter(min_chars, protect_literals=lang == "ru")
 
     async def sentences() -> AsyncIterator[str]:
+        intro = ""
         async for token in tokens:
             if on_token:
                 on_token(token)
             for sentence in splitter.feed(token):
                 if spoken := (sentence if lang == "ru" else clean_for_speech(sentence, lang)):
+                    if (
+                        lang == "ru"
+                        and not intro
+                        and spoken.casefold().strip(".!? ")
+                        in {"конечно", "с удовольствием", "давай разберёмся", "сейчас расскажу"}
+                    ):
+                        intro = spoken
+                        continue
+                    if intro:
+                        spoken, intro = intro + " " + spoken, ""
                     yield spoken
         if (rest := splitter.flush()) and (
             spoken := (rest if lang == "ru" else clean_for_speech(rest, lang))
         ):
-            yield spoken
+            yield (intro + " " + spoken).strip()
+            intro = ""
+        if intro:
+            yield intro
 
     return await speaker.speak(sentences(), on_start=on_start)
 
@@ -151,22 +181,49 @@ async def reply_aloud(
     lock = getattr(speaker, "_reply_lock", None)
     if lock is None:
         lock = speaker._reply_lock = asyncio.Lock()
-    async with lock:
-        from backend.audio.waiting import trace
-
-        token = None
-        if request_context.get() is None:
-            token = request_context.set(next(_standalone_requests))
-            trace("REQUEST_RECEIVED", source="reply")
+    owned = current.get() is None
+    profile = current.get() or Profile()
+    timing_token = current.set(profile)
+    if store := getattr(conv, "store", None):
+        store.performance.attach(profile, conv.id)
+    status = "completed"
+    try:
+        with measure("reply_queue"):
+            await lock.acquire()
         try:
-            if not user_text.strip():
-                trace("REQUEST_REJECTED", reason="empty_text")
-                return False
-            return await _reply_aloud(conv, speaker, user_text, min_chars, on_token, on_start)
+            from backend.audio.waiting import trace
+
+            token = None
+            if request_context.get() is None:
+                token = request_context.set(next(_standalone_requests))
+                trace("REQUEST_RECEIVED", source="reply")
+            try:
+                if not user_text.strip():
+                    profile.result_status = "rejected"
+                    trace("REQUEST_REJECTED", reason="empty_text")
+                    return False
+                completed = await _reply_aloud(
+                    conv, speaker, user_text, min_chars, on_token, on_start
+                )
+                if not completed:
+                    status = "cancelled"
+                return completed
+            finally:
+                if token is not None:
+                    trace("REQUEST_COMPLETED")
+                    request_context.reset(token)
         finally:
-            if token is not None:
-                trace("REQUEST_COMPLETED")
-                request_context.reset(token)
+            lock.release()
+    except BaseException as exc:
+        status = (
+            "cancelled" if isinstance(exc, (asyncio.CancelledError, GeneratorExit)) else "failed"
+        )
+        profile.fail(type(exc).__name__)
+        raise
+    finally:
+        if owned:
+            profile.finish(status)
+        current.reset(timing_token)
 
 
 async def _reply_aloud(conv, speaker, user_text, min_chars, on_token, on_start) -> bool:
@@ -319,7 +376,9 @@ async def speak_briefing(
     def on_start() -> None:
         nonlocal first_audio
         if first_audio is None:
-            first_audio = time.perf_counter()
+            first_audio = getattr(speaker, "playback_started_at", None)
+            if first_audio is None and not isinstance(speaker, SaySpeaker):
+                first_audio = time.perf_counter()
             bus.publish({"type": "state", "state": State.SPEAKING.value})
 
     console.print(f"\n[bold cyan]{s.assistant_name} ›[/] ", end="")
@@ -456,6 +515,7 @@ class VoiceLoop:
         self.wake_task: asyncio.Task | None = None
         self.mute_until = 0.0
         self.vad_wait_s = 0.0
+        self.vad_started_at: float | None = None
         self.wake_detection_s = 0.0
         self.listen_deadline: float | None = None  # None = listen forever
         self._barged_in = False
@@ -472,6 +532,12 @@ class VoiceLoop:
         self.last_interrupted = False
         self.last_accepted_topic = ""
         self._prompted_until = 0.0
+        self._session_started_at: float | None = None
+        self._last_activation = float("-inf")
+        self._next_wake_check = 0.0
+        self.input_processor = None
+        self.microphone_running = False
+        self._accepted_audio_events = deque(maxlen=64)
         self.task_snapshots: dict[int, TaskSnapshot] = {}
         registry = getattr(conv, "tools", None)
         if registry is not None:
@@ -481,6 +547,8 @@ class VoiceLoop:
         self.state.add_listener(self._publish_state)
         self._publish_state(None, self.state.state)
         self.bus.handle("dialogue_settings", self.configure_dialogue)
+        self.bus.handle("voice_settings", self.configure_voice)
+        self.bus.handle("voice_status", lambda _: self._publish_voice())
         self._publish_session()
 
     def _observe_task(self, execution_id, name, status, result) -> None:
@@ -494,6 +562,8 @@ class VoiceLoop:
                     status = "confirmation_required"
                 elif result.get("error") or result.get("ok") is False:
                     status = "failed"
+                elif name == "led_control" and result.get("written") is True:
+                    status = "submitted"
                 elif result.get("ok") is True:
                     status = "completed"
         self.task_snapshots[execution_id] = TaskSnapshot(owner, name, status, self.clock())
@@ -519,6 +589,16 @@ class VoiceLoop:
         )
         pending = bool(action and action.expires > registry.confirmations.clock())
         topic = self.last_accepted_topic
+        controls = getattr(self.conv, "controls", None)
+        control_context = bool(
+            controls
+            and controls.plan(
+                text,
+                ((self.conv.device.device_id, self.conv.device.session_id), self.conv.id),
+                self.s.led.comfortable_brightness,
+            )
+            is not None
+        )
         # A separately spoken wake word grants just the first request in its short window.
         prompted = not topic and self.clock() < self._prompted_until
         decision = decide(
@@ -526,9 +606,7 @@ class VoiceLoop:
             addressed=addressed,
             active=self.session_active if active is None else active,
             topic=topic,
-            signals=SpeechSignals(
-                evidence(audio).usable, getattr(self.stt, "last_speech_confident", False), echo
-            ),
+            signals=SpeechSignals(evidence(audio).usable, decoder_confident(self.stt), echo),
             task=choose_task(text, self._recent_tasks()),
             strictness=self.s.dialogue.addressee_strictness,
             confirmation_pending=pending,
@@ -537,13 +615,14 @@ class VoiceLoop:
                 and hasattr(self.conv, "pending_followup")
                 and self.conv.pending_followup()
             ),
+            control_context=control_context,
         )
         if (
             prompted
             and not decision.accepted
             and decision.reason in {"recipient_unclear", "strict_wake_required"}
             and follow_up(text)
-            and getattr(self.stt, "last_speech_confident", False)
+            and decoder_confident(self.stt)
         ):
             decision = decide(
                 text,
@@ -621,12 +700,17 @@ class VoiceLoop:
     def _open_session(self) -> None:
         if not self.s.dialogue.enabled or not self.use_wake:
             return
-        self.session_deadline = self.clock() + self.s.dialogue.duration_s
+        if self._session_started_at is None:
+            self._session_started_at = self.clock()
+        self.session_deadline = min(
+            self.clock() + self.s.dialogue.duration_s,
+            self._session_started_at + self.s.dialogue.max_session_s,
+        )
         self.listen_deadline = self.session_deadline
         if self._session_timer:
             self._session_timer.cancel()
         self._session_timer = asyncio.get_running_loop().call_later(
-            self.s.dialogue.duration_s, self._session_timeout
+            max(0.01, self.session_deadline - self.clock()), self._session_timeout
         )
         log.info(
             "SESSION_ACTIVE request=%s duration_s=%s",
@@ -648,9 +732,83 @@ class VoiceLoop:
 
     def _close_session(self) -> None:
         self.session_deadline = None
+        self._session_started_at = None
         if self._session_timer:
             self._session_timer.cancel()
             self._session_timer = None
+
+    def _publish_voice(self) -> None:
+        self.bus.publish(
+            {
+                "type": "voice_settings",
+                **controls(self.s).model_dump(),
+                "activation_enabled": self.use_wake,
+                "wake_source": "whisper" if self.wake_phrase else "onnx",
+                "wake_threshold": self.s.wakeword.threshold,
+                "min_avg_logprob": self.s.wakeword.min_avg_logprob,
+                "max_no_speech_prob": self.s.wakeword.max_no_speech_prob,
+                "max_session_s": self.s.dialogue.max_session_s,
+                "noise_available": self.input_processor is not None,
+                "noise_active": bool(
+                    self.input_processor and self.input_processor.noise_suppression
+                ),
+                "microphone": "listening" if self.microphone_running else "stopped",
+                "state": self.state.state.value,
+            }
+        )
+
+    def configure_voice(self, value) -> None:
+        import sqlite3
+
+        from pydantic import ValidationError
+
+        old_noise = self.input_processor.noise_suppression if self.input_processor else None
+        try:
+            if self.busy:
+                raise ValueError("Дождись завершения ответа или останови его.")
+            updated = self.s.model_copy(deep=True)
+            selected = apply_controls(updated, value)
+            if not self.use_wake and not self.wake and not updated.wakeword.phrase:
+                raise ValueError("Для включения ONNX-активации нужен перезапуск приложения.")
+            if selected.noise_suppression and self.input_processor is None:
+                raise ValueError("Шумоподавление недоступно: модуль WebRTC не загружен.")
+            if self.input_processor:
+                self.input_processor.configure_noise(selected.noise_suppression)
+            store = getattr(self.conv, "store", None)
+            if store:
+                store.set_preference("voice", "controls", selected.model_dump())
+            self.s.audio, self.s.wakeword, self.s.dialogue = (
+                updated.audio,
+                updated.wakeword,
+                updated.dialogue,
+            )
+            self.wake_phrase = self.s.wakeword.phrase
+            self.use_wake = True
+            if self.wake:
+                self.wake.threshold = self.s.wakeword.threshold
+            self._go_to_sleep()
+            self._publish_voice()
+            self.bus.publish(
+                {
+                    "type": "voice_settings_result",
+                    "ok": True,
+                    "message": "Настройки голоса применены и сохранены."
+                    if store
+                    else "Настройки голоса применены до перезапуска; хранилище недоступно.",
+                }
+            )
+        except (ValueError, OSError, RuntimeError, sqlite3.Error) as exc:
+            if self.input_processor and old_noise is not None:
+                self.input_processor.configure_noise(old_noise)
+            message = (
+                "Проверь значения настроек голоса."
+                if isinstance(exc, ValidationError)
+                else "Не удалось сохранить настройки голоса."
+                if isinstance(exc, (OSError, sqlite3.Error))
+                else str(exc)
+            )
+            self._publish_voice()
+            self.bus.publish({"type": "voice_settings_result", "ok": False, "message": message})
 
     def configure_dialogue(self, value) -> None:
         from pydantic import ValidationError
@@ -687,11 +845,13 @@ class VoiceLoop:
         elif self.session_deadline is not None:
             self._open_session()
         self._publish_session()
+        self._publish_voice()
         self.bus.publish({"type": "dialogue_settings_result", "ok": True})
 
     def _publish_state(self, _: State | None, new: State) -> None:
         self.bus.publish({"type": "state", "state": new.value, "request_id": self.state.request_id})
         self._publish_session()
+        self._publish_voice()
 
     def _phase(self, name: str) -> None:
         owner = request_context.get() or self.state.request_id
@@ -706,6 +866,10 @@ class VoiceLoop:
         self.listen_deadline = self.clock() + seconds if self.use_wake else None
 
     def _wake_up(self, score: float | None) -> None:
+        if score is not None and self.clock() - self._last_activation < self.s.wakeword.cooldown_s:
+            return
+        self._last_activation = self.clock()
+        self._session_started_at = self.clock()
         log.info("WAKE_DETECTED")
         self.last_accepted_topic = ""
         self._prompted_until = self.clock() + self.s.wakeword.listen_timeout_s
@@ -750,6 +914,12 @@ class VoiceLoop:
 
     def command(self, name: str) -> None:
         """A HUD button: wake up as if called, or go to sleep, cutting any reply short."""
+        if name == "stop":
+            if self.busy:
+                self._sleep_requested = self.use_wake
+                self.speaker.interrupt()
+                self.task.cancel()
+            return
         if not self.use_wake:
             return
         if name == "wake" and self.state.state is State.SLEEPING:
@@ -804,17 +974,101 @@ class VoiceLoop:
         self.task = task
         task.add_done_callback(self._after_turn)
 
-    async def _bounded_turn(self, operation) -> None:
+    def submit_text(self, value: dict) -> bool:
+        """Explicit local UI input, using the same conversation, tools and turn owner."""
+        if (
+            set(value) - {"text", "speak"}
+            or not isinstance(value.get("text"), str)
+            or not 0 < len(value["text"].strip()) <= 4000
+            or type(value.get("speak", False)) is not bool
+        ):
+            self.bus.publish(
+                {
+                    "type": "notice",
+                    "error": True,
+                    "message": "Сообщение должно содержать от 1 до 4000 символов.",
+                }
+            )
+            return False
+        if self.busy:
+            self.bus.publish(
+                {
+                    "type": "notice",
+                    "error": True,
+                    "message": "Дождись текущего ответа или останови его кнопкой микрофона.",
+                }
+            )
+            return False
+        if self.state.state is State.SLEEPING:
+            if self.clock() < self.mute_until:
+                return
+            self.state.to(State.LISTENING)
+        self.state.to(State.THINKING)
+        self.task = asyncio.create_task(
+            self._bounded_turn(
+                functools.partial(
+                    self._handle_text, value["text"].strip(), value.get("speak", False)
+                ),
+                kind="text",
+            )
+        )
+        self.task.add_done_callback(self._after_turn)
+        return True
+
+    async def _handle_text(self, text: str, speak: bool) -> None:
+        profile = current.get()
+        profile.update(input_mode="text")
+        self.conv.store.performance.attach(profile, self.conv.id)
+        self.bus.publish({"type": "user", "text": text})
+        self._phase("generating")
+
+        def on_start():
+            if self.state.state is State.THINKING:
+                self.state.to(State.SPEAKING)
+
+        try:
+            if speak:
+                await reply_aloud(
+                    self.conv, self.speaker, text, self.s.tts.sentence_min_chars, on_start=on_start
+                )
+            else:
+                async with contextlib.aclosing(self.conv.reply(text)) as stream:
+                    async for piece in stream:
+                        self.bus.publish({"type": "reply", "delta": piece})
+                await self.conv.finish_reply()
+        finally:
+            end_reply(self.bus, self.speaker)
+            totals = profile.totals()
+            self.bus.publish(
+                {
+                    "type": "stats",
+                    "trace_id": profile.request_id,
+                    "stt_s": None,
+                    "response_s": profile.marks.get("first_content_text"),
+                    "voice_s": None,
+                    "first_token_s": totals.get("model_first_chunk"),
+                    "tts_s": totals.get("tts_generation"),
+                    "stages": totals,
+                    "model_used": "model_total" in totals,
+                    "tokens_per_second": self.conv.last_stats.tokens_per_second,
+                    "tools": self.conv.last_stats.tools,
+                }
+            )
+
+    async def _bounded_turn(self, operation, *, kind: str = "voice") -> None:
         from backend.audio.waiting import trace
 
-        profile_token = current.set(Profile())
+        profile = Profile(kind=kind)
+        profile_token = current.set(profile)
         owner = self.state.begin_request()
         request_token = request_context.set(owner)
         phase_token = phase_sink.set(self._phase)
         address_token = voice_addressed.set(True)
         music_token = voice_music_command.set(None)
+        led_token = voice_led_command.set(None)
+        control_token = voice_control_command.set(None)
         self.bus.request_id = owner
-        trace("REQUEST_RECEIVED", source="audio")
+        trace("REQUEST_RECEIVED", source="audio" if kind == "voice" else "text")
         failed = True
         try:
             self.flush_audio()
@@ -825,6 +1079,7 @@ class VoiceLoop:
             log.info("PLAYBACK_CANCEL request=%s kind=main reason=request_cancelled", owner)
             raise
         except Exception as exc:
+            profile.fail(type(exc).__name__)
             self._phase("error")
             log.error("ERROR voice_turn type=%s", type(exc).__name__)
             self.bus.publish(
@@ -842,11 +1097,20 @@ class VoiceLoop:
             if failed and self.speaker is not None and asyncio.current_task() is self.task:
                 self.speaker.interrupt()
             trace("REQUEST_COMPLETED", failed=failed)
+            profile.finish(
+                "cancelled"
+                if asyncio.current_task().cancelling()
+                else "failed"
+                if failed
+                else "completed"
+            )
             current.reset(profile_token)
             phase_sink.reset(phase_token)
             request_context.reset(request_token)
             voice_addressed.reset(address_token)
             voice_music_command.reset(music_token)
+            voice_led_command.reset(led_token)
+            voice_control_command.reset(control_token)
 
     def _after_turn(self, task: asyncio.Task) -> None:
         if task is not self.task:
@@ -856,6 +1120,9 @@ class VoiceLoop:
         self.state.to(State.LISTENING)
         self._phase("listening")
         log.info("LISTENING_RESUMED")
+        self.bus.publish(
+            {"type": "addressee", "state": "waiting", "request_id": self.state.request_id}
+        )
         if self._sleep_requested:
             self._sleep_requested = False
             self._barged_in = False
@@ -897,11 +1164,14 @@ class VoiceLoop:
         if self.pending:
             self._maybe_announce()
         if self.state.state is State.SLEEPING:
+            if self.clock() < self.mute_until:
+                return
             if self.wake_phrase:
                 if self.clock() < self.mute_until or (self.wake_task and not self.wake_task.done()):
                     return
                 event = self.segmenter.process(frame, self.vad(frame))
                 if event.started:
+                    self.vad_started_at = time.perf_counter() - event.speech_ms / 1000
                     log.info("RECORDING wake_check")
                 if event.utterance is not None:
                     self.vad_wait_s = event.silence_s
@@ -919,8 +1189,12 @@ class VoiceLoop:
             return
         # Not `busy`: the turn's done-callback may still be pending.
         working = self.state.state is not State.LISTENING
-        if working and not self.s.audio.barge_in:
-            return  # half duplex: don't listen while thinking or speaking
+        if (
+            working
+            and not self.s.audio.barge_in
+            and not (self.use_wake and self.state.state is State.SPEAKING)
+        ):
+            return
         if not working:
             now = self.clock()
             if now < self.mute_until:
@@ -931,6 +1205,7 @@ class VoiceLoop:
                 return
         event = self.segmenter.process(frame, self.vad(frame))
         if event.started:
+            self.vad_started_at = time.perf_counter() - event.speech_ms / 1000
             self._session_recording = self.session_active
             log.info(
                 "RECORDING command vad_start_ms=%.0f threshold=%.2f",
@@ -959,7 +1234,9 @@ class VoiceLoop:
             if working or self.busy:
                 if self.busy and (self.barge_task is None or self.barge_task.done()):
                     self.barge_task = asyncio.create_task(
-                        self._validate_barge(event.utterance, self.task)
+                        self._validate_barge(
+                            event.utterance, self.task, stop_only=not self.s.audio.barge_in
+                        )
                     )
                 return
             self.vad_wait_s = event.silence_s
@@ -976,17 +1253,11 @@ class VoiceLoop:
             )
             self.task.add_done_callback(self._after_turn)
 
-    async def _validate_barge(self, audio: np.ndarray, previous: asyncio.Task) -> None:
+    async def _validate_barge(
+        self, audio: np.ndarray, previous: asyncio.Task, *, stop_only=False
+    ) -> None:
         """Never cancel an answer on VAD alone: background speech is also speech."""
-        import re
-        from difflib import SequenceMatcher
-
         started = time.perf_counter()
-        recent = (
-            tuple(getattr(self.speaker, "recent_spoken", []))
-            if started - getattr(self.speaker, "last_audio_at", started) <= ECHO_TAIL_S
-            else ()
-        )
         try:
             text = await asyncio.wait_for(self.stt.transcribe(audio), STT_TIMEOUT_S)
             request = strip_wake_phrase(text, self.wake_phrase or self.s.assistant_name)
@@ -1009,22 +1280,16 @@ class VoiceLoop:
                     normalize(text) in CONTROLS | CLOSE
                     and acoustic.usable
                     and acoustic.active_ms >= 320
-                    and getattr(self.stt, "last_speech_confident", False)
+                    and decoder_confident(self.stt)
                 ):
                     request, nameless = text, True
 
-            def clean(value):
-                return " ".join(re.findall(r"\w+", value.casefold()))
-
-            echo = (
-                any(
-                    clean(text) in clean(spoken)
-                    or SequenceMatcher(None, clean(text), clean(spoken)).ratio() >= 0.85
-                    for spoken in recent
-                )
-                if text
-                else False
-            )
+            if not decoder_confident(self.stt, self.s.wakeword):
+                log.info("BARGE_SKIP reason=uncertain_stt")
+                return
+            echo = echoes_output(text, self.speaker, now=time.perf_counter())
+            if stop_only and (request is None or not stop_requested(request)):
+                return
             decision = self._recipient(text, audio, addressed=request is not None, echo=echo)
             if (
                 decision.accepted
@@ -1066,6 +1331,11 @@ class VoiceLoop:
             self.flush_audio()
             self._listen_for(self.s.wakeword.listen_timeout_s)
             self._open_session()
+            if request and stop_requested(request):
+                self.bus.publish(
+                    {"type": "notice", "error": False, "message": "Озвучка остановлена."}
+                )
+                return
             if request:
                 self.state.to(State.THINKING)
                 self.task = asyncio.create_task(
@@ -1086,55 +1356,91 @@ class VoiceLoop:
             log.info("BARGE_SKIP reason=recognition_error type=%s", type(exc).__name__)
 
     async def _check_wake_phrase(self, audio: np.ndarray, speech_end: float) -> None:
-        """Whisper checks custom phrases without involving the LLM or a network service."""
-        start = time.perf_counter()
+        """Local activation stage; only native decoder evidence can open a dialogue."""
+        now = self.clock()
+        if (
+            self.state.state is not State.SLEEPING
+            or now < self._next_wake_check
+            or now - self._last_activation < self.s.wakeword.cooldown_s
+        ):
+            log.info("ACTIVATION_SKIP reason=cooldown")
+            return
+        self._next_wake_check = now + self.s.wakeword.check_interval_s
         if not evidence(audio).usable:
-            log.info("STT_REJECT wake_check reason=no_acoustic_speech")
             return
+        profile = Profile(kind="activation", origin=speech_end)
+        store = getattr(self.conv, "store", None)
+        if store is not None:
+            store.performance.attach(profile)
+        token = current.set(profile)
+        status = "rejected"
+        start = time.perf_counter()
         try:
-            text = await asyncio.wait_for(self.stt.transcribe(audio), STT_TIMEOUT_S)
-            log.info("STT_RESULT wake_check chars=%d night=%s", len(text), night_requested(text))
-        except Exception:  # noqa: BLE001 - a missed activation must not stop listening
-            log.error("ERROR wake_stt", exc_info=False)
-            self.vad.reset()
-            self.segmenter.reset()
-            log.info("LISTENING_RESUMED wake_detector")
-            return
-        if self.state.state is not State.SLEEPING:
-            return
-        if discussing(text):
-            log.info("ADDRESSEE confidence=low reason=third_person_discussion")
-            return
-        request = (
-            text
-            if is_morning_greeting(text, self.s.assistant_name, require_name=True)
-            or night_addressed(text)
-            else strip_wake_phrase(text, self.wake_phrase)
-        )
-        if request is None:
-            for prefix in (self.s.assistant_name, f"эй {self.s.assistant_name}"):
-                if (request := strip_wake_phrase(text, prefix)) is not None:
-                    break
-        if request is None:
-            return
-        elapsed = time.perf_counter() - start
-        self.wake_detection_s = elapsed
-        self._wake_up(None)
-        if request:
-            self.state.to(State.THINKING)
-            self.task = asyncio.create_task(
-                self._bounded_turn(
-                    functools.partial(
-                        self.handle,
-                        audio,
-                        speech_end,
-                        transcript=request,
-                        stt_elapsed=elapsed,
-                        wake_validated=True,
+            if self.vad_started_at is not None:
+                profile.mark("vad_start", self.vad_started_at, allow_before_origin=True)
+            profile.mark("vad_end", speech_end)
+            profile.interval("vad_wait", speech_end, speech_end + self.vad_wait_s)
+            with measure("wake_detection", wake_source="whisper"):
+                text = await asyncio.wait_for(self.stt.transcribe(audio), STT_TIMEOUT_S)
+            profile.update(
+                wake_source="whisper", **(getattr(self.stt, "last_confidence", None) or {})
+            )
+            reason = "not_addressed"
+            request = None
+            if not decoder_confident(self.stt, self.s.wakeword):
+                reason = "uncertain_stt"
+            elif echoes_output(text, self.speaker, now=time.perf_counter()):
+                reason = "own_tts_echo"
+            elif discussing(text):
+                reason = "third_person_discussion"
+            else:
+                request = (
+                    text
+                    if is_morning_greeting(text, self.s.assistant_name, require_name=True)
+                    or night_addressed(text)
+                    else strip_wake_phrase(text, self.wake_phrase or self.s.assistant_name)
+                )
+                if request is None:
+                    for prefix in (
+                        self.s.assistant_name,
+                        f"эй {self.s.assistant_name}",
+                        f"привет {self.s.assistant_name}",
+                    ):
+                        request = strip_wake_phrase(text, prefix)
+                        if request is not None:
+                            break
+            if request is None or self.state.state is not State.SLEEPING:
+                profile.update(reason=reason)
+                log.info("ACTIVATION_REJECT reason=%s", reason)
+                return
+            profile.update(reason="explicit_address")
+            status = "activated"
+            elapsed = time.perf_counter() - start
+            self.wake_detection_s = elapsed
+            self._wake_up(None)
+            if request and not is_hallucination(request):
+                self.state.to(State.THINKING)
+                self.task = asyncio.create_task(
+                    self._bounded_turn(
+                        functools.partial(
+                            self.handle,
+                            audio,
+                            speech_end,
+                            transcript=request,
+                            stt_elapsed=elapsed,
+                            wake_validated=True,
+                        )
                     )
                 )
-            )
-            self.task.add_done_callback(self._after_turn)
+                self.task.add_done_callback(self._after_turn)
+        except Exception as exc:
+            log.warning("ACTIVATION_REJECT reason=recognition_error type=%s", type(exc).__name__)
+            profile.update(reason="recognition_error")
+            self.vad.reset()
+            self.segmenter.reset()
+        finally:
+            profile.finish("cancelled" if asyncio.current_task().cancelling() else status)
+            current.reset(token)
 
     async def _say_by_code(self, user_text: str, signing_off: bool) -> None:
         """Fixed lines for a sign-off or a lone thank-you: the model echoed the sign-off
@@ -1174,31 +1480,76 @@ class VoiceLoop:
         session_input: bool = False,
         wake_validated: bool = False,
         from_barge: bool = False,
+        input_mode: str = "microphone",
     ) -> None:
         s = self.s
         profile = current.get() or Profile()
-        profile.add("vad_wait", self.vad_wait_s)
+        profile.kind = "voice"
+        profile.update(input_mode=input_mode)
+        profile.origin = speech_end
+        profile.mark("user_speech_end", speech_end)
+        if self.vad_started_at is not None:
+            profile.mark("vad_start", self.vad_started_at, allow_before_origin=True)
+        profile.mark("vad_end", speech_end)
+        store = getattr(self.conv, "store", None)
+        if store is not None:
+            store.performance.attach(profile, self.conv.id)
+        profile.interval("vad_wait", speech_end, speech_end + self.vad_wait_s)
         profile.add("wake_detection", self.wake_detection_s)
         t0 = time.perf_counter()
+        stt_interval = profile.begin("stt") if transcript is None else None
         self.bus.publish({"type": "activity", "phase": "recognizing"})
         self._phase("recognizing")
         if transcript is None and not evidence(audio).usable:
+            profile.result_status = "rejected"
             log.info("STT_REJECT request=%s reason=no_acoustic_speech", request_context.get())
             return
+        recognized = False
         try:
             text = (
                 await asyncio.wait_for(self.stt.transcribe(audio), STT_TIMEOUT_S)
                 if transcript is None
                 else transcript
             )
+            recognized = True
         finally:
             stt_s = time.perf_counter() - t0 if transcript is None else stt_elapsed
-            profile.add("stt", stt_s)
+            if transcript is None:
+                profile.end(
+                    stt_interval,
+                    "cancelled"
+                    if asyncio.current_task().cancelling()
+                    else "ok"
+                    if recognized
+                    else "error",
+                )
+            else:
+                profile.add("stt", stt_s)
+            profile.mark("stt_completed" if recognized else "stt_failed")
         log.info("STT_RESULT command chars=%d night=%s", len(text), night_requested(text))
+        profile.update(
+            wake_enabled=self.use_wake, **(getattr(self.stt, "last_confidence", None) or {})
+        )
+        if not decoder_confident(self.stt) or echoes_output(
+            text, self.speaker, now=time.perf_counter()
+        ):
+            profile.result_status = "rejected"
+            profile.update(reason="uncertain_stt_or_echo")
+            return
         original_text = text
         addressed = wake_validated
+        if (
+            is_sign_off(text, s.assistant_name)
+            and normalize(s.assistant_name) in normalize(text).split()
+        ):
+            addressed = True
         for prefix in (
-            (self.wake_phrase, self.s.assistant_name, f"эй {self.s.assistant_name}")
+            (
+                self.wake_phrase,
+                self.s.assistant_name,
+                f"эй {self.s.assistant_name}",
+                f"привет {self.s.assistant_name}",
+            )
             if self.s.dialogue.enabled
             else ()
         ):
@@ -1209,16 +1560,26 @@ class VoiceLoop:
             if addressed:
                 self._open_session()
             if not self.session_active and not session_input:
+                profile.result_status = "rejected"
                 log.info("STT_REJECT reason=session_expired")
                 return
         if addressed and not text:
+            profile.result_status = "rejected"
             return
         if addressed:
             text = original_text
+        if is_hallucination(text) or (
+            addressed and command_text(text) and is_hallucination(command_text(text))
+        ):
+            profile.result_status = "rejected"
+            profile.update(reason="empty_or_filler")
+            return
         if text and is_wake_phrase(text, s.assistant_name):
+            profile.result_status = "rejected"
             console.print(f"[dim](обращение: «{text}» · продолжаю слушать)[/]")
             return
         if not text:
+            profile.result_status = "rejected"
             log.info("STT_REJECT request=%s reason=empty_or_filtered", request_context.get())
             return
         decision = None
@@ -1227,10 +1588,23 @@ class VoiceLoop:
                 text, audio, addressed=addressed, active=self.session_active or session_input
             )
             if not decision.accepted:
+                profile.result_status = "rejected"
                 return
             voice_addressed.set(decision.kind == "direct")
             if decision.kind == "music":
                 voice_music_command.set(text)
+            elif decision.kind == "led":
+                voice_led_command.set(text)
+            elif decision.kind == "devices":
+                voice_control_command.set(text)
+        event_key = round(speech_end, 6)
+        if speech_end > 0 and event_key in self._accepted_audio_events:
+            profile.result_status = "rejected"
+            profile.update(reason="duplicate_audio_event")
+            log.info("STT_REJECT reason=duplicate_audio_event")
+            return
+        if speech_end > 0:
+            self._accepted_audio_events.append(event_key)
         self._prompted_until = 0
         if decision is not None and decision.kind == "task":
             task = choose_task(text, self._recent_tasks())
@@ -1296,8 +1670,13 @@ class VoiceLoop:
             if owner_task is not self.task or owner_task.done() or owner_task.cancelling():
                 return
             self._phase("speaking")
-            first_audio = time.perf_counter()
+            first_audio = getattr(self.speaker, "playback_started_at", None)
+            if first_audio is None and not isinstance(self.speaker, SaySpeaker):
+                first_audio = time.perf_counter()
             queued = getattr(self.speaker, "audio_enqueued_at", None)
+            sentence_ready = getattr(self.speaker, "first_sentence_at", None)
+            if queued is not None and sentence_ready is not None:
+                profile.add("tts_first_audio", queued - sentence_ready)
             playback = getattr(self.speaker, "playback_started_at", None)
             if queued is not None and playback is not None:
                 profile.add("playback_queue", playback - queued)
@@ -1313,9 +1692,13 @@ class VoiceLoop:
                 or any("_attempt_" in name for name in totals)
             )
             response = first_audio - speech_end if first_audio is not None else None
+            if isinstance(self.speaker, PiperSpeaker):
+                response = profile.marks.get("first_content_audio")
             self.bus.publish(
                 {
                     "type": "stats",
+                    "trace_id": profile.request_id,
+                    **profile.summary(),
                     "stt_s": stt_s,
                     "first_token_s": totals.get(
                         "model_first_chunk", totals.get("provider_first_chunk")
@@ -1343,6 +1726,7 @@ class VoiceLoop:
                 on_start=on_start,
             )
         except LLMError as exc:
+            profile.fail(type(exc).__name__)
             log.error("ERROR model type=%s request=%s", type(exc).__name__, request_context.get())
             self._phase("error")
             self.bus.publish(
@@ -1352,10 +1736,12 @@ class VoiceLoop:
                     "message": "Модель не ответила. Можно повторить запрос.",
                 }
             )
-            publish_stats()
             return
         finally:
             end_reply(self.bus, self.speaker)
+            profile.add("response_total", time.perf_counter() - speech_end)
+            if not asyncio.current_task().cancelling():
+                publish_stats()
         st = self.conv.last_stats
         if st.quiet:
             self.request_sleep()  # e.g. the music asked for is playing: let it be heard
@@ -1369,7 +1755,6 @@ class VoiceLoop:
         if st.tokens_per_second:
             details.append(f"{st.tokens_per_second:.0f} ток/с")
         console.print(f"\n[dim]{' · '.join(details)}[/]")
-        publish_stats()
         log.info(
             "VOICE_TIMINGS stages=%s response_s=%s",
             profile.totals(),
@@ -1484,6 +1869,12 @@ async def _run_voice(
     # Before the model: the system prompt names the place (cached after the first run).
     await boot.track("location", resolve_location(s))
     store = MemoryStore.open_resilient(s.db_path)
+    try:
+        if saved_controls := store.preference("voice", "controls"):
+            apply_controls(s, saved_controls)
+            use_wake = s.wakeword.enabled if wake_word is None else wake_word
+    except (ValueError, TypeError):
+        log.warning("VOICE_SETTINGS invalid_saved_value using_config")
     if not store.memory_available:
         console.print("[yellow]SQLite недоступна: долговременная память отключена.[/]")
     # The callbacks reach `loop`, created below, only after startup.
@@ -1519,14 +1910,20 @@ async def _run_voice(
     stt = WhisperSTT(s.stt.model, s.stt_language, s.stt_hint, s.resources.mlx_cache_mb)
     speaker = make_speaker(s)
     speaker.on_sentence = write_as_spoken(bus)
+    from backend.hud.dashboard import Dashboard
+
+    dashboard = Dashboard(bus, s, store, conv, weather)
     if isinstance(speaker, PiperSpeaker):
         speaker.on_level = lambda v: bus.publish({"type": "level", "out": v})
     aec = None
-    if s.audio.barge_in and s.audio.echo_cancellation:
+    if s.audio.echo_cancellation or s.audio.noise_suppression:
         if isinstance(speaker, PiperSpeaker):
             from backend.audio.aec import load_echo_canceller
 
-            aec = load_echo_canceller()
+            aec = load_echo_canceller(
+                noise_suppression=s.audio.noise_suppression,
+                echo_cancellation=s.audio.echo_cancellation,
+            )
             if aec:
                 speaker.on_audio = aec.play
         else:
@@ -1661,7 +2058,9 @@ async def _run_voice(
         bus=bus,
         wake_phrase=s.wakeword.phrase if use_wake else None,
     )
-    loop.echo_ready = aec is not None
+    loop.echo_ready = aec is not None and s.audio.echo_cancellation
+    loop.input_processor = aec
+    loop._publish_voice()
     loop.headset_verified = await asyncio.to_thread(private_headset, s.audio)
     loop._publish_session()
 
@@ -1691,6 +2090,7 @@ async def _run_voice(
     if server:
         # After the briefing's fetch: the news are then a cache hit.
         background += start_feeds(s, bus, weather, news)
+        background += dashboard.start(loop)
     mic = Microphone(s.audio.input_device)
     loop.flush_audio = mic.flush
     silence = SilenceWatch()
@@ -1698,6 +2098,8 @@ async def _run_voice(
     try:
         try:
             mic.start()
+            loop.microphone_running = True
+            loop._publish_voice()
         except Exception as exc:  # noqa: BLE001 - clean up models/window on input failure
             from backend.permissions import instruction
 
@@ -1713,6 +2115,8 @@ async def _run_voice(
         pass
     finally:
         mic.stop()
+        loop.microphone_running = False
+        loop._publish_voice()
         loop._close_session()
         timers.cancel_all()
         resources.close()
@@ -1725,6 +2129,7 @@ async def _run_voice(
             loop.barge_task.cancel()
         for task in background:
             task.cancel()
+        await dashboard.close()
         if window:
             await window.close()
         if server:

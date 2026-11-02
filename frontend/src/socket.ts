@@ -30,7 +30,7 @@ export class Link {
     };
   }
 
-  send(type: "wake" | "sleep" | "export"): void {
+  send(type: "wake" | "sleep" | "stop" | "export"): void {
     this.post({ type });
   }
 
@@ -39,7 +39,14 @@ export class Link {
     this.post({ type, value });
   }
 
+  voice(value: import('./voice_settings').VoiceControls): void { this.post({type:'voice_settings',value}); }
+  voiceStatus(): void { this.post({type:'voice_status'}); }
   history(value = 0): void { this.post({type: "history", value}); }
+  historySearch(value: object): void { this.post({type: 'history_search', value}); }
+  dashboard(value: object): void { this.post({type: 'dashboard', value}); }
+  chat(value: {text: string; speak?: boolean}): void { this.post({type: 'chat_message', value}); }
+  performance(value = 1): void { this.post({type: "performance_stats", value}); }
+  trace(value: string): void { this.post({type: "performance_detail", value}); }
   music(value: string): void { this.post({type: "music_settings", value}); }
   dialogue(value: {enabled: boolean; duration_s: number; nameless_interruptions: boolean; addressee_strictness: "contextual" | "addressed"}): void {
     this.post({type: "dialogue_settings", value});

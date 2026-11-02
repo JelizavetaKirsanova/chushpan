@@ -1,14 +1,28 @@
-"""Bounded dialogue context and a single, explicit read-only playlist proposal."""
+"""Bounded context and explicit proposals for a small allowlist of safe actions."""
 
 import json
 import re
 import time
+from uuid import uuid4
 
+from backend.brain.privacy import redact
 from backend.dialogue import normalize
+from backend.security import command_text
 
 SHORT = {
     "да",
     "давай",
+    "давай включай",
+    "давай включи",
+    "да включай",
+    "включай",
+    "давай открой",
+    "да открой",
+    "давай сделай",
+    "да сделай",
+    "давай попробуй",
+    "да пожалуйста",
+    "давай пожалуйста",
     "давай посмотри",
     "посмотри",
     "сделай",
@@ -22,7 +36,7 @@ SHORT = {
 
 
 def is_short(text):
-    return normalize(text) in SHORT
+    return not re.search(r'[«»"“”`\n;]', text) and normalize(text) in SHORT
 
 
 def playlist_proposal(text, tools):
@@ -32,8 +46,10 @@ def playlist_proposal(text, tools):
     if re.search(r"\b(?:или|либо)\b", text, re.I):
         return None
     if re.search(
-        r"(?:^|[.!?]\s+)(?:я )?могу (?:посмотреть|показать|попробовать (?:ещ[её] раз )?посмотреть) "
-        r"(?:список )?(?:доступные |доступных |твои |твоих |ваши |ваших )?плейлист(?:ы|ов)",
+        r"(?:^|[.!?]\s+)(?:я )?могу (?:просто )?"
+        r"(?:посмотреть|показать|открыть|попробовать (?:ещ[её] раз )?посмотреть) "
+        r"(?:список )?(?:доступные |доступных |твои |твоих |ваши |ваших )?плейлист(?:ы|ов)"
+        r"(?:[.!?]|$)",
         " ".join(text.split()),
         re.I,
     ):
@@ -43,6 +59,78 @@ def playlist_proposal(text, tools):
             "expires": time.time() + 600,
         }
     return None
+
+
+def safe_followup(name, arguments):
+    """A proposal cannot authorize arbitrary tools, parameters or dangerous actions."""
+    if name == "music_playlist":
+        return arguments == {"action": "list"}
+    if name == "open_website":
+        return arguments == {"site": "youtube"}
+    if name == "led_control" and set(arguments) == {"command"}:
+        from backend.led import parse
+
+        return isinstance(arguments["command"], str) and parse(arguments["command"]) is not None
+    if name == "music_command" and set(arguments) == {"command"}:
+        from backend.music import parse
+
+        intent = parse(arguments["command"]) if isinstance(arguments["command"], str) else None
+        return bool(
+            intent and intent.action == "play" and intent.kind == "playlist" and intent.query
+        )
+    return False
+
+
+def action_proposal(text, tools):
+    proposal = playlist_proposal(text, tools)
+    from backend.music import FAVOURITE_NAME
+
+    if (
+        proposal is None
+        and "music_command" in tools
+        and re.search(FAVOURITE_NAME, text, re.I)
+        and re.search(r"(?:могу|хочешь|давай) (?:просто )?включить", text, re.I)
+        and not re.search(r"\bили\b(?! выбрать что-то другое)", text, re.I)
+    ):
+        proposal = {
+            "tool": "music_command",
+            "arguments": {"command": "Включи плейлист Favourite Songs"},
+            "expires": time.time() + 600,
+        }
+    if proposal is None and not re.search(r"\b(?:или|либо)\b", text, re.I):
+        # A direct question is also a proposal. Parsing supplies the device/action;
+        # a quoted instruction, alternative or destructive action cannot grant it.
+        question = re.fullmatch(
+            r"(?:Хочешь[, ]+(?:я )?)?"
+            r"((?:Сделать|Включить|Выключить|Поставить|Установить) [^.!?]+)\?",
+            text.strip(),
+            re.I,
+        )
+        match = re.search(
+            r"(?:^|[.!?]\s+)(?:я )?могу (?:просто )?([^.!?]+)(?:[.!?]|$)",
+            " ".join(text.split()),
+            re.I,
+        )
+        if question or match:
+            from backend.local_commands import route
+
+            command = command_text((question or match)[1])
+            routed = route(command)
+            if routed and routed[0] in tools and safe_followup(*routed):
+                proposal = {"tool": routed[0], "arguments": routed[1], "expires": time.time() + 600}
+    if proposal:
+        if proposal["tool"] == "led_control":
+            proposal["expires"] = time.time() + 120
+        proposal.update(
+            {
+                "id": uuid4().hex,
+                "state": "proposed",
+                "source": "assistant",
+                "offer": redact(text),
+                "created": time.time(),
+            }
+        )
+    return proposal
 
 
 def playlist_reply(result):
@@ -60,7 +148,43 @@ def playlist_reply(result):
     return "Доступные плейлисты: " + ", ".join(titles) + "." + suffix
 
 
-def bounded_history(history, budget, stale_result, result_limit=300):
+def estimated_tokens(value):
+    """Conservative UTF-8 estimate, without JSON's artificial \\uXXXX expansion.
+
+    This is a budget heuristic, not a replacement for a model's tokenizer.
+    """
+    text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=lambda _: "[image]")
+    return (len(text.encode("utf-8")) + 3) // 4
+
+
+def fit_local_context(messages, tools, num_ctx):
+    """Keep system/current tool round intact; trim only older complete turns."""
+    if not messages:
+        return messages
+    last_user = max((i for i, m in enumerate(messages) if m["role"] == "user"), default=-1)
+    if last_user < 1:
+        return messages
+    prefix = messages[:1] if messages[0]["role"] == "system" else []
+    current_turn = messages[last_user:]
+    image_reserve = 1024 * sum(len(m.get("images", [])) for m in current_turn)
+    available = max(
+        0,
+        num_ctx
+        - estimated_tokens([*prefix, *current_turn])
+        - estimated_tokens(tools or [])
+        - 2048
+        - image_reserve,
+    )
+    history = bounded_history(
+        messages[len(prefix) : last_user],
+        num_ctx * 4,
+        '{"historical":true,"result_omitted":true}',
+        token_budget=available,
+    )
+    return [*prefix, *history, *current_turn]
+
+
+def bounded_history(history, budget, stale_result, result_limit=300, *, token_budget=None):
     """Compact only the outbound copy; SQLite retains complete redacted tool results."""
     history = [dict(message) for message in history]
     for message in history:
@@ -88,7 +212,9 @@ def bounded_history(history, budget, stale_result, result_limit=300):
     def size():
         return len(json.dumps(history, ensure_ascii=False))
 
-    while history and size() > budget:
+    while history and (
+        size() > budget or (token_budget is not None and estimated_tokens(history) > token_budget)
+    ):
         history.pop(0)
         while history and history[0]["role"] != "user":
             history.pop(0)

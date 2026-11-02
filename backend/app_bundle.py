@@ -84,6 +84,9 @@ def info_plist(s: Settings) -> dict:
         "CFBundleVersion": "1",
         "LSMinimumSystemVersion": "13.0",
         "NSHighResolutionCapable": True,
+        "NSBluetoothAlwaysUsageDescription": (
+            f"{s.assistant_name} управляет вашей LED-лентой локально по Bluetooth."
+        ),
         # Required: without it, macOS ends a bundled app that opens the microphone.
         "NSMicrophoneUsageDescription": (
             f"{s.assistant_name} распознаёт фразу «{s.wakeword.phrase or s.assistant_name}» "

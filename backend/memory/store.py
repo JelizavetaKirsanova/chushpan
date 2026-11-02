@@ -46,6 +46,15 @@ CREATE TABLE IF NOT EXISTS preferences (
     updated_at TEXT NOT NULL,
     PRIMARY KEY(namespace, key)
 );
+CREATE TABLE IF NOT EXISTS dashboard_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL CHECK(kind IN ('note','goal','task')),
+    content TEXT NOT NULL,
+    completed INTEGER NOT NULL DEFAULT 0,
+    deleted_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -62,6 +71,9 @@ class MemoryStore:
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.executescript(SCHEMA)
         self._migrate()
+        from backend.performance import PerformanceHistory
+
+        self.performance = PerformanceHistory(self)
 
     @classmethod
     def open_resilient(cls, path: Path | str) -> MemoryStore:
@@ -97,6 +109,19 @@ class MemoryStore:
     def _migrate(self) -> None:
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
+            conversation_cols = {
+                r["name"] for r in self.db.execute("PRAGMA table_info(conversations)")
+            }
+            for name, definition in {
+                "title": "TEXT NOT NULL DEFAULT ''",
+                "pinned": "INTEGER NOT NULL DEFAULT 0",
+                "deleted_at": "TEXT",
+            }.items():
+                if name not in conversation_cols:
+                    self.db.execute(f"ALTER TABLE conversations ADD COLUMN {name} {definition}")
+            self.db.create_function(
+                "casefold", 1, lambda value: str(value or "").casefold(), deterministic=True
+            )
             cols = {r["name"] for r in self.db.execute("PRAGMA table_info(messages)")}
             for col in (
                 "tool_calls",
@@ -129,6 +154,7 @@ class MemoryStore:
             )
 
     def close(self) -> None:
+        self.performance.close()
         self.db.close()
 
     def preference(self, namespace: str, key: str) -> Any:
@@ -256,7 +282,10 @@ class MemoryStore:
         *,
         source: RequestContext | None = None,
     ) -> None:
-        with self.db:
+        from backend.latency import current
+
+        profile = current.get()
+        with self.memory_transaction():
             self.db.execute(
                 "INSERT INTO messages "
                 "(conversation_id, role, content, created_at, tool_calls, tool_name, "
@@ -272,7 +301,11 @@ class MemoryStore:
                     source.device.device_id if source else None,
                     source.device.device_type if source else None,
                     source.device.session_id if source else None,
-                    source.request_id if source else None,
+                    source.request_id
+                    if source
+                    else profile.request_id
+                    if profile and profile.repository
+                    else None,
                 ),
             )
 
@@ -306,14 +339,24 @@ class MemoryStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def conversation_list(self) -> list[dict]:
+    def conversation_list(self, query: str = "", *, trash: bool = False) -> list[dict]:
         return [
             dict(row)
             for row in self.db.execute(
-                "SELECT c.id, c.started_at, COUNT(m.id) AS messages FROM conversations c "
+                "SELECT c.id, c.started_at, c.title, c.pinned, c.deleted_at, "
+                "COALESCE((SELECT substr(x.content,1,100) FROM messages x "
+                "WHERE x.conversation_id=c.id "
+                "AND x.role='user' ORDER BY x.id LIMIT 1),'') AS preview, "
+                "COUNT(m.id) AS messages FROM conversations c "
                 "LEFT JOIN messages m ON m.conversation_id=c.id AND m.role IN ('user','assistant') "
-                "AND m.tool_calls IS NULL AND m.content != '' GROUP BY c.id "
-                "ORDER BY c.id DESC LIMIT 50"
+                "AND m.tool_calls IS NULL AND m.content != '' "
+                "WHERE (c.deleted_at IS NOT NULL)=? "
+                "AND (?='' OR instr(casefold(c.title),casefold(?))>0 "
+                "OR EXISTS(SELECT 1 FROM messages s WHERE s.conversation_id=c.id "
+                "AND s.role IN ('user','assistant') AND s.tool_calls IS NULL "
+                "AND instr(casefold(s.content),casefold(?))>0)) GROUP BY c.id "
+                "ORDER BY c.pinned DESC,c.id DESC LIMIT 100",
+                (int(trash), query, query, query),
             ).fetchall()
         ]
 
@@ -321,9 +364,13 @@ class MemoryStore:
         return [
             dict(row)
             for row in self.db.execute(
-                "SELECT role, content, created_at FROM (SELECT id, role, content, created_at "
+                "SELECT id, role, content, created_at, request_id, "
+                "EXISTS(SELECT 1 FROM request_traces t WHERE t.request_id=page.request_id) "
+                "AS has_trace FROM ("
+                "SELECT id, role, content, created_at, request_id "
                 "FROM messages WHERE conversation_id=? AND role IN ('user','assistant') "
-                "AND tool_calls IS NULL AND content != '' ORDER BY id DESC LIMIT 200) ORDER BY id",
+                "AND tool_calls IS NULL AND content != '' ORDER BY id DESC LIMIT 200) "
+                "AS page ORDER BY id",
                 (conversation_id,),
             ).fetchall()
         ]

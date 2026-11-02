@@ -1,4 +1,7 @@
+import type {VoiceSettingsEvent} from './voice_settings';
 // Events sent by backend/hud (see backend/hud/bus.py and backend/voice.py).
+import type { PerformanceEvent } from './performance';
+import type { DashboardEvent, ConversationItem } from './dashboard_state';
 
 export type AssistantState = "booting" | "sleeping" | "listening" | "thinking" | "speaking";
 
@@ -79,6 +82,7 @@ export interface Timer {
 
 export interface StatsEvent {
   type: "stats";
+  trace_id?: string;
   response_s?: number | null;
   tts_s?: number;
   model_used?: boolean;
@@ -120,6 +124,9 @@ export interface ExportedEvent {
 }
 
 type HudPayload =
+  | VoiceSettingsEvent
+  | DashboardEvent
+  | PerformanceEvent
   | {type: "music_settings"; current: string | null; saved: string | null; restart_required: boolean; error: string | null}
   | {type: "addressee"; state: "direct" | "continuation" | "waiting" | "task" | "task_running" | "ambiguous"}
   | {type: "dialogue_settings_result"; ok: boolean}
@@ -128,7 +135,7 @@ type HudPayload =
   | {type: "settings_info"; items: Record<string, string>}
   | {type: "activity"; phase: string}
   | {type: "notice"; message: string; error: boolean}
-  | {type: "history"; selected: number; conversations: {id: number; started_at: string; messages: number}[]; messages: {role: string; content: string; created_at: string}[]; error?: string}
+  | {type: "history"; selected: number; conversations: ConversationItem[]; messages: {role: string; content: string; created_at: string; request_id?: string; has_trace?: number}[]; query?: string; trash?: boolean; error?: string}
   | Hello
   | StateEvent
   | LevelEvent

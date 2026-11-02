@@ -7,44 +7,27 @@
     <title>Чушпан · Ассистент</title>
     <link
       rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%2300e5ff' stroke-width='2.5' stroke-dasharray='14 4'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%237af4ff'/%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%23b999f2' stroke-width='2.5' stroke-dasharray='14 4'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%23ddc6ff'/%3E%3C/svg%3E"
     />
   </head>
   <body>
     <div class="hud" data-state="offline" data-view="home">
-      <nav class="workspace-nav" aria-label="Разделы приложения">
-        <div class="nav-brand">◉ <strong>Чушпан</strong><small>PERSONAL AI · macOS</small></div>
-        <button data-view="home" aria-current="page">◌ Диалог <kbd>⌘1</kbd></button>
-        <button data-view="history">▤ История <kbd>⌘2</kbd></button>
-        <button data-view="day">☀ Мой день</button>
-        <div class="nav-spacer"></div>
-        <button data-view="diagnostics">↗ Диагностика</button>
-        <button data-view="settings">⚙ Настройки <kbd>⌘,</kbd></button>
-        <div class="nav-foot">Локальный голос.<br>Твой контекст. Твой Mac.</div>
-      </nav>
-      <div class="backdrop" aria-hidden="true"></div>
+      <p id="dashboard-feedback" class="dashboard-feedback" role="status" hidden></p>
+      <nav class="workspace-nav" aria-label="Разделы приложения"><div class="nav-brand"><span class="nav-avatar"><svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="19" fill="#51405f"/><path d="M8 27V13l8 5h9l7-5v14q-12 11-24 0" fill="#edcfda"/><path d="M12 25h5m7 0h5m-10 5q2 2 4 0" fill="none" stroke="#5b4059" stroke-width="2" stroke-linecap="round"/></svg></span><strong>Мой Чушпан <i>♡</i></strong></div>
+      <button data-view="home" aria-current="page"><span data-icon="chat"></span><span>Чат</span><kbd>⌘1</kbd></button><button data-view="history"><span data-icon="history"></span><span>История разговоров</span></button><button data-view="calendar"><span data-icon="calendar"></span><span>Календарь</span></button><button data-view="performance"><span data-icon="chart"></span><span>Статистика</span></button><button data-view="memory"><span data-icon="note"></span><span>Заметки и память</span></button><button data-view="automations"><span data-icon="sparkles"></span><span>Автоматизации</span></button><button data-view="smart-home"><span data-icon="lamp"></span><span>Умный дом</span></button><button data-view="settings"><span data-icon="settings"></span><span>Настройки</span></button>
+      <div class="recent-heading"><span>Недавние разговоры</span><button data-action="new-chat" aria-label="Новый разговор">+</button></div><label class="recent-search"><span data-icon="search"></span><input id="recent-search" placeholder="Найти разговор" type="search" aria-label="Поиск разговоров"></label><div id="recent-conversations" class="recent-conversations"><p class="muted">История появится после подключения.</p></div>
+      <div class="nav-spacer"></div><div class="nav-secondary"><button data-view="day"><span data-icon="news"></span><span>Новости</span></button><button data-view="diagnostics"><span data-icon="activity"></span><span>Диагностика</span></button></div><div class="nav-foot"><span class="connection-light"></span><span id="nav-state">Подключаюсь…</span><button data-action="ambient" title="Ambient" aria-label="Открыть Ambient"><span data-icon="moon"></span></button></div></nav>
 
-      <header class="top">
-        <div class="brand">
-          <span class="mark" aria-hidden="true">◈</span>
-          <b id="name">ЧУШПАН</b>
-          <span class="dim" id="model"></span>
-        </div>
-        <div class="status" role="status" aria-live="polite">
-          <span class="dot" aria-hidden="true"></span>
-          <span id="state-label"></span>
-        </div>
-        <div class="clock">
-          <span id="time">--:--</span>
-          <span id="date" class="dim"></span>
-        </div>
-      </header>
-
-      <aside class="col left">
-        <section class="panel" id="weather">
+      <div class="backdrop" aria-hidden="true"></div><header class="top"><div class="brand"><b id="name">ЧУШПАН</b><span id="model"></span></div><div class="clock"><span id="time">--:--</span><span id="date"></span></div><div class="status" role="status" aria-live="polite"><span class="dot"></span><span id="state-label">Подключение</span></div></header>
+      <main class="stage"><div class="room-art" role="img" aria-label="Уютная комната с видом на вечерний Таллин"></div><canvas id="core" hidden></canvas><div class="caption"><p id="greeting">Привет ♡</p><h1 id="caption-state" class="caption-state">Я рядом</h1><p id="caption-hint"></p><p id="session-status" class="session-meta"></p><p id="session-interrupted" hidden>Предыдущий ответ прерван.</p><p id="recipient-status" class="sr-only"></p><div id="tool" class="tool"></div></div><div id="character" class="character"></div><div class="ambient-glance"><div id="ambient-weather"></div><div id="ambient-event"></div></div><button id="ambient-exit" class="ambient-exit" data-action="ambient-exit">Вернуться к разговору</button><small class="room-signature">МАЛЕНЬКИЙ УГОЛОК СПОКОЙСТВИЯ</small></main>
+      <section class="talk"><div class="talk-tools"><span id="talk-note" role="status"></span><button id="export" class="tool-button"></button></div><div class="transcript" id="transcript" aria-live="polite"></div></section>
+      <form id="chat-composer" class="chat-composer"><button id="listen-control" type="button" class="mic-button" aria-label="Начать разговор"><span data-icon="mic"></span><span id="listen-control-label" class="sr-only">Начать разговор</span></button><button type="button" id="stop-response" class="tool-button" aria-label="Остановить ответ" disabled>■<span class="sr-only">Остановить ответ</span></button><textarea id="chat-input" rows="1" maxlength="4000" placeholder="Напиши мне что-нибудь…" aria-label="Сообщение Чушпану"></textarea><label class="speak-toggle" title="Озвучить ответ"><input id="chat-speak" type="checkbox"><span data-icon="volume"></span><span class="sr-only">Озвучить ответ</span></label><button type="submit" id="chat-send" class="send-button" aria-label="Отправить сообщение"><span data-icon="send"></span></button></form>
+      <aside class="col right" aria-label="Мой день">
+        <section class="dashboard-card location-card"><span class="location-icon" data-icon="pin"></span><div><p id="location-caption">Твой город</p><h2><span id="location-zone">Местоположение неизвестно</span> <i>♡</i></h2><small id="location-source"></small></div><button data-go="settings" aria-label="Настроить местоположение" class="icon-button" data-icon="settings"></button></section>
+        <section class="panel dashboard-card weather-card" id="weather">
           <h2><span data-label="weather"></span><span class="sub" id="w-place"></span></h2>
-          <div class="w-now">
-            <div class="temp"><span id="w-temp">--</span><sup>°C</sup></div>
+          <div class="w-now"><span class="weather-art" id="weather-art" aria-hidden="true">☁</span>
+            <div class="temp"><span id="w-temp">—</span><sup>°C</sup></div>
             <div>
               <div id="w-cond" class="bright"></div>
               <div id="w-feels" class="dim"></div>
@@ -52,41 +35,17 @@
           </div>
           <dl class="kv" id="w-details"></dl>
           <ul class="w-days" id="w-days"></ul>
-        </section>
-        <section class="panel grow" id="news">
-          <h2><span data-label="news"></span></h2>
-          <ul class="news" id="news-list"></ul>
-        </section>
-      </aside>
+        <p id="weather-forecast" class="weather-forecast"></p><p id="weather-feedback" class="card-feedback">Выбери город, чтобы узнать погоду.</p><button class="text-button weather-refresh" data-op="weather_refresh" aria-label="Обновить погоду">Обновить</button></section>
 
-      <main class="stage">
-        <div class="hero-eyebrow">ТВОЙ ГОЛОСОВОЙ АССИСТЕНТ</div>
-        <canvas id="core" aria-label="Ядро ассистента Чушпан"></canvas>
-        <div class="caption">
-          <div id="caption-state" class="caption-state"></div>
-          <p id="session-status" role="status" aria-live="polite">Подключение к голосовой сессии…</p>
-          <p id="session-interrupted" hidden>Предыдущий ответ прерван пользователем.</p>
-          <p id="recipient-status" role="status" aria-live="polite">Ожидание обращения</p>
-          <div id="caption-hint" class="caption-hint"></div>
-          <div id="tool" class="tool" aria-live="polite"></div>
-          <button id="listen-control" class="primary-action" type="button">Активировать</button>
-        </div>
-      </main>
+        <div class="card-pair"><section class="dashboard-card today-card"><div class="section-heading"><h2>Сегодня</h2><button class="icon-button" data-go="calendar" title="Открыть календарь" aria-label="Открыть календарь">+</button></div><p id="today-date" class="muted"></p><div id="today-events" class="event-list"></div><button id="calendar-connect-card" class="text-button" data-op="calendar_connect">Подключить календарь</button></section>
+        <section class="dashboard-card mini-calendar"><div class="month-heading"><button data-month="-1" aria-label="Предыдущий месяц">‹</button><h2 class="calendar-month-title"></h2><button data-month="1" aria-label="Следующий месяц">›</button></div><div class="weekday-row"><span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span></div><div class="month-grid" id="calendar-mini-grid"></div></section></div>
+        <div class="card-pair lower-cards"><section class="dashboard-card stats-card"><div class="section-heading"><h2><span data-icon="chart"></span>Чушпан сегодня</h2><button class="text-button" data-go="performance">Подробнее</button></div><dl id="dashboard-stats" class="dashboard-stats"><div><dt>Отклик</dt><dd>Нет данных</dd></div></dl></section><section class="dashboard-card goals-card"><div class="section-heading"><h2><span data-icon="target"></span>Фокус недели</h2><div class="button-row"><button class="text-button" data-action="add-task">Задача</button><button class="icon-button" data-action="add-goal" aria-label="Добавить цель">+</button></div></div><div id="dashboard-goals"></div></section></div>
 
-      <section class="talk">
-        <div class="talk-tools">
-          <span id="talk-note" class="talk-note" role="status"></span>
-          <button id="export" class="tool-button" type="button"></button>
-        </div>
-        <div class="transcript" id="transcript" aria-live="polite"></div>
-      </section>
-
-      <aside class="col right">
         <section class="panel ai-panel">
           <h2>AI · Соединение <span class="live-indicator" id="ai-provider">Не проверено</span></h2>
           <strong id="ai-model">Ожидание подключения</strong>
           <p id="ai-reason" class="dim">Статус появится после подключения к ассистенту.</p>
-          <div class="ai-summary"><span>Отклик <b id="summary-response">—</b></span><span>Генерация <b id="summary-model">—</b></span></div>
+          <div class="ai-summary"><span>Отклик <b id="summary-response">—</b></span><span>Генерация <b id="summary-model">—</b></span><button id="open-performance" class="trace-link" disabled>Диагностика ответа</button></div>
           <div id="ai-models"></div>
         </section>
         <section class="panel" id="system">
@@ -104,13 +63,53 @@
         </section>
       </aside>
 
-      <section class="workspace-page history-page" aria-label="История разговоров">
+<aside class="col left">        <section class="panel grow" id="news">
+          <h2><span data-label="news"></span></h2>
+          <ul class="news" id="news-list"></ul>
+        </section>
+
+
+</aside>      <section class="workspace-page history-page" aria-label="История разговоров">
         <div class="page-heading"><small>ПАМЯТЬ ДИАЛОГА</small><h1>Разговоры</h1><p>Твои сохранённые диалоги. Без технических событий.</p></div>
-        <div class="history-layout"><div id="conversation-list" class="conversation-list"></div><div id="history-messages" class="history-messages"><p class="empty-state">Выбери разговор слева.</p></div></div>
+        <div class="page-toolbar"><label class="search-field"><span data-icon="search"></span><input id="history-search" type="search" placeholder="Поиск по сообщениям"></label><label class="check-label"><input id="history-trash" type="checkbox"> Корзина</label><button data-action="new-chat">Новый разговор</button></div><div class="history-layout"><div id="conversation-list" class="conversation-list"></div><div id="history-messages" class="history-messages"><p class="empty-state">Выбери разговор слева.</p></div></div>
+      </section>
+      <section class="workspace-page performance-page" aria-label="Производительность">
+        <div class="page-heading"><small>РЕАЛЬНОЕ ВРЕМЯ ОЖИДАНИЯ</small><h1>Статистика Чушпана</h1>
+          <p>От конца реплики до содержательного ответа. «Секунду» учитывается отдельно. Полное время включает озвучку.</p></div>
+        <div id="dashboard-stat-details" class="dashboard-stat-details"></div><section class="stat-chart-card"><div class="section-heading"><h2>Ритм разговоров</h2><span>Запросы по времени · реальные трассы</span></div><div id="dashboard-stat-chart" class="stat-chart"></div></section><div class="performance-toolbar"><label>Период <select id="performance-period"><option value="1">Сегодня</option><option value="7">7 дней</option><option value="30">30 дней</option></select></label>
+          <button id="performance-refresh">Обновить</button><small id="performance-connection">Нет соединения</small></div>
+        <div id="performance-live" class="performance-live" role="status">Ожидаю реальные события backend.</div>
+        <div id="performance-summary" class="performance-summary"></div>
+        <p id="performance-samples" class="perf-note"></p><div id="performance-providers" class="performance-providers"></div>
+        <section class="stat-chart-card"><h2>Проверки обращения</h2><p class="muted">Отклонённые звуки и речь не считаются ответами и не уменьшают среднюю задержку.</p><div id="performance-activations"></div></section>
+        <div class="performance-layout"><section><h2>История запросов</h2><div id="performance-requests"></div></section>
+          <section id="performance-detail" aria-label="Трасса запроса"><p class="empty-state">Выбери запрос для временной шкалы.</p></section></div>
       </section>
       <section class="workspace-page settings-page" aria-label="Настройки">
         <div class="page-heading"><small>ТВОЁ ПРОСТРАНСТВО</small><h1>Настройки</h1><p>Текущие параметры ассистента. Изменение голоса и моделей здесь не выполняется.</p></div>
         <dl id="settings-items" class="settings-list"><div class="empty-state">Подключись к Чушпану, чтобы увидеть реальные параметры.</div></dl>
+        <form id="ambient-settings" class="settings-card"><h2>Твоя тихая комната</h2><p>Ambient включается, когда ты не пользуешься Mac. Он не мешает блокировке и системному сну.</p>
+        <label class="check-label"><input id="ambient-enabled" type="checkbox"> Включать Ambient автоматически</label>
+        <div class="form-grid"><label>После бездействия<select id="ambient-minutes"><option value="1">1 минута</option><option value="3">3 минуты</option><option value="5">5 минут</option><option value="10">10 минут</option><option value="15">15 минут</option></select></label>
+        <label>Дисплей<select id="ambient-display"><option value="primary">Основной</option><option value="external">Внешний</option></select></label></div>
+        <label class="check-label"><input id="ambient-fullscreen" type="checkbox"> Полноэкранный Ambient</label><label class="check-label"><input id="ambient-battery" type="checkbox"> Уменьшать анимации от аккумулятора</label>
+        <div class="button-row"><button class="primary" type="submit">Сохранить</button><button data-action="ambient" type="button">Посмотреть комнату</button></div><p id="ambient-note" class="muted" role="status"></p></form>
+        <section class="settings-card"><h2>Местоположение и календарь</h2><p>Разрешения macOS запрашиваются отдельно. Точная геопозиция не сохраняется; погоде передаётся только округлённая область.</p>
+        <div class="button-row"><button type="button" data-op="location_connect">Определить город и погоду</button><button type="button" data-op="location_disable">Остановить автоопределение</button></div>
+        <p id="location-feedback" class="muted" role="status"></p><form id="manual-location"><label>Город вручную<input id="manual-city" placeholder="Например, Таллин или Силламяэ" maxlength="80" required></label><button type="submit">Выбрать город</button></form>
+        <div class="button-row"><button data-op="calendar_connect">Подключить Apple Calendar</button><button data-op="calendar_disable">Отключить карточку календаря</button></div><p id="calendar-feedback" class="muted" role="status"></p><p class="muted">Календари Google появятся здесь, если подключены к учётным записям macOS. Отдельная авторизация Google не требуется.</p></section>
+
+        <form id="voice-settings" class="settings-card"><h2>Голос и обращение</h2>
+          <p id="microphone-status" role="status">Состояние микрофона неизвестно.</p>
+          <label>Чувствительность активации<select id="voice-sensitivity" disabled><option value="conservative">Консервативная</option><option value="balanced">Сбалансированная</option><option value="sensitive">Повышенная</option></select></label><p id="voice-thresholds" class="muted"></p>
+          <label>Режим общения<select id="voice-mode" disabled><option value="name_only">Только по имени</option><option value="dialogue">Непрерывный диалог в пределах окна</option></select></label>
+          <label>Ожидание продолжения, секунд<input id="voice-duration" type="number" min="10" max="300" step="1" required disabled></label>
+          <label class="check-label"><input id="voice-barge" type="checkbox" disabled> Разрешить перебивание ассистента</label>
+          <label class="check-label"><input id="voice-noise" type="checkbox" disabled> Подавление фонового шума</label><p id="voice-noise-status" class="muted"></p>
+          <p class="muted">В обоих режимах первый запрос требует обращения. Окно диалога закрывается по тишине. <span id="voice-session-limit"></span> «Чушпан, стоп» и кнопка остановки доступны отдельно.</p>
+          <button type="submit" disabled>Применить настройки голоса</button><p id="voice-feedback" role="status"></p>
+        </form>
+        <details class="settings-card"><summary>Дополнительные ограничения диалога</summary>
         <form id="dialogue-settings" class="dialogue-settings">
           <h2>Диалоговая сессия</h2>
           <label><input id="dialogue-enabled" type="checkbox" disabled> Продолжать разговор без повторного обращения</label>
@@ -123,6 +122,7 @@
           <button type="button" id="dialogue-close" disabled>Закончить разговор</button>
           <p id="dialogue-feedback" role="status"></p>
         </form>
+        </details>
         <form id="music-settings" class="dialogue-settings">
           <h2>Музыкальный сервис</h2>
           <label>Основной сервис <select id="music-provider" disabled><option value="unselected">Не выбран</option><option value="youtube_music">YouTube Music</option><option value="spotify">Spotify</option></select></label>
@@ -132,6 +132,15 @@
         </form>
       </section>
 
+
+      <section class="workspace-page calendar-page" aria-label="Календарь"><div class="page-heading"><small>ТВОЙ ДЕНЬ, БЕЗ СУЕТЫ</small><h1>Календарь</h1><p>Настоящие события из Apple Calendar. Время указано в твоём часовом поясе.</p></div>
+        <div class="page-toolbar"><button data-op="calendar_connect">Подключить календарь</button><button data-op="calendar_refresh">Обновить</button><button data-op="calendar_open">Открыть Calendar</button></div>
+        <div class="calendar-layout"><section class="dashboard-card calendar-large"><div class="month-heading"><button data-month="-1" aria-label="Предыдущий месяц">‹</button><h2 class="calendar-month-title"></h2><button data-month="1" aria-label="Следующий месяц">›</button></div><div class="weekday-row"><span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span></div><div class="month-grid" id="calendar-full-grid"></div></section>
+        <section class="dashboard-card"><div class="section-heading"><h2 id="calendar-selected-title">Сегодня</h2></div><div id="calendar-events" class="event-list"></div><p class="muted">Создавать и изменять события можно в Calendar. Чушпан самостоятельно их не редактирует.</p></section></div></section>
+      <section class="workspace-page memory-page" aria-label="Заметки и память"><div class="page-heading"><small>ВАЖНОЕ ОСТАЁТСЯ РЯДОМ</small><h1>Заметки и память</h1><p>Твои записи и факты, которые Чушпан действительно сохранил.</p></div><div class="page-toolbar"><button class="primary" data-action="add-note">Новая заметка</button><label class="search-field"><span data-icon="search"></span><input id="memory-search" type="search" placeholder="Найти заметку или воспоминание"></label></div>
+      <h2>Заметки</h2><div id="dashboard-notes" class="notes-grid"></div><h2>Сохранённая память</h2><p class="muted">Правки и удаление проходят существующую проверку подтверждения Чушпана.</p><div id="dashboard-memories" class="notes-grid"></div></section>
+      <section class="workspace-page automations-page" aria-label="Автоматизации"><div class="page-heading"><small>ПРИВЫЧНЫЕ РИТУАЛЫ</small><h1>Автоматизации</h1><p>Существующие сценарии Чушпана. Запуск требует явного действия и предусмотренных подтверждений.</p></div><div class="integration-grid"><section class="dashboard-card ritual-card"><span class="ritual-icon" data-icon="moon"></span><h2>Я спать</h2><p>Существующий ночной сценарий: видео, BetterDisplay, громкость, подсветка и Shortcut <b>youtube sleep</b>.</p><p id="night-availability" class="muted">Проверяю доступность сценария…</p><button data-command="Чушпан, я спать" id="run-night">Запустить сценарий</button></section><section class="dashboard-card"><h2>Ambient</h2><p>Тихая комната с часами, погодой и ближайшими событиями, пока ты отдыхаешь.</p><button data-action="ambient">Открыть комнату</button><button data-go="settings">Настроить</button></section></div></section>
+      <section class="workspace-page smart-home-page" aria-label="Умный дом"><div class="page-heading"><small>НЕМНОГО УЮТА</small><h1>Умный дом</h1><p>Локальное управление подключённой Bluetooth-подсветкой.</p></div><section class="dashboard-card led-card"><div class="section-heading"><h2>LED-лента</h2><span id="led-availability">Проверяю настройки…</span></div><p class="muted">ELK-BLEDOB · изменения подтверждаются результатом Bluetooth-записи. Физическое состояние может потребовать проверки.</p><div class="button-row"><button data-command="Включи подсветку" class="primary">Включить</button><button data-command="Выключи подсветку">Выключить</button></div><div id="led-colors" class="led-colors"></div><form id="led-brightness"><label>Яркость<input id="led-level" type="range" min="0" max="100" value="50"><output id="led-level-value">50%</output></label><button type="submit">Применить</button></form><p class="muted">Ползунок задаёт запрашиваемое значение, а не показывает измеренную яркость ленты.</p></section></section>
       <section class="boot" id="boot" aria-live="polite" hidden>
         <div class="boot-box">
           <div class="boot-title" id="boot-title"></div>
@@ -152,7 +161,8 @@
           <span id="owner" class="dim"></span>
         </span>
       </footer>
-    </div>
+<div id="action-confirmation" class="action-confirmation" hidden><strong>Нужно твоё подтверждение</strong><p id="confirmation-summary"></p><div class="button-row"><button id="confirm-action" class="primary"></button><button data-command="Отмена">Отмена</button></div></div>
+<dialog id="edit-dialog"><form id="edit-form"><h2 id="edit-heading"></h2><p id="edit-description" class="muted"></p><label id="edit-value-label">Текст<input id="edit-value" maxlength="80"></label><label id="edit-long-label" hidden>Текст<textarea id="edit-long" rows="5" maxlength="3000"></textarea></label><div class="button-row"><button type="submit" id="edit-submit" class="primary">Сохранить</button><button type="button" id="edit-cancel">Отмена</button></div></form></dialog>    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

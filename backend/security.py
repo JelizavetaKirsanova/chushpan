@@ -41,8 +41,20 @@ def fingerprint(name: str, arguments: dict, summary: str) -> str:
 def command_text(text: str) -> str:
     """Only direct current-user commands, not quoted instructions or source excerpts."""
     text = " ".join(text.casefold().split()).strip()
-    text = re.sub(r"^(?:эй[, .!]+)?(?:чушпа[́]?н|jarvis|джарвис)[, .!:]+", "", text)
+    text = re.sub(
+        r"^(?:(?:привет|здравствуй|добрый (?:день|вечер)|доброе утро)[, .!]+)?"
+        r"(?:эй[, .!]+)?(?:чушпа[́]?н|jarvis|джарвис)[, .!:]+",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"^(?:какая (?:еще |ещё )?явная просьба\?\s*)?"
+        r"(?:я (?:тебя|вас) прошу|прошу(?: тебя| вас)?)[, .!:]+",
+        "",
+        text,
+    )
     text = re.sub(r"^(?:пожалуйста[, ]+|please[, ]+)", "", text)
+    text = re.sub(r"[, ]+пожалуйста[.!? ]*$", "", text)
     text = re.sub(r"^(?:можешь(?:,? пожалуйста)?|can you|could you)\s+", "", text)
     infinitives = {
         "открыть": "открой",
@@ -53,9 +65,13 @@ def command_text(text: str) -> str:
         "сделать": "сделай",
         "поставить": "поставь",
         "включить": "включи",
+        "выключить": "выключи",
+        "установить": "установи",
+        "погасить": "погаси",
     }
     first, separator, rest = text.partition(" ")
     text = infinitives.get(first, first) + separator + rest
+    text = re.sub(r"^(сделай|поставь|установи|включи|выключи|открой|запусти) мне ", r"\1 ", text)
     return text
 
 
@@ -82,11 +98,17 @@ def vision_requested(text: str) -> bool:
 def action_requested(text: str) -> bool:
     """Conservative guard for direct action requests; quoted source text is not authority."""
     command = command_text(text)
+    from backend.local_commands import route
+
+    local = route(text)
+    if local and local[0] in {"led_control", "open_website", "set_brightness", "set_volume"}:
+        return True
     if vision_requested(text):
         return True
     if re.match(
         r"(?:открой|закрой|переключ\w*|сверни|усыпи|заблокируй"
-        r"|запомни|забудь|удали|сотри|запусти|выполни|open|close|switch|remember|forget|run)\b",
+        r"|включи|включай|запомни|забудь|удали|сотри|запусти|выполни"
+        r"|open|close|switch|remember|forget|run)\b",
         command,
     ):
         return True
@@ -176,7 +198,7 @@ def explicit_request(name: str, arguments: dict, text: str) -> bool:
         return bool(re.match(patterns.get(arguments.get("action"), r"(?!)"), command))
     if name == "set_brightness":
         return bool(
-            re.match(r"измени|сделай|увеличь|уменьши|прибавь|убавь|установи|set", command)
+            re.match(r"измени|сделай|увеличь|уменьши|прибавь|убавь|установи|поставь|set", command)
             and re.search(r"яркост|brightness", command)
         )
     if name == "take_screenshot":
@@ -239,7 +261,8 @@ def risk_for(name: str, arguments: dict) -> Risk:
     if name == "manage_memory":
         return (
             Risk.READ
-            if arguments.get("action") in {"list", "recall", "explain", "character_list", "clarify"}
+            if arguments.get("action")
+            in {"list", "recall", "last_saved", "explain", "character_list", "clarify"}
             else Risk.DANGEROUS
         )
     if (

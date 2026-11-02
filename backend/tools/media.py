@@ -425,7 +425,7 @@ class MediaService:
             out["spotify_volume"] = await self.ducker.set_level(self.s.media.play_volume)
         track = await self.spotify.search_and_play(query, self.s.media.search_wait_s)
         self._last_control_target = "music"
-        return {**out, **track.describe()}
+        return {**out, **track.describe(), "playback_confirmed": track.state == "playing"}
 
     async def media_control(self, action: str, target: str = "auto") -> dict:
         if target not in ("auto", "music", "video"):
@@ -459,7 +459,13 @@ class MediaService:
         if action not in ("next", "previous"):
             return {"ok": True, "action": action}
         await asyncio.sleep(0.4)  # the new track's name arrives a moment later
-        return {"ok": True, "action": action, **(await self.spotify.now_playing()).describe()}
+        now = await self.spotify.now_playing()
+        return {
+            "ok": True,
+            "action": action,
+            **now.describe(),
+            "playback_confirmed": now.state == "playing",
+        }
 
     async def now_playing(self) -> dict:
         if self.youtube:
@@ -581,6 +587,18 @@ def _route_playback_tools(tools: list[Tool], media: MediaService) -> list[Tool]:
     for tool in tools:
         if tool.name == "play_music":
             tool.handler = media.play_music
+            from backend.music import message
+
+            tool.reply = message
+        elif tool.name == "music_playlist":
+            from backend.brain.followups import playlist_reply
+
+            tool.reply = lambda r: (
+                playlist_reply(r)
+                if "playlists" in r
+                else r.get("message")
+                or "Результат операции с плейлистом получен; музыку не включал."
+            )
         elif tool.name == "media_control":
             tool.handler = media.media_control
             tool.parameters["target"] = {

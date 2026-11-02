@@ -8,6 +8,8 @@ from dataclasses import dataclass, replace
 from backend.security import command_text
 from backend.tools.registry import ToolError
 
+FAVOURITE_NAME = r"(?:favou?rite songs|феврит сонгс|фейворит сонгс|фэйворит сонгс)"
+
 
 def load_provider(settings, store) -> None:
     if store is None:
@@ -79,6 +81,12 @@ class MusicIntent:
 
 def parse(text: str) -> MusicIntent | None:
     command = command_text(text).strip(".!? ")
+    command = re.sub(r"^включай\b", "включи", command)
+    if re.fullmatch(
+        rf'(?:включи|поставь) (?:плейлист )?(?:мой )?[«"]?{FAVOURITE_NAME}[»"]?(?: тогда)?',
+        command,
+    ):
+        return MusicIntent("play", "Favourite Songs", "playlist")
     service = re.fullmatch(r"(.+) (?:в|через) (spotify|youtube music)", command)
     if service:
         raw = re.search(r"(.+) (?:в|через) (Spotify|YouTube Music)[.!? ]*$", text, re.I)
@@ -160,6 +168,8 @@ def route(text: str, *, context: bool = False) -> tuple[str, dict] | None:
 
 
 def message(result: dict) -> str:
+    if result.get("error"):
+        return str(result.get("error") or result.get("message") or "Действие завершилось ошибкой.")
     if result.get("status") == "not_found":
         if result.get("offer_playlist_list") is True:
             return "Плейлист не удалось найти. Могу посмотреть доступные плейлисты."
@@ -172,14 +182,27 @@ def message(result: dict) -> str:
             if titles
             else "Не выбран плейлист для этого запроса. Назови нужный плейлист."
         )
+    if result.get("execution_status") == "failed":
+        return str(result.get("message") or "Действие завершилось ошибкой.")
     volume = result.get("spotify_volume", result.get("volume"))
     if result.get("ok") and result.get("action") == "volume" and isinstance(volume, (int, float)):
         return f"Громкость музыки: {volume} процентов."
-    if result.get("message"):
+    if (
+        result.get("message")
+        and result.get("state") != "playing"
+        and (
+            result.get("execution_status")
+            or result.get("code")
+            or result.get("diagnostics")
+            or result.get("action") in {"opened", "volume"}
+        )
+    ):
         return str(result["message"])
     if result.get("error"):
         return str(result["error"])
     if result.get("state") == "playing" and result.get("ok"):
+        if result.get("playback_confirmed") is not True:
+            return "Команда отправлена, но запуск воспроизведения подтвердить не удалось."
         track, artist = result.get("track", ""), result.get("artist", "")
         return (
             "Играет: " + " — ".join(str(x) for x in (artist, track) if x) + "."
@@ -203,6 +226,8 @@ def classify_error(error: Exception) -> tuple[str, str]:
 
     if isinstance(error, MusicBrowserError):
         return error.code, str(error)
+    if isinstance(error, TimeoutError):
+        return "service_timeout", "Музыкальный сервис не ответил вовремя; запуск не подтверждён."
     # No raw exception, query, URL, login or token goes to diagnostics/UI.
     text = str(error).casefold()
     if re.search(r"не найден safari web app|not installed|не установ", text):
@@ -232,6 +257,11 @@ def classify_error(error: Exception) -> tuple[str, str]:
             "Нужна авторизация в музыкальном приложении. Войди вручную; "
             "логины и токены в чат не присылай.",
         )
+    if re.search(r"no.active.device|device.not.found|не выбрано.{0,20}устройств", text):
+        return (
+            "device_required",
+            "Выбери доступное устройство воспроизведения в музыкальном сервисе.",
+        )
     if re.search(r"не найден|found nothing|no results|not found", text):
         return "track_not_found", "Музыка не найдена однозначно. Уточни название или исполнителя."
     if re.search(r"каталог|catalog|библиотек", text):
@@ -258,7 +288,41 @@ class MusicCommands:
         self._last_result: dict | None = None
         self._uncertain: tuple | None = None
 
+    def _receipt(self, result: dict) -> dict:
+        app = getattr(getattr(self.media, "youtube", None), "app", None)
+        sent = bool(
+            result.get("playback_confirmed")
+            or result.get("execution_status") == "submitted"
+            or getattr(app, "stages", {}).get("play_submitted")
+        )
+        status = "confirmed" if result.get("ok") else "failed"
+        if result.get("deduplicated") or result.get("action") == "status":
+            sent = False
+        return {
+            **result,
+            "ok": bool(result.get("ok")),
+            "playback_confirmed": bool(
+                result.get("ok")
+                and result.get("state") == "playing"
+                and result.get("playback_confirmed") is True
+            ),
+            "execution_status": status,
+            "execution_events": ["requested", *(["submitted"] if sent else []), status],
+        }
+
     async def execute(self, command: str) -> dict:
+        result = await self._execute_command(command)
+        if "execution_status" not in result:
+            result = {
+                **result,
+                "ok": False,
+                "execution_status": "failed",
+                "playback_confirmed": False,
+                "execution_events": ["requested", "failed"],
+            }
+        return result
+
+    async def _execute_command(self, command: str) -> dict:
         intent = parse(command)
         if intent is None:
             return {"error": "Музыкальная команда не поддерживается.", "code": "unsupported"}
@@ -289,11 +353,20 @@ class MusicCommands:
                 "Другой сервис автоматически не выбираю.",
             }
         async with self.lock:
+            app = getattr(getattr(self.media, "youtube", None), "app", None)
+            if isinstance(getattr(app, "stages", None), dict):
+                for key in app.stages:
+                    app.stages[key] = False
             try:
-                return await self._execute(intent, provider)
+                return self._receipt(await self._execute(intent, provider))
             except (ToolError, OSError, TimeoutError) as exc:
                 code, text = classify_error(exc)
-                if code in {"playback_unconfirmed", "playback_blocked", "service_unavailable"}:
+                if code in {
+                    "playback_unconfirmed",
+                    "playback_blocked",
+                    "service_unavailable",
+                    "service_timeout",
+                }:
                     self._uncertain = (provider, intent)
                 if (
                     intent.action in {"playlist", "open_playlist"}
@@ -309,7 +382,7 @@ class MusicCommands:
                     and provider == "youtube_music"
                 ):
                     text += " Могу посмотреть доступные плейлисты."
-                return {"ok": False, "code": code, "error": text}
+                return self._receipt({"ok": False, "code": code, "error": text})
 
     async def _execute(self, intent: MusicIntent, provider: str) -> dict:
         if intent.action == "list_playlists":
@@ -318,7 +391,11 @@ class MusicCommands:
             from backend.brain.followups import playlist_reply
 
             result = await self.media.youtube.playlist(action="list")
-            return {**result, "message": playlist_reply(result)}
+            return {
+                **result,
+                "ok": not bool(result.get("error")),
+                "message": playlist_reply(result),
+            }
         if intent.action in {"diagnose", "request_access"}:
             if provider != "youtube_music" or self.s.media.youtube_music.transport != "safari":
                 return {
@@ -364,7 +441,17 @@ class MusicCommands:
                     and (now.get("track"), now.get("artist"))
                     == (before.get("track"), before.get("artist"))
                 ):
-                    return {**now, "ok": True, "deduplicated": True}
+                    app = getattr(getattr(self.media, "youtube", None), "app", None)
+                    if provider == "youtube_music" and hasattr(app, "wait_playing"):
+                        if self.s.media.youtube_music.transport == "safari":
+                            now = await app.wait_playing(
+                                title=before.get("track", ""),
+                                playlist=before.get("playlist_id", ""),
+                                playlist_title=before.get("playlist_title", ""),
+                            )
+                        else:
+                            now = await app.wait_playing(before.get("track", ""))
+                    return {**now, "ok": True, "playback_confirmed": True, "deduplicated": True}
                 if now.get("state") == "paused" and now.get("track") == before.get("track"):
                     return await self._execute(MusicIntent("resume"), provider)
                 if now.get("state") == "unknown":
@@ -395,7 +482,9 @@ class MusicCommands:
                     "message": "Открыл страницу сохранённого плейлиста. "
                     "Воспроизведение не запускал.",
                 }
-            if intent.action in {"playlist", "open_playlist"} and result.get("status") in {
+            if (
+                intent.kind == "playlist" or intent.action in {"playlist", "open_playlist"}
+            ) and result.get("status") in {
                 "not_found",
                 "unavailable",
             }:
@@ -406,7 +495,21 @@ class MusicCommands:
                 }
         elif intent.action == "status":
             result = await self.media.now_playing()
-            return {**result, "ok": result.get("state") in {"playing", "paused"}}
+            app = getattr(getattr(self.media, "youtube", None), "app", None)
+            if (
+                result.get("state") == "playing"
+                and provider == "youtube_music"
+                and hasattr(app, "wait_playing")
+            ):
+                result = await app.wait_playing(result.get("track", ""))
+            return {
+                **result,
+                "action": "status",
+                "ok": result.get("state") in {"playing", "paused"},
+                "playback_confirmed": bool(
+                    result.get("track") and result.get("state") == "playing"
+                ),
+            }
         elif intent.action in {"quieter", "louder"}:
             return {
                 **await self.media.media_volume(
@@ -421,6 +524,25 @@ class MusicCommands:
                 await self.media.now_playing() if intent.action in {"next", "previous"} else {}
             )
             result = await self.media.media_control(intent.action, target=target)
+            if provider == "spotify" and intent.action == "resume" and result.get("ok"):
+                # Spotify's command receipt has no state; read its scripting API
+                # before allowing a playback confirmation.
+                observed = await self.media.now_playing()
+                result = {
+                    **result,
+                    **observed,
+                    "playback_confirmed": observed.get("state") == "playing",
+                }
+        if (
+            intent.action in {"play", "playlist", "calm", "resume"}
+            and (result.get("status") not in {"not_found", "choose", "ambiguous", "unavailable"})
+            and not (
+                result.get("ok")
+                and result.get("state") == "playing"
+                and result.get("playback_confirmed") is True
+            )
+        ):
+            raise ToolError("Запуск воспроизведения не подтверждён доступным API")
         if result.get("ok"):
             state = result.get("state")
             if state not in {"playing", "paused"}:

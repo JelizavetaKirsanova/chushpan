@@ -249,10 +249,15 @@ def test_hud_opens_in_the_window_and_falls_back_to_the_browser(monkeypatch):
     asyncio.run(server.open_hud(HudBus(), "http://hud", FakeWindow(opens=False)))
     assert browser == ["http://hud"]
     bus = HudBus()
-    bus.subscribe()  # a page left open reconnected: open nothing
+    bus.subscribe()  # A browser tab must not suppress the requested native app.
     window = FakeWindow(opens=True)
     asyncio.run(server.open_hud(bus, "http://hud", window))
-    assert window.opened == 0 and browser == ["http://hud"]
+    assert window.opened == 1 and browser == ["http://hud"]
+    # Browser mode and a failed window still reuse the connected page.
+    asyncio.run(server.open_hud(bus, "http://hud"))
+    failed_window = FakeWindow(opens=False)
+    asyncio.run(server.open_hud(bus, "http://hud", failed_window))
+    assert failed_window.opened == 1 and browser == ["http://hud"]
 
 
 def test_hud_window_reports_a_window_that_cannot_open(monkeypatch):

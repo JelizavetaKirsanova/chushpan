@@ -36,12 +36,14 @@ class EchoCanceller:
     """Feed it what is played (`play`, from any thread) and every microphone frame
     (`process`, in order); it returns the cleaned frames, same size, ~10 ms later."""
 
-    def __init__(self, noise_suppression: bool = False) -> None:
+    def __init__(self, noise_suppression: bool = False, echo_cancellation: bool = True) -> None:
         from livekit import rtc
 
         self._rtc = rtc
+        self.noise_suppression = noise_suppression
+        self.echo_cancellation = echo_cancellation
         self._apm = rtc.AudioProcessingModule(
-            echo_cancellation=True,
+            echo_cancellation=echo_cancellation,
             noise_suppression=noise_suppression,
             high_pass_filter=True,
             auto_gain_control=False,  # the wake word and VAD thresholds assume raw levels
@@ -51,6 +53,22 @@ class EchoCanceller:
         self._queued = 0
         self._mic = np.zeros(0, dtype=np.int16)
         self._out = np.zeros(0, dtype=np.int16)
+
+    def configure_noise(self, enabled: bool) -> None:
+        """Called on the capture/event-loop thread between frames, never inside a callback."""
+        if enabled == self.noise_suppression:
+            return
+        replacement = self._rtc.AudioProcessingModule(
+            echo_cancellation=self.echo_cancellation,
+            noise_suppression=enabled,
+            high_pass_filter=True,
+            auto_gain_control=False,
+        )
+        old, self._apm = self._apm, replacement
+        self.noise_suppression = enabled
+        handle = getattr(old, "_ffi_handle", None)
+        if handle:
+            handle.dispose()
 
     def play(self, audio: np.ndarray) -> None:
         """16 kHz int16 audio that is going to the speakers right now."""
@@ -110,9 +128,13 @@ class EchoCanceller:
             handle.dispose()
 
 
-def load_echo_canceller() -> EchoCanceller | None:
+def load_echo_canceller(
+    noise_suppression: bool = False, echo_cancellation: bool = True
+) -> EchoCanceller | None:
     try:
-        return EchoCanceller()
+        return EchoCanceller(
+            noise_suppression=noise_suppression, echo_cancellation=echo_cancellation
+        )
     except Exception as exc:  # noqa: BLE001 - optional: Jarvis works without it
         log.warning("Echo cancellation off: %s", exc)
         return None

@@ -17,7 +17,8 @@ export class Workspace {
   constructor(private readonly requestHistory: (id: number) => void,
     private readonly saveDialogue: (value: {enabled: boolean; duration_s: number; nameless_interruptions: boolean; addressee_strictness: "contextual" | "addressed"}) => void,
     private readonly closeSession: () => void,
-    private readonly saveMusic: (value: string) => void) {
+    private readonly saveMusic: (value: string) => void,
+    private readonly performance?: (id?: string) => void) {
     node("music-settings").addEventListener("submit", event => {
       event.preventDefault();
       if (!this.online || !this.hasMusic) return;
@@ -39,10 +40,11 @@ export class Workspace {
       });
     });
     node("dialogue-close").addEventListener("click", () => { if (this.online) this.closeSession(); });
-    document.querySelectorAll<HTMLButtonElement>(".workspace-nav button").forEach(button => {
+    document.querySelectorAll<HTMLButtonElement>(".workspace-nav button[data-view]").forEach(button => {
       button.addEventListener("click", () => this.navigate(button.dataset.view!));
     });
     document.addEventListener("keydown", event => {
+      if (document.querySelector('dialog[open]')) return;
       if (event.metaKey || event.ctrlKey) {
         const view = {"1": "home", "2": "history", ",": "settings"}[event.key];
         if (view) { event.preventDefault(); this.navigate(view); }
@@ -51,7 +53,7 @@ export class Workspace {
   }
   navigate(view: string): void {
     document.querySelector<HTMLElement>(".hud")!.dataset.view = view;
-    document.querySelectorAll<HTMLButtonElement>(".workspace-nav button").forEach(button => {
+    document.querySelectorAll<HTMLButtonElement>(".workspace-nav button[data-view]").forEach(button => {
       if (button.dataset.view === view) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     });
@@ -59,7 +61,9 @@ export class Workspace {
       if (this.online) this.requestHistory(this.selected);
       else node("history-messages").replaceChildren(text("p", "Для просмотра истории запусти Чушпана. Соединение с backend отсутствует.", "empty-state"));
     }
+    if (view === "performance") this.performance?.();
   }
+  openTrace(id: string): void { this.navigate('performance'); this.performance?.(id); }
   connection(online: boolean): void {
     this.online = online;
     document.querySelectorAll<HTMLSelectElement | HTMLButtonElement>("#music-settings select, #music-settings button")
@@ -141,15 +145,29 @@ export class Workspace {
     else if (event.type === "history") {
       this.selected = event.selected;
       node("conversation-list").replaceChildren(...event.conversations.map(conversation => {
-        const button = text("button", `Разговор ${conversation.id}`, "conversation") as HTMLButtonElement;
+        const row = text('div', '', 'conversation-row');
+        const button = text("button", `${conversation.pinned ? '⌁ ' : ''}${conversation.title || conversation.preview || `Разговор ${conversation.id}`}`, "conversation") as HTMLButtonElement;
         button.append(text("small", `${new Date(conversation.started_at).toLocaleString()} · ${conversation.messages} сообщений`));
         button.setAttribute("aria-pressed", String(conversation.id === event.selected));
-        button.addEventListener("click", () => this.requestHistory(conversation.id)); return button;
+        button.addEventListener("click", () => this.requestHistory(conversation.id));
+        row.append(button);
+        const actions = text('div', '', 'conversation-actions');
+        for (const [action, label] of conversation.deleted_at ? [['restore', 'Восстановить']] : [['rename', 'Название'], ['pin', conversation.pinned ? 'Открепить' : 'Закрепить'], ['delete', 'В корзину']]) {
+          const control = text('button', label) as HTMLButtonElement;
+          control.dataset.conversationAction = action; control.dataset.id = String(conversation.id); control.dataset.title = conversation.title || conversation.preview || '';
+          actions.append(control);
+        }
+        row.append(actions); return row;
       }));
       if (!event.conversations.length) node("conversation-list").append(text("p", "Здесь появятся сохранённые разговоры.", "empty-state"));
       node("history-messages").replaceChildren(...event.messages.map(message => {
         const row = text("article", "", `history-message ${message.role}`);
-        row.append(text("small", `${message.role === "user" ? "Ты" : "Чушпан"} · ${new Date(message.created_at).toLocaleTimeString()}`), text("p", message.content)); return row;
+        row.append(text("small", `${message.role === "user" ? "Ты" : "Чушпан"} · ${new Date(message.created_at).toLocaleTimeString()}`), text("p", message.content));
+        if (message.role === 'assistant' && message.request_id && message.has_trace) {
+          const button = text('button', 'Диагностика ответа', 'trace-link');
+          button.onclick = () => this.openTrace(message.request_id!); row.append(button);
+        }
+        return row;
       }));
       if (!event.messages.length) node("history-messages").append(text("p", event.error ?? "Выбери разговор слева. Показаны последние 50 диалогов; до 200 сообщений в каждом.", "empty-state"));
     }

@@ -1,4 +1,4 @@
-"""Settings, in increasing priority: config.yaml < .env < environment variables."""
+"""Settings: config.yaml < config.local.yaml < .env < environment variables."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from backend.i18n import Locale, get_locale, normalize_code
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 CONFIG_FILE = ROOT_DIR / "config.yaml"
+LOCAL_CONFIG_FILE = ROOT_DIR / "config.local.yaml"
 ENV_FILE = ROOT_DIR / ".env"
 WAKEWORD_VERSION = "v0.1"  # openWakeWord pre-trained model version
 
@@ -110,6 +111,7 @@ class LLMConfig(BaseModel):
     keep_alive: str = "30m"
     temperature: float = 0.6
     think: bool = True
+    think_for_simple: bool = False  # only a conservative allowlist; complex requests keep think
     num_ctx: int = Field(default=16384, ge=1024)  # persona + tools + conversation + reply
     context_messages: int = 30  # a turn with a tool call takes 4: question, call, result, answer
 
@@ -123,6 +125,8 @@ class GeminiConfig(BaseModel):
     free_tier_confirmed: bool = False
     timeout_s: float = Field(default=15, ge=5, le=120)
     attempt_timeout_s: float = Field(default=6, ge=1, le=120)
+    stream_idle_timeout_s: float = Field(default=4, ge=1, le=30)
+    simple_use_fallback_model: bool = True  # plain requests use configured secondary, then local
     max_output_tokens: int = Field(default=2048, ge=128, le=8192)
     context_messages: int = Field(default=24, ge=0, le=30)
     context_chars: int = Field(default=24000, ge=4000, le=100000)
@@ -156,6 +160,21 @@ class NightConfig(BaseModel):
         return str(UUID(value)) if value else None
 
 
+class LEDConfig(BaseModel):
+    enabled: bool = False
+    name: str = "ELK-BLEDOB"
+    firmware: str = "JSY-P10A27NM-V1.1.2"
+    address: UUID = UUID("3A4F5301-2291-2E56-628D-83567E951876")
+    service: UUID = UUID("0000fff0-0000-1000-8000-00805f9b34fb")
+    write_characteristic: UUID = UUID("0000fff3-0000-1000-8000-00805f9b34fb")
+    notify_characteristic: UUID = UUID("0000fff4-0000-1000-8000-00805f9b34fb")
+    connect_timeout_s: float = Field(default=12, ge=1, le=30)
+    write_timeout_s: float = Field(default=5, ge=0.1, le=15)
+    settle_s: float = Field(default=1, ge=0.1, le=3)
+    night_off: bool = True
+    comfortable_brightness: int | None = Field(default=None, ge=0, le=100)
+
+
 class STTConfig(BaseModel):
     model: str = "mlx-community/whisper-small-mlx"
     language: str | None = None  # None = assistant language
@@ -180,6 +199,7 @@ class AudioConfig(BaseModel):
     barge_in: bool = False
     # With barge_in: remove Jarvis's own voice from the microphone (WebRTC AEC3).
     echo_cancellation: bool = True
+    noise_suppression: bool = True
 
 
 class VADConfig(BaseModel):
@@ -197,6 +217,7 @@ class DialogueConfig(BaseModel):
     duration_s: int = Field(default=45, ge=10, le=300)
     nameless_interruptions: bool = False
     addressee_strictness: Literal["contextual", "addressed"] = "contextual"
+    max_session_s: float = Field(default=180, ge=30, le=900)
 
 
 class WakeWordConfig(BaseModel):
@@ -204,13 +225,18 @@ class WakeWordConfig(BaseModel):
     phrase: str | None = None  # Custom phrase recognized locally by Whisper; None = ONNX model
     model: str = "hey_jarvis"  # openWakeWord pre-trained name, or a path to a custom .onnx
     models_dir: Path = Path("models/wakeword")
-    threshold: float = 0.5
+    threshold: float = Field(default=0.5, ge=0.05, le=0.99)
+    min_avg_logprob: float = Field(default=-0.7, ge=-3, le=0)
+    max_no_speech_prob: float = Field(default=0.45, ge=0, le=1)
+    cooldown_s: float = Field(default=3, ge=0.5, le=30)
+    check_interval_s: float = Field(default=1, ge=0, le=10)
     listen_timeout_s: float = 6  # after the wake word, how long to wait for a request
     follow_up_s: float = 8  # after a reply, keep listening without the wake word
     chime: bool = True
 
 
 class ToolsConfig(BaseModel):
+    control_context_s: int = Field(default=60, ge=5, le=180)
     # weather | news | system | timers | clock | memory | media. Remove one to hide it.
     enabled: list[str] = Field(
         default_factory=lambda: [
@@ -226,6 +252,7 @@ class ToolsConfig(BaseModel):
     max_rounds: int = 3  # tool calls the model may chain before it must answer
     # Say "one moment" when the model is silent this long (it is probably calling a tool).
     one_moment_after_s: float = 1.5
+    quick_read_timeout_s: float = Field(default=3, ge=1, le=30)
 
 
 class PlaylistConfig(BaseModel):
@@ -347,7 +374,7 @@ class Settings(BaseSettings):
         env_nested_delimiter="__",
         env_file=ROOT_DIR / ".env",
         env_file_encoding="utf-8",
-        yaml_file=CONFIG_FILE,
+        yaml_file=(CONFIG_FILE, LOCAL_CONFIG_FILE),
         yaml_file_encoding="utf-8",
         extra="ignore",
     )
@@ -365,6 +392,7 @@ class Settings(BaseSettings):
     gemini: GeminiConfig = Field(default_factory=GeminiConfig)
     shortcuts: ShortcutsConfig = Field(default_factory=ShortcutsConfig)
     night: NightConfig = Field(default_factory=NightConfig)
+    led: LEDConfig = Field(default_factory=LEDConfig)
     youtube_video: YouTubeVideoConfig = Field(default_factory=YouTubeVideoConfig)
     stt: STTConfig = Field(default_factory=STTConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)

@@ -7,13 +7,20 @@ def bind_workspace(bus, settings, store):
     from backend.music import bind_settings
 
     bind_settings(bus, settings, store)
+    store.performance.bind(bus, settings.location.tz_name)
+
+    search = {"query": "", "trash": False}
 
     def history(conversation_id):
         try:
             bus.publish(
                 {
                     "type": "history",
-                    "conversations": store.conversation_list(),
+                    "conversations": store.conversation_list(
+                        search["query"], trash=search["trash"]
+                    ),
+                    "query": search["query"],
+                    "trash": search["trash"],
                     "selected": conversation_id,
                     "messages": store.conversation_page(conversation_id)
                     if conversation_id > 0
@@ -32,6 +39,14 @@ def bind_workspace(bus, settings, store):
             )
 
     bus.handle("history", history)
+
+    def history_search(value):
+        if set(value) <= {"query", "trash", "selected"} and isinstance(value.get("query", ""), str):
+            search.update(query=value.get("query", "")[:200], trash=value.get("trash") is True)
+            selected = value.get("selected", 0)
+            history(selected if type(selected) is int else 0)
+
+    bus.handle("history_search", history_search)
     bus.publish(
         {
             "type": "settings_info",
@@ -53,9 +68,11 @@ def bind_workspace(bus, settings, store):
                 "История Gemini": f"{settings.gemini.context_messages} сообщений",
                 "Ночной режим": "Действует подтверждение и предварительная проверка разрешений",
                 "Разрешения macOS": "Голосовая команда: проверь разрешения ночного режима",
-                "Память": "Существующая SQLite · история только для чтения в интерфейсе",
-                "Производительность": "Раздел «Диагностика» в боковой панели; latency-check в CLI",
-                "Изменение параметров": "config.yaml; после изменения перезапусти Чушпана",
+                "Память": "Локальная SQLite · история, заметки и подтверждаемые изменения фактов",
+                "Производительность": "Постоянная история трасс в разделе «Производительность»",
+                "Изменение параметров": (
+                    "Голос и модели — config.yaml; параметры комнаты сохраняются здесь"
+                ),
             },
         }
     )

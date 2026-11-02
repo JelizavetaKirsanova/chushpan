@@ -275,6 +275,13 @@ class ProfileMemory:
 
     def route(self, text: str) -> dict | None:
         t = command_text(text).rstrip(".!? ")
+        if t in {
+            "что ты только что запомнил",
+            "что только что запомнил",
+            "что ты сейчас запомнил",
+            "что-то только что запомнил",
+        }:
+            return {"action": "last_saved"}
         changes = character_change(text, self.character())
         if changes:
             return {"action": "character", "value": json.dumps(changes)}
@@ -331,6 +338,8 @@ class ProfileMemory:
 
     def summary(self, args: dict) -> str:
         action = args["action"]
+        if action == "last_saved":
+            return "показать последний действительно сохранённый факт текущего разговора"
         if action == "character":
             values = json.loads(args["value"])
             if character_change(request_context.get().text, self.character()) != values:
@@ -373,6 +382,25 @@ class ProfileMemory:
     def _execute(self, action: str, id: int | None, value: str, revision: int | None) -> dict:
         if not self.store.memory_available:
             raise ToolError("Долговременная память недоступна; изменения не сохранены.")
+        if action == "last_saved":
+            context = request_context.get()
+            conversation = self.store.session_conversation(context.device.session_id)
+            saved = self.store.db.execute(
+                "SELECT content FROM messages WHERE conversation_id=? AND role='tool' "
+                "AND tool_name='remember' ORDER BY id DESC LIMIT 1",
+                (conversation,),
+            ).fetchone()
+            if saved is None:
+                return {"message": "В этом разговоре ещё не было подтверждённого сохранения факта."}
+            result = json.loads(saved["content"])
+            if not result.get("ok"):
+                return {
+                    "message": "Последнее сохранение ещё не подтверждено или завершилось ошибкой."
+                }
+            fact = next((r for r in self.store.memories() if r["id"] == result.get("id")), None)
+            if not fact or fact["status"] != "active" or not safe_memory(fact["content"]):
+                return {"message": "Последний сохранённый факт уже удалён или недоступен."}
+            return {"id": fact["id"], "message": "Запомнил: «" + fact["content"] + "»."}
         if action == "clarify":
             return {"message": "Уточни номер воспоминания и правильный факт. Я не буду гадать."}
         if action == "character_list":
@@ -520,6 +548,7 @@ class ProfileMemory:
                     "enum": [
                         "list",
                         "recall",
+                        "last_saved",
                         "explain",
                         "correct",
                         "delete",

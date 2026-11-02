@@ -1,8 +1,13 @@
+import {VoiceSettingsPanel} from './voice_settings';
 import "./style.css";
 import "./workspace.css";
+import './dashboard.css';
 import { Workspace } from "./workspace";
+import { PerformancePanel } from './performance';
 
-import { Core, type Mode } from "./core";
+import type { Mode } from "./core";
+import { Character } from './character';
+import { DashboardView } from './dashboard';
 import { fill, stringsFor } from "./i18n";
 import { Panels } from "./panels";
 import { Link } from "./socket";
@@ -18,7 +23,10 @@ let t = stringsFor(document.documentElement.lang);
 let hello: Hello | null = null;
 let mode: Mode = "offline";
 let toolTimer = 0;
-const workspace = new Workspace(id => link.history(id), value => link.dialogue(value), () => link.send("sleep"), value => link.music(value));
+const performancePanel = new PerformancePanel(days => link.performance(days), id => link.trace(id));
+const workspace = new Workspace(id => link.history(id), value => link.dialogue(value), () => link.send("sleep"), value => link.music(value), id => id ? performancePanel.open(id) : performancePanel.refresh());
+let latestTrace: string | null = null;
+byId('open-performance').addEventListener('click', () => { if (latestTrace) workspace.openTrace(latestTrace); });
 
 const panels = new Panels(t);
 panels.setStrings(t);
@@ -28,10 +36,13 @@ function tap(): void {
   else if (mode === "listening" || mode === "thinking" || mode === "speaking") link.send("sleep");
 }
 
-const core = new Core(byId("core") as HTMLCanvasElement, tap);
+const voiceSettings = new VoiceSettingsPanel(value => link.voice(value));
+const core = new Character(byId('character'), tap);
+const dashboard = new DashboardView(value => link.dashboard(value), value => link.chat(value), view => workspace.navigate(view), value => link.historySearch(value), core, value => panels.weather(value));
 
 function setMode(next: Mode): void {
   mode = next;
+  (byId("stop-response") as HTMLButtonElement).disabled = !["thinking", "speaking"].includes(next);
   hud.dataset.state = next;
   hud.dataset.activity = next;
   core.setMode(next);
@@ -48,7 +59,9 @@ function setMode(next: Mode): void {
   else if (next === "offline") hint = t.hints.offline;
   byId("caption-hint").textContent = hint;
   if (next !== "thinking") showTool(null);
-  byId("listen-control").textContent = next === "sleeping" ? "Начать разговор" : next === "offline" ? "Нет соединения" : "Завершить разговор";
+  const micLabel = next === "sleeping" ? "Начать разговор" : next === "offline" ? "Нет соединения" : "Завершить разговор";
+  byId('listen-control-label').textContent = micLabel;
+  byId('listen-control').setAttribute('aria-label', micLabel);
   (byId("listen-control") as HTMLButtonElement).disabled = next === "offline" || next === "booting";
 }
 
@@ -61,7 +74,6 @@ function showTool(name: string | null): void {
   }
   box.textContent = `⟳ ${t.tools[name] ?? name}`;
   box.classList.add("on");
-  toolTimer = window.setTimeout(() => box.classList.remove("on"), 6000);
 }
 
 // The loading screen: shown while the backend reports a startup below 100%.
@@ -159,6 +171,9 @@ function onEvent(e: HudEvent): void {
   if (e.type === "hello") requestEvents.reset();
   if (!requestEvents.accept(e)) return;
   workspace.receive(e);
+  performancePanel.receive(e);
+  dashboard.receive(e);
+  voiceSettings.receive(e);
   switch (e.type) {
     case "notice":
       hud.dataset.activity = "error";
@@ -173,7 +188,8 @@ function onEvent(e: HudEvent): void {
       if (e.out !== undefined && mode === "speaking") core.feed(e.out);
       return;
     case "weather":
-      return panels.weather(e);
+      if (!dashboard.hasLocation) panels.weather(e);
+      return;
     case "news":
       return panels.news(e);
     case "system":
@@ -181,6 +197,8 @@ function onEvent(e: HudEvent): void {
     case "timers":
       return panels.setTimers(e.items);
     case "stats":
+      latestTrace = e.trace_id ?? null;
+      (byId('open-performance') as HTMLButtonElement).disabled = latestTrace === null;
       return panels.stats(e);
     case "autostart":
       return showAutostart(e);
@@ -205,12 +223,17 @@ function onEvent(e: HudEvent): void {
 
 const link = new Link(onEvent, (online) => {
   workspace.connection(online);
+  performancePanel.connection(online);
+  dashboard.connection(online);
+  voiceSettings.connection(online);
+  if (online) link.voiceStatus();
   exportButton.disabled = !online;
   if (!online) {
     setMode("offline");
     autostartButton.hidden = true;
   }
 });
+byId("stop-response").addEventListener("click", () => link.send("stop"));
 byId("listen-control").addEventListener("click", tap);
 
 function tickClock(): void {
@@ -222,6 +245,8 @@ function tickClock(): void {
     day: "numeric",
     month: "long",
   });
+  const hour = now.getHours();
+  byId('greeting').textContent = `${hour < 5 ? 'Тихой ночи' : hour < 12 ? 'Доброе утро' : hour < 18 ? 'Добрый день' : 'Добрый вечер'} ♡`;
 }
 
 // In the native window (pywebview) WebKit's Fullscreen API is off: the window does it.
@@ -235,7 +260,7 @@ function toggleFullscreen(): void {
 }
 
 document.addEventListener("keydown", (e) => {
-  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLButtonElement) return;
+  if (e.target instanceof HTMLElement && (e.target.closest('input, textarea, select, button, [contenteditable="true"]') || document.querySelector('dialog[open]'))) return;
   if (e.code === "Space") {
     e.preventDefault();
     tap();

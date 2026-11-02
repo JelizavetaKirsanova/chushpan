@@ -21,14 +21,21 @@ log = logging.getLogger(__name__)
 
 DIST_DIR = ROOT_DIR / "frontend" / "dist"
 DEV_PORT = 5173  # `npm run dev` (Vite)
-COMMANDS = {"wake", "sleep"}
+COMMANDS = {"wake", "sleep", "stop"}
 # Requests answered by handlers registered on the bus, and the type of their value.
 REQUESTS: dict[str, type] = {
     "music_settings": str,
     "autostart": bool,
     "export": type(None),
     "history": int,
+    "history_search": dict,
+    "dashboard": dict,
+    "chat_message": dict,
     "dialogue_settings": dict,
+    "voice_settings": dict,
+    "voice_status": type(None),
+    "performance_stats": int,
+    "performance_detail": str,
 }
 RECONNECT_S = 1.5  # an already open HUD page reconnects within this; then no new tab
 
@@ -157,11 +164,13 @@ class HudServer:
 
 
 async def open_hud(bus: HudBus, url: str, window=None) -> None:
-    """Open the HUD, unless a page left open has already reconnected: in `window` (a
-    HudWindow) if given, falling back to the browser when it cannot open."""
+    """Open the requested native window, even if a browser tab has reconnected.
+
+    Reuse an existing page only in browser mode or if the native window fails.
+    """
     await asyncio.sleep(RECONNECT_S)
-    if bus.clients:
-        return
     if window is not None and await window.open():
+        return
+    if bus.clients:
         return
     await asyncio.to_thread(webbrowser.open, url)

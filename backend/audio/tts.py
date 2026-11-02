@@ -15,7 +15,7 @@ from typing import Protocol
 
 import numpy as np
 
-from backend.latency import measure
+from backend.latency import current, measure
 
 OnStart = Callable[[], None]
 OnLevel = Callable[[float], None]
@@ -144,13 +144,20 @@ class PiperSpeaker:
         started = False
         stop = getattr(audio_q, "stop", self._stop)
         on_audio = self.on_audio
+        previous_end = None
+        on_gap = getattr(audio_q, "on_gap", None)
         with sd.OutputStream(samplerate=rate, channels=1, dtype="int16", device=self.device) as out:
             while (item := audio_q.get()) is not None:
                 sentence, audio = item
+                if (
+                    previous_end is not None
+                    and on_gap
+                    and time.perf_counter() - previous_end > 0.25
+                ):
+                    on_gap(previous_end, time.perf_counter())
                 self.recent_spoken.append(sentence)
                 self.recent_spoken[:] = self.recent_spoken[-8:]
-                if on_sentence:
-                    on_sentence(sentence, len(audio) / rate)
+                sentence_started = False
                 # Resampled per sentence, not per block: no filter edges every 50 ms.
                 ref = resample(audio, rate) if on_audio else None
                 for i in range(0, len(audio), block):
@@ -162,12 +169,19 @@ class PiperSpeaker:
                         on_level(level(audio[i : i + block]))
                     if ref is not None:
                         on_audio(ref[i * SAMPLE_RATE // rate : (i + block) * SAMPLE_RATE // rate])
+                    out.write(audio[i : i + block])
+                    # Only successful writes count as audio. A queued callback before
+                    # the first write could report sound after a device failure/cancel.
+                    if not sentence_started:
+                        if on_sentence:
+                            on_sentence(sentence, len(audio) / rate)
+                        sentence_started = True
                     if not started:
                         self.playback_started_at = time.perf_counter()
                         if on_start:
                             on_start()
                         started = True
-                    out.write(audio[i : i + block])
+                previous_end = time.perf_counter()
         if on_level:
             on_level(0.0)
         return True
@@ -196,8 +210,12 @@ class PiperSpeaker:
 
     async def speak(self, sentences: AsyncIterator[str], on_start: OnStart | None = None) -> bool:
         # The cancelled owner finishes its player before a successor can start.
-        async with self._playback_lock:
+        with measure("tts_queue"):
+            await self._playback_lock.acquire()
+        try:
             return await self._speak(sentences, on_start)
+        finally:
+            self._playback_lock.release()
 
     async def _speak(self, sentences: AsyncIterator[str], on_start: OnStart | None) -> bool:
         loop = asyncio.get_running_loop()
@@ -205,10 +223,17 @@ class PiperSpeaker:
         self._stop = stop
         self.audio_enqueued_at = None
         self.playback_started_at = None
+        self.first_sentence_at = None
         audio_q: queue.Queue = queue.Queue()
         audio_q.stop = stop
         callbacks = copy_context()
         callbacks_active = True
+        profile = current.get()
+        if profile:
+            audio_q.on_gap = lambda start, end: loop.call_soon_threadsafe(
+                profile.interval, "playback_gap", start, end
+            )
+        playback_interval = None
 
         def dispatch(callback, *args):
             if callbacks_active and self._stop is stop and not stop.is_set():
@@ -222,11 +247,27 @@ class PiperSpeaker:
         report = None
         if (on_level := self.on_level) is not None:
             report = lambda v: loop.call_soon_threadsafe(dispatch, on_level, v, context=callbacks)  # noqa: E731
-        said = None
-        if (on_sentence := self.on_sentence) is not None:
+        on_sentence = self.on_sentence
 
-            def said(text, s):
-                loop.call_soon_threadsafe(dispatch, on_sentence, text, s, context=callbacks)
+        def sentence_started(text, seconds, at):
+            nonlocal playback_interval
+            from backend.audio.waiting import is_waiting_only
+
+            if profile:
+                waiting = is_waiting_only(text)
+                profile.mark("first_audio", at=at)
+                profile.mark("waiting_audio" if waiting else "first_content_audio", at=at)
+                if playback_interval is None:
+                    playback_interval = profile.begin(
+                        "waiting_playback" if waiting else "tts_playback", at=at
+                    )
+            if on_sentence:
+                on_sentence(text, seconds)
+
+        def said(text, seconds):
+            loop.call_soon_threadsafe(
+                dispatch, sentence_started, text, seconds, time.perf_counter(), context=callbacks
+            )
 
         with measure("tts_model_ready"):
             await loop.run_in_executor(self._synth_pool, self._load)
@@ -237,6 +278,16 @@ class PiperSpeaker:
             async for sentence in sentences:
                 if stop.is_set():
                     break
+                if self.first_sentence_at is None:
+                    self.first_sentence_at = time.perf_counter()
+                    if profile:
+                        from backend.audio.waiting import is_waiting_only
+
+                        profile.mark(
+                            "waiting_sentence_ready"
+                            if is_waiting_only(sentence)
+                            else "first_sentence_ready"
+                        )
                 audio = self.wait_audio.get(sentence)
                 if audio is None:
                     audio = self._ready.pop(sentence, None)
@@ -245,20 +296,35 @@ class PiperSpeaker:
                         audio = await loop.run_in_executor(self._synth_pool, self._synth, sentence)
                 if self.audio_enqueued_at is None:
                     self.audio_enqueued_at = time.perf_counter()
+                    if profile:
+                        from backend.audio.waiting import is_waiting_only
+
+                        profile.mark(
+                            "waiting_audio_enqueued"
+                            if is_waiting_only(sentence)
+                            else "tts_audio_enqueued"
+                        )
                 audio_q.put((sentence, audio))
         except BaseException:
             stop.set()
             raise
         finally:
             audio_q.put(None)
+            player_ok = False
             try:
                 try:
                     completed = await asyncio.shield(player)
+                    player_ok = bool(completed)
                 except asyncio.CancelledError:
                     stop.set()
                     await asyncio.shield(player)
                     raise
             finally:
+                if profile:
+                    profile.end(
+                        playback_interval,
+                        "cancelled" if stop.is_set() else "ok" if player_ok else "error",
+                    )
                 callbacks_active = False
                 self._speaking = False
         return completed and not stop.is_set()

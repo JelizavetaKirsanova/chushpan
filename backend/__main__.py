@@ -27,8 +27,11 @@ def _run(coro) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="чушпан")
     sub = parser.add_subparsers(dest="command", required=True)
+    from backend.led_cli import arguments as led_arguments
+
+    led_arguments(sub.add_parser("led", help="локальная BLE-подсветка и ручная проверка"))
     latency_check = sub.add_parser(
-        "latency-check", help="замер задержек без записи и воспроизведения"
+        "latency-check", help="замер задержек; полный pipeline со звуком только по явным флагам"
     )
     latency_check.add_argument(
         "--live", action="store_true", help="нейтральный тестовый запрос модели"
@@ -42,6 +45,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     latency_check.add_argument("--label", choices=["before", "after", "sample"], default="sample")
     latency_check.add_argument("--stt-file", help="явно выбранный mono PCM16 WAV; без микрофона")
+    latency_check.add_argument(
+        "--pipeline", action="store_true", help="реальный STT → диалог → TTS"
+    )
+    latency_check.add_argument(
+        "--play-audio", action="store_true", help="явно разрешить звук для --pipeline"
+    )
+    latency_check.add_argument(
+        "--with-vad", action="store_true", help="добавить настоящий VAD и задержку окончания фразы"
+    )
+    voice_check = sub.add_parser("voice-check", help="аудиопроверки без микрофона и звука")
+    voice_check.add_argument(
+        "--decode", action="store_true", help="реальные локальные VAD/STT на тестовых файлах"
+    )
     sub.add_parser("doctor", help="проверить Ollama, модель, голос и местоположение")
     mac_check = sub.add_parser(
         "mac-check", help="безопасная диагностика Mac и доступных инструментов"
@@ -148,7 +164,33 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = get_settings()
     setup_logging(settings.log_level)
+    if args.command == "led":
+        from backend.led_cli import run as run_led
+
+        return _run(run_led(settings, args))
+
+    if args.command == "voice-check":
+        from backend.voice_check import run as run_voice_check
+
+        return _run(run_voice_check(settings, decode=args.decode))
+
     if args.command == "latency-check":
+        if args.with_vad and not args.pipeline:
+            parser.error("--with-vad используется вместе с --pipeline")
+        if args.pipeline:
+            if args.stt_file:
+                parser.error(
+                    "--pipeline использует нейтральные записи; --stt-file проверяй отдельно"
+                )
+            if not args.live or not args.play_audio:
+                parser.error(
+                    "--pipeline требует явные --live --play-audio; микрофон не используется"
+                )
+            from backend.performance_check import run as run_pipeline
+
+            return _run(
+                run_pipeline(settings, runs=args.runs, label=args.label, with_vad=args.with_vad)
+            )
         from backend.latency_check import run
 
         return _run(

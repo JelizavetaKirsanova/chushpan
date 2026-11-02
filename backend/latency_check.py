@@ -28,6 +28,27 @@ class NoNetwork:
 async def run(
     settings, *, live=False, tts=False, runs=1, label="sample", stream=False, stt_file=None
 ) -> int:
+    # Match the voice runtime: reuse clients, sockets and outage cooldown across turns.
+    client = create_llm(settings) if live else None
+    try:
+        return await _run(
+            settings,
+            client,
+            live=live,
+            tts=tts,
+            runs=runs,
+            label=label,
+            stream=stream,
+            stt_file=stt_file,
+        )
+    finally:
+        if client is not None:
+            await client.aclose()
+
+
+async def _run(
+    settings, client, *, live=False, tts=False, runs=1, label="sample", stream=False, stt_file=None
+) -> int:
     report = {"label": label, "microphone": False, "audio_played": False, "runs": []}
     if stt_file:
         from backend.audio.aec import resample
@@ -79,7 +100,6 @@ async def run(
                 pass
             row = {"local_time_s": time.perf_counter() - started}
             if live:
-                client = create_llm(settings)
                 started = time.perf_counter()
                 first = None
                 try:
@@ -96,17 +116,21 @@ async def run(
                         ):
                             if first is None and chunk.content.strip():
                                 first = time.perf_counter() - started
+                                profile.add("model_first_chunk", first)
+                                profile.add("model_first_text", first)
                     row["model_first_text_s"] = first
                     row["transport"] = "text_stream" if stream else "buffered"
                     row["model_total_s"] = time.perf_counter() - started
+                    profile.add("model_total", row["model_total_s"])
                     row["provider"] = getattr(client, "last_provider", settings.llm.provider)
                     row["model"] = getattr(client, "last_model", None)
+                    row["switch_reason"] = getattr(client, "switch_reason", None)
                 except Exception as exc:
                     row["error_type"] = type(exc).__name__
                     row["model_total_s"] = time.perf_counter() - started
-                finally:
-                    await client.aclose()
+                    profile.add("model_total", row["model_total_s"], "error")
             row["stages"] = profile.stages
+            row["metrics"] = profile.summary()
             report["runs"].append(row)
         finally:
             store.close()
@@ -126,6 +150,7 @@ async def run(
                     speaker._synth_pool, speaker._synth, "Проверка скорости."
                 )
                 report["tts_generation_s"] = time.perf_counter() - started
+                report["tts_first_sentence_audio_s"] = report["tts_generation_s"]
             finally:
                 speaker._synth_pool.shutdown(wait=True)
     print(json.dumps(report, ensure_ascii=False, indent=2))

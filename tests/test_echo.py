@@ -38,6 +38,26 @@ def test_reference_queue_is_capped():
     aec.close()
 
 
+def test_noise_control_changes_real_native_processing_without_enabling_disabled_echo():
+    audio = np.random.default_rng(8).normal(0, 900, 16000 * 4).astype(np.int16)
+    processors = [EchoCanceller(echo_cancellation=False) for _ in range(2)]
+    try:
+        processors[1].configure_noise(True)
+        outputs = []
+        for processor in processors:
+            frames = []
+            for offset in range(0, len(audio) - FRAME_SAMPLES, FRAME_SAMPLES):
+                frames.extend(processor.process(audio[offset : offset + FRAME_SAMPLES]))
+            outputs.append(np.concatenate(frames)[-16000:].astype(float))
+            assert not processor.echo_cancellation
+        assert np.sqrt(np.mean(outputs[1] ** 2)) < np.sqrt(np.mean(outputs[0] ** 2)) * 0.8
+        processors[1].configure_noise(False)
+        assert not processors[1].noise_suppression
+    finally:
+        for processor in processors:
+            processor.close()
+
+
 def test_echo_is_removed():
     """Speech-like noise played, heard back 30 ms later through a short room response."""
     rng = np.random.default_rng(1)

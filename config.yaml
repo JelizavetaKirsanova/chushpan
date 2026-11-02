@@ -1,4 +1,5 @@
-# Настройки проекта. Личные данные (имя, город, язык) указываются в .env:
+# Общие настройки. Личные переопределения — config.local.yaml (вне Git).
+# Личные данные (имя, город, язык) указываются в .env:
 #   cp .env.example .env
 # Любой параметр можно переопределить переменной окружения; секции разделяются «__»:
 #   JARVIS_LLM__MODEL=qwen3.5:9b-q4_K_M
@@ -31,6 +32,7 @@ llm:
   keep_alive: 30m           # для chat и briefing; voice использует resources.profile
   temperature: 0.6
   think: true               # обдумывает ответ; внутренний текст не озвучивается и не сохраняется
+  think_for_simple: false   # простые бытовые запросы без обдумывания; сложные сохраняют think
   num_ctx: 16384             # место для личности, инструментов и истории; 4096 их обрезает
   context_messages: 30      # включая вызовы инструментов и короткие результаты
 
@@ -39,20 +41,28 @@ gemini:
   fallback_model: gemini-3.5-flash # проверен: API перенаправляет на gemini-3.6-flash
   timeout_s: 15              # общий бюджет облачной цепочки
   attempt_timeout_s: 6       # ожидание первого результата; живой поток получает остаток бюджета
+  simple_use_fallback_model: true  # простой текст: настроенная резервная Gemini → Ollama
   free_tier_confirmed: false # включать в .env после проверки Free tier проекта в AI Studio
   context_messages: 24       # текущая сессия: сообщения, вызовы и результаты инструментов
   context_chars: 24000       # бюджет истории; полные результаты остаются в SQLite
 
 shortcuts:
-  allowed:
-    Youtube sleep:
-      identifier: 1646EE92-B628-481D-9499-CED5B05EC32D
-      description: Ждёт окончания видео в активной вкладке Safari, затем усыпляет Mac; проверка каждые 5 секунд
-      input_type: none
+  allowed: {} # добавляйте проверенные Shortcut только в config.local.yaml
 
 night:
-  external_uuid: 4F1704FB-5A9B-458D-9173-F5CE3727CF9C # проверенный HISENSE, не случайный экран
+  external_uuid: null # выбирается локально после проверки дисплея
   external_control: brightness # общая шкала BetterDisplay; компоненты сохраняются отдельно
+
+led:
+  enabled: false # разрешите своё устройство в config.local.yaml
+  name: ELK-BLEDOB
+  firmware: JSY-P10A27NM-V1.1.2
+  address: 00000000-0000-0000-0000-000000000000 # замените локально
+  service: 0000fff0-0000-1000-8000-00805f9b34fb
+  write_characteristic: 0000fff3-0000-1000-8000-00805f9b34fb
+  notify_characteristic: 0000fff4-0000-1000-8000-00805f9b34fb
+  night_off: false # только после ручной проверки выключения; сбой не блокирует Shortcut
+  comfortable_brightness: null # «не слишком ярко»: уточнять, пока пользователь не задал процент
 
 stt:
   model: mlx-community/whisper-large-v3-turbo
@@ -62,11 +72,12 @@ audio:
   input_device: null        # null = системное устройство (список: python -m sounddevice)
   output_device: null
   barge_in: false           # прерывать ответ Чушпан голосом
+  noise_suppression: true   # локальная обработка WebRTC, без облака
   echo_cancellation: true   # с barge_in: убирает голос Чушпан из микрофона; наушники не нужны
 
 vad:
   threshold: 0.5
-  silence_ms: 1000
+  silence_ms: 650
   start_ms: 64
   min_speech_ms: 160
   preroll_ms: 400
@@ -87,18 +98,24 @@ wakeword:
   phrase: эй чушпан         # произвольная фраза; распознаётся локально через Whisper
   enabled: true             # false = слушать постоянно (или voice --no-wake)
   model: hey_jarvis         # используется только при phrase: null
-  threshold: 0.5            # настройка: python -m backend wake-test
+  threshold: 0.5            # порог реального ONNX-score; русская фраза проверяется Whisper
+  min_avg_logprob: -0.7     # реальные метрики Whisper, не выдуманная вероятность
+  max_no_speech_prob: 0.45
+  cooldown_s: 3
+  check_interval_s: 1
   listen_timeout_s: 6       # сколько секунд ждать вопрос после «эй чушпан»
   follow_up_s: 8            # сколько секунд слушать после ответа без повторной активации
   chime: true               # короткие звуки при активации и переходе в ожидание
 
 tools:
+  control_context_s: 60 # срок коротких уточнений последнего управляемого устройства
   enabled: [weather, news, system, timers, clock, memory, media]   # удалите элемент, чтобы отключить функцию
   max_rounds: 3             # максимальное число последовательных вызовов инструментов
   one_moment_after_s: 1.5   # сказать «Ой, ну ща», если модель молчит дольше этого времени
+  quick_read_timeout_s: 3   # предел ожидания сервиса в прямом запросе текущей погоды
 
 youtube_video:
-  playlist_url: https://www.youtube.com/playlist?list=PLSuZQXqwb2Uw
+  playlist_url: '' # личный плейлист задаётся локально
   night_autoplay: true       # видео → яркость 10%/25% → громкость Mac 30% → Youtube sleep
   preferred_screen: external
 
@@ -106,7 +123,7 @@ media:
   provider: youtube_music   # youtube_music | spotify
   youtube_music:
     enabled: true
-    bundle_id: com.apple.Safari.WebApp.5DE8E730-70F0-4F8C-9111-4112EC757B26
+    bundle_id: com.apple.Safari # локальный WebApp настраивается отдельно
     app_path: ~/Applications/Music.app
     auth_file: null         # необязательно: библиотека читается из открытого приложения
     timeout_s: 12
@@ -146,3 +163,10 @@ hud:
   enabled: true             # интерфейс; voice --no-hud отключает
   window: true              # отдельное окно; false = вкладка браузера
   open_on_start: true       # открывать при запуске, если интерфейс ещё не открыт
+
+dialogue:
+  enabled: true
+  duration_s: 25
+  max_session_s: 180
+  nameless_interruptions: false
+  addressee_strictness: contextual

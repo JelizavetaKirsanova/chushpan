@@ -222,7 +222,7 @@ def say(conv, text):
     return asyncio.run(go())
 
 
-def test_a_copied_reply_is_dropped_and_answered_without_history(tmp_path):
+def test_a_copied_reply_is_dropped_and_context_is_preserved(tmp_path):
     payloads: list[dict] = []
     history = [("user", "Qual é o clima?"), ("assistant", WEATHER)]
     retry = "Desculpe, senhora, pode repetir?"
@@ -230,7 +230,9 @@ def test_a_copied_reply_is_dropped_and_answered_without_history(tmp_path):
     out = say(conv, "Eu amo a própria Alexa.")
     assert out == retry  # nothing of the copy reached the speaker
     assert len(payloads) == 2
-    assert [m["role"] for m in payloads[1]["messages"]] == ["system", "user"]  # no history
+    assert payloads[1]["messages"][1]["content"] == history[0][1]
+    assert payloads[1]["messages"][2]["content"] == WEATHER
+    assert "Не повторяй" in payloads[1]["messages"][-1]["content"]
     assert store.recent(conv.id, 10)[-1]["content"] == retry
 
 

@@ -36,6 +36,8 @@ STICKY = {
     "session",
     "music_settings",
     "addressee",
+    "performance_live",
+    "voice_settings",
 }
 TRANSCRIPT_LINES = 8
 QUEUE_SIZE = 512  # ~15 s of audio levels; a stalled client loses the oldest events
@@ -99,6 +101,10 @@ class HudBus:
     def _close_reply(self) -> None:
         if self._lines and self._lines[-1]["open"]:
             self._lines[-1]["open"] = False
+
+    def clear_transcript(self) -> None:
+        self._lines.clear()
+        self.publish({"type": "transcript", "lines": []})
 
     def snapshot(self) -> list[Event]:
         """What a new client needs to catch up: panels, state and the recent transcript."""

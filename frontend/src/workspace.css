@@ -105,3 +105,30 @@ kbd { float: right; font-size: 10px; color: #939bad; }
 .dialogue-settings button { padding: 10px 16px; cursor: pointer; }
 .dialogue-settings :disabled { opacity: .45; cursor: default; }
 #session-status, #session-interrupted { color: var(--text-secondary, #9ba5b6); font-size: 13px; }
+.hud[data-view="performance"] .performance-page { display: flex; flex-direction: column; }
+.performance-toolbar { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+.performance-toolbar select, .performance-toolbar button, .trace-link { color: #dce4f4; background: #252b38; border: 1px solid #414c62; border-radius: 7px; padding: 8px 12px; cursor: pointer; }
+.trace-link { font-size: 11px; }
+.trace-link:disabled { opacity: .4; cursor: default; }
+.performance-live { padding: 16px; border: 1px solid #43556e; border-radius: 10px; background: #1c2635; line-height: 1.6; font-size: 13px; }
+.performance-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 12px; margin-top: 18px; }
+.perf-card { padding: 17px; border-radius: 10px; border: 1px solid #323c4c; background: #20252e; display: grid; gap: 10px; }
+.perf-card small, .perf-note, .performance-providers, .perf-marks { font-size: 12px; line-height: 1.7; color: #a9b4c8; }
+.perf-card strong { font-size: 24px; font-weight: 500; color: #e3eaf9; }
+.performance-layout { display: grid; grid-template-columns: minmax(250px, .85fr) minmax(400px, 1.5fr); gap: 24px; align-items: start; }
+.performance-layout h2 { margin: 20px 0; font-size: 18px; font-weight: 500; color: #e0e6f2; }
+.perf-request { display: grid; gap: 8px; text-align: left; width: 100%; padding: 15px; margin-bottom: 10px; background: #202630; color: #dce4f4; border: 1px solid #364253; border-radius: 9px; cursor: pointer; font: inherit; font-size: 12px; }
+.perf-request:hover { border-color: #a0b4d8; }
+.perf-request[data-slow="true"] { border-left: 3px solid #d9a96a; }
+.perf-request small { color: #aab9d0; }
+#performance-detail { background: #181e28; border: 1px solid #354052; border-radius: 12px; padding: 18px; min-width: 0; }
+.perf-detail-heading p { font-size: 12px; color: #aebbd1; line-height: 1.7; }
+.perf-axis { text-align: right; color: #899bb8; font-size: 11px; margin: 15px 0; }
+.perf-stage { display: grid; gap: 7px; padding: 10px 0; font-size: 11px; border-top: 1px solid #293142; }
+.perf-stage small { color: #a9b6cc; }
+.perf-track { height: 9px; border-radius: 4px; background: #283145; position: relative; overflow: hidden; }
+.perf-bar { position: absolute; top: 0; height: 9px; border-radius: 3px; background: #98b8e3; min-width: 2px; }
+.perf-bar[data-outcome="running"] { background: #c5b3f2; }
+.perf-bar[data-outcome="error"], .perf-error { color: #edaaa0; background-color: #6f413c; }
+@media(max-width:1100px) { .performance-layout { grid-template-columns: 1fr; } }
+@media(max-width:540px) { .hud[data-view="performance"] .performance-page { grid-column: 1; grid-row: 3 / 5; padding: 12px 0; }.performance-summary { grid-template-columns: repeat(2, 1fr); }.perf-card strong { font-size: 20px; } }

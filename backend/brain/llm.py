@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from collections.abc import AsyncIterator
@@ -10,8 +11,12 @@ from typing import Any, Protocol
 
 import httpx
 
+from backend.brain.followups import fit_local_context
 from backend.brain.privacy import redact
+from backend.brain.response_mode import simple_request
 from backend.config import LLMConfig
+from backend.context import request_context
+from backend.latency import current
 
 Message = dict[str, Any]
 
@@ -57,6 +62,7 @@ class OllamaClient:
         await self._client.aclose()
 
     def _payload(self, messages: list[Message], stream: bool, tools: list | None) -> dict:
+        messages = fit_local_context(messages, tools, self.cfg.num_ctx)
         messages = [dict(m) for m in messages]
         for message in messages:
             if message.get("images"):
@@ -71,6 +77,13 @@ class OllamaClient:
             "keep_alive": self.cfg.keep_alive,
             "options": {"temperature": self.cfg.temperature, "num_ctx": self.cfg.num_ctx},
         }
+        user = next((m.get("content", "") for m in reversed(messages) if m["role"] == "user"), "")
+        if context := request_context.get():
+            user = context.text
+        if isinstance(user, str) and simple_request(user) and not self.cfg.think_for_simple:
+            payload["think"] = False
+        if profile := current.get():
+            profile.update(provider="ollama", model=self.cfg.model, thinking=payload["think"])
         if tools:
             payload["tools"] = tools
         return payload
@@ -140,30 +153,58 @@ class OllamaClient:
             if "vision" not in info.json().get("capabilities", []):
                 raise LLMError("Установленная Ollama-модель не поддерживает изображения.")
         payload = self._payload(messages, stream=True, tools=tools)
-        async with self._client.stream("POST", "/api/chat", json=payload) as resp:
-            if resp.status_code >= 400:
-                await resp.aread()
-                self._raise_for(resp)
-            async for line in resp.aiter_lines():
-                if not line.strip():
-                    continue
-                data = json.loads(line)
-                if "error" in data:
-                    raise LLMError(data["error"])
-                if data.get("done") and data.get("done_reason") == "length":
-                    raise LLMError("Ollama достигла лимита длины; ответ не завершён.")
-                msg = data.get("message") or {}
-                chunk = ChatChunk(
-                    content=msg.get("content", ""),
-                    thinking=msg.get("thinking", ""),
-                    done=bool(data.get("done")),
-                    tool_calls=msg.get("tool_calls") or [],
+        profile = current.get()
+        interval = (
+            profile.begin(
+                "llm_transport", provider="ollama", model=self.cfg.model, thinking=payload["think"]
+            )
+            if profile
+            else None
+        )
+        thinking_interval = None
+        outcome = "error"
+        try:
+            async with self._client.stream("POST", "/api/chat", json=payload) as resp:
+                if resp.status_code >= 400:
+                    await resp.aread()
+                    self._raise_for(resp)
+                async for line in resp.aiter_lines():
+                    if not line.strip():
+                        continue
+                    data = json.loads(line)
+                    if "error" in data:
+                        raise LLMError(data["error"])
+                    if data.get("done") and data.get("done_reason") == "length":
+                        raise LLMError("Ollama достигла лимита длины; ответ не завершён.")
+                    msg = data.get("message") or {}
+                    chunk = ChatChunk(
+                        content=msg.get("content", ""),
+                        thinking=msg.get("thinking", ""),
+                        done=bool(data.get("done")),
+                        tool_calls=msg.get("tool_calls") or [],
+                    )
+                    if profile and (chunk.thinking or chunk.content or chunk.tool_calls):
+                        profile.mark("first_llm_token")
+                        if chunk.thinking and thinking_interval is None:
+                            thinking_interval = profile.begin("model_thinking")
+                        if chunk.content or chunk.tool_calls:
+                            profile.end(thinking_interval)
+                            if chunk.content:
+                                profile.mark("first_llm_text")
+                    if chunk.done:
+                        chunk.stats = {
+                            k: v for k, v in data.items() if k.endswith(("count", "duration"))
+                        }
+                    yield chunk
+            outcome = "ok"
+        finally:
+            if profile:
+                outcome = "cancelled" if asyncio.current_task().cancelling() else outcome
+                profile.end(thinking_interval, outcome)
+                profile.end(
+                    interval,
+                    outcome,
                 )
-                if chunk.done:
-                    chunk.stats = {
-                        k: v for k, v in data.items() if k.endswith(("count", "duration"))
-                    }
-                yield chunk
 
     @staticmethod
     def _raise_for(resp: httpx.Response) -> None:

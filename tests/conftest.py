@@ -3,7 +3,7 @@ import os
 import pytest
 import yaml
 
-from backend.config import CONFIG_FILE, Settings
+from backend.config import CONFIG_FILE, LEDConfig, Settings
 
 
 @pytest.fixture(autouse=True)
@@ -26,6 +26,15 @@ def isolated_settings(monkeypatch, tmp_path):
     config["tts"]["engine"] = "piper"  # original audio fixtures; Silero has separate tests
     config["llm"]["model"] = "qwen3:8b"
     config["llm"]["think"] = False
+    # Explicit mock-device grants: public defaults no longer contain this Mac's setup.
+    config["led"].update(enabled=True, address=str(LEDConfig().address), night_off=True)
+    config["shortcuts"]["allowed"] = {
+        "Youtube sleep": {
+            "identifier": "00000000-0000-0000-0000-000000000001",
+            "description": "Mock sleep Shortcut; never executed by tests",
+            "input_type": "none",
+        }
+    }
     config_file = tmp_path / "config.yaml"
     config_file.write_text(yaml.safe_dump(config), encoding="utf-8")
     monkeypatch.setitem(Settings.model_config, "yaml_file", config_file)

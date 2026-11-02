@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+root=$(git rev-parse --show-toplevel)
+[ "$1" = origin ] || { echo 'Only origin is allowed by the sync policy.' >&2; exit 1; }
+python="$root/.venv/bin/python"
+[ -x "$python" ] || python=python3
+exec "$python" "$root/scripts/git_sync.py" check-push

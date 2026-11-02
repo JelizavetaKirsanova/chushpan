@@ -123,7 +123,8 @@ def test_conversation_runs_tools_and_answers(tmp_path):
     assert payloads[0]["tools"] == payloads[1]["tools"]  # stable prefix for the cache
     assert payloads[0]["messages"][1]["content"] == "Boa noite."  # history to pick the call
     msgs = payloads[1]["messages"]
-    assert [m["role"] for m in msgs] == ["system", "user", "assistant", "tool"]  # not to answer
+    assert [m["role"] for m in msgs] == ["system", "assistant", "user", "assistant", "tool"]
+    assert msgs[1]["content"] == "Boa noite."  # history survives the tool call
     assert msgs[-2]["role"] == "assistant" and msgs[-2]["tool_calls"][0]["id"] == "c1"
     assert msgs[-1] == {
         "role": "tool",

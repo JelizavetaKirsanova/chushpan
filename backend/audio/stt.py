@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import logging
+import math
 import re
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
@@ -31,6 +32,7 @@ _HALLUCINATIONS = {
     "благодарю за просмотр",
     "подписывайтесь на канал",
     "субтитры создал dimatorzok",
+    "субтитры сделал dimatorzok",
     "продолжение следует",
 }
 
@@ -52,7 +54,10 @@ def _assistant_names(name: str) -> set[str]:
 
 def is_hallucination(text: str) -> bool:
     norm = _normalize(text)
-    return not norm or norm in _HALLUCINATIONS
+    # Pure hesitation/noise is not a request. Keep words following it intact, including
+    # short agreements: these still need the existing dialogue/confirmation checks.
+    filler = re.fullmatch(r"(?:х?м{2,}|ум+|у{2,}|а{3,}|э{2,})", norm.replace(" ", ""))
+    return not norm or norm in _HALLUCINATIONS or bool(filler)
 
 
 def is_farewell(text: str) -> bool:
@@ -184,6 +189,7 @@ class WhisperSTT:
         self._path: str | None = None
         self.last_raw = ""  # last transcript before filtering, for diagnostics
         self.last_speech_confident = False
+        self.last_confidence: dict = {}
         # MLX state is not thread-safe: run every call on the same worker thread.
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stt")
         self._pending: asyncio.Future | None = None
@@ -221,6 +227,25 @@ class WhisperSTT:
         # Use the decoder's acoustic confidence as well as VAD. These are Whisper's
         # standard silence/failure thresholds; neither guesses a replacement transcript.
         segments = result.get("segments", [])
+        metrics = [
+            {
+                key: segment.get(key)
+                for key in ("no_speech_prob", "avg_logprob", "compression_ratio")
+            }
+            for segment in segments
+        ]
+        if metrics and all(
+            type(value) in (int, float) and math.isfinite(value)
+            for segment in metrics
+            for value in segment.values()
+        ):
+            self.last_confidence = {
+                "max_no_speech_prob": max(s["no_speech_prob"] for s in metrics),
+                "min_avg_logprob": min(s["avg_logprob"] for s in metrics),
+                "max_compression_ratio": max(s["compression_ratio"] for s in metrics),
+            }
+        else:
+            self.last_confidence = {}
         self.last_speech_confident = bool(segments) and all(
             segment.get("no_speech_prob", 1) <= 0.6 and segment.get("avg_logprob", -100) >= -1.0
             for segment in segments
@@ -268,6 +293,7 @@ class WhisperSTT:
         from backend.audio.evidence import evidence
 
         self.last_speech_confident = False
+        self.last_confidence = {}
 
         if not evidence(audio).usable:
             self.last_raw = ""

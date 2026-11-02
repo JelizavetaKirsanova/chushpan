@@ -17,7 +17,7 @@ from collections.abc import Callable
 
 log = logging.getLogger(__name__)
 
-BACKGROUND = "#02050a"  # the HUD's, so the window never flashes white while loading
+BACKGROUND = "#15121f"
 
 
 class _Api:
@@ -27,10 +27,64 @@ class _Api:
 
     def __init__(self) -> None:
         self.window = None
+        self.minimized = False
+        self._ambient_restore = None
+        self._idle_function = None
+        self._fullscreen = False
+
+    def desktop_state(self) -> dict:
+        """Only elapsed idle time and display count, never keyboard/screen contents."""
+        import ctypes
+
+        import webview
+
+        if self._idle_function is None:
+            library = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+            self._idle_function = library.CGEventSourceSecondsSinceLastEventType
+            self._idle_function.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+            self._idle_function.restype = ctypes.c_double
+        return {
+            "idle_s": self._idle_function(0, 0xFFFFFFFF),
+            "minimized": self.minimized,
+            "screens": len(webview.screens),
+            "ambient_active": self._ambient_restore is not None,
+        }
+
+    def ambient(self, active: bool, display: str, fullscreen: bool) -> dict:
+        import webview
+
+        if (
+            type(active) is not bool
+            or type(fullscreen) is not bool
+            or display not in {"primary", "external"}
+        ):
+            return {"ok": False, "reason": "invalid_setting"}
+        if self.window is None or self.minimized:
+            return {"ok": False, "reason": "minimized"}
+        window = self.window
+        if active and self._ambient_restore is None:
+            if display == "external" and len(webview.screens) < 2:
+                return {"ok": False, "reason": "external_unavailable"}
+            self._ambient_restore = (window.x, window.y, self._fullscreen)
+            screen = webview.screens[1 if display == "external" else 0]
+            window.move(
+                screen.x + max(0, (screen.width - window.width) // 2),
+                screen.y + max(0, (screen.height - window.height) // 2),
+            )
+            if fullscreen != self._fullscreen:
+                self.toggle_fullscreen()
+        elif not active and self._ambient_restore is not None:
+            x, y, previous_fullscreen = self._ambient_restore
+            self._ambient_restore = None
+            if self._fullscreen != previous_fullscreen:
+                self.toggle_fullscreen()
+            window.move(x, y)
+        return {"ok": True}
 
     def toggle_fullscreen(self) -> None:
         if self.window is not None:
             self.window.toggle_fullscreen()
+            self._fullscreen = not self._fullscreen
 
     def open_url(self, url: str) -> bool:
         """A news item clicked in the HUD: read it in the default browser, not in here."""
@@ -95,6 +149,10 @@ def run_window(url: str, title: str, parent_pid: int | None = None) -> int:
         text_select=False,
     )
     api.window = window
+    window.events.minimized += lambda: setattr(api, "minimized", True)
+    window.events.restored += lambda: setattr(api, "minimized", False)
+    window.events.maximized += lambda: setattr(api, "_fullscreen", True)
+    window.events.restored += lambda: setattr(api, "_fullscreen", False)
     if parent_pid:
         threading.Thread(target=_watch_parent, args=(parent_pid, window), daemon=True).start()
     webview.start()

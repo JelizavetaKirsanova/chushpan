@@ -24,8 +24,17 @@ MAC_CAPABILITIES = frozenset(
 # A contextual continuation alone grants no system action; matched READ proposals are scoped below.
 voice_addressed: ContextVar[bool] = ContextVar("voice_addressed", default=True)
 voice_music_command: ContextVar[str | None] = ContextVar("voice_music_command", default=None)
+voice_led_command: ContextVar[str | None] = ContextVar("voice_led_command", default=None)
+voice_control_command: ContextVar[str | None] = ContextVar("voice_control_command", default=None)
+# Issued only by the local validated planner, scoped to one exact child operation.
+planned_operation: ContextVar[tuple[str, str, str] | None] = ContextVar(
+    "planned_operation", default=None
+)
 voice_read_followup: ContextVar[tuple[str, str] | None] = ContextVar(
     "voice_read_followup", default=None
+)
+accepted_followup: ContextVar[tuple[str, str] | None] = ContextVar(
+    "accepted_followup", default=None
 )
 
 

@@ -443,9 +443,18 @@ class SafariMusic(AccessibilityApp):
                 if (
                     previous
                     and previous.get("track") == now.get("track")
-                    and (previous.get("position") and previous["position"] != now.get("position"))
+                    and now.get("position", 0) > previous.get("position", 0)
                 ):
-                    return {"ok": True, **now}
+                    return {
+                        **now,
+                        "ok": True,
+                        "playback_confirmed": True,
+                        "confirmation": {
+                            "source": "safari_ax_player",
+                            "position_before": previous["position"],
+                            "position_after": now["position"],
+                        },
+                    }
                 previous = now
             await asyncio.sleep(0.4)
         raise ToolError("YouTube Music открыт, но реальное воспроизведение не подтверждено.")

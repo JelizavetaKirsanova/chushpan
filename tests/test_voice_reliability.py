@@ -85,11 +85,8 @@ def test_barge_requires_addressed_non_echo_speech(source):
                 assert h.loop.speaker.said == []
             elif source == "addressed_user":
                 assert previous.cancelled()
-                assert h.loop.task is not previous
-                await h.loop.task
-                await asyncio.sleep(0)
                 assert h.state is State.LISTENING
-                assert h.loop.speaker.said == ["Готово."]
+                assert h.loop.speaker.said == []  # Explicit stop never starts a new model reply.
             else:
                 assert not previous.done()
                 assert h.loop.speaker.said == []

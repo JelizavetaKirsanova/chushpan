@@ -10,6 +10,7 @@ import time
 
 from backend.config import Settings
 from backend.permissions import instruction
+from backend.security import Risk, command_text
 from backend.tools.registry import Tool, ToolError, user_text
 
 TIMEOUT_S = 5
@@ -180,6 +181,14 @@ async def open_app(name: str) -> dict:
 
 
 def system_tools(s: Settings) -> list[Tool]:
+    async def open_website(site: str) -> dict:
+        if site != "youtube":
+            raise ToolError("Этот сайт не входит в список разрешённых быстрых команд.")
+        code, _ = await run("open", "https://www.youtube.com")
+        if code:
+            raise ToolError("macOS не приняла запрос на открытие YouTube.")
+        return {"submitted": True, "message": "Запрос на открытие YouTube передан macOS."}
+
     async def set_requested_volume(level: int | None = None, mute: bool | None = None) -> dict:
         said = (user_text.get() or "").casefold()
         if (
@@ -259,6 +268,18 @@ def system_tools(s: Settings) -> list[Tool]:
         return "Текущий уровень звука не прочитан."
 
     return [
+        Tool(
+            "open_website",
+            "Открыть YouTube в браузере. Не запускает музыку или видео.",
+            open_website,
+            {"site": {"type": "string", "enum": ["youtube"]}},
+            ["site"],
+            risk=Risk.CHANGE,
+            intent=lambda a, t: bool(
+                re.fullmatch(r"(?:открой|запусти) (?:youtube|ютуб|ютьюб)[.!? ]*", command_text(t))
+            ),
+            reply=lambda r: r["message"],
+        ),
         Tool(
             name="get_system_status",
             description=(

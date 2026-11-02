@@ -32,7 +32,7 @@ class Player:
     async def play_music(self, query="", **kwargs):
         self.calls.append(("play", query, kwargs))
         self.state["state"] = "playing"
-        return {"ok": True, **self.state}
+        return {"ok": True, **self.state, "playback_confirmed": self.state["state"] == "playing"}
 
     async def now_playing(self):
         return dict(self.state)
@@ -42,7 +42,7 @@ class Player:
         self.state["state"] = "paused" if action == "pause" else "playing"
         if action == "next":
             self.state["track"] = "Next song"
-        return {"ok": True, **self.state}
+        return {"ok": True, **self.state, "playback_confirmed": self.state["state"] == "playing"}
 
     async def media_volume(self, direction):
         self.calls.append(("volume", direction))

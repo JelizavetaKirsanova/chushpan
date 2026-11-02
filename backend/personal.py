@@ -26,7 +26,7 @@ class PersonalContext:
         contents = app / "Contents"
         binary = contents / "MacOS" / "chushpan-personal"
         stamp = cache / "personal-version"
-        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        digest = hashlib.sha256(source.read_bytes() + Path(__file__).read_bytes()).hexdigest()
         if binary.exists() and stamp.exists() and stamp.read_text() == digest:
             return app
         binary.parent.mkdir(parents=True, exist_ok=True)
@@ -39,8 +39,7 @@ class PersonalContext:
             "CFBundleVersion": "1",
             "LSUIElement": True,
             "NSCalendarsFullAccessUsageDescription": (
-                "Чушпан читает события на сегодня и завтра для утренней сводки. "
-                "События не изменяются."
+                "Чушпан показывает события выбранного дня и утреннюю сводку. События не изменяются."
             ),
             "NSLocationUsageDescription": (
                 "Чушпан узнаёт погоду там, где сейчас находится твой Mac."
@@ -64,14 +63,36 @@ class PersonalContext:
         stamp.write_text(digest)
         return app
 
-    async def read(self, *, request_access: bool = True) -> dict:
+    async def read(
+        self,
+        *,
+        request_access: bool = True,
+        parts: tuple[str, ...] = ("calendar", "location"),
+        day: str | None = None,
+        city_only: bool = False,
+    ) -> dict:
+        from datetime import date
+
+        if not parts or set(parts) - {"calendar", "location"}:
+            raise ValueError("Неизвестный источник личных данных.")
+        if day is not None:
+            day = date.fromisoformat(day).isoformat()
         async with self._lock:
             app = await self.helper()
             # Only the requested two-day window is returned. Temporary data is removed
             # after each invocation; calendars and coordinates aren't saved as facts.
             with tempfile.TemporaryDirectory(prefix="chushpan-morning-") as tmp:
                 request, result = Path(tmp) / "request.json", Path(tmp) / "result.json"
-                request.write_text(json.dumps({"request_access": request_access}))
+                request.write_text(
+                    json.dumps(
+                        {
+                            "request_access": request_access,
+                            "parts": parts,
+                            "date": day,
+                            "city_only": city_only,
+                        }
+                    )
+                )
                 try:
                     await process(
                         "open",

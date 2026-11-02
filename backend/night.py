@@ -148,12 +148,19 @@ class BetterDisplay:
 
 class NightRoutine:
     def __init__(
-        self, s: Settings, store: MemoryStore, desktop: MacDesktop | None = None, *, video=None
+        self,
+        s: Settings,
+        store: MemoryStore,
+        desktop: MacDesktop | None = None,
+        *,
+        video=None,
+        led=None,
     ):
         self.s, self.store = s, store
         self.display = BetterDisplay(desktop or MacDesktop(s))
         self.shortcuts = ShortcutsService(s)
         self.video = video
+        self.led = led
         self.volume = set_volume
         from backend.night_preflight import NightPreflight
 
@@ -191,7 +198,14 @@ class NightRoutine:
             + str(self.s.night.external_uuid or "не выбран")
             + " 25% ("
             + control_label
-            + "); системную громкость Mac 30%; последней запустить существующую "
+            + "); системную громкость Mac 30%; "
+            + (
+                "отправить выключение LED-ленты (только проверенная команда; "
+                "ошибка LED не блокирует остальные шаги); "
+                if self.led and self.s.led.night_off
+                else ""
+            )
+            + "последней запустить существующую "
             + SHORTCUT
             + " ("
             + entry.identifier
@@ -394,6 +408,22 @@ class NightRoutine:
                     steps["volume"] = {"status": "unknown"}
                     outcomes.append("Громкость Mac: уровень 30% не подтверждён")
                 self.store.set_preference("night", "last_run", state)
+            # Optional device: its failure must never break the existing sleep routine.
+            # Do not change lighting after a sleep watcher has already been launched.
+            if self.led and self.s.led.night_off and not steps.get("shortcut"):
+                if "led" in steps:
+                    outcomes.append("LED: повтор пропущен; физическое состояние не считывал")
+                else:
+                    steps["led"] = {"status": "started"}
+                    self.store.set_preference("night", "last_run", state)
+                    try:
+                        result = await self.led.execute(action="off")
+                        steps["led"] = {"status": "done", "physical_confirmed": False}
+                        outcomes.append(result["message"])
+                    except ToolError as exc:
+                        steps["led"] = {"status": "unknown", "error": str(exc)}
+                        outcomes.append("LED: " + str(exc))
+                    self.store.set_preference("night", "last_run", state)
             launched = False
             if steps.get("shortcut", {}).get("status") in {"started", "done", "unknown"}:
                 outcomes.append("Youtube sleep повторно не запускал")
@@ -422,6 +452,8 @@ class NightRoutine:
                 steps.get(k, {}).get("status") == "done"
                 for k in ["builtin", "external", "volume", "shortcut"]
             )
+            if self.led and self.s.led.night_off:
+                complete = complete and steps.get("led", {}).get("status") == "done"
             return {
                 "ok": complete,
                 "shortcut_started": launched,
@@ -446,7 +478,8 @@ class NightRoutine:
         tool = Tool(
             "night_mode",
             "Ночной сценарий: видео для сна в Safari, встроенный 10%, внешний 25%, "
-            "системная громкость Mac 30%, затем Youtube sleep. Явная просьба и свежий код.",
+            "системная громкость Mac 30%, проверенное выключение LED, затем Youtube sleep. "
+            "Явная просьба и свежий код.",
             self.run,
             risk=Risk.DANGEROUS,
             intent=lambda a, t: night_requested(t),

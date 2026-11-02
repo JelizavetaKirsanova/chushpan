@@ -10,9 +10,13 @@ final class LocationReader: NSObject, CLLocationManagerDelegate {
     var completion: (([String: Any]) -> Void)?
     var timer: Timer?
     var started = false
+    var cityOnly = false
+    var resolving = false
+    let geocoder = CLGeocoder()
 
-    func read(requestAccess: Bool, completion: @escaping ([String: Any]) -> Void) {
+    func read(requestAccess: Bool, cityOnly: Bool = false, completion: @escaping ([String: Any]) -> Void) {
         self.completion = completion
+        self.cityOnly = cityOnly
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyKilometer
         timer = Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { [weak self] _ in
@@ -51,6 +55,22 @@ final class LocationReader: NSObject, CLLocationManagerDelegate {
               location.horizontalAccuracy >= 0,
               location.horizontalAccuracy <= 25000,
               abs(location.timestamp.timeIntervalSinceNow) < 300 else { return }
+        if cityOnly {
+            guard !resolving else { return }
+            resolving = true
+            manager.stopUpdatingLocation()
+            geocoder.reverseGeocodeLocation(location, preferredLocale: Locale(identifier: "ru_RU")) { [weak self] places, _ in
+                guard let city = places?.first?.locality, !city.isEmpty else {
+                    self?.finish(["error": "location_city_unavailable"])
+                    return
+                }
+                self?.finish(["city": city, "country": places?.first?.country ?? "",
+                    "latitude": (location.coordinate.latitude * 10).rounded() / 10,
+                    "longitude": (location.coordinate.longitude * 10).rounded() / 10,
+                    "timezone": TimeZone.current.identifier])
+            }
+            return
+        }
         finish([
             "latitude": location.coordinate.latitude,
             "longitude": location.coordinate.longitude,
@@ -74,7 +94,7 @@ final class LocationReader: NSObject, CLLocationManagerDelegate {
     }
 }
 
-func calendarEvents(requestAccess: Bool) async -> [String: Any] {
+func calendarEvents(requestAccess: Bool, day: String? = nil) async -> [String: Any] {
     let store = EKEventStore()
     var status = EKEventStore.authorizationStatus(for: .event)
     if status == .notDetermined && requestAccess {
@@ -87,8 +107,14 @@ func calendarEvents(requestAccess: Bool) async -> [String: Any] {
     }
     guard status == .fullAccess else { return ["error": "calendar_permission"] }
     let calendar = Calendar.current
-    let start = calendar.startOfDay(for: Date())
-    guard let end = calendar.date(byAdding: .day, value: 2, to: start) else {
+    let input = DateFormatter()
+    input.locale = Locale(identifier: "en_US_POSIX")
+    input.timeZone = TimeZone.current
+    input.dateFormat = "yyyy-MM-dd"
+    input.isLenient = false
+    if let day, input.date(from: day) == nil { return ["error": "invalid_date"] }
+    let start = calendar.startOfDay(for: day.flatMap { input.date(from: $0) } ?? Date())
+    guard let end = calendar.date(byAdding: .day, value: day == nil ? 2 : 1, to: start) else {
         return ["error": "calendar_unavailable"]
     }
     let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
@@ -97,7 +123,11 @@ func calendarEvents(requestAccess: Bool) async -> [String: Any] {
         .filter { $0.status != .canceled && $0.startDate < end && $0.endDate > start }
         .sorted { $0.startDate < $1.startDate }
         .map { event -> [String: Any] in
-            ["id": event.eventIdentifier ?? "", "title": event.title ?? "Без названия",
+            let color = NSColor(cgColor: event.calendar.cgColor)?.usingColorSpace(.deviceRGB)
+            let hex = color.map { String(format: "#%02x%02x%02x", Int($0.redComponent * 255), Int($0.greenComponent * 255), Int($0.blueComponent * 255)) } ?? "#9881bd"
+            return ["id": (event.eventIdentifier ?? "") + ":" + formatter.string(from: event.startDate),
+             "external_id": event.calendarItemExternalIdentifier ?? "",
+             "title": event.title ?? "Без названия", "color": hex,
              "start": formatter.string(from: event.startDate),
              "end": formatter.string(from: event.endDate), "all_day": event.isAllDay,
              "calendar": event.calendar.title]
@@ -113,13 +143,15 @@ guard args.count == 3,
       let data = try? Data(contentsOf: URL(fileURLWithPath: args[1])),
       let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { exit(1) }
 let requestAccess = request["request_access"] as? Bool ?? false
+let parts = Set(request["parts"] as? [String] ?? ["calendar", "location"])
+guard !parts.isEmpty, parts.isSubset(of: ["calendar", "location"]) else { exit(1) }
 let location = LocationReader()
 var output: [String: Any] = [:]
 var finished = 0
 func save(_ key: String, _ value: [String: Any]) {
     output[key] = value
     finished += 1
-    if finished == 2 {
+    if finished == parts.count {
         if let data = try? JSONSerialization.data(withJSONObject: output) {
             try? data.write(to: URL(fileURLWithPath: args[2]), options: .atomic)
         }
@@ -129,9 +161,13 @@ func save(_ key: String, _ value: [String: Any]) {
 DispatchQueue.main.async {
     // Request sequentially, so two privacy dialogs never compete for attention.
     Task { @MainActor in
-        let calendar = await calendarEvents(requestAccess: requestAccess)
-        save("calendar", calendar)
-        location.read(requestAccess: requestAccess) { save("location", $0) }
+        if parts.contains("calendar") {
+            let calendar = await calendarEvents(requestAccess: requestAccess, day: request["date"] as? String)
+            save("calendar", calendar)
+        }
+        if parts.contains("location") {
+            location.read(requestAccess: requestAccess, cityOnly: request["city_only"] as? Bool ?? false) { save("location", $0) }
+        }
     }
 }
 // Bounded even when a permission dialog is left unanswered.

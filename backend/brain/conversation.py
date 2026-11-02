@@ -14,7 +14,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from backend.audio.stt import is_morning_greeting
-from backend.brain.followups import bounded_history, is_short, playlist_proposal, playlist_reply
+from backend.brain.followups import (
+    action_proposal,
+    bounded_history,
+    is_short,
+    playlist_reply,
+    safe_followup,
+)
 from backend.brain.llm import ChatChunk, LLMClient
 from backend.brain.prompts import (
     build_context_note,
@@ -22,10 +28,17 @@ from backend.brain.prompts import (
     build_response_hint,
     build_system_prompt,
 )
+from backend.brain.response_mode import simple_request
 from backend.config import Settings
-from backend.context import DeviceContext, RequestContext, request_scope, voice_read_followup
+from backend.context import (
+    DeviceContext,
+    RequestContext,
+    accepted_followup,
+    request_scope,
+    voice_read_followup,
+)
 from backend.dialogue import CONTROLS, normalize
-from backend.latency import record
+from backend.latency import Profile, current, record
 from backend.local_commands import route as local_route
 from backend.memory.store import MemoryStore
 from backend.music import music_context
@@ -101,6 +114,9 @@ class Conversation:
         self.last_stats = TurnStats()
         self._morning_music_pending = False
         self.on_tool: Callable[[str], None] | None = None  # the HUD shows tools as they run
+        from backend.intents import ControlSession
+
+        self.controls = ControlSession(settings.tools.control_context_s)
         self._capabilities = self.tools.capabilities(settings.locale.lang)
         # Same list every turn: Ollama renders tools into the cached prompt prefix.
         self._schemas = self.tools.schemas() or None
@@ -123,7 +139,12 @@ class Conversation:
                     if "remember" in self.tools and not getattr(self.llm, "cloud_context", False)
                     else None
                 )
-            prompt = build_system_prompt(self.s, self._capabilities, facts)
+            prompt = build_system_prompt(
+                self.s,
+                self._capabilities,
+                facts,
+                text_only=bool(self._request and simple_request(self._request.text)),
+            )
             if self.tools.memory and self.device.authenticated and self.s.locale.lang == "ru":
                 prompt += "\n" + self._character_note()
             return prompt
@@ -153,7 +174,31 @@ class Conversation:
     async def prime(self) -> None:
         await self.llm.prime(self.system_prompt, self._schemas)
 
-    async def warm(self) -> None:
+    def _text_only_request(self) -> bool:
+        if self._request is None:
+            return False
+        text = command_text(self._request.text)
+        return (
+            text.rstrip(".!? ") in {"привет", "как дела", "как ты", "расскажи шутку"}
+            or normalize(self._request.text) in CONTROLS
+            or simple_request(self._request.text)
+            or (
+                not action_requested(self._request.text)
+                and bool(re.match(r"^(?:что такое |объясни |расскажи (?:о |про )|почему )", text))
+            )
+        )
+
+    def _model_history(self) -> list[dict[str, Any]]:
+        cloud = getattr(self.llm, "cloud_context", False)
+        limit = self.s.gemini.context_messages if cloud else self.s.llm.context_messages
+        try:
+            history = self.store.recent(self.id, limit) if limit else []
+        except sqlite3.Error:
+            history = []
+        budget = self.s.gemini.context_chars if cloud else self.s.llm.num_ctx * 4
+        return bounded_history(history, max(0, budget), STALE_RESULT)
+
+    async def warm(self, *, system_prompt: str | None = None, tools: list | None = None) -> None:
         """Pre-process the next request's prefix: system, history and the context note.
 
         Ollama keeps one cached prefix, and the answer after a tool call is drafted without
@@ -161,18 +206,33 @@ class Conversation:
         Ending with the note, not the last answer, matters: qwen3 renders the final
         assistant message differently from the same message in history.
         """
-        history = self.store.recent(self.id, self.s.llm.context_messages)
+        history = self._model_history()
         note = build_context_note(self.s, first_turn=not history, tools=bool(self._schemas))
         next_turn = [*history, {"role": "user", "content": note}]
         try:
-            await self.llm.prime(self.system_prompt, self._schemas, next_turn)
+            await self.llm.prime(
+                system_prompt if system_prompt is not None else self.system_prompt,
+                self._schemas if tools is None else tools,
+                next_turn,
+            )
         except Exception as exc:  # noqa: BLE001 - only an optimisation
             log.debug("Cache warm-up failed: %s", exc)
 
     def schedule_warm(self) -> None:
         """Warm the cache in the background, while the reply is still being spoken."""
-        if self.warm_after_turn and not getattr(self.llm, "cloud_context", False):
-            self._warm_task = asyncio.create_task(self.warm())
+        local = not getattr(self.llm, "cloud_context", False) or getattr(
+            self.llm, "needs_local_warmup", False
+        )
+        if self.warm_after_turn and local and (self._warm_task is None or self._warm_task.done()):
+            # Snapshot while the trusted request still exists. Rebuilding after its
+            # cleanup changed the memory prefix; warming all schemas after a text-only
+            # reply also replaced the useful cache with an unrelated tool prefix.
+            self._warm_task = asyncio.create_task(
+                self.warm(
+                    system_prompt=self.system_prompt,
+                    tools=[] if self._text_only_request() else self._schemas,
+                )
+            )
 
     async def settle(self) -> None:
         """Wait for a cache warm-up in flight, so an unload does not race it."""
@@ -181,18 +241,12 @@ class Conversation:
 
     def add_exchange(self, user_text: str, answer: str) -> None:
         """A turn answered by code, not the model (a sign-off), kept for the history."""
-        source = self._request or RequestContext(self.device, user_text)
-        try:
-            self.store.add(self.id, "user", user_text, source=source)
-            self.store.add(self.id, "assistant", answer, source=source)
-            self._save_followup(answer)
-        except sqlite3.Error:
-            log.warning("Conversation history unavailable; reply not persisted")
+        self._persist(user_text, [], answer)
 
     def add_assistant_note(self, text: str) -> None:
         """Something said unprompted (a timer going off), so follow-ups have context."""
         self.store.add(self.id, "assistant", text, source=self._request)
-        self._save_followup(text)
+        # Unsolicited timers/background notes do not propose a new user action.
 
     @staticmethod
     def _for_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -214,26 +268,34 @@ class Conversation:
             log.warning("Conversation persistence unavailable; content omitted from log")
 
     def _persist_available(self, user_text: str, trace: list[dict[str, Any]], answer: str) -> None:
-        self.store.add(self.id, "user", user_text, source=self._request)
-        for m in self._for_history(trace):
-            self.store.add(
-                self.id,
-                m["role"],
-                m["content"],
-                m.get("tool_calls"),
-                m.get("tool_name"),
-                source=self._request,
-            )
-        if answer:
-            self.store.add(self.id, "assistant", answer, source=self._request)
-        self._save_followup(answer)
+        source = self._request or RequestContext(self.device, user_text)
+        with self.store.memory_transaction():
+            self.store.add(self.id, "user", user_text, source=source)
+            for m in self._for_history(trace):
+                self.store.add(
+                    self.id,
+                    m["role"],
+                    m["content"],
+                    m.get("tool_calls"),
+                    m.get("tool_name"),
+                    source=source,
+                )
+            if answer:
+                self.store.add(self.id, "assistant", answer, source=source)
+            self._save_followup(answer)
 
     def _save_followup(self, answer):
         if self.device.authenticated and self.store.memory_available:
-            proposal = playlist_proposal(answer, self.tools)
+            proposal = action_proposal(answer, self.tools)
             if proposal:
                 self.store.set_preference("dialogue_pending", str(self.id), proposal)
-            else:
+            elif re.search(r"\bмогу\b", answer, re.I) or re.fullmatch(
+                r"(?:Хочешь[, ]+(?:я )?)?(?:Сделать|Включить|Выключить|Поставить|Установить) .+\?",
+                answer.strip(),
+                re.I,
+            ):
+                # A new ambiguous/unsupported offer supersedes the old one. An unrelated
+                # answer or technical error does not erase a still-relevant proposal.
                 self.store.clear_preference("dialogue_pending", str(self.id))
 
     def reset(self) -> None:
@@ -255,8 +317,10 @@ class Conversation:
         if (
             isinstance(proposal, dict)
             and proposal.get("expires", 0) > time.time()
-            and proposal.get("tool") == "music_playlist"
-            and proposal.get("arguments") == {"action": "list"}
+            and proposal.get("state", "proposed") == "proposed"
+            and isinstance(proposal.get("arguments"), dict)
+            and safe_followup(proposal.get("tool"), proposal["arguments"])
+            and proposal.get("tool") in self.tools
         ):
             return proposal
         return None
@@ -377,33 +441,33 @@ class Conversation:
 
         async def pump() -> None:
             started = time.perf_counter()
+            profile = current.get()
+            interval = profile.begin("model_total") if profile else None
+            outcome = "ok"
             first = True
+            first_text = True
             try:
-                text_only = self._request is not None and command_text(self._request.text).rstrip(
-                    ".!? "
-                ) in {"привет", "как дела", "как ты", "расскажи шутку"}
-                text_only = text_only or (
-                    self._request is not None and normalize(self._request.text) in CONTROLS
-                )
-                if self._request and not action_requested(self._request.text):
-                    text_only = text_only or bool(
-                        re.match(
-                            r"^(?:что такое |объясни |расскажи (?:о |про )|почему )",
-                            command_text(self._request.text),
-                        )
-                    )
                 async for chunk in self.llm.chat_stream(
-                    messages, tools=[] if text_only else self._schemas
+                    messages, tools=[] if self._text_only_request() else self._schemas
                 ):
+                    if profile:
+                        profile.update(**chunk.stats)
+                    if first_text and chunk.content:
+                        record("model_first_text", time.perf_counter() - started)
+                        first_text = False
                     if first and (chunk.content or chunk.tool_calls):
                         record("model_first_chunk", time.perf_counter() - started)
                         first = False
                     queue.put_nowait(chunk)
             except Exception as exc:  # noqa: BLE001 - re-raised by the consumer
+                outcome = "error"
                 queue.put_nowait(exc)
                 return
             finally:
-                record("model_total", time.perf_counter() - started)
+                if profile:
+                    profile.end(
+                        interval, "cancelled" if asyncio.current_task().cancelling() else outcome
+                    )
             queue.put_nowait(_END)
 
         task = asyncio.create_task(pump())
@@ -430,7 +494,10 @@ class Conversation:
     @staticmethod
     def _could_be_copy(text: str, earlier: list[str]) -> bool:
         t = _norm(text)
-        return bool(t) and any(reply.startswith(t) for reply in earlier)
+        return bool(t) and any(
+            reply.startswith(t) or (len(reply) >= COPY_MIN_CHARS and t.startswith(reply))
+            for reply in earlier
+        )
 
     def _could_be_tool_name(self, text: str) -> bool:
         t = text.strip().rstrip(".!").lower()
@@ -441,7 +508,24 @@ class Conversation:
         """What a reply must not copy: the assistant's earlier answers in history."""
         if _ASKS_REPEAT.search(user_text):
             return []  # "pode repetir?": copying is the right answer
-        return [_norm(m["content"]) for m in history if m["role"] == "assistant" and m["content"]]
+        question = command_text(user_text).rstrip(".!? ")
+        repeat_definition = simple_request(user_text) and question.startswith("что такое ")
+        same_definition = False
+        replies = []
+        for message in history:
+            if message["role"] == "user":
+                same_definition = repeat_definition and (
+                    command_text(message["content"]).rstrip(".!? ") == question
+                )
+            elif message["role"] == "tool" or message.get("tool_calls"):
+                same_definition = False  # current data/actions still require fresh tools
+            if message["role"] == "assistant" and message.get("content") and not same_definition:
+                replies.append(_norm(message["content"]))
+        if len(_norm(user_text)) >= COPY_MIN_CHARS and not re.search(
+            r"цитир|дословно|quote|verbatim", user_text, re.I
+        ):
+            replies.append(_norm(user_text))
+        return replies
 
     def _as_tool_name(self, text: str) -> str | None:
         t = text.strip().rstrip(".!").lower()
@@ -461,6 +545,34 @@ class Conversation:
 
     async def reply(self, user_text: str) -> AsyncIterator[str]:
         """Both text and transcribed voice enter the same trusted request boundary."""
+        owned = current.get() is None
+        profile = current.get() or Profile()
+        timing_token = current.set(profile)
+        self.store.performance.attach(profile, self.id)
+        status = "completed"
+        try:
+            async with contextlib.aclosing(self._timed_reply(user_text)) as stream:
+                async for piece in stream:
+                    if piece.strip():
+                        profile.mark("first_content_text")
+                    yield piece
+        except BaseException as exc:
+            status = (
+                "cancelled"
+                if isinstance(exc, (asyncio.CancelledError, GeneratorExit))
+                else "failed"
+            )
+            profile.fail(type(exc).__name__)
+            raise
+        finally:
+            if owned:
+                profile.finish(status)
+            current.reset(timing_token)
+
+    async def _timed_reply(self, user_text: str) -> AsyncIterator[str]:
+        if self._warm_task and not self._warm_task.done():
+            self._warm_task.cancel()
+            await asyncio.gather(self._warm_task, return_exceptions=True)
         if self.device.authenticated:
             try:
                 self.id = self.store.session_conversation(self.device.session_id)
@@ -473,7 +585,12 @@ class Conversation:
                     yield piece
 
     async def _request_reply(self, user_text: str) -> AsyncIterator[str]:
-        context = RequestContext(self.device, user_text)
+        profile = current.get()
+        context = (
+            RequestContext(self.device, user_text, profile.request_id)
+            if profile
+            else RequestContext(self.device, user_text)
+        )
         self._request = context
         token = user_text_var.set(user_text)
         try:
@@ -482,13 +599,47 @@ class Conversation:
             before_count = None
         try:
             with request_scope(context):
-                if self.device.authenticated and user_text.strip() and not is_short(user_text):
-                    try:
+                if self.device.authenticated and re.search(
+                    r"(?:другую|новую) тему|сменим тему|поговорим о другом", command_text(user_text)
+                ):
+                    self.store.clear_preference("dialogue_pending", str(self.id))
+                route_interval = profile.begin("local_routing") if profile else None
+                routed = (
+                    local_route(
+                        user_text,
+                        control_session=self.controls,
+                        binding=(context.binding, self.id),
+                        comfortable_brightness=self.s.led.comfortable_brightness,
+                    )
+                    if self.s.locale.lang == "ru"
+                    else None
+                )
+                control_plan = routed[1] if routed and routed[0] == "device_plan" else None
+                if routed and (
+                    routed[0] == "led_control"
+                    or control_plan
+                    and any(action.device == "led_strip" for action in control_plan.actions)
+                ):
+                    from backend.led import diagnostic, intent_fields, parse
+
+                    diagnostic(
+                        "normalization",
+                        input_chars=len(user_text),
+                        normalized_chars=len(command_text(user_text)),
+                    )
+                    led_text = (
+                        next(
+                            action.call()[1]["command"]
+                            for action in control_plan.actions
+                            if action.device == "led_strip"
+                        )
+                        if control_plan
+                        else user_text
+                    )
+                    diagnostic("intent", "recognized", **intent_fields(parse(led_text)))
+                    diagnostic("selection", tool="led_control", authority="original_user")
+                    with contextlib.suppress(sqlite3.Error):
                         self.store.clear_preference("dialogue_pending", str(self.id))
-                    except sqlite3.Error:
-                        log.warning("Pending dialogue state unavailable")
-                route_started = time.perf_counter()
-                routed = local_route(user_text) if self.s.locale.lang == "ru" else None
                 if self.s.locale.lang == "ru" and routed is None:
                     history_context = False
                     if normalize(user_text) == "продолжай":
@@ -499,7 +650,8 @@ class Conversation:
                         )
                         history_context = music_context(last_user)
                     routed = music_route(user_text, context=history_context)
-                record("local_routing", time.perf_counter() - route_started)
+                if profile:
+                    profile.end(route_interval)
                 if routed is not None:
                     from backend.audio.waiting import trace as voice_trace
 
@@ -538,12 +690,83 @@ class Conversation:
                         self.add_exchange(user_text, confirmation)
                     yield confirmation
                     return
+                if control_plan is not None:
+                    from backend.led import diagnostic
+
+                    with contextlib.suppress(sqlite3.Error):
+                        self.store.clear_preference("dialogue_pending", str(self.id))
+                    started = time.perf_counter()
+                    diagnostic(
+                        "plan", "clarification" if control_plan.clarification else "validated"
+                    )
+                    receipt = await self.controls.execute(control_plan, self)
+                    answer = receipt.get("error") or receipt["message"]
+                    steps = receipt.get("steps", [])
+                    names = [step["tool"] for step in steps if step["tool"]]
+                    elapsed = time.perf_counter() - started
+                    record("local_execution", elapsed)
+                    self.last_stats = TurnStats(tools=names, tools_s=elapsed, total_s=elapsed)
+                    trace = []
+                    for step in steps:
+                        if step["tool"]:
+                            trace.extend(
+                                [
+                                    {
+                                        "role": "assistant",
+                                        "content": "",
+                                        "tool_calls": [
+                                            {
+                                                "function": {
+                                                    "name": step["tool"],
+                                                    "arguments": step["arguments"],
+                                                }
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "role": "tool",
+                                        "tool_name": step["tool"],
+                                        "content": json.dumps(step["result"], ensure_ascii=False),
+                                    },
+                                ]
+                            )
+                    if profile and (
+                        receipt.get("error")
+                        or receipt.get("status") in {"failed", "partial", "clarification"}
+                    ):
+                        profile.result_status = (
+                            "rejected" if receipt.get("status") == "clarification" else "failed"
+                        )
+                    diagnostic(
+                        "reply",
+                        receipt.get("status", "failed"),
+                        delivery_state=receipt.get("status", "unverified"),
+                        physical_confirmed=False,
+                    )
+                    if trace:
+                        self._persist(user_text, trace, answer)
+                    else:
+                        self.add_exchange(user_text, answer)
+                    yield answer
+                    return
+                self.controls.clear()
+                if self.s.locale.lang == "ru" and routed is None:
+                    from backend.led import clarification, diagnostic, request_candidate
+
+                    if request_candidate(user_text):
+                        diagnostic("intent", "unrecognized", authority="original_user")
+                        with contextlib.suppress(sqlite3.Error):
+                            self.store.clear_preference("dialogue_pending", str(self.id))
+                        if profile:
+                            profile.result_status = "rejected"
+                        answer = clarification()
+                        self.last_stats = TurnStats()
+                        self.add_exchange(user_text, answer)
+                        yield answer
+                        return
                 if self.s.locale.lang == "ru" and is_short(user_text):
                     started = time.perf_counter()
                     proposal = self.pending_followup()
-                    if normalize(user_text) == "открой":
-                        # Listing was offered; opening an unspecified item is a different action.
-                        proposal = None
                     if proposal and self.store.claim_followup(self.id, proposal):
                         name, arguments = proposal["tool"], proposal["arguments"]
                         from backend.audio.waiting import trace as voice_trace
@@ -554,11 +777,21 @@ class Conversation:
                         grant = voice_read_followup.set(
                             (name, json.dumps(arguments, sort_keys=True))
                         )
+                        accepted = accepted_followup.set(
+                            (name, json.dumps(arguments, sort_keys=True))
+                        )
                         try:
                             result = json.loads(await self.tools.call(name, arguments))
                         finally:
                             voice_read_followup.reset(grant)
-                        answer = playlist_reply(result)
+                            accepted_followup.reset(accepted)
+                        answer = (
+                            playlist_reply(result)
+                            if name == "music_playlist"
+                            else self.tools.direct_reply(name, result)
+                            or result.get("error")
+                            or "Результат действия не подтверждён."
+                        )
                         trace = [
                             {
                                 "role": "assistant",
@@ -574,7 +807,9 @@ class Conversation:
                             },
                         ]
                         self.last_stats = TurnStats(
-                            tools=[name], total_s=time.perf_counter() - started
+                            tools=[name],
+                            total_s=time.perf_counter() - started,
+                            tools_s=time.perf_counter() - started,
                         )
                         self._persist(user_text, trace, answer)
                     else:
@@ -584,6 +819,14 @@ class Conversation:
                         )
                         self.last_stats = TurnStats()
                         self.add_exchange(user_text, answer)
+                    yield answer
+                    return
+                if normalize(user_text) in {"нет", "не надо", "отмена", "передумала"} and (
+                    self.pending_followup()
+                ):
+                    self.store.clear_preference("dialogue_pending", str(self.id))
+                    answer = "Ладно, предложение отменил."
+                    self.add_exchange(user_text, answer)
                     yield answer
                     return
                 if normalize(user_text) == "повтори последнее":
@@ -607,10 +850,16 @@ class Conversation:
                     return
                 if (
                     routed is not None
-                    and routed[0] == "music_command"
+                    and routed[0] in {"music_command", "led_control", "open_website"}
                     and routed[0] not in self.tools
                 ):
-                    answer = "Управление музыкой отключено в настройках инструментов."
+                    answer = (
+                        "Управление подсветкой отключено в настройках."
+                        if routed[0] == "led_control"
+                        else "Открытие сайтов отключено в настройках."
+                        if routed[0] == "open_website"
+                        else "Управление музыкой отключено в настройках инструментов."
+                    )
                     self.last_stats = TurnStats()
                     self.add_exchange(user_text, answer)
                     yield answer
@@ -620,20 +869,67 @@ class Conversation:
                     started = time.perf_counter()
                     if self.on_tool:
                         self.on_tool(name)
-                    result = json.loads(await self.tools.call(name, arguments))
-                    record("local_execution", time.perf_counter() - started)
+                    try:
+                        call = self.tools.call(name, arguments)
+                        raw = (
+                            await asyncio.wait_for(call, self.s.tools.quick_read_timeout_s)
+                            if name == "get_weather"
+                            else await call
+                        )
+                        result = json.loads(raw)
+                    except TimeoutError:
+                        if profile:
+                            profile.fail("tool_timeout")
+                            profile.update(reason="tool_timeout")
+                        result = {
+                            "error": "Погодный сервис не ответил вовремя. "
+                            "Погоду проверить не удалось."
+                        }
+                    execution_s = time.perf_counter() - started
+                    record("local_execution", execution_s)
+                    weather_reply = None
+                    if name == "get_weather" and not result.get("error"):
+                        from backend.brain.briefing import (
+                            BriefingData,
+                            weather_brief,
+                            weather_sentence,
+                        )
+
+                        weather_reply = weather_sentence(
+                            self, BriefingData(weather=weather_brief(result))
+                        )
+                        if weather_reply:
+                            weather_reply = weather_reply.replace(
+                                "Сейчас на улице", "Сейчас там", 1
+                            )
+                            if place := result.get("place"):
+                                weather_reply = f"Погода: {place}. {weather_reply}"
+                        else:
+                            weather_reply = "Погодный сервис не вернул температуру."
                     answer = (
                         self.tools.direct_reply(name, result)
+                        or weather_reply
                         or result.get("error")
                         or "Нет результата команды."
                     )
+                    if name == "led_control":
+                        from backend.led import diagnostic
+
+                        diagnostic(
+                            "reply",
+                            "error" if result.get("error") else "ok",
+                            delivery_state=result.get("delivery_state", "unverified"),
+                            physical_confirmed=result.get("physical_confirmed", False),
+                        )
                     if self.tools.memory:
                         try:
                             if suggestion := self.tools.memory.observe(name, arguments, result):
                                 answer += " " + suggestion
                         except sqlite3.Error:
                             log.warning("Habit metadata unavailable; local result preserved")
-                    self.last_stats = TurnStats(tools=[name], total_s=time.perf_counter() - started)
+                    self.last_stats = TurnStats(
+                        tools=[name], tools_s=execution_s, total_s=time.perf_counter() - started
+                    )
                     trace = [
                         {
                             "role": "assistant",
@@ -710,7 +1006,7 @@ class Conversation:
         except BaseException:
             try:
                 if before_count is not None and self.store.count(self.id) == before_count:
-                    self.store.add(self.id, "user", user_text)
+                    self.store.add(self.id, "user", user_text, source=context)
             except sqlite3.Error:
                 log.warning("User turn could not be stored")
             raise
@@ -732,31 +1028,15 @@ class Conversation:
             async for piece in self._morning_reply(user_text):
                 yield piece
             return
-        context_started = time.perf_counter()
+        profile = current.get()
+        context_interval = profile.begin("context_memory") if profile else None
         from backend.audio.waiting import trace as voice_trace
 
         voice_trace("REQUEST_ROUTE", route="model", provider=type(self.llm).__name__)
-        limit = (
-            self.s.gemini.context_messages
-            if getattr(self.llm, "cloud_context", False)
-            else self.s.llm.context_messages
-        )
-        try:
-            history = self.store.recent(self.id, limit) if limit else []
-        except sqlite3.Error:
-            history = []
-        if getattr(self.llm, "cloud_context", False):
-            budget = self.s.gemini.context_chars
-        else:
-            budget = self.s.llm.num_ctx * 2 - (
-                len(self.system_prompt)
-                + len(json.dumps(self._schemas or []))
-                + len(user_text)
-                + 4096
-            )
-        history = bounded_history(history, max(0, budget), STALE_RESULT)
+        history = self._model_history()
         messages: list[dict[str, Any]] = self._messages(user_text, history)
-        record("context_memory", time.perf_counter() - context_started)
+        if profile:
+            profile.end(context_interval)
         earlier = self._earlier_replies(user_text, history)
         stats = TurnStats()
         start = time.perf_counter()
@@ -772,13 +1052,25 @@ class Conversation:
         guard_action = action_requested(user_text)
         try:
             # Not persisted: the model would copy it and greet on every turn.
-            if not history and (greeting := build_greeting(self.s)):
+            if (
+                not history
+                and (
+                    self.s.locale.lang != "ru"
+                    or normalize(user_text)
+                    in {"привет", "здравствуй", "добрый день", "добрый вечер"}
+                )
+                and (greeting := build_greeting(self.s))
+            ):
                 yield f"{greeting} "  # not counted in first_token_s: that measures the model
             for round_index in range(self.s.tools.max_rounds + 1):
                 calls: list[dict[str, Any]] = []
                 said = []
                 retried_blank = False
                 for _attempt in range(3):
+                    if _attempt and profile:
+                        profile.update(retry=profile.info.get("retry", 0) + 1)
+                        retry = profile.begin("model_retry", reason="reply_validation")
+                        profile.end(retry)
                     generated = 0
                     thinking: list[str] = []
                     native_parts: list[Any] = []
@@ -821,11 +1113,17 @@ class Conversation:
                                 if ns := chunk.stats.get("prompt_eval_duration"):
                                     stats.prompt_eval_s = ns / 1e9
                     if copied:
-                        # Nothing was said yet. Without the history there is nothing to
-                        # copy; the question alone gets "could you repeat that?".
-                        log.warning("Model copied an earlier reply; answering without history")
-                        del messages[1 : 1 + len(history)]
-                        history, earlier, calls = [], [], []
+                        log.warning("Model echoed transcript; retrying with context preserved")
+                        calls = []
+                        messages.append(
+                            {
+                                "role": "system",
+                                "content": "Предыдущая генерация повторила текст истории. "
+                                "Не повторяй вопрос или прежний ответ. Ответь на текущий смысл, "
+                                "сохрани контекст и исправления пользовательницы. "
+                                "Не добавляй погоду, события или личные факты без данных.",
+                            }
+                        )
                         continue
                     if name := self._as_tool_name(held):
                         # qwen3 sometimes writes "Go_to_sleep." as text instead of calling it;
@@ -905,12 +1203,6 @@ class Conversation:
                     waited = True
                     if self.s.locale.lang != "ru":
                         yield one_moment
-                if history and not getattr(self.llm, "cloud_context", False):
-                    # The call already resolved the question in context ("and tomorrow?"
-                    # → days=2). Drafting the answer next to earlier replies that open the
-                    # same way ("A senhora terá..."), qwen3 copied one instead of the data.
-                    del messages[1 : 1 + len(history)]
-                    history, earlier = [], []
                 assistant = {"role": "assistant", "content": "".join(said), "tool_calls": calls}
                 if native_parts:
                     assistant["native_parts"] = native_parts

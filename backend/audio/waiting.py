@@ -11,12 +11,16 @@ from collections import deque
 
 def trace(event: str, **fields) -> None:
     """Timing and lifecycle only: never log transcripts or generated text."""
+    from backend.latency import current
     from backend.state import request_context
 
+    profile = current.get()
+
     logging.getLogger("backend.voice.events").info(
-        "VOICE_EVENT event=%s request=%s t=%.6f %s",
+        "VOICE_EVENT event=%s request=%s request_id=%s t=%.6f %s",
         event,
         request_context.get(),
+        profile.request_id if profile else None,
         time.monotonic(),
         " ".join(f"{key}={value}" for key, value in fields.items()),
     )
@@ -44,11 +48,26 @@ PHRASES = (
 )
 
 
+def is_waiting_only(text: str) -> bool:
+    def key(value):
+        return " ".join(re.findall(r"\w+", value.casefold()))
+
+    return key(text) in {
+        key(p) for p in (*PHRASES, "Секунду", "Ща", "Сейчас посмотрю", "Одну секунду")
+    }
+
+
 def allow_waiting(text: str) -> bool:
     """Whole local social commands only; never suppress a substantive follow-up question."""
+    from backend.brain.response_mode import simple_request
     from backend.dialogue import CLOSE, normalize
     from backend.local_commands import route
     from backend.music import parse
+
+    # Plain fast answers begin with their content. A filler followed by a cold
+    # fallback pause is not useful progress; the HUD still shows the current stage.
+    if simple_request(text):
+        return False
 
     intent = parse(text)
     if intent and intent.action in {

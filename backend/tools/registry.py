@@ -6,18 +6,19 @@ import asyncio
 import json
 import logging
 import sqlite3
-import time
 from collections.abc import Awaitable, Callable, Iterable
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from backend.context import (
+    accepted_followup,
     request_context,
     voice_addressed,
+    voice_led_command,
     voice_music_command,
     voice_read_followup,
 )
-from backend.latency import record
+from backend.latency import current
 from backend.mac_agent import MacAgent, authorized_operation
 from backend.security import (
     ActionDenied,
@@ -90,8 +91,32 @@ class Tool:
         args = validate_arguments(arguments, self.parameters, self.required)
         context = request_context.get()
         risk = self.risk or risk_for(self.name, args)
+        from backend.context import planned_operation
+
+        planned = (
+            context is not None
+            and risk != Risk.DANGEROUS
+            and self.name in {"led_control", "set_brightness", "music_command", "open_website"}
+            and planned_operation.get()
+            == (context.request_id, self.name, json.dumps(args, sort_keys=True))
+        )
+        from backend.brain.followups import is_short, safe_followup
+
+        bound_action = (
+            risk != Risk.DANGEROUS
+            and context is not None
+            and is_short(context.text)
+            and accepted_followup.get() == (self.name, json.dumps(args, sort_keys=True))
+            and safe_followup(self.name, args)
+        )
         local_music = self.name == "music_command" and voice_music_command.get() == args.get(
             "command"
+        )
+        local_led = (
+            self.name == "led_control"
+            and risk == Risk.CHANGE
+            and context is not None
+            and voice_led_command.get() == context.text == args.get("command")
         )
         local_read = risk == Risk.READ and voice_read_followup.get() == (
             self.name,
@@ -101,7 +126,10 @@ class Tool:
             not voice_addressed.get()
             and approved_action.get() is None
             and not local_music
+            and not local_led
             and not local_read
+            and not bound_action
+            and not planned
             and (risk != Risk.READ or self.required_capability)
         ):
             raise ActionDenied("Для системного действия нужно явное обращение к Чушпану.")
@@ -118,8 +146,16 @@ class Tool:
             if context is None or not context.device.authenticated:
                 raise ActionDenied("Нужен текущий запрос от авторизованной сессии.")
             intent = self.intent or (lambda a, t: explicit_request(self.name, a, t))
-            if not intent(args, context.text):
+            if not bound_action and not planned and not intent(args, context.text):
                 raise ActionDenied("Действие не выполнено: нужна явная просьба пользовательницы.")
+            if bound_action and self.name == "led_control":
+                from backend.led import diagnostic
+
+                diagnostic("authorization", "allowed", authority="accepted_proposal")
+            elif planned and self.name == "led_control":
+                from backend.led import diagnostic
+
+                diagnostic("authorization", "allowed", authority="local_validated_plan")
         if self.prepare:
             args = self.prepare(args)
         summary = self.summary(args) if self.summary else f"{self.name}: {_dump(args)}"
@@ -235,24 +271,51 @@ class ToolRegistry:
         tool = self._tools.get(name) if isinstance(name, str) else None
         if tool is None:
             return _dump({"error": f"unknown tool {name!r}"})
-        started = time.perf_counter()
+        profile = current.get()
+        interval = profile.begin("tool_execution", tool=tool.name) if profile else None
+        outcome = "ok"
         try:
             args = validate_arguments(arguments, tool.parameters, tool.required)
             result = await tool.handler(**args)
+            if isinstance(result, dict) and (result.get("error") or result.get("ok") is False):
+                outcome = "error"
+                if profile:
+                    profile.fail("tool_failed")
         except ConfirmationRequired as exc:
+            if profile:
+                profile.result_status = "awaiting_confirmation"
             context = request_context.get()
             if context is None:
                 return _dump({"error": "Нет текущего запроса для подтверждения."})
             return _dump(self.confirmations.request(name, exc.arguments, exc, context))
         except (ToolError, ArgumentError, ActionDenied, PermissionError) as exc:
+            outcome = "error"
+            context = request_context.get()
+            log.info(
+                "TOOL_REJECT tool=%s request_id=%s reason=%s",
+                tool.name,
+                context.request_id if context else "none",
+                type(exc).__name__,
+            )
+            if profile:
+                profile.fail(type(exc).__name__)
             return _dump({"error": str(exc)})
         except sqlite3.Error:
+            outcome = "error"
+            if profile:
+                profile.fail("sqlite_error")
             return _dump({"error": "SQLite недоступна. Память не изменена; попробуй позже."})
         except Exception as exc:  # noqa: BLE001
+            outcome = "error"
+            if profile:
+                profile.fail(type(exc).__name__)
             log.exception("Tool %s failed", name)
             return _dump({"error": f"{type(exc).__name__}: {exc}"})
         finally:
-            record("tool_execution", time.perf_counter() - started)
+            if profile:
+                profile.end(
+                    interval, "cancelled" if asyncio.current_task().cancelling() else outcome
+                )
         return _dump(result)
 
 

@@ -9,6 +9,7 @@ import os
 import sys
 import time
 from collections.abc import AsyncIterator
+from contextvars import ContextVar
 from typing import Any
 from urllib.parse import urlparse
 
@@ -19,11 +20,13 @@ from google.genai import types
 
 from backend.brain.llm import ChatChunk, LLMClient, LLMError, Message, OllamaClient
 from backend.brain.privacy import redact
+from backend.brain.response_mode import simple_request
 from backend.config import ENV_FILE, GeminiConfig, Settings
 from backend.context import request_context
-from backend.latency import record
+from backend.latency import current, record
 
 log = logging.getLogger(__name__)
+_wire_progress = ContextVar("gemini_wire_progress", default=None)
 SETUP = (
     "Gemini недоступен: добавь GEMINI_API_KEY в существующий .env и после проверки "
     "Free tier проекта в AI Studio установи JARVIS_GEMINI__FREE_TIER_CONFIRMED=true. "
@@ -167,14 +170,24 @@ class GeminiClient:
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             tools=[types.Tool(function_declarations=declarations)] if declarations else None,
         )
-        # Buffer one complete model turn. Failed/partial cloud calls never release actions
-        # or partial claims before fallback. Only our registry executes returned calls.
+        # Stream informational text; action replies and function calls remain buffered
+        # until the turn completes. Only our registry executes returned calls.
         try:
-            async with asyncio.timeout(self.cfg.timeout_s):
+            async with asyncio.timeout(self.cfg.timeout_s) as response_deadline:
                 stream_method = getattr(self._sdk().models, "generate_content_stream", None)
-                if tools == [] and callable(stream_method):
+                if callable(stream_method):
+                    from backend.context import request_context
+                    from backend.security import action_requested
+
+                    context = request_context.get()
+                    stream_text = tools == [] or bool(
+                        context and not action_requested(context.text)
+                    )
                     emitted = False
                     last_response = None
+                    native_parts, calls, buffered_text = [], [], []
+                    finished = False
+                    wire_first = True
                     stream = await stream_method(
                         model=self.cfg.model, contents=contents, config=config
                     )
@@ -185,28 +198,60 @@ class GeminiClient:
                             if not candidates:
                                 continue
                             candidate = candidates[0]
+                            finished |= candidate.finish_reason == types.FinishReason.STOP
                             if candidate.finish_reason not in {None, types.FinishReason.STOP}:
                                 raise LLMError(
                                     "Gemini прервал потоковый ответ; повтор не выполняется."
                                 )
                             parts = candidate.content.parts if candidate.content else []
-                            if any(part.function_call for part in parts or []):
+                            if wire_first and any(p.text or p.function_call for p in parts or []):
+                                wire_first = False
+                                if profile := current.get():
+                                    profile.mark("first_llm_token")
+                                if progress := _wire_progress.get():
+                                    progress()
+                            if tools == [] and any(part.function_call for part in parts or []):
                                 raise LLMError("В текстовом потоке вызовы действий запрещены.")
+                            native_parts.extend(parts or [])
+                            for part in parts or []:
+                                if fn := part.function_call:
+                                    calls.append(
+                                        {
+                                            "id": fn.id,
+                                            "function": {
+                                                "name": fn.name,
+                                                "arguments": dict(fn.args or {}),
+                                            },
+                                        }
+                                    )
                             text = "".join(
                                 part.text or "" for part in parts or [] if not part.thought
                             )
                             if text:
                                 emitted = True
-                                yield ChatChunk(
-                                    content=text,
-                                    stats={"model": response.model_version or self.cfg.model},
-                                )
-                        if not emitted:
+                                buffered_text.append(text)
+                                if stream_text:
+                                    response_deadline.reschedule(
+                                        asyncio.get_running_loop().time() + self.cfg.timeout_s
+                                    )
+                                    yield ChatChunk(
+                                        content=text,
+                                        stats={"model": response.model_version or self.cfg.model},
+                                    )
+                        if calls and not finished:
+                            raise LLMError(
+                                "Gemini не завершил вызов инструмента; действия отклонены."
+                            )
+                        if not emitted and not calls:
                             raise LLMError("Gemini вернул пустой потоковый ответ.")
                         usage = last_response.usage_metadata if last_response else None
                         yield ChatChunk(
+                            content="" if stream_text else "".join(buffered_text),
                             done=True,
+                            tool_calls=calls,
+                            native_parts=native_parts,
                             stats={
+                                "model": last_response.model_version or self.cfg.model,
                                 "eval_count": getattr(usage, "candidates_token_count", 0),
                                 "prompt_eval_count": getattr(usage, "prompt_token_count", 0),
                             },
@@ -230,6 +275,8 @@ class GeminiClient:
                 404: "модель недоступна",
                 429: "лимит запросов",
             }.get(code, "временная сеть или сервис" if temporary else "ошибка конфигурации или API")
+            if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
+                reason = "таймаут ожидания ответа"
             # SDK exceptions can contain request details. Do not expose/log their text.
             raise GeminiRequestError(code, transient=temporary, reason=reason) from None
         candidates = response.candidates or []
@@ -350,14 +397,18 @@ class FallbackClient:
         return self.enabled and await self.local.wait_ready(timeout_s, interval_s)
 
     async def prime(self, system_prompt: str, tools=None, history=None) -> None:
-        if not self.primary.available and self.enabled:
+        if self.needs_local_warmup:
             await self.local.prime(system_prompt, tools, history)
         elif not self.primary.available:
             raise LLMError(SETUP)
 
     async def warmup(self) -> None:
-        if not self.primary.available and self.enabled:
+        if self.needs_local_warmup:
             await self.local.warmup()
+
+    @property
+    def needs_local_warmup(self) -> bool:
+        return self.enabled and (not self.primary.available or self.last_provider == "ollama")
 
     async def unload(self) -> None:
         if self._using_local or not self.primary.available:
@@ -376,6 +427,8 @@ class FallbackClient:
         context = request_context.get()
         request_id = context.request_id if context else None
         pinned = self._routes.get(request_id) if request_id else None
+        last_user = max((i for i, m in enumerate(messages) if m["role"] == "user"), default=-1)
+        after_tool = any(m["role"] == "tool" for m in messages[last_user + 1 :])
         candidates: list[LLMClient] = [self.primary]
         if pinned is not None:
             candidates = [pinned]
@@ -385,15 +438,34 @@ class FallbackClient:
             candidates = [self.local]  # explicit unconfigured mode, not a masked API failure
             self.switch_reason = "Gemini не настроен; используется локальная Ollama"
         elif self.enabled:
-            if self.secondary is not None and self.secondary.cfg.model != self.primary.cfg.model:
-                candidates.append(self.secondary)
-            candidates.append(self.local)
-        last_user = max((i for i, m in enumerate(messages) if m["role"] == "user"), default=-1)
-        after_tool = any(m["role"] == "tool" for m in messages[last_user + 1 :])
+            secondary = (
+                self.secondary is not None and self.secondary.cfg.model != self.primary.cfg.model
+            )
+            if (
+                secondary
+                and self.primary.cfg.simple_use_fallback_model
+                and context is not None
+                and simple_request(context.text)
+                and tools == []
+                and not after_tool
+            ):
+                # The live plain-query trace waited six seconds on primary before the
+                # configured secondary answered in <2s. Keep the original chain for
+                # complex queries and every pinned tool round; never invent a model.
+                candidates = [self.secondary, self.local]
+                self.switch_reason = "Простой текстовый запрос: настроенная резервная Gemini"
+                if profile := current.get():
+                    profile.update(reason="simple_model_route")
+            else:
+                if secondary:
+                    candidates.append(self.secondary)
+                candidates.append(self.local)
         cloud_deadline = time.perf_counter() + self.primary.cfg.timeout_s
         for index, candidate in enumerate(candidates):
             attempt_started = time.perf_counter()
             succeeded = False
+            attempt_reason = None
+            code = None
             cloud = isinstance(candidate, GeminiClient)
             provider = "gemini" if cloud else "ollama"
             model = self._model_label(candidate)
@@ -424,6 +496,20 @@ class FallbackClient:
             emitted = False
             self._probing.add(candidate)
             self._active_candidate = candidate
+            profile = current.get()
+            interval = (
+                profile.begin(
+                    "llm_attempt",
+                    provider=provider,
+                    model=model,
+                    attempt=index + 1,
+                    fallback=index > 0,
+                )
+                if profile
+                else None
+            )
+            if profile:
+                profile.update(provider=provider, model=model, fallback=index > 0)
             self.phase = "switching" if index else "generating"
             self._notify()
 
@@ -443,15 +529,28 @@ class FallbackClient:
                             ),
                         )
                     ) as deadline:
-                        async for chunk in candidate.chat_stream(payload, tools):
-                            if first_chunk and (chunk.content or chunk.tool_calls):
-                                # A responsive stream retains the original total budget.
-                                deadline.reschedule(
-                                    asyncio.get_running_loop().time()
-                                    + max(0.001, cloud_deadline - time.perf_counter())
-                                )
-                                first_chunk = False
-                            yield chunk
+
+                        def progress():
+                            deadline.reschedule(
+                                asyncio.get_running_loop().time()
+                                + max(0.001, cloud_deadline - time.perf_counter())
+                            )
+
+                        progress_token = _wire_progress.set(progress)
+                        try:
+                            async for chunk in candidate.chat_stream(payload, tools):
+                                if chunk.content:
+                                    deadline.reschedule(
+                                        asyncio.get_running_loop().time()
+                                        + candidate.cfg.stream_idle_timeout_s
+                                    )
+                                    first_chunk = False
+                                elif first_chunk and chunk.tool_calls:
+                                    progress()
+                                    first_chunk = False
+                                yield chunk
+                        finally:
+                            _wire_progress.reset(progress_token)
                 except TimeoutError:
                     raise GeminiRequestError(
                         None, transient=True, reason="общий таймаут облачной цепочки"
@@ -490,6 +589,23 @@ class FallbackClient:
                     self._routes.pop(request_id, None)
                 transient = isinstance(exc, GeminiRequestError) and exc.transient
                 code = exc.status_code if isinstance(exc, GeminiRequestError) else None
+                attempt_reason = (
+                    "rate_limit"
+                    if code == 429
+                    else "timeout"
+                    if isinstance(exc, TimeoutError)
+                    or isinstance(exc, GeminiRequestError)
+                    and "таймаут" in str(exc)
+                    else "api_error"
+                )
+                if profile:
+                    profile.update(
+                        reason="rate_limit"
+                        if code == 429
+                        else "timeout"
+                        if isinstance(exc, TimeoutError)
+                        else type(exc).__name__
+                    )
                 self.switch_reason = {
                     429: "Достигнут лимит запросов Gemini",
                     503: "Gemini временно недоступен",
@@ -543,6 +659,13 @@ class FallbackClient:
                 cancelled = bool(asyncio.current_task().cancelling()) or isinstance(
                     sys.exception(), (GeneratorExit, asyncio.CancelledError)
                 )
+                if profile:
+                    profile.end(
+                        interval,
+                        "cancelled" if cancelled else "ok" if succeeded else "error",
+                        reason=attempt_reason,
+                        http_status=code,
+                    )
                 if not cancelled:
                     health["successes" if succeeded else "failures"] += 1
                 health["latency_s"] = round(elapsed, 3)

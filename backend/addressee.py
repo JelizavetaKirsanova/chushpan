@@ -19,7 +19,7 @@ class SpeechSignals:
 class Decision:
     confidence: Literal["high", "medium", "low"]
     reason: str
-    kind: Literal["direct", "continuation", "task", "music", "ignore"] = "ignore"
+    kind: Literal["direct", "continuation", "task", "music", "led", "devices", "ignore"] = "ignore"
 
     @property
     def accepted(self) -> bool:
@@ -37,6 +37,9 @@ class TaskSnapshot:
         return {
             "running": "Предыдущая задача ещё выполняется.",
             "completed": "Предыдущий инструмент сообщил об успешном завершении задачи.",
+            "submitted": (
+                "Команда ленты записана по Bluetooth. Физическое выполнение не подтверждено."
+            ),
             "failed": "Предыдущая задача вернула ошибку или отказ. Успех не подтверждён.",
             "cancelled": "Ожидание предыдущей задачи отменено. Фактический результат неизвестен.",
             "confirmation_required": (
@@ -87,24 +90,31 @@ def decide(
     strictness: str = "contextual",
     confirmation_pending: bool = False,
     followup_pending: bool = False,
+    control_context: bool = False,
 ) -> Decision:
     value = normalize(text)
     if not signals.confirmed or signals.echo:
         return Decision("low", "no_speech_or_echo")
     if discussing(text):
         return Decision("low", "third_person_discussion")
+    if not signals.stt_confident:
+        return Decision("medium", "uncertain_stt")
     if addressed:
         return Decision("high", "explicit_address", "task" if task_reference(text) else "direct")
     if not value:
         return Decision("low", "empty_text")
     if not active:
         return Decision("medium" if task_reference(text) else "low", "wake_required")
-    if not signals.stt_confident:
-        return Decision("medium", "uncertain_stt")
     if re.search(r"чушпан|мам[аеуы]?|пап[аеуы]?|приед|приход|забер|встретим|позвонишь", value):
         return Decision("low", "other_person_or_third_person")
     if strictness == "addressed":
         return Decision("medium", "strict_wake_required")
+    from backend.led import parse as led_parse
+
+    if led_parse(text) is not None:
+        return Decision("high", "local_led_command", "led")
+    if control_context:
+        return Decision("high", "local_control_plan", "devices")
     if followup_pending:
         from backend.brain.followups import is_short
 
@@ -129,4 +139,11 @@ def decide(
     if topic and re.fullmatch(r"а (?:завтра|сегодня|в воскресенье|в субботу|в понедельник)", value):
         if re.search(r"погод|прогноз|температур|дожд|врем|расписан", normalize(topic)):
             return Decision("high", "anchored_date", "continuation")
+    if (
+        topic
+        and len(value.split()) >= 3
+        and re.match(r"(?:а )?(?:почему|зачем|как|что такое|объясни|расскажи)\b", value)
+        and not re.search(r"\b(?:он|она|они|ты|вы)\b", value)
+    ):
+        return Decision("high", "active_question", "continuation")
     return Decision("medium", "recipient_unclear")

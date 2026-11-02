@@ -8,7 +8,23 @@ __pycache__/
 
 # Local config and private notes (never committed)
 .env
+.env.*
+!.env.example
+config.local.yaml
 private/
+backups/
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.pem
+*.key
+credentials*.json
+*token*.json
+oauth*.json
+auth.json
+.codex/config.toml
 
 # Runtime data and downloaded models
 data/
@@ -22,3 +38,13 @@ frontend/dist/
 
 # macOS
 .DS_Store
+*.log
+*.tmp
+*.swp
+*.bak
+.coverage
+htmlcov/
+dist/
+build/
+# Local recordings, screenshots and diagnostic exports may contain conversation data.
+docs/diagnostics/

@@ -39,6 +39,7 @@ def build_registry(
     conversation's `store`; without it, the memory tools are left out.
     """
     from backend.brain.morning import MorningRoutine
+    from backend.led import LEDStrip
     from backend.media.sleep_video import SleepVideo
     from backend.memory.profile import ProfileMemory
     from backend.night import NightRoutine
@@ -55,6 +56,9 @@ def build_registry(
 
     enabled = set(s.tools.enabled)
     tools: list[Tool] = []
+    led = LEDStrip(s) if s.led.enabled and "system" in enabled else None
+    if led:
+        tools.append(led.tool())
     video = SleepVideo(s, store) if "media" in enabled and store is not None else None
     if "weather" in enabled:
         weather = weather or WeatherService(s)
@@ -68,7 +72,7 @@ def build_registry(
         tools += vision_tools(s, desktop)
         tools += shortcut_tools(s)
         if store is not None:
-            night = NightRoutine(s, store, desktop, video=video)
+            night = NightRoutine(s, store, desktop, video=video, led=led)
             tools.extend([night.tool(), night.permissions_tool()])
     if "timers" in enabled:
         tools += timer_tools(timers or TimerManager(s))
@@ -87,8 +91,10 @@ def build_registry(
             tools.append(video.tool())
     agent = mac_agent or (LocalMacAgent() if local_mac else None)
     for tool in tools:
-        if tool.name in {"get_system_status", "set_volume", "open_app"}:
-            tool.required_capability = "mac.apps" if tool.name == "open_app" else "mac.system"
+        if tool.name in {"get_system_status", "set_volume", "open_app", "open_website"}:
+            tool.required_capability = (
+                "mac.apps" if tool.name in {"open_app", "open_website"} else "mac.system"
+            )
         elif tool.name in {
             "play_music",
             "music_command",
