@@ -40,6 +40,7 @@ class Automations:
         self.scheduler = None
         self.capture_target = None
         self.pending_training = {}
+        self.recent_commands = {}
         self.seed()
         tools.add(
             Tool(
@@ -71,6 +72,13 @@ class Automations:
             return
         # The established night routine stays intact. This separately editable template
         # is disabled until the user chooses phrases and reviews the exact Shortcut.
+        from backend.shortcuts import ShortcutsService
+        from backend.tools.registry import ToolError
+
+        try:
+            sleep_name = ShortcutsService(self.s).configured_name("youtube sleep")
+        except ToolError:
+            sleep_name = "youtube sleep"  # Disabled until the existing Shortcut is reviewed.
         scenario = Scenario(
             name="Я спать",
             description=(
@@ -83,7 +91,7 @@ class Automations:
             actions=[
                 Block(capability="mac.brightness", parameters={"level": 10}),
                 Block(capability="display.brightness", parameters={"level": 25}),
-                Block(capability="shortcut.run", parameters={"name": "youtube sleep"}),
+                Block(capability="shortcut.run", parameters={"name": sleep_name}),
                 Block(capability="led.set", parameters={"color": "#FF3020", "brightness": 10}),
             ],
         )
@@ -113,9 +121,9 @@ class Automations:
             raise ValueError("Параметры сценария должны быть объектом.")
         return await self.engine.run(scenario, values=parsed)
 
-    def recognize(self, text):
+    def recognize(self, text, *, exact_only=False):
         with measure("scenario_search"):
-            return self.matcher.match(text)
+            return self.matcher.match(text, exact_only=exact_only)
 
     def contextual_command(self, text, binding):
         # Preference learning is only proposed after an explicit correction. No silent rule writes.
@@ -139,7 +147,7 @@ class Automations:
             from backend.intents import compile_plan
 
             plan = compile_plan("Сделай ленту " + correction)
-            previous = self.store.memory.preference("automation_context", str(binding))
+            previous = self.recent_commands.get(binding)
             if (
                 previous
                 and previous.get("expires", 0) > time.time()
@@ -159,9 +167,9 @@ class Automations:
                     "Скажи «сохрани предпочтение»."
                 )
         if not value.startswith(("нет", "сохрани", "подтверждаю")) and len(text) <= 500:
-            self.store.memory.set_preference(
-                "automation_context", str(binding), {"phrase": text, "expires": time.time() + 90}
-            )
+            self.recent_commands[binding] = {"phrase": text, "expires": time.time() + 90}
+            if len(self.recent_commands) > 128:
+                self.recent_commands.pop(next(iter(self.recent_commands)))
         return None
 
     def model_examples(self, text):
@@ -222,11 +230,12 @@ class Automations:
             if fn.get("name") != "select_scenario" or set(args) != {"id"} or args["id"] not in ids:
                 return None
             return self.store.get(args["id"])
-        except (ValueError, TypeError, AttributeError, TimeoutError):
+        except Exception:
             return None
 
     def bind(self, bus, conv):
         self.bus, self.conv = bus, conv
+        self.store.on_run_change = self.publish
         bus.handle("automations", self.request)
         self.publish()
         self.scheduler = asyncio.create_task(self.schedule())
@@ -270,6 +279,14 @@ class Automations:
                 "type": device,
                 "status": self.engine.device_state.get(device, {}).get("status", "not_checked"),
                 "actions": [c.id for c in self.capabilities.items.values() if c.device == device],
+                "permissions": sorted(
+                    {
+                        p
+                        for c in self.capabilities.items.values()
+                        if c.device == device
+                        for p in c.permissions
+                    }
+                ),
                 "note": (
                     "Доступен запуск разрешённых Shortcuts на Mac. "
                     "Прямое удалённое управление не подключено."
@@ -312,8 +329,8 @@ class Automations:
             elif op == "teach":
                 if value.get("consent") is not True:
                     raise ValueError("Для обучения нужно явное согласие.")
-                self.store.teach(value["id"], value.get("phrase"), old=value.get("old"))
-                self.publish(message="Обучение сохранено.")
+                saved = self.store.teach(value["id"], value.get("phrase"), old=value.get("old"))
+                self.publish(updated=saved.id, message="Обучение сохранено.")
             elif op == "capture":
                 if value.get("consent") is not True:
                     raise ValueError("Нужно согласие на запись одной фразы.")
@@ -480,10 +497,7 @@ class Automations:
                                 )
                             )
                             continue
-                        context = RequestContext(self.conv.device, "Расписание сценария")
-                        with request_scope(context):
-                            await self.engine.run(scenario, event_id=event_id)
-                        self.publish()
+                        self.spawn(self.scheduled_run(scenario, event_id))
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -492,8 +506,19 @@ class Automations:
                 )
             await asyncio.sleep(15)
 
+    async def scheduled_run(self, scenario, event_id):
+        asyncio.current_task().set_name("scenario:" + scenario.id)
+        context = RequestContext(self.conv.device, "Расписание сценария")
+        try:
+            with request_scope(context):
+                await self.engine.run(scenario, event_id=event_id)
+            self.publish()
+        except (ValueError, ActionDenied) as exc:
+            self.publish(error=str(exc))
+
     async def close(self):
         tasks = list(self.jobs) + ([self.scheduler] if self.scheduler else [])
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        self.store.on_run_change = None

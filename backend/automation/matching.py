@@ -77,6 +77,8 @@ class Matcher:
     def __init__(self, store):
         self.store, self.generation = store, -1
         self.rows = []
+        self.exact = {}
+        self.names = {}
 
     def index(self):
         if self.generation != self.store.generation:
@@ -86,25 +88,23 @@ class Matcher:
                 if s.enabled and any(t.kind == "voice" for t in s.triggers)
             ]
             self.generation = self.store.generation
+            self.exact = {phrase: s for s, phrases in self.rows for phrase, _ in phrases}
+            names = {}
+            for scenario, _ in self.rows:
+                for verb in ("запусти", "выполни"):
+                    names.setdefault(
+                        verb + " сценарий " + normalize_phrase(scenario.name), []
+                    ).append(scenario)
+            self.names = names
         return self.rows
 
-    def match(self, text):
+    def match(self, text, *, exact_only=False):
         value = normalize_phrase(text)
         empty = {"scenario_id": None, "confidence": 0.0, "method": "none", "candidates": []}
         if not value or is_hallucination(text) or len(text) > 1000 or BLOCKED.search(text):
             return empty
         rows = self.index()
-        exact = [
-            s
-            for s, phrases in rows
-            if any(value == p for p, _ in phrases)
-            or value
-            in {
-                "запусти сценарий " + normalize_phrase(s.name),
-                "выполни сценарий " + normalize_phrase(s.name),
-            }
-        ]
-        # Exact phrases are user's own deliberate training examples, including natural negatives.
+        exact = [self.exact[value]] if value in self.exact else self.names.get(value, [])
         if len(exact) == 1:
             return {
                 "scenario_id": exact[0].id,
@@ -113,7 +113,7 @@ class Matcher:
                 "method": "exact",
                 "candidates": [],
             }
-        if BLOCKED.search(text):
+        if exact_only:
             return empty
         query = features(text)
         scores = sorted(

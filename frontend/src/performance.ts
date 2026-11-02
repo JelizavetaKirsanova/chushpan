@@ -17,6 +17,7 @@ export type PerformanceEvent = {type: 'performance_live' | 'performance_detail';
   | {type: 'performance_error'; message: string};
 
 const labels: Record<string, string> = {reply_queue: 'Ожидание очереди ответа', stt: 'Распознавание речи', local_routing: 'Маршрутизация',
+  intent_detection: 'Определение намерения', scenario_search: 'Поиск сценария', action_planning: 'Планирование действий', scenario_execution: 'Выполнение сценария', scenario_action: 'Действие сценария', result_verification: 'Проверка результата', scenario_interpretation: 'Уточнение сценария моделью',
   led_normalization: 'Нормализация команды подсветки', led_intent: 'Намерение подсветки', led_selection: 'Выбор инструмента LED', led_authorization: 'Разрешение на подсветку', led_request: 'Запрос к ленте', ble_connect: 'Подключение BLE', ble_write: 'Запись BLE', led_delivery: 'Отправка команды LED', led_result: 'Результат подсветки', led_reply: 'Ответ о подсветке',
   context_memory: 'Память и контекст', model_retry: 'Повтор после проверки ответа', model_total: 'Поток ответа LLM', llm_attempt: 'Попытка запроса', llm_transport: 'Поток Ollama', model_thinking: 'Обдумывание модели',
   tool_execution: 'Инструмент', tts_queue: 'Очередь TTS', tts_model_ready: 'Подготовка голоса',

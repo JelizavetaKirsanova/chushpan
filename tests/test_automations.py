@@ -292,7 +292,12 @@ def test_continue_error_records_failed_run_but_executes_next(rig):
 
 @pytest.mark.parametrize(
     "receipt, expected",
-    [({"ok": True}, "unverified"), ({"level": 31}, "unverified"), ({"level": 30}, "confirmed")],
+    [
+        ({"ok": True}, "unverified"),
+        ({"level": 31}, "unverified"),
+        ({"level": 31, "device_state_confirmed": True}, "unverified"),
+        ({"level": 30}, "confirmed"),
+    ],
 )
 def test_actual_result_must_match_requested_level(rig, receipt, expected):
     rig.brightness.side_effect = None
@@ -610,5 +615,225 @@ def test_real_voice_loop_passes_custom_phrase_to_scenario_engine(rig):
             rig.brightness.assert_awaited_once_with(level=30)
         finally:
             harness.loop._close_session()
+
+    asyncio.run(run())
+
+
+def test_sleep_template_uses_reviewed_case_sensitive_config_name(rig):
+    template = next(s for s in rig.service.store.list() if s.name == "Я спать")
+    assert template.actions[2].parameters["name"] == "Youtube sleep"
+    assert not template.enabled
+
+
+def test_many_phrases_recognize_after_actual_sqlite_reopen(rig, tmp_path):
+    scenario = saved(rig, phrases=[f"Мой ритуал номер {i}" for i in range(1500)])
+    path = tmp_path / "test.sqlite"
+    reopened = MemoryStore(path)
+    try:
+        from backend.automation.matching import Matcher
+
+        matcher = Matcher(ScenarioStore(reopened))
+        for i in (0, 49, 749, 1499):
+            result = matcher.match(f"Чушпан, мой ритуал номер {i}!")
+            assert result["scenario_id"] == scenario.id and result["confidence"] == 1
+    finally:
+        reopened.close()
+
+
+def test_ui_receives_running_failed_and_actual_step_status(rig):
+    saved(rig)
+
+    async def run():
+        bus = HudBus()
+        rig.service.bind(bus, rig.conv)
+        queue = bus.subscribe()
+        try:
+            rig.brightness.side_effect = None
+            rig.brightness.return_value = {"error": "Mock display disconnected"}
+            await ask(rig.conv, "Пора отдыхать")
+            events = []
+            while not queue.empty():
+                events.append(queue.get_nowait())
+            assert any(e.get("runs") and e["runs"][0]["status"] == "running" for e in events)
+            final = [e for e in events if e.get("runs")][-1]
+            assert final["runs"][0]["status"] == "failed"
+            assert final["runs"][0]["steps"][0]["result"]["error"] == "Mock display disconnected"
+        finally:
+            await rig.service.close()
+
+    asyncio.run(run())
+
+
+def test_known_control_skips_semantic_scan_and_context_does_not_write_database(rig, monkeypatch):
+    saved(rig, phrases=[f"Особый ритуал {i}" for i in range(1500)])
+    rig.service.matcher.index()
+
+    def fail_scan(*args):
+        raise AssertionError("Known command should skip semantic search")
+
+    monkeypatch.setattr("backend.automation.matching.similarity", fail_scan)
+    asyncio.run(ask(rig.conv, "Поставь яркость Mac 30 процентов"))
+    rig.brightness.assert_awaited_once_with(level=30)
+    assert rig.memory.preference("automation_context", str(rig.conv.device.session_id)) is None
+
+
+def test_removing_registered_tool_blocks_saved_action(rig):
+    scenario = saved(rig)
+    rig.tools._tools.pop("set_brightness")
+    with pytest.raises(ValueError, match="отключено"):
+        rig.service.capabilities.validate(scenario)
+
+
+def test_editor_websocket_sqlite_voice_registered_transport_and_ui_receipt(tmp_path):
+    from contextlib import asynccontextmanager
+
+    from fastapi.testclient import TestClient
+
+    from backend.hud.server import allowed_origins, create_app
+    from backend.mac import MacDesktop
+    from backend.tools import build_registry
+
+    bus = HudBus()
+    state = {}
+    app = create_app(bus, allowed_origins("127.0.0.1", 8765))
+
+    @asynccontextmanager
+    async def lifespan(app):
+        settings = Settings(
+            language="ru-RU",
+            assistant_name="Чушпан",
+            tools={"enabled": ["system"]},
+            led={"enabled": False},
+        )
+        memory = MemoryStore(tmp_path / "full-path.sqlite")
+        desktop = MacDesktop(settings)
+        transport = AsyncMock(side_effect=lambda operation, **args: {"level": args["level"]})
+        desktop.bridge = SimpleNamespace(request=transport)
+        registry = build_registry(settings, store=memory, desktop=desktop)
+        conv = Conversation(settings, Model(), memory, tools=registry)
+        harness = custom_harness("")
+        harness.loop.conv = conv
+        harness.loop.bus = bus
+        harness.loop._wake_up(None)
+        registry.automations.bind(bus, conv)
+        state.update(memory=memory, transport=transport, conv=conv, registry=registry)
+
+        async def voice(value):
+            harness.stt.text = value["text"]
+            await harness.loop.handle(SPEECH, 0, wake_validated=True)
+
+        bus.handle("chat_message", lambda value: registry.automations.spawn(voice(value)))
+        try:
+            yield
+        finally:
+            harness.loop._close_session()
+            await registry.automations.close()
+            memory.close()
+
+    app.router.lifespan_context = lifespan
+    with (
+        TestClient(app) as client,
+        client.websocket_connect("/ws", headers={"origin": "http://127.0.0.1:8765"}) as ws,
+    ):
+
+        def until(predicate):
+            for _ in range(80):
+                event = ws.receive_json()
+                if predicate(event):
+                    return event
+            raise AssertionError("Expected WebSocket event was not received")
+
+        scenario = Scenario(
+            name="Полный путь",
+            phrases=["Моя полная проверка"],
+            actions=[Block(capability="mac.brightness", parameters={"level": 37})],
+        )
+        ws.send_json(
+            {
+                "type": "automations",
+                "value": {"op": "save", "scenario": scenario.model_dump(mode="json")},
+            }
+        )
+        saved_event = until(lambda event: bool(event.get("saved")))
+        identifier = saved_event["saved"]
+        state["transport"].assert_not_awaited()
+        ws.send_json({"type": "chat_message", "value": {"text": "Чушпан, моя полная проверка"}})
+        receipt = until(
+            lambda event: (
+                event.get("type") == "automations"
+                and any(
+                    run["scenario_id"] == identifier and run["status"] == "confirmed"
+                    for run in event.get("runs", [])
+                )
+            )
+        )
+        step = receipt["runs"][0]["steps"][0]
+        assert step["result"]["level"] == 37 and step["status"] == "confirmed"
+        state["transport"].assert_awaited_once_with("desktop_brightness", level=37)
+        assert not state["conv"].llm.requests
+        assert not state["registry"].confirmations.pending
+        ws.send_json(
+            {"type": "automations", "value": {"op": "delete", "id": identifier, "revision": 1}}
+        )
+        deleted = until(lambda event: event.get("deleted") == identifier)
+        assert not any(s["id"] == identifier for s in deleted["scenarios"])
+
+
+@pytest.mark.parametrize("safe, requires_confirmation", [(True, False), (False, True)])
+def test_reviewed_shortcut_invokes_existing_registered_service(
+    rig, monkeypatch, safe, requires_confirmation
+):
+    from backend import shortcuts
+    from backend.mac_agent import LocalMacAgent
+    from backend.shortcuts import shortcut_tools
+
+    entry = rig.s.shortcuts.allowed["Youtube sleep"]
+    rig.s.shortcuts.allowed["Youtube sleep"] = entry.model_copy(
+        update={"safe_without_confirmation": safe}
+    )
+    transport = AsyncMock(
+        side_effect=lambda *args, **kwargs: (
+            (0, f"youtube sleep ({entry.identifier})") if args[0] == "list" else (0, "")
+        )
+    )
+    monkeypatch.setattr(shortcuts, "command", transport)
+    agent = LocalMacAgent()
+    for tool in shortcut_tools(rig.s):
+        tool.agent = agent
+        agent.register(tool.name, tool._handler)
+        rig.tools.add(tool)
+    from backend.automation.capabilities import CapabilityRegistry
+
+    rig.service.capabilities = CapabilityRegistry(rig.tools, rig.s)
+    rig.service.engine.capabilities = rig.service.capabilities
+    saved(rig, actions=[Block(capability="shortcut.run", parameters={"name": "youtube sleep"})])
+
+    async def run():
+        response = await ask(rig.conv, "Пора отдыхать")
+        assert ("Нужно подтверждение" in response) is requires_confirmation
+        if requires_confirmation:
+            transport.assert_not_awaited()
+            pending = next(iter(rig.tools.confirmations.pending.values()))
+            response = await ask(rig.conv, "Подтверждаю " + pending.code)
+        assert "физический результат не подтверждён" in response
+        assert [c.args[0] for c in transport.await_args_list] == ["list", "run"]
+        assert transport.await_args_list[1].args[1] == entry.identifier
+
+    asyncio.run(run())
+
+
+def test_scheduled_event_uses_same_engine_and_never_replays(rig):
+    scenario = saved(rig)
+
+    async def run():
+        bus = HudBus()
+        rig.service.bind(bus, rig.conv)
+        try:
+            await rig.service.scheduled_run(scenario, "schedule:fixture:2026-11-02:22:00")
+            await rig.service.scheduled_run(scenario, "schedule:fixture:2026-11-02:22:00")
+            rig.brightness.assert_awaited_once_with(level=30)
+            assert len(rig.service.store.history(scenario.id)) == 1
+        finally:
+            await rig.service.close()
 
     asyncio.run(run())

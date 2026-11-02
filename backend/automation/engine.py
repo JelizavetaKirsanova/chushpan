@@ -253,9 +253,6 @@ class Engine:
             capability = self.capabilities.get(block.capability)
             args = capability.arguments(self.parameters(block, values))
             context = request_context.get()
-            grant = scenario_operation.set(
-                (context.request_id, capability.tool, json.dumps(args, sort_keys=True))
-            )
             approved = None
             tool = self.capabilities.tools._tools[capability.tool]
             # Only the outer, complete scenario approval may authorize a dangerous child.
@@ -270,6 +267,9 @@ class Engine:
                 )
                 identity = summary + ("\n" + tool.version(prepared) if tool.version else "")
                 approved = approved_action.set(fingerprint(tool.name, prepared, identity))
+            grant = scenario_operation.set(
+                (context.request_id, capability.tool, json.dumps(args, sort_keys=True))
+            )
             try:
                 with measure("scenario_action", tool=capability.tool):
                     result = json.loads(await self.capabilities.tools.call(capability.tool, args))
@@ -286,7 +286,7 @@ class Engine:
             if step["status"] in {"confirmed", "sent"}:
                 state.update(connected=True, last_success=datetime.now().isoformat(), error=None)
             else:
-                state.update(error=result.get("error", "Результат не подтверждён."))
+                state.update(connected=None, error=result.get("error", "Результат не подтверждён."))
             if step["status"] in {"failed", "blocked", "unverified"}:
                 failure = StepUnverified if step["status"] == "unverified" else StepFailed
                 raise failure(f"Шаг {path} ({capability.name}): " + str(state["error"]))

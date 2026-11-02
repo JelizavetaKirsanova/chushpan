@@ -1,4 +1,5 @@
 import type {HudEvent} from './types';
+import {icon} from './dashboard';
 import './automations.css';
 
 type Json = string | number | boolean | null | {[key: string]: Json} | Json[];
@@ -10,9 +11,9 @@ interface Capability {id: string; name: string; device: string; description: str
 interface Recognition {scenario_id: string | null; name?: string; confidence: number; method: string; candidates: {id: string; name: string; confidence: number}[]}
 interface Step {path: string; capability: string; kind: string; status: string; duration_s?: number; result?: Record<string, Json>; error?: string}
 interface Run {id: string; scenario_id: string; name: string; status: string; steps: Step[]; duration_s?: number; started_at: string; error?: string}
-interface Device {id: string; name: string; type: string; status: string; actions: string[]; note: string; last_success?: string; last_operation?: string; error?: string; details?: Json}
+interface Device {id: string; name: string; type: string; status: string; actions: string[]; permissions: string[]; note: string; last_success?: string; last_operation?: string; error?: string; details?: Json}
 interface Permission {id: string; name: string; status: string; note: string; url: string}
-export interface AutomationsEvent {type: 'automations'; scenarios: Scenario[]; capabilities: Capability[]; runs: Run[]; devices: Device[]; training: {id: number; scenario_id: string; phrase: string; operation: string; created_at: string}[]; permissions?: {items: Permission[]; error?: string; scope: string}; error?: string; message?: string; saved?: string; deleted?: string; recognition?: Recognition; captured?: string; result?: {message?: string; error?: string; status?: string}}
+export interface AutomationsEvent {type: 'automations'; scenarios: Scenario[]; capabilities: Capability[]; runs: Run[]; devices: Device[]; training: {id: number; scenario_id: string; phrase: string; operation: string; created_at: string}[]; permissions?: {items: Permission[]; error?: string; scope: string}; error?: string; message?: string; saved?: string; updated?: string; deleted?: string; recognition?: Recognition; captured?: string; result?: {message?: string; error?: string; status?: string}}
 
 const el = <T extends keyof HTMLElementTagNameMap>(tag: T, value = '', className = ''): HTMLElementTagNameMap[T] => {
   const node = document.createElement(tag); node.textContent = value; node.className = className; return node;
@@ -51,6 +52,8 @@ export class AutomationsView {
   private recognition = el('div', '', 'scenario-recognition');
   private trainingSelect = el('select');
   private permissions: AutomationsEvent['permissions'];
+  private dragSource: {blocks: Block[]; index: number} | null = null;
+  private sectionFeedback: HTMLElement[] = [];
 
   constructor(private send: (value: object) => void, navigate: (view: string) => void, private wake: () => void, private chat: (text: string) => void) {
     this.feedback.setAttribute('role', 'status'); this.feedback.setAttribute('aria-live', 'polite');
@@ -64,18 +67,22 @@ export class AutomationsView {
     page.querySelector('.page-heading')!.after(toolbar, this.feedback, layout, history);
     const old = page.querySelector('.integration-grid');
     if (old) {const details = el('details', '', 'legacy-ritual'); details.append(el('summary', 'Встроенные сценарии и комната')); old.before(details); details.append(old);}
-    document.querySelector('[data-view="automations"] span:last-of-type')!.textContent = 'Сценарии';
+    const scenarioNav = document.querySelector<HTMLButtonElement>('[data-view="automations"]')!;
+    scenarioNav.querySelector('span:last-of-type')!.textContent = 'Сценарии';
+    scenarioNav.title = 'Сценарии'; scenarioNav.setAttribute('aria-label', 'Сценарии');
     const sections: [string, string, HTMLElement][] = [['devices', 'Устройства', this.deviceRoot], ['permissions', 'Разрешения', this.permissionRoot], ['commands', 'Команды и понимание', this.commandRoot], ['training', 'История обучения', this.trainingRoot]];
     for (const [view, label, root] of sections) {
       const nav = el('button'); nav.dataset.view = view; nav.title = label; nav.setAttribute('aria-label', label);
-      nav.append(el('span', {devices: '◈', permissions: '◇', commands: '⌘', training: '↗'}[view]), el('span', label));
+      const glyph = el('span'); glyph.dataset.icon = {devices: 'lamp', permissions: 'settings', commands: 'mic', training: 'history'}[view]; glyph.innerHTML = icon(glyph.dataset.icon!);
+      nav.append(glyph, el('span', label));
       document.querySelector('[data-view="settings"]')!.before(nav);
       nav.onclick = () => navigate(view);
       const section = el('section', '', `workspace-page automation-section ${view}-page`); section.setAttribute('aria-label', label);
       section.append(el('h1', label));
       if (view === 'devices') section.append(el('p', 'Проверка читает состояние. Кнопка тестирования выбранного действия изменяет устройство.', 'muted'), this.button('Обновить список', () => this.send({op: 'refresh'})));
       if (view === 'permissions') section.append(el('p', 'Проверка не запрашивает доступ. macOS выдаёт разрешения конкретному приложению запуска.', 'muted'), this.button('Проверить разрешения', () => this.send({op: 'permissions'})));
-      section.append(root); document.querySelector('.hud')!.append(section);
+      const feedback = el('p', '', 'scenario-feedback'); feedback.setAttribute('role', 'status'); feedback.setAttribute('aria-live', 'polite');
+      this.sectionFeedback.push(feedback); section.append(feedback, root); document.querySelector('.hud')!.append(section);
     }
     this.renderCommands();
   }
@@ -96,8 +103,10 @@ export class AutomationsView {
   private label(name: string, control: HTMLElement): HTMLLabelElement {const label = el('label'); label.append(el('span', name), control); return label;}
   connection(online: boolean): void {
     this.online = online;
-    document.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>('.scenario-layout button, .automation-section button, .automations-page > .page-toolbar button, .scenario-layout input, .scenario-layout select').forEach(control => control.disabled = !online);
+    if (!online) this.saving = false;
+    document.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('.scenario-layout button, .automation-section button, .automations-page > .page-toolbar button, .scenario-layout input, .scenario-layout select, .scenario-layout textarea, .automation-section input, .automation-section select').forEach(control => control.disabled = !online);
     this.feedback.textContent = online ? 'Подключено.' : 'Нет соединения. Сохранение и выполнение недоступны.';
+    this.updateFeedback();
     if (online) this.send({op: 'refresh'});
   }
   receive(event: HudEvent): void {
@@ -108,6 +117,7 @@ export class AutomationsView {
       this.draft = clone(event.scenarios.find(s => s.id === event.saved) ?? newScenario());
       this.dirty = false; this.saving = false; this.renderEditor();
     } else if (event.deleted === this.draft?.id) {this.draft = null; this.editor.replaceChildren();}
+    else if (event.updated === this.draft?.id && !this.dirty) {this.draft = clone(event.scenarios.find(s => s.id === event.updated)!); this.renderEditor();}
     if (event.error) {this.saving = false; this.feedback.textContent = event.error; this.feedback.dataset.error = 'true';}
     else if (event.message) {this.feedback.textContent = event.message; delete this.feedback.dataset.error;}
     if (event.captured !== undefined) {
@@ -124,10 +134,14 @@ export class AutomationsView {
       const confirm = this.button('Ввести код подтверждения', () => {const code = window.prompt('Код из сообщения Чушпана'); if (code) this.chat(`Подтверждаю ${code}`);});
       this.feedback.append(el('br'), confirm);
     }
+    this.updateFeedback();
     this.renderList(); this.renderDevices(); this.renderPermissions(); this.renderTraining(); this.renderRuns();
     const selected = this.trainingSelect.value;
     this.trainingSelect.replaceChildren(...event.scenarios.map(s => {const option = el('option', s.name); option.value = s.id; return option;}));
     if (event.scenarios.some(s => s.id === selected)) this.trainingSelect.value = selected;
+  }
+  private updateFeedback(): void {
+    for (const node of this.sectionFeedback) {node.textContent = this.feedback.textContent; node.dataset.error = this.feedback.dataset.error ?? '';}
   }
 
   private renderList(): void {
@@ -140,6 +154,8 @@ export class AutomationsView {
         if (this.dirty && !window.confirm('Отбросить несохранённые изменения?')) return;
         this.draft = clone(scenario); this.dirty = false; this.renderEditor();
       }), this.button('Копировать', () => this.send({op: 'copy', id: scenario.id})), this.button('Запустить', () => this.send({op: 'run', id: scenario.id, revision: scenario.revision})));
+      const run = actions.lastElementChild as HTMLButtonElement;
+      run.disabled ||= !scenario.enabled || !scenario.triggers.some(t => t.kind === 'manual');
       card.append(actions); this.list.append(card);
     }
     if (!this.data?.scenarios.length) this.list.append(el('p', 'Создай первый сценарий.'));
@@ -201,9 +217,9 @@ export class AutomationsView {
     const root = el('div', '', 'scenario-blocks');
     blocks.forEach((block, index) => {
       const card = el('article', '', 'scenario-block'); card.draggable = true;
-      card.ondragstart = event => {if ((event.target as HTMLElement).closest('input, select, textarea')) {event.preventDefault(); return;} event.stopPropagation(); event.dataTransfer?.setData('text/plain', String(index));};
+      card.ondragstart = event => {if ((event.target as HTMLElement).closest('input, select, textarea')) {event.preventDefault(); return;} event.stopPropagation(); this.dragSource = {blocks, index}; event.dataTransfer?.setData('text/plain', String(index));};
       card.ondragover = event => {event.preventDefault(); event.stopPropagation();};
-      card.ondrop = event => {event.preventDefault(); event.stopPropagation(); const from = Number(event.dataTransfer?.getData('text/plain')); if (Number.isInteger(from) && from >= 0 && from < blocks.length) {const [item] = blocks.splice(from, 1); blocks.splice(index, 0, item); this.dirty = true; this.renderEditor();}};
+      card.ondrop = event => {event.preventDefault(); event.stopPropagation(); const source = this.dragSource; this.dragSource = null; if (source?.blocks === blocks) {const [item] = blocks.splice(source.index, 1); blocks.splice(index, 0, item); this.dirty = true; this.renderEditor();}};
       const heading = el('div', '', 'section-heading');
       heading.append(el('strong', `${index + 1}. ${{action: 'Действие', delay: 'Задержка', sequence: 'Последовательность', parallel: 'Параллельно', if: 'IF / ELSE'}[block.kind]}`), this.button('↑', () => {moveBlock(blocks, index, -1); this.dirty = true; this.renderEditor();}), this.button('↓', () => {moveBlock(blocks, index, 1); this.dirty = true; this.renderEditor();}), this.button('Удалить блок', () => {blocks.splice(index, 1); this.dirty = true; this.renderEditor();})); card.append(heading);
       card.append(this.label('При ошибке', this.select([['stop', 'Остановить сценарий'], ['continue', 'Продолжить, сохранив ошибку']], block.on_error, v => block.on_error = v)));
@@ -231,6 +247,10 @@ export class AutomationsView {
   private parameter(block: Block, key: string, schema: Parameter, required: boolean): HTMLElement {
     const row = el('div', '', 'parameter-row');
     const value = block.parameters[key];
+    if (block.capability === 'shortcut.run' && key === 'name' && typeof value === 'string' && schema.enum) {
+      const canonical = schema.enum.filter(v => typeof v === 'string' && v.toLowerCase() === value.toLowerCase());
+      if (canonical.length === 1) block.parameters[key] = canonical[0];
+    }
     const source = typeof value === 'object' && value !== null && !Array.isArray(value) ? String(value.variable) : 'literal';
     const choices: [string, string][] = [['literal', 'Значение'], ...(this.draft?.variables ?? []).map(v => [v.name, `Переменная: ${v.name}`] as [string, string])];
     row.append(this.label('Источник', this.select(choices, source, v => {if (v === 'literal') delete block.parameters[key]; else block.parameters[key] = {variable: v}; this.renderEditor();})));
@@ -239,7 +259,7 @@ export class AutomationsView {
     let control: HTMLInputElement | HTMLSelectElement;
     if (schema.enum || schema.type === 'boolean') {
       const options = schema.enum ?? [true, false];
-      control = this.select([['', required ? 'Выбери значение' : 'Не изменять'], ...options.map(v => [String(v), v === true ? 'Да' : v === false ? 'Нет' : String(v)] as [string, string])], value === undefined ? '' : String(value), assign);
+      control = this.select([['', required ? 'Выбери значение' : 'Не изменять'], ...options.map(v => [String(v), v === true ? 'Да' : v === false ? 'Нет' : String(v)] as [string, string])], block.parameters[key] === undefined ? '' : String(block.parameters[key]), assign);
     } else {
       control = this.input(value === undefined ? '' : String(value), assign, ['integer', 'number'].includes(schema.type) ? 'number' : 'text');
       if (schema.minimum !== undefined) control.min = String(schema.minimum);
@@ -255,7 +275,7 @@ export class AutomationsView {
     this.deviceRoot.replaceChildren();
     for (const device of this.data?.devices ?? []) {
       const card = el('article', '', 'dashboard-card');
-      card.append(el('h2', device.name), el('p', `${device.type} · ${status[device.status] ?? device.status}`), el('p', device.note), el('p', device.error ?? '', 'error'));
+      card.append(el('h2', device.name), el('p', `${device.type} · ${status[device.status] ?? device.status}`), el('p', device.note), el('p', `Разрешения: ${device.permissions?.join(', ') || 'системные API'}`), el('p', device.error ?? '', 'error'));
       if (device.last_success) card.append(el('p', `Последняя успешная операция: ${device.last_operation} · ${new Date(device.last_success).toLocaleString()}`));
       if (device.actions.length) card.append(this.button(device.id === 'led' ? 'Прочитать сохранённый статус' : 'Проверить подключение', () => this.send({op: 'probe', device: device.id})));
       for (const id of device.actions) {

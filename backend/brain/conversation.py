@@ -694,7 +694,12 @@ class Conversation:
                 if automations and self.device.authenticated:
                     with measure("intent_detection"):
                         learned = automations.contextual_command(user_text, context.binding)
-                        match = automations.recognize(user_text)
+                        match = automations.recognize(
+                            user_text,
+                            exact_only=bool(
+                                routed and (control_plan is None or not control_plan.clarification)
+                            ),
+                        )
                     interpreted = None
                     if match["method"] == "ambiguous" and (
                         routed is None or control_plan and control_plan.clarification

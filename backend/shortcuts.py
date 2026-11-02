@@ -66,11 +66,31 @@ class ShortcutsService:
         self._lock = asyncio.Lock()
         self._watchers: set[asyncio.Task] = set()
 
-    async def verify_sleep(self) -> None:
-        self.entry("Youtube sleep")
+    def configured_name(self, name: str) -> str:
+        """Case variants identify one reviewed entry, never broaden the UUID allowlist."""
+        matches = [key for key in self.s.shortcuts.allowed if key.casefold() == name.casefold()]
+        if len(matches) != 1:
+            raise ToolError(
+                "Команда не разрешена или её имя неоднозначно. "
+                "Проверь shortcuts.allowed и UUID существующей Shortcut."
+            )
+        return matches[0]
+
+    async def resolve(self, name: str) -> dict:
+        entry = self.entry(name)
         inventory = await self.inventory()
-        if not any(i["name"] == "Youtube sleep" and i["allowed"] for i in inventory["items"]):
-            raise ToolError("Разрешённая Youtube sleep с проверенным UUID не найдена.")
+        matches = [
+            item for item in inventory["items"] if item["name"].casefold() == name.casefold()
+        ]
+        if len(matches) != 1 or matches[0]["identifier"].casefold() != entry.identifier.casefold():
+            raise ToolError(
+                "Разрешённая команда с этим именем и UUID не найдена или имя неоднозначно. "
+                "Ничего не запущено."
+            )
+        return matches[0]
+
+    async def verify_sleep(self) -> None:
+        await self.resolve("youtube sleep")
 
     async def start_sleep(self) -> dict:
         """The reviewed sleep watcher intentionally outlives a normal 30-second tool call.
@@ -129,7 +149,12 @@ class ShortcutsService:
             if not match:
                 continue
             name, identifier = match.groups()
-            entry = self.s.shortcuts.allowed.get(name)
+            candidates = [
+                entry
+                for key, entry in self.s.shortcuts.allowed.items()
+                if key.casefold() == name.casefold()
+            ]
+            entry = candidates[0] if len(candidates) == 1 else None
             items.append(
                 {
                     "name": name,
@@ -140,7 +165,7 @@ class ShortcutsService:
         return {"items": items, "untrusted_data": True}
 
     def entry(self, name: str) -> ShortcutEntry:
-        entry = self.s.shortcuts.allowed.get(name)
+        entry = self.s.shortcuts.allowed[self.configured_name(name)]
         if entry is None or not re.fullmatch(_IDENTIFIER, entry.identifier):
             raise ToolError(
                 "Команда не разрешена. Сначала проверь её действия и добавь ID в shortcuts.allowed."
@@ -150,6 +175,7 @@ class ShortcutsService:
         return entry
 
     def prepare(self, args: dict) -> dict:
+        args = {**args, "name": self.configured_name(args["name"])}
         entry = self.entry(args["name"])
         value = args.get("input", "")
         if entry.input_type == "none" and value:
@@ -188,11 +214,8 @@ class ShortcutsService:
     async def run(self, name: str, input: str = "") -> dict:
         entry = self.entry(name)
         async with self._lock:
-            inventory = await self.inventory()
-            if not any(i["name"] == name and i["allowed"] for i in inventory["items"]):
-                raise ToolError(
-                    "Разрешённая команда с этим ID и именем не найдена. Ничего не запущено."
-                )
+            actual = await self.resolve(name)
+            name = actual["name"]
             with tempfile.TemporaryDirectory(prefix="chushpan-shortcut-") as directory:
                 base = Path(directory)
                 argv = ["run", entry.identifier]

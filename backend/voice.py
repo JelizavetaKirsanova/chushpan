@@ -600,7 +600,7 @@ class VoiceLoop:
             is not None
         )
         automations = getattr(registry, "automations", None)
-        if automations and automations.recognize(text)["scenario_id"]:
+        if not control_context and automations and automations.recognize(text)["scenario_id"]:
             control_context = True
         # A separately spoken wake word grants just the first request in its short window.
         prompted = not topic and self.clock() < self._prompted_until

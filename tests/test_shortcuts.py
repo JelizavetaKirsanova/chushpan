@@ -225,3 +225,52 @@ def test_untrusted_output_file_is_bounded_and_not_followed(monkeypatch, tmp_path
     monkeypatch.setattr(shortcuts, "command", command)
     with pytest.raises(ToolError):
         asyncio.run(ShortcutsService(settings()).run("Учёба"))
+
+
+@pytest.mark.parametrize("actual_name", ["Youtube sleep", "youtube sleep", "YouTube Sleep"])
+def test_sleep_case_variants_resolve_existing_uuid_without_duplicates(monkeypatch, actual_name):
+    s = Settings(
+        shortcuts={
+            "allowed": {"Youtube sleep": {"identifier": UUID, "description": "Reviewed fixture"}}
+        }
+    )
+    observed = []
+
+    async def command(*argv, **kwargs):
+        observed.append(argv)
+        return (0, f"{actual_name} ({UUID})") if argv[0] == "list" else (0, "")
+
+    monkeypatch.setattr(shortcuts, "command", command)
+    service = ShortcutsService(s)
+
+    async def run():
+        assert service.prepare({"name": "youtube sleep"})["name"] == "Youtube sleep"
+        assert (await service.resolve("youtube sleep"))["name"] == actual_name
+        result = await service.run("youtube sleep")
+        assert actual_name in result["message"]
+        assert all(args[0] in {"list", "run"} for args in observed)
+        assert sum(args[0] == "run" for args in observed) == 1
+        assert next(args[1] for args in observed if args[0] == "run") == UUID
+
+    asyncio.run(run())
+
+
+def test_sleep_ambiguous_or_different_uuid_fails_before_run(monkeypatch):
+    s = Settings(
+        shortcuts={
+            "allowed": {"Youtube sleep": {"identifier": UUID, "description": "Reviewed fixture"}}
+        }
+    )
+
+    async def run():
+        for listing in [
+            "youtube sleep (00000000-0000-0000-0000-000000000002)",
+            f"Youtube sleep ({UUID})\nyoutube sleep ({UUID})",
+        ]:
+            transport = AsyncMock(return_value=(0, listing))
+            monkeypatch.setattr(shortcuts, "command", transport)
+            with pytest.raises(ToolError):
+                await ShortcutsService(s).run("youtube sleep")
+            assert all(call.args[0] == "list" for call in transport.await_args_list)
+
+    asyncio.run(run())

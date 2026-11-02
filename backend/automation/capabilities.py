@@ -64,7 +64,6 @@ class CapabilityRegistry:
                     tool.description,
                 )
         if "led_control" in tools:
-            schema = LEDParameters.model_json_schema()["properties"]
             # These JSON Schema types are nullable in Pydantic; the editor uses concrete fields.
             schema = {
                 "power": {"type": "boolean"},
@@ -84,7 +83,7 @@ class CapabilityRegistry:
             )
 
     def get(self, identifier):
-        if identifier not in self.items:
+        if identifier not in self.items or self.items[identifier].tool not in self.tools:
             raise ValueError(f"Действие {identifier!r} отключено или не поддерживается.")
         return self.items[identifier]
 
@@ -172,12 +171,8 @@ class CapabilityRegistry:
             return "failed"
         if result.get("status") == "confirmation_required":
             return "blocked"
-        if result.get("physical_confirmed") is True or result.get("device_state_confirmed") is True:
-            return "confirmed"
-        if tool in {"set_brightness", "set_external_brightness"} and result.get(
-            "level"
-        ) == args.get("level"):
-            return "confirmed"
+        if tool in {"set_brightness", "set_external_brightness"}:
+            return "confirmed" if result.get("level") == args.get("level") else "unverified"
         if (
             tool == "set_volume"
             and result.get("ok")
@@ -186,6 +181,8 @@ class CapabilityRegistry:
                 for key, value in args.items()
             )
         ):
+            return "confirmed"
+        if result.get("physical_confirmed") is True or result.get("device_state_confirmed") is True:
             return "confirmed"
         if (
             tool == "music_command"

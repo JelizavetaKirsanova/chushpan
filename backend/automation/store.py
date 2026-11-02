@@ -32,6 +32,7 @@ class ScenarioStore:
         self.memory, self.db = memory, memory.db
         self.db.executescript(SCHEMA)
         self.generation = 0
+        self.on_run_change = None
 
     def list(self):
         return [
@@ -158,6 +159,8 @@ class ScenarioStore:
                     run["id"],
                 ),
             )
+        if self.on_run_change:
+            self.on_run_change()
 
     def history(self, identifier=None):
         rows = self.db.execute(
