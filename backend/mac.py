@@ -172,6 +172,31 @@ class MacDesktop:
             result["message"] = f"Яркость {result['level']} процентов."
             return result
 
+    async def external_brightness(self, level: int) -> dict:
+        from backend.night import BetterDisplay
+
+        service = BetterDisplay(self)
+        async with self._lock:
+            displays = [d for d in await service.inventory() if not d.get("builtin")]
+            selected = self.s.night.external_uuid
+            if selected:
+                displays = [
+                    d for d in displays if d.get("uuid", "").casefold() == selected.casefold()
+                ]
+            if len(displays) != 1:
+                raise ToolError(
+                    "Внешний дисплей не найден или выбор неоднозначен. Укажи night.external_uuid."
+                )
+            result = await service.set_level(
+                displays[0]["uuid"], self.s.night.external_control, level
+            )
+            return {
+                **result,
+                "level": round(result["actual"] * 100),
+                "device_state_confirmed": True,
+                "message": f"Яркость внешнего дисплея {level} процентов.",
+            }
+
     async def power(self, action: str) -> dict:
         from backend.tools.system import run
 

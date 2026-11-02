@@ -36,6 +36,7 @@ REQUESTS: dict[str, type] = {
     "voice_status": type(None),
     "performance_stats": int,
     "performance_detail": str,
+    "automations": dict,
 }
 RECONNECT_S = 1.5  # an already open HUD page reconnects within this; then no new tab
 

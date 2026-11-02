@@ -41,6 +41,7 @@ export class Link {
 
   voice(value: import('./voice_settings').VoiceControls): void { this.post({type:'voice_settings',value}); }
   voiceStatus(): void { this.post({type:'voice_status'}); }
+  automations(value: object): void { this.post({type: 'automations', value}); }
   history(value = 0): void { this.post({type: "history", value}); }
   historySearch(value: object): void { this.post({type: 'history_search', value}); }
   dashboard(value: object): void { this.post({type: 'dashboard', value}); }

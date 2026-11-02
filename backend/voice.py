@@ -599,6 +599,9 @@ class VoiceLoop:
             )
             is not None
         )
+        automations = getattr(registry, "automations", None)
+        if automations and automations.recognize(text)["scenario_id"]:
+            control_context = True
         # A separately spoken wake word grants just the first request in its short window.
         prompted = not topic and self.clock() < self._prompted_until
         decision = decide(
@@ -1537,6 +1540,13 @@ class VoiceLoop:
             profile.update(reason="uncertain_stt_or_echo")
             return
         original_text = text
+        automations = getattr(getattr(self.conv, "tools", None), "automations", None)
+        if (
+            automations
+            and automations.capture_target
+            and automations.capture(text, decoder_confident(self.stt))
+        ):
+            return
         addressed = wake_validated
         if (
             is_sign_off(text, s.assistant_name)
@@ -1906,6 +1916,8 @@ async def _run_voice(
         device=DeviceContext.local_mac(store.desktop_session()),
     )
     conv.on_tool = lambda name: bus.publish({"type": "tool", "name": name})
+    if tools.automations:
+        tools.automations.bind(bus, conv)
     export_button(s, bus, store, conv)
     stt = WhisperSTT(s.stt.model, s.stt_language, s.stt_hint, s.resources.mlx_cache_mb)
     speaker = make_speaker(s)
@@ -2130,6 +2142,8 @@ async def _run_voice(
         for task in background:
             task.cancel()
         await dashboard.close()
+        if tools.automations:
+            await tools.automations.close()
         if window:
             await window.close()
         if server:

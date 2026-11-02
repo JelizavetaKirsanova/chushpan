@@ -38,7 +38,7 @@ from backend.context import (
     voice_read_followup,
 )
 from backend.dialogue import CONTROLS, normalize
-from backend.latency import Profile, current, record
+from backend.latency import Profile, current, measure, record
 from backend.local_commands import route as local_route
 from backend.memory.store import MemoryStore
 from backend.music import music_context
@@ -690,6 +690,65 @@ class Conversation:
                         self.add_exchange(user_text, confirmation)
                     yield confirmation
                     return
+                automations = self.tools.automations
+                if automations and self.device.authenticated:
+                    with measure("intent_detection"):
+                        learned = automations.contextual_command(user_text, context.binding)
+                        match = automations.recognize(user_text)
+                    interpreted = None
+                    if match["method"] == "ambiguous" and (
+                        routed is None or control_plan and control_plan.clarification
+                    ):
+                        interpreted = await automations.interpret(user_text, self.llm, match)
+                        if interpreted:
+                            match["scenario_id"] = interpreted.id
+                    if learned:
+                        self.add_exchange(user_text, learned)
+                        yield learned
+                        return
+                    if match["scenario_id"]:
+                        from backend.context import voice_addressed, voice_control_command
+
+                        if voice_addressed.get() or voice_control_command.get() == user_text:
+                            scenario = automations.store.get(match["scenario_id"])
+                            from backend.context import scenario_selection
+
+                            selection = (
+                                scenario_selection.set(
+                                    (context.request_id, scenario.id, scenario.revision)
+                                )
+                                if interpreted
+                                else None
+                            )
+                            try:
+                                result = json.loads(
+                                    await self.tools.call(
+                                        "run_scenario",
+                                        {
+                                            "id": scenario.id,
+                                            "revision": scenario.revision,
+                                        },
+                                    )
+                                )
+                            finally:
+                                if selection is not None:
+                                    scenario_selection.reset(selection)
+                            answer = (
+                                result.get("message")
+                                or result.get("error")
+                                or "Результат сценария не подтверждён."
+                            )
+                            self.last_stats = TurnStats(tools=["run_scenario"])
+                            self.add_exchange(user_text, answer)
+                            automations.publish()
+                            yield answer
+                            return
+                    elif match["method"] == "ambiguous" and match["candidates"] and routed is None:
+                        names = ", ".join(c["name"] for c in match["candidates"][:3])
+                        answer = f"Уточни сценарий: {names}."
+                        self.add_exchange(user_text, answer)
+                        yield answer
+                        return
                 if control_plan is not None:
                     from backend.led import diagnostic
 

@@ -30,6 +30,12 @@ voice_control_command: ContextVar[str | None] = ContextVar("voice_control_comman
 planned_operation: ContextVar[tuple[str, str, str] | None] = ContextVar(
     "planned_operation", default=None
 )
+scenario_operation: ContextVar[tuple[str, str, str] | None] = ContextVar(
+    "scenario_operation", default=None
+)
+scenario_selection: ContextVar[tuple[str, str, int] | None] = ContextVar(
+    "scenario_selection", default=None
+)
 voice_read_followup: ContextVar[tuple[str, str] | None] = ContextVar(
     "voice_read_followup", default=None
 )

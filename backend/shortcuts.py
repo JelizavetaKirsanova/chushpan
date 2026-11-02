@@ -253,6 +253,11 @@ def shortcut_tools(s: Settings) -> list[Tool]:
             },
             ["name"],
             risk=Risk.DANGEROUS,
+            risk_resolver=lambda a: (
+                Risk.CHANGE
+                if service.entry(a["name"]).safe_without_confirmation
+                else Risk.DANGEROUS
+            ),
             intent=service.intent,
             prepare=service.prepare,
             summary=service.summary,

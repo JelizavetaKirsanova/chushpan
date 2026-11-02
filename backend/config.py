@@ -137,8 +137,9 @@ class ShortcutEntry(BaseModel):
     identifier: str = Field(pattern=r"^[A-Fa-f0-9]{8}(?:-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$")
     description: str = Field(min_length=1, max_length=300)
     input_type: Literal["none", "text", "url"] = "none"
-    # All external automations require confirmation, even a nominally read-only one.
-    # Their internals can change independently of this process.
+    # Explicit manual review only; existing entries retain mandatory confirmation.
+    safe_without_confirmation: bool = False
+    # Review the Shortcut again after editing it; its internals can change independently.
 
 
 class ShortcutsConfig(BaseModel):

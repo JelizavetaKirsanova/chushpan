@@ -1,5 +1,7 @@
 """Fixed Mac Agent operations added to the existing system group."""
 
+import re
+
 from backend.config import Settings
 from backend.mac import MacDesktop
 from backend.security import Risk
@@ -155,6 +157,22 @@ def mac_tools(s: Settings, desktop: MacDesktop | None = None) -> list[Tool]:
             reply=reply,
         ),
     ]
+    tools.append(
+        Tool(
+            "set_external_brightness",
+            "Яркость выбранного внешнего дисплея через BetterDisplay с перечитыванием.",
+            mac.external_brightness,
+            {"level": {"type": "integer", "minimum": 0, "maximum": 100}},
+            ["level"],
+            risk=Risk.CHANGE,
+            intent=lambda a, text: bool(
+                re.search(
+                    r"яркост.*(?:телевизор|внешн)|(?:телевизор|внешн).*яркост", text.casefold()
+                )
+            ),
+            reply=reply,
+        )
+    )
     for tool in tools:
         tool.required_capability = (
             "mac.apps"

@@ -137,6 +137,13 @@ class BetterDisplay:
             "brightness",
         } or level not in {10, 25}:
             raise ToolError("Ночной сценарий допускает только предусмотренные уровни яркости.")
+        return await self.set_level(uuid, control, level)
+
+    async def set_level(self, uuid: str, control: str, level: int) -> dict:
+        if control not in {"hardwareBrightness", "softwareBrightness", "brightness"} or (
+            type(level) is not int or not 0 <= level <= 100
+        ):
+            raise ToolError("Неверный способ или уровень яркости дисплея.")
         uid = str(UUID(uuid)).upper()
         previous = await self.read(uid, control)
         await display_command("set", "-UUID=" + uid, f"-{control}={level / 100:.2f}")

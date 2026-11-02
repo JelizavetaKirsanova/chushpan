@@ -1,4 +1,5 @@
 import {VoiceSettingsPanel} from './voice_settings';
+import {AutomationsView} from './automations';
 import "./style.css";
 import "./workspace.css";
 import './dashboard.css';
@@ -39,6 +40,7 @@ function tap(): void {
 const voiceSettings = new VoiceSettingsPanel(value => link.voice(value));
 const core = new Character(byId('character'), tap);
 const dashboard = new DashboardView(value => link.dashboard(value), value => link.chat(value), view => workspace.navigate(view), value => link.historySearch(value), core, value => panels.weather(value));
+const automations = new AutomationsView(value => link.automations(value), view => workspace.navigate(view), () => link.send('wake'), text => link.chat({text}));
 
 function setMode(next: Mode): void {
   mode = next;
@@ -174,6 +176,7 @@ function onEvent(e: HudEvent): void {
   performancePanel.receive(e);
   dashboard.receive(e);
   voiceSettings.receive(e);
+  automations.receive(e);
   switch (e.type) {
     case "notice":
       hud.dataset.activity = "error";
@@ -226,6 +229,7 @@ const link = new Link(onEvent, (online) => {
   performancePanel.connection(online);
   dashboard.connection(online);
   voiceSettings.connection(online);
+  automations.connection(online);
   if (online) link.voiceStatus();
   exportButton.disabled = !online;
   if (!online) {

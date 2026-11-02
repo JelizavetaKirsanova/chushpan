@@ -147,4 +147,8 @@ def build_registry(
     )
     registry.memory = profile
     registry.youtube_video = video
+    if store is not None:
+        from backend.automation.service import Automations
+
+        registry.automations = Automations(registry, s, store)
     return registry

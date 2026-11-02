@@ -13,7 +13,9 @@ from typing import TYPE_CHECKING, Any
 from backend.context import (
     accepted_followup,
     request_context,
+    scenario_operation,
     voice_addressed,
+    voice_control_command,
     voice_led_command,
     voice_music_command,
     voice_read_followup,
@@ -66,6 +68,7 @@ class Tool:
         summary: Callable[[dict], str] | None = None,
         reply: Callable[[dict], str] | None = None,
         version: Callable[[dict], str] | None = None,
+        risk_resolver: Callable[[dict], Risk] | None = None,
     ) -> None:
         self.name, self.description, self._handler = name, description, handler
         self.parameters, self.required = parameters or {}, required or []
@@ -75,6 +78,7 @@ class Tool:
         self.prepare, self.summary = prepare, summary
         self.reply = reply
         self.version = version
+        self.risk_resolver = risk_resolver
         self.agent: MacAgent | None = None
         self.required_capability: str | None = None
 
@@ -90,7 +94,16 @@ class Tool:
     async def invoke(self, **arguments: Any) -> Any:
         args = validate_arguments(arguments, self.parameters, self.required)
         context = request_context.get()
-        risk = self.risk or risk_for(self.name, args)
+        risk = (
+            self.risk_resolver(args)
+            if self.risk_resolver
+            else self.risk or risk_for(self.name, args)
+        )
+        scenario = context is not None and scenario_operation.get() == (
+            context.request_id,
+            self.name,
+            json.dumps(args, sort_keys=True),
+        )
         from backend.context import planned_operation
 
         planned = (
@@ -122,6 +135,13 @@ class Tool:
             self.name,
             json.dumps(args, sort_keys=True),
         )
+        local_scenario = (
+            self.name == "run_scenario"
+            and context is not None
+            and voice_control_command.get() == context.text
+            and self.intent is not None
+            and self.intent(args, context.text)
+        )
         if (
             not voice_addressed.get()
             and approved_action.get() is None
@@ -130,6 +150,8 @@ class Tool:
             and not local_read
             and not bound_action
             and not planned
+            and not scenario
+            and not local_scenario
             and (risk != Risk.READ or self.required_capability)
         ):
             raise ActionDenied("Для системного действия нужно явное обращение к Чушпану.")
@@ -146,7 +168,7 @@ class Tool:
             if context is None or not context.device.authenticated:
                 raise ActionDenied("Нужен текущий запрос от авторизованной сессии.")
             intent = self.intent or (lambda a, t: explicit_request(self.name, a, t))
-            if not bound_action and not planned and not intent(args, context.text):
+            if not bound_action and not planned and not scenario and not intent(args, context.text):
                 raise ActionDenied("Действие не выполнено: нужна явная просьба пользовательницы.")
             if bound_action and self.name == "led_control":
                 from backend.led import diagnostic
@@ -199,6 +221,8 @@ class ToolRegistry:
         self.morning = morning
         self.memory = None
         self.youtube_video = None
+        self.automations = None
+        self.device_locks: dict[str, asyncio.Lock] = {}
         self.confirmations = Confirmations()
         self._tools: dict[str, Tool] = {}
         self.on_execution: Callable[[int, str, str, Any], None] | None = None
@@ -267,6 +291,35 @@ class ToolRegistry:
         return result
 
     async def _call(self, name: str, arguments: dict[str, Any] | str | None) -> str:
+        resources = {
+            "set_brightness": "mac",
+            "set_volume": "mac",
+            "open_app": "mac",
+            "mac_power": "mac",
+            "set_external_brightness": "tv",
+            "led_control": "led",
+            "run_shortcut": "shortcuts",
+            "music_command": "music",
+            "play_music": "music",
+            "media_control": "music",
+        }
+        resource = resources.get(name) if isinstance(name, str) else None
+        context = request_context.get()
+        grant = scenario_operation.get()
+        owned = (
+            context is not None and grant is not None and grant[:2] == (context.request_id, name)
+        )
+        lock = self.device_locks.setdefault(resource, asyncio.Lock()) if resource else None
+        if lock and not owned:
+            if lock.locked():
+                return _dump(
+                    {"error": "Устройство занято другим действием. Повтори после завершения."}
+                )
+            async with lock:
+                return await self._invoke(name, arguments)
+        return await self._invoke(name, arguments)
+
+    async def _invoke(self, name: str, arguments: dict[str, Any] | str | None) -> str:
         """Run a tool and return JSON for the model. Never raises: errors become data."""
         tool = self._tools.get(name) if isinstance(name, str) else None
         if tool is None:
