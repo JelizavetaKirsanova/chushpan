@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field, ValidationError
 from backend.config import LEDConfig, Settings
 from backend.latency import measure
 from backend.security import Risk, command_text
-from backend.tools.registry import Tool, ToolError
+from backend.tools.registry import DeviceUnavailable, Tool, ToolError
 
 log = logging.getLogger(__name__)
 
@@ -467,6 +467,7 @@ class LEDStrip:
     async def _write(self, data: bytes, state: LEDState, args: dict) -> None:
         # Reconnect only before write. After write starts, delivery is ambiguous: no replay.
         client = None
+        write_started = False
         try:
             for attempt in range(2):
                 client = BleakClient(str(self.cfg.address), timeout=self.cfg.connect_timeout_s)
@@ -498,6 +499,7 @@ class LEDStrip:
                 state.brightness = None
             self._save(state)
             diagnostic("delivery", "write_started", delivery_state="requested")
+            write_started = True
             with measure("ble_write", device="led_strip"):
                 async with asyncio.timeout(self.cfg.write_timeout_s):
                     await client.write_gatt_char(char, data, response=False)
@@ -512,12 +514,19 @@ class LEDStrip:
                 BleakBluetoothNotAvailableReason.DENIED_BY_USER: "Запрещено пользователем macOS.",
                 BleakBluetoothNotAvailableReason.DENIED_BY_SYSTEM: "Запрещено системой macOS.",
             }
-            raise ToolError(
+            unavailable = not write_started and exc.reason in {
+                BleakBluetoothNotAvailableReason.POWERED_OFF,
+                BleakBluetoothNotAvailableReason.NO_BLUETOOTH,
+                BleakBluetoothNotAvailableReason.NO_BLE_CENTRAL_ROLE,
+            }
+            failure = DeviceUnavailable if unavailable else ToolError
+            raise failure(
                 "Bluetooth недоступен. "
                 + reasons.get(exc.reason, "Система не сообщила точную причину недоступности.")
             ) from None
         except BleakDeviceNotFoundError:
-            raise ToolError(
+            failure = ToolError if write_started else DeviceUnavailable
+            raise failure(
                 "LED-лента не найдена по сохранённому BLE UUID. Проверь питание и близость; "
                 "после смены UUID выполни python -m backend led discover и обнови led.address. "
                 "Другую ленту автоматически не выбираю."
@@ -542,7 +551,7 @@ class LEDStrip:
     async def execute(self, *, action: str, rgb=None, level=None, experiment=False) -> dict:
         diagnostic("request", action="set_color" if action == "color" else action)
         if not self.cfg.enabled:
-            raise ToolError("LED-лента отключена в настройках.")
+            raise DeviceUnavailable("LED-лента отключена в настройках.")
         async with self._exclusive():
             return await self._execute_locked(
                 self._load(), action=action, rgb=rgb, level=level, experiment=experiment
@@ -640,7 +649,7 @@ class LEDStrip:
         if args["action"] != "sequence":
             return await self.execute(**args)
         if not self.cfg.enabled:
-            raise ToolError("LED-лента отключена в настройках.")
+            raise DeviceUnavailable("LED-лента отключена в настройках.")
         async with self._exclusive():
             state = self._load()
             # Preflight every operation before the first write. Relative brightness

@@ -27,6 +27,49 @@ class Engine:
         self.store, self.capabilities = store, capabilities
         self.locks = capabilities.tools.device_locks
         self.device_state = {}
+        self.location = lambda: {"place_id": None, "name": None}
+
+    def select(self, scenario, variant=""):
+        if not scenario.variants:
+            if variant:
+                raise ValueError("У команды нет такой версии.")
+            return scenario, None
+        place = self.location()
+        if variant:
+            selected = next((v for v in scenario.variants if v.id == variant), None)
+        else:
+            if not place.get("place_id"):
+                raise ValueError("Место не определено. Выбери место в разделе «Мои команды».")
+            selected = next((v for v in scenario.variants if v.place_id == place["place_id"]), None)
+        if selected is None or not selected.enabled:
+            raise ValueError(
+                "Для выбранного места нет включённой версии команды. "
+                "Добавь или включи её в разделе «Мои команды»."
+            )
+        effective = scenario.model_copy(
+            update={
+                "actions": [*scenario.actions, *selected.actions],
+                "conditions": [*scenario.conditions, *selected.conditions],
+                "variants": [],
+            }
+        )
+        return effective, {
+            "variant_id": selected.id,
+            "variant_name": selected.name,
+            "place_id": selected.place_id,
+            "current_place_id": place.get("place_id"),
+            "place_name": place.get("name"),
+            "selection": "manual" if variant else "auto",
+        }
+
+    def unavailable(self, block):
+        if block.capability not in self.capabilities.items:
+            return True
+        cap = self.capabilities.items[block.capability]
+        return (
+            cap.tool not in self.capabilities.tools
+            or self.device_state.get(cap.device, {}).get("connected") is False
+        )
 
     def resolve(self, scenario, values):
         unknown = set(values) - {v.name for v in scenario.variables}
@@ -48,17 +91,21 @@ class Engine:
 
     def operations(self, blocks, values):
         for block in blocks:
+            if not block.enabled:
+                continue
             if block.kind == "action":
+                if not block.required and self.unavailable(block):
+                    continue
                 cap = self.capabilities.get(block.capability)
                 yield cap, cap.arguments(self.parameters(block, values))
             yield from self.operations(block.children, values)
             yield from self.operations(block.otherwise, values)
 
-    def identity(self, scenario, values):
+    def identity(self, scenario, values, selection=None, variant=""):
         # Bind approval to the complete revision and current external Shortcut configuration.
         shortcuts = self.capabilities.s.shortcuts.model_dump(mode="json")
         summary = f"сценарий «{scenario.name}», версия {scenario.revision}; " + json.dumps(
-            [scenario.model_dump(mode="json"), values, shortcuts],
+            [scenario.model_dump(mode="json"), values, shortcuts, selection],
             ensure_ascii=False,
             sort_keys=True,
         )
@@ -67,6 +114,8 @@ class Engine:
             "revision": scenario.revision,
             "values": json.dumps(values, sort_keys=True),
         }
+        if variant:
+            args["variant"] = variant
         return args, summary, fingerprint("run_scenario", args, summary)
 
     async def condition(self, condition, values):
@@ -90,7 +139,7 @@ class Engine:
         except TypeError:
             raise StepFailed("Типы значений условия несовместимы.") from None
 
-    async def run(self, scenario, *, values=None, event_id=None):
+    async def run(self, scenario, *, values=None, event_id=None, variant=""):
         context = request_context.get()
         if (
             context is None
@@ -101,10 +150,11 @@ class Engine:
         if not scenario.enabled:
             raise ActionDenied("Сценарий отключён.")
         with measure("action_planning"):
-            self.capabilities.validate(scenario)
-            values = self.resolve(scenario, values or {})
-            operations = list(self.operations(scenario.actions, values))
-            args, summary, approval = self.identity(scenario, values)
+            effective, selection = self.select(scenario, variant)
+            self.capabilities.validate(effective)
+            values = self.resolve(effective, values or {})
+            operations = list(self.operations(effective.actions, values))
+            args, summary, approval = self.identity(scenario, values, selection, variant)
             dangerous = any(
                 self.capabilities.risk(cap, a) == Risk.DANGEROUS for cap, a in operations
             )
@@ -131,6 +181,8 @@ class Engine:
                 "message": "Событие уже зарегистрировано; повторного запуска нет.",
             }
         started = time.perf_counter()
+        if selection:
+            run.update(selection)
         acquired = []
         try:
             # Reserve all devices atomically before awaiting any operation. A conflicting
@@ -142,12 +194,12 @@ class Engine:
                 await lock.acquire()
                 acquired.append(lock)
             if not all(
-                [await self.condition(condition, values) for condition in scenario.conditions]
+                [await self.condition(condition, values) for condition in effective.conditions]
             ):
                 run["status"] = "skipped"
             else:
                 with measure("scenario_execution"):
-                    await self.blocks(scenario.actions, values, run, approval=approval)
+                    await self.blocks(effective.actions, values, run, approval=approval)
                 statuses = {step["status"] for step in run["steps"]}
                 run["status"] = (
                     "failed"
@@ -156,6 +208,8 @@ class Engine:
                     if "unverified" in statuses
                     else "sent"
                     if "sent" in statuses
+                    else "skipped"
+                    if not statuses or statuses == {"skipped"}
                     else "confirmed"
                 )
         except asyncio.CancelledError:
@@ -186,7 +240,7 @@ class Engine:
             "sent": "команды отправлены; физический результат не подтверждён",
             "failed": "остановлен с ошибкой",
             "unverified": "результат не подтверждён",
-            "skipped": "условия не выполнены",
+            "skipped": "нет шагов для выполнения или условия не выполнены",
         }
         run["message"] = f"Сценарий «{scenario.name}»: {labels.get(run['status'], run['status'])}."
         if run.get("error"):
@@ -204,6 +258,24 @@ class Engine:
                     raise
 
     async def block(self, block, values, run, path, approval=None):
+        if (
+            not block.enabled
+            or block.kind == "action"
+            and not block.required
+            and self.unavailable(block)
+        ):
+            run["steps"].append(
+                {
+                    "path": path,
+                    "kind": block.kind,
+                    "capability": block.capability,
+                    "status": "skipped",
+                    "reason": "disabled" if not block.enabled else "unavailable",
+                    "duration_s": 0.0,
+                }
+            )
+            self.store.update_run(run)
+            return
         if block.kind == "sequence":
             await self.blocks(block.children, values, run, path + ".", approval)
             return
@@ -281,6 +353,16 @@ class Engine:
                 step.update(
                     result=result, status=self.capabilities.verify(capability.tool, args, result)
                 )
+            if (
+                not block.required
+                and result.get("error_code") == "device_unavailable"
+                and result.get("effect_started") is False
+            ):
+                step.update(status="skipped", reason="unavailable")
+                self.device_state.setdefault(capability.device, {}).update(
+                    connected=False, status="unavailable", error=result["error"]
+                )
+                return
             state = self.device_state.setdefault(capability.device, {})
             state.update(last_operation=capability.name, status=step["status"])
             if step["status"] in {"confirmed", "sent"}:

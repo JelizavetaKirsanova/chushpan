@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -50,6 +51,8 @@ class Block(Model):
     children: list[Block] = Field(default_factory=list)
     otherwise: list[Block] = Field(default_factory=list)
     on_error: Literal["stop", "continue"] = "stop"
+    enabled: bool = True
+    required: bool = True
 
     @model_validator(mode="after")
     def coherent(self):
@@ -76,6 +79,30 @@ class Trigger(Model):
         return self
 
 
+class Variant(Model):
+    id: str = Field(default_factory=lambda: uuid4().hex, pattern=r"^[a-f0-9]{32}$")
+    name: str = Field(min_length=1, max_length=120)
+    place_id: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9_-]+$")
+    enabled: bool = True
+    actions: list[Block] = Field(default_factory=list)
+    conditions: list[Condition] = Field(default_factory=list)
+
+
+class Place(Model):
+    id: str = Field(default_factory=lambda: uuid4().hex, pattern=r"^[a-z0-9_-]{1,40}$")
+    revision: int = Field(default=0, ge=0)
+    name: str = Field(min_length=1, max_length=120)
+    cities: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def valid(self):
+        if any(not city.strip() or len(city) > 120 for city in self.cities):
+            raise ValueError("Название города должно содержать от 1 до 120 символов.")
+        if contains_secret(self.model_dump_json()):
+            raise ValueError("Секреты нельзя сохранять в настройках места.")
+        return self
+
+
 class Scenario(Model):
     id: str = Field(default="", pattern=r"^(?:[a-f0-9]{32})?$")
     revision: int = Field(default=0, ge=0)
@@ -86,6 +113,7 @@ class Scenario(Model):
     mode: Literal["exact", "smart"] = "smart"
     phrases: list[str] = Field(default_factory=list)  # Deliberately no phrase-count limit.
     actions: list[Block] = Field(default_factory=list)
+    variants: list[Variant] = Field(default_factory=list)
     conditions: list[Condition] = Field(default_factory=list)
     triggers: list[Trigger] = Field(default_factory=lambda: [Trigger(), Trigger(kind="manual")])
     variables: list[Variable] = Field(default_factory=list)
@@ -112,7 +140,11 @@ class Scenario(Model):
                 total += visit(block.children, depth + 1) + visit(block.otherwise, depth + 1)
             return total
 
-        if visit(self.actions) > 500:
+        if len({v.id for v in self.variants}) != len(self.variants):
+            raise ValueError("Идентификаторы версий должны различаться.")
+        if len({v.place_id for v in self.variants}) != len(self.variants):
+            raise ValueError("Для одного места допускается одна версия команды.")
+        if visit(self.actions) + sum(visit(v.actions) for v in self.variants) > 500:
             raise ValueError("В одном сценарии допускается до 500 блоков.")
         if contains_secret(self.model_dump_json()):
             raise ValueError("Не сохраняй ключи, пароли и токены в сценарии.")

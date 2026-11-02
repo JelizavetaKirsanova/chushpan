@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS scenario_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_scenario_runs ON scenario_runs(scenario_id, started_at);
 CREATE TABLE IF NOT EXISTS scenario_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scenario_revisions (
+ scenario_id TEXT NOT NULL, revision INTEGER NOT NULL, data TEXT NOT NULL,
+ created_at TEXT NOT NULL, PRIMARY KEY(scenario_id, revision)
+);
 """
 
 
@@ -52,7 +56,7 @@ class ScenarioStore:
         identifier = scenario.id or uuid4().hex
         with self.memory.memory_transaction():
             row = self.db.execute(
-                "SELECT revision FROM scenarios WHERE id=?", (identifier,)
+                "SELECT revision, data FROM scenarios WHERE id=?", (identifier,)
             ).fetchone()
             if (row and row[0] != scenario.revision) or (not row and scenario.revision):
                 raise ValueError("Сценарий изменён в другом окне. Обнови его перед сохранением.")
@@ -65,8 +69,17 @@ class ScenarioStore:
                     raise ValueError(
                         f"Фраза «{phrase}» уже принадлежит сценарию «{self.get(found[0]).name}»."
                     )
+            if row:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO scenario_revisions VALUES (?,?,?,?)",
+                    (identifier, row[0], row[1], _now()),
+                )
+            latest = self.db.execute(
+                "SELECT COALESCE(MAX(revision),0) FROM scenario_revisions WHERE scenario_id=?",
+                (identifier,),
+            ).fetchone()[0]
             saved = scenario.model_copy(
-                update={"id": identifier, "revision": scenario.revision + 1}
+                update={"id": identifier, "revision": max(scenario.revision, latest) + 1}
             )
             self.db.execute(
                 "INSERT INTO scenarios VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
@@ -78,6 +91,10 @@ class ScenarioStore:
                 "INSERT INTO scenario_phrases VALUES (?,?)",
                 [(normalize_phrase(p), identifier) for p in saved.phrases],
             )
+            self.db.execute(
+                "INSERT INTO scenario_revisions VALUES (?,?,?,?)",
+                (identifier, saved.revision, saved.model_dump_json(), _now()),
+            )
         self.generation += 1
         return saved
 
@@ -86,8 +103,44 @@ class ScenarioStore:
         with self.memory.memory_transaction():
             if self.get(identifier).revision != revision:
                 raise ValueError("Сценарий изменился. Обнови список.")
+            scenario = self.get(identifier)
+            self.db.execute(
+                "INSERT OR IGNORE INTO scenario_revisions VALUES (?,?,?,?)",
+                (identifier, scenario.revision, scenario.model_dump_json(), _now()),
+            )
             self.db.execute("DELETE FROM scenarios WHERE id=?", (identifier,))
         self.generation += 1
+
+    def revisions(self, identifier):
+        rows = self.db.execute(
+            "SELECT revision,created_at,data FROM scenario_revisions "
+            "WHERE scenario_id=? ORDER BY revision DESC LIMIT 30",
+            (identifier,),
+        )
+        return [
+            {"revision": r[0], "created_at": r[1], "name": json.loads(r[2])["name"]} for r in rows
+        ]
+
+    def revision(self, identifier, revision):
+        row = self.db.execute(
+            "SELECT data FROM scenario_revisions WHERE scenario_id=? AND revision=?",
+            (identifier, revision),
+        ).fetchone()
+        if not row:
+            raise ValueError("Сохранённая редакция не найдена.")
+        return Scenario.model_validate_json(row[0])
+
+    def restore(self, identifier, revision, expected):
+        with self.memory.memory_transaction():
+            current = self.db.execute(
+                "SELECT revision FROM scenarios WHERE id=?", (identifier,)
+            ).fetchone()
+            actual = current[0] if current else 0
+            if actual != expected:
+                raise ValueError("Команда изменилась в другом окне. Обнови список.")
+            return self.save(
+                self.revision(identifier, revision).model_copy(update={"revision": actual})
+            )
 
     def teach(self, identifier, phrase, *, old=None):
         scenario = self.get(identifier)

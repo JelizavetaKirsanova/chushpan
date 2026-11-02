@@ -50,6 +50,10 @@ class ToolError(RuntimeError):
     """An expected failure the model should hear about (bad argument, service down)."""
 
 
+class DeviceUnavailable(ToolError):
+    """An integration established absence before starting any device write."""
+
+
 class Tool:
     def __init__(
         self,
@@ -302,6 +306,8 @@ class ToolRegistry:
             "music_command": "music",
             "play_music": "music",
             "media_control": "music",
+            "media_volume": "music",
+            "media_seek": "music",
         }
         resource = resources.get(name) if isinstance(name, str) else None
         context = request_context.get()
@@ -334,6 +340,13 @@ class ToolRegistry:
                 outcome = "error"
                 if profile:
                     profile.fail("tool_failed")
+        except DeviceUnavailable as exc:
+            outcome = "unavailable"
+            if profile and scenario_operation.get() is None:
+                profile.fail("device_unavailable")
+            return _dump(
+                {"error": str(exc), "error_code": "device_unavailable", "effect_started": False}
+            )
         except ConfirmationRequired as exc:
             if profile:
                 profile.result_status = "awaiting_confirmation"

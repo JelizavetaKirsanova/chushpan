@@ -73,6 +73,9 @@ class Dashboard:
                 "message": "Последняя сохранённая погода. Проверяю обновление.",
             }
         self.location = self._saved("location", {"status": "unknown", "city": None})
+        automations = getattr(self.conv.tools, "automations", None)
+        if automations:
+            automations.locations.provider = lambda: self.location
         if self.location.get("city"):
             self.location = {**self.location, "status": "stale"}
         try:

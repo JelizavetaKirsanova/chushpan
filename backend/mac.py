@@ -17,7 +17,7 @@ from backend.context import request_context
 from backend.media.safari import AccessibilityApp, process
 from backend.permissions import instruction
 from backend.security import app_mentioned, command_text, explicit_request
-from backend.tools.registry import ToolError
+from backend.tools.registry import DeviceUnavailable, ToolError
 
 
 class DesktopBridge(AccessibilityApp):
@@ -183,6 +183,10 @@ class MacDesktop:
                 displays = [
                     d for d in displays if d.get("uuid", "").casefold() == selected.casefold()
                 ]
+            if not displays:
+                raise DeviceUnavailable(
+                    "Выбранный внешний дисплей не подключён. Команда не отправлялась."
+                )
             if len(displays) != 1:
                 raise ToolError(
                     "Внешний дисплей не найден или выбор неоднозначен. Укажи night.external_uuid."

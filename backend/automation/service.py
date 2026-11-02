@@ -12,8 +12,9 @@ from zoneinfo import ZoneInfo
 
 from backend.automation.capabilities import CapabilityRegistry
 from backend.automation.engine import Engine
+from backend.automation.locations import Locations
 from backend.automation.matching import Matcher
-from backend.automation.models import Block, Scenario, normalize_phrase
+from backend.automation.models import Block, Place, Scenario, normalize_phrase
 from backend.automation.store import ScenarioStore
 from backend.context import (
     RequestContext,
@@ -32,9 +33,11 @@ class Automations:
     def __init__(self, tools, settings, memory):
         self.tools, self.s = tools, settings
         self.store = ScenarioStore(memory)
+        self.locations = Locations(memory)
         self.capabilities = CapabilityRegistry(tools, settings)
         self.matcher = Matcher(self.store)
         self.engine = Engine(self.store, self.capabilities)
+        self.engine.location = self.locations.current
         self.jobs = set()
         self.bus = None
         self.scheduler = None
@@ -52,6 +55,7 @@ class Automations:
                     "id": {"type": "string", "pattern": "[a-f0-9]{32}"},
                     "revision": {"type": "integer", "minimum": 1},
                     "values": {"type": "string", "maxLength": 4000},
+                    "variant": {"type": "string", "maxLength": 32},
                 },
                 ["id", "revision"],
                 risk=Risk.CHANGE,
@@ -109,17 +113,30 @@ class Automations:
         match = self.matcher.match(text)
         return match["scenario_id"] == args["id"]
 
-    async def run(self, id, revision, values="{}"):
+    async def run(self, id, revision, values="{}", variant=""):
         scenario = self.store.get(id)
         if scenario.revision != revision:
             raise ActionDenied("Сценарий изменился. Обнови его и повтори запуск.")
         context = request_context.get()
         if context is None or not self.intent({"id": id, "revision": revision}, context.text):
             raise ActionDenied("Нет явного запроса на этот сценарий.")
+        if (
+            variant
+            and scenario_selection.get() != (context.request_id, id, revision)
+            and approved_action.get() is None
+        ):
+            raise ActionDenied("Ручной выбор версии доступен только из редактора команды.")
         parsed = json.loads(values)
         if not isinstance(parsed, dict):
             raise ValueError("Параметры сценария должны быть объектом.")
-        return await self.engine.run(scenario, values=parsed)
+        return await self.engine.run(scenario, values=parsed, variant=variant)
+
+    def validate_document(self, scenario):
+        for variant in scenario.variants:
+            self.locations.get(variant.place_id)
+        if scenario.enabled:
+            self.capabilities.validate(scenario)
+        return scenario
 
     def recognize(self, text, *, exact_only=False):
         with measure("scenario_search"):
@@ -258,6 +275,8 @@ class Automations:
                     "runs": self.store.history(),
                     "training": self.store.training(),
                     "devices": self.devices(),
+                    "places": [p.model_dump(mode="json") for p in self.locations.list()],
+                    "location": self.locations.current(),
                     **extra,
                 }
             )
@@ -303,10 +322,12 @@ class Automations:
             op = value.get("op")
             if op == "save":
                 scenario = Scenario.model_validate(value["scenario"])
-                if scenario.enabled:
-                    self.capabilities.validate(scenario)
+                self.validate_document(scenario)
                 saved = self.store.save(scenario)
-                self.publish(saved=saved.id, message="Сценарий сохранён.")
+                self.publish(
+                    saved=saved.id,
+                    message="Команда применена. Голосовые фразы уже используют эту редакцию.",
+                )
             elif op == "delete":
                 self.store.delete(value["id"], value["revision"])
                 self.publish(deleted=value["id"], message="Сценарий удалён.")
@@ -317,13 +338,50 @@ class Automations:
                         update={
                             "id": "",
                             "revision": 0,
-                            "name": source.name + " (копия)",
+                            "name": source.name[:112] + " (копия)",
                             "enabled": False,
                             "phrases": [],
                         }
                     )
                 )
                 self.publish(saved=copied.id, message="Копия создана без конфликтующих фраз.")
+            elif op == "revisions":
+                self.publish(
+                    revisions={"id": value["id"], "items": self.store.revisions(value["id"])}
+                )
+            elif op == "restore":
+                source = self.store.revision(value["id"], value["from_revision"])
+                self.validate_document(source)
+                restored = self.store.restore(
+                    value["id"], value["from_revision"], value["expected_revision"]
+                )
+                self.publish(
+                    saved=restored.id, message="Сохранённая редакция восстановлена и применена."
+                )
+            elif op == "place_save":
+                place = self.locations.save(Place.model_validate(value["place"]))
+                self.publish(place_saved=place.id, message="Место сохранено.")
+            elif op == "place_delete":
+                self.locations.delete(value["id"], value["revision"], self.store.list())
+                self.publish(message="Место удалено.")
+            elif op == "location":
+                self.locations.select(value["mode"], value.get("place_id", ""))
+                self.publish(
+                    message=(
+                        "Текущее место обновлено. Следующая команда выберет соответствующую версию."
+                    )
+                )
+            elif op == "preview":
+                from backend.automation.preview import preview
+
+                scenario = Scenario.model_validate(value["scenario"])
+                result = await preview(
+                    self.engine,
+                    scenario,
+                    variant=value.get("variant", ""),
+                    values=value.get("values", {}),
+                )
+                self.publish(preview=result, message=result["message"])
             elif op == "recognize":
                 self.publish(recognition=self.recognize(value["text"]))
             elif op == "teach":
@@ -394,6 +452,7 @@ class Automations:
                             "id": scenario.id,
                             "revision": scenario.revision,
                             "values": json.dumps(value.get("values", {}), sort_keys=True),
+                            "variant": value.get("variant", ""),
                         },
                     )
                 )
@@ -485,10 +544,11 @@ class Automations:
                             "SELECT 1 FROM scenario_runs WHERE event_id=?", (event_id,)
                         ).fetchone():
                             continue
-                        values = self.engine.resolve(scenario, {})
+                        effective, _ = self.engine.select(scenario)
+                        values = self.engine.resolve(effective, {})
                         if scenario.confirmation == "always" or any(
                             self.capabilities.risk(cap, args) == Risk.DANGEROUS
-                            for cap, args in self.engine.operations(scenario.actions, values)
+                            for cap, args in self.engine.operations(effective.actions, values)
                         ):
                             self.publish(
                                 error=(

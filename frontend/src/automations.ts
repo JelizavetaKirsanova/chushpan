@@ -1,37 +1,28 @@
 import type {HudEvent} from './types';
 import {icon} from './dashboard';
 import './automations.css';
+import {addVariant, clone, newBlock, newId, newScenario, searchCommands, moveBlock} from './automation_state';
+import type {Json, Block, Condition, Place, Scenario, Variant} from './automation_state';
+export type {Scenario, Block, Condition} from './automation_state';
+export {newBlock, newScenario, moveBlock} from './automation_state';
 
-type Json = string | number | boolean | null | {[key: string]: Json} | Json[];
-export interface Condition {source: 'variable' | 'available' | 'time'; key: string; operator: 'eq' | 'ne' | 'gt' | 'lt'; value: Json}
-export interface Block {kind: 'action' | 'delay' | 'sequence' | 'parallel' | 'if'; capability: string; parameters: Record<string, Json>; seconds: number; condition: Condition | null; children: Block[]; otherwise: Block[]; on_error: 'stop' | 'continue'}
-export interface Scenario {id: string; revision: number; name: string; description: string; icon: string; enabled: boolean; mode: 'exact' | 'smart'; phrases: string[]; actions: Block[]; conditions: Condition[]; triggers: {kind: 'voice' | 'manual' | 'schedule'; at: string; weekdays: number[]}[]; variables: {name: string; kind: 'number' | 'string' | 'boolean'; default: Json}[]; confirmation: 'auto' | 'always'}
 interface Parameter {type: string; enum?: Json[]; minimum?: number; maximum?: number; maxLength?: number; pattern?: string}
 interface Capability {id: string; name: string; device: string; description: string; parameters: Record<string, Parameter>; required: string[]; permissions: string[]; risk: string; availability: string}
 interface Recognition {scenario_id: string | null; name?: string; confidence: number; method: string; candidates: {id: string; name: string; confidence: number}[]}
-interface Step {path: string; capability: string; kind: string; status: string; duration_s?: number; result?: Record<string, Json>; error?: string}
-interface Run {id: string; scenario_id: string; name: string; status: string; steps: Step[]; duration_s?: number; started_at: string; error?: string}
+interface Step {reason?: string; path: string; capability: string; kind: string; status: string; duration_s?: number; result?: Record<string, Json>; error?: string}
+interface Run {variant_name?: string; place_name?: string; id: string; scenario_id: string; name: string; status: string; steps: Step[]; duration_s?: number; started_at: string; error?: string}
 interface Device {id: string; name: string; type: string; status: string; actions: string[]; permissions: string[]; note: string; last_success?: string; last_operation?: string; error?: string; details?: Json}
 interface Permission {id: string; name: string; status: string; note: string; url: string}
-export interface AutomationsEvent {type: 'automations'; scenarios: Scenario[]; capabilities: Capability[]; runs: Run[]; devices: Device[]; training: {id: number; scenario_id: string; phrase: string; operation: string; created_at: string}[]; permissions?: {items: Permission[]; error?: string; scope: string}; error?: string; message?: string; saved?: string; updated?: string; deleted?: string; recognition?: Recognition; captured?: string; result?: {message?: string; error?: string; status?: string}}
+interface PreviewStep {path: string; kind: string; status: string; name?: string; capability: string; parameters?: Record<string, Json>; seconds?: number; reason?: string; condition_result?: boolean | null; risk?: string}
+interface Preview {status: 'dry_run'; name: string; message: string; selection: {variant_name: string; place_name?: string} | null; steps: PreviewStep[]; conditions: (boolean | null)[]}
+export interface AutomationsEvent {places: Place[]; location: {place_id: string | null; name: string | null; mode: 'auto' | 'manual'; status?: string; city?: string; message?: string}; revisions?: {id: string; items: {revision: number; name: string; created_at: string}[]}; preview?: Preview; place_saved?: string; type: 'automations'; scenarios: Scenario[]; capabilities: Capability[]; runs: Run[]; devices: Device[]; training: {id: number; scenario_id: string; phrase: string; operation: string; created_at: string}[]; permissions?: {items: Permission[]; error?: string; scope: string}; error?: string; message?: string; saved?: string; updated?: string; deleted?: string; recognition?: Recognition; captured?: string; result?: {message?: string; error?: string; status?: string}}
 
 const el = <T extends keyof HTMLElementTagNameMap>(tag: T, value = '', className = ''): HTMLElementTagNameMap[T] => {
   const node = document.createElement(tag); node.textContent = value; node.className = className; return node;
 };
-const clone = <T>(value: T): T => structuredClone(value);
-export function newBlock(kind: Block['kind'] = 'action', capability = ''): Block {
-  return {kind, capability, parameters: {}, seconds: 1, condition: kind === 'if' ? {source: 'variable', key: '', operator: 'eq', value: true} : null, children: [], otherwise: [], on_error: 'stop'};
-}
-export function newScenario(): Scenario {
-  return {id: '', revision: 0, name: 'Новый сценарий', description: '', icon: '✦', enabled: true, mode: 'smart', phrases: [], actions: [], conditions: [], triggers: [{kind: 'voice', at: '22:00', weekdays: [0,1,2,3,4,5,6]}, {kind: 'manual', at: '22:00', weekdays: [0,1,2,3,4,5,6]}], variables: [], confirmation: 'auto'};
-}
-export function moveBlock(blocks: Block[], index: number, offset: number): void {
-  const target = index + offset;
-  if (index < 0 || index >= blocks.length || target < 0 || target >= blocks.length) return;
-  [blocks[index], blocks[target]] = [blocks[target], blocks[index]];
-}
 const status: Record<string, string> = {confirmed: 'Проверено', sent: 'Отправлено, физический результат не подтверждён', unverified: 'Результат не подтверждён', failed: 'Ошибка', blocked: 'Заблокировано', interrupted: 'Прервано', running: 'Выполняется', skipped: 'Пропущено', not_checked: 'Не проверено', unavailable: 'Недоступно', connected: 'Подключено', observed: 'Ответ получен', error: 'Ошибка', granted: 'Предоставлено', denied: 'Не предоставлено', manual: 'Требуется ручная настройка', unsupported: 'Не поддерживается', unknown: 'Не удалось определить'};
-const parameterNames: Record<string, string> = {level: 'Уровень, %', mute: 'Без звука', power: 'Питание', color: 'Цвет RGB', brightness: 'Яркость, %', brightness_delta: 'Изменение яркости', name: 'Название', input: 'Входной текст / URL', command: 'Музыкальная команда', action: 'Действие'};
+const parameterNames: Record<string, string> = {level: 'Уровень, %', mute: 'Без звука', power: 'Питание', color: 'Цвет RGB', brightness: 'Яркость, %', brightness_delta: 'Изменение яркости', name: 'Название', input: 'Входной текст / URL', command: 'Музыкальная команда', action: 'Действие', query: 'Исполнитель, композиция или плейлист', direction: 'Изменение громкости', kind: 'Что включить', seconds: 'Секунды'};
+const valueNames: Record<string,string> = {up:'Громче',down:'Тише',pause:'Пауза',resume:'Продолжить',stop:'Остановить',next:'Следующий трек',previous:'Предыдущий трек',open:'Открыть плеер',like:'Отметить понравившимся',shuffle_on:'Перемешивание: включить',shuffle_off:'Перемешивание: выключить',repeat_on:'Повтор: включить',repeat_off:'Повтор: выключить',repeat_one:'Повторять один трек',sleep:'Сон Mac',lock:'Блокировка экрана',shutdown:'Выключение Mac',track:'Композиция',artist:'Исполнитель',album:'Альбом',playlist:'Плейлист'};
 
 export class AutomationsView {
   private data: AutomationsEvent | null = null;
@@ -54,22 +45,34 @@ export class AutomationsView {
   private permissions: AutomationsEvent['permissions'];
   private dragSource: {blocks: Block[]; index: number} | null = null;
   private sectionFeedback: HTMLElement[] = [];
+  private activeVariant = '';
+  private searchText = '';
+  private placeRoot = el('div', '', 'place-settings');
+  private locationRoot = el('div', '', 'location-selection');
+  private previewRoot = el('div', '', 'command-preview');
+  private revisionRoot = el('div', '', 'command-revisions');
+  private lastDeleted: {id: string; revision: number} | null = null;
+  private locationStamp = '';
+  private placesDirty = false;
+
 
   constructor(private send: (value: object) => void, navigate: (view: string) => void, private wake: () => void, private chat: (text: string) => void) {
     this.feedback.setAttribute('role', 'status'); this.feedback.setAttribute('aria-live', 'polite');
     const page = document.querySelector<HTMLElement>('.automations-page')!;
-    page.querySelector('h1')!.textContent = 'Сценарии';
-    page.querySelector('.page-heading p')!.textContent = 'Собери действия подключённых интеграций и добавь собственные голосовые фразы.';
+    page.querySelector('h1')!.textContent = 'Мои команды';
+    page.querySelector('.page-heading p')!.textContent = 'Одна команда — общие фразы и независимые версии для дома, общаги и других мест.';
     const toolbar = el('div', '', 'page-toolbar');
-    toolbar.append(this.button('Новый сценарий', () => {this.draft = newScenario(); this.dirty = false; this.renderEditor();}), this.button('Обновить', () => this.send({op: 'refresh'})), this.button('Остановить ожидание', () => this.send({op: 'cancel'})));
+    const search = el('input'); search.type = 'search'; search.placeholder = 'Найти команду или фразу'; search.setAttribute('aria-label', 'Поиск моих команд'); search.oninput = () => {this.searchText = search.value; this.renderList();};
+    toolbar.append(this.button('Новая команда', () => {if (!this.discardAllowed()) return; this.draft = newScenario(); this.activeVariant = ''; this.dirty = false; this.renderEditor();}), search, this.button('Обновить', () => this.send({op: 'refresh'})), this.button('Остановить ожидание', () => this.send({op: 'cancel'})));
     const layout = el('div', '', 'scenario-layout'); layout.append(this.list, this.editor);
     const history = el('details'); history.append(el('summary', 'История запусков'), this.runRoot);
-    page.querySelector('.page-heading')!.after(toolbar, this.feedback, layout, history);
+    const places = el('details'); places.append(el('summary', 'Места и автоматический выбор версии'), this.placeRoot);
+    page.querySelector('.page-heading')!.after(toolbar, this.feedback, this.locationRoot, places, layout, this.previewRoot, this.revisionRoot, history);
     const old = page.querySelector('.integration-grid');
     if (old) {const details = el('details', '', 'legacy-ritual'); details.append(el('summary', 'Встроенные сценарии и комната')); old.before(details); details.append(old);}
     const scenarioNav = document.querySelector<HTMLButtonElement>('[data-view="automations"]')!;
-    scenarioNav.querySelector('span:last-of-type')!.textContent = 'Сценарии';
-    scenarioNav.title = 'Сценарии'; scenarioNav.setAttribute('aria-label', 'Сценарии');
+    scenarioNav.querySelector('span:last-of-type')!.textContent = 'Мои команды';
+    scenarioNav.title = 'Мои команды'; scenarioNav.setAttribute('aria-label', 'Мои команды');
     const sections: [string, string, HTMLElement][] = [['devices', 'Устройства', this.deviceRoot], ['permissions', 'Разрешения', this.permissionRoot], ['commands', 'Команды и понимание', this.commandRoot], ['training', 'История обучения', this.trainingRoot]];
     for (const [view, label, root] of sections) {
       const nav = el('button'); nav.dataset.view = view; nav.title = label; nav.setAttribute('aria-label', label);
@@ -110,14 +113,21 @@ export class AutomationsView {
     if (online) this.send({op: 'refresh'});
   }
   receive(event: HudEvent): void {
+    if (event.type === 'dashboard') {const stamp = JSON.stringify(event.location); if (stamp !== this.locationStamp) {this.locationStamp = stamp; if (this.online) this.send({op: 'refresh'});} return;}
     if (event.type !== 'automations') return;
+    if (!Array.isArray(event.places) || !event.location) {
+      this.online = false;
+      this.feedback.textContent = 'Для загрузки обновления один раз перезапусти Чушпана. После этого команды и версии будут применяться без перезапуска.';
+      document.querySelectorAll<HTMLButtonElement>('.automations-page button, .automation-section button').forEach(button => button.disabled = true);
+      this.updateFeedback(); return;
+    }
     this.data = event;
     if (event.permissions) this.permissions = event.permissions;
-    if (event.saved) {
+    if (event.saved && (!this.dirty || this.saving)) {
       this.draft = clone(event.scenarios.find(s => s.id === event.saved) ?? newScenario());
       this.dirty = false; this.saving = false; this.renderEditor();
-    } else if (event.deleted === this.draft?.id) {this.draft = null; this.editor.replaceChildren();}
-    else if (event.updated === this.draft?.id && !this.dirty) {this.draft = clone(event.scenarios.find(s => s.id === event.updated)!); this.renderEditor();}
+    } else if (event.deleted && event.deleted === this.draft?.id) {this.draft = null; this.dirty = false; this.activeVariant = ''; this.editor.replaceChildren(); this.previewRoot.replaceChildren();}
+    else if (event.updated && event.updated === this.draft?.id && !this.dirty) {this.draft = clone(event.scenarios.find(s => s.id === event.updated)!); this.renderEditor();}
     if (event.error) {this.saving = false; this.feedback.textContent = event.error; this.feedback.dataset.error = 'true';}
     else if (event.message) {this.feedback.textContent = event.message; delete this.feedback.dataset.error;}
     if (event.captured !== undefined) {
@@ -135,6 +145,10 @@ export class AutomationsView {
       this.feedback.append(el('br'), confirm);
     }
     this.updateFeedback();
+    if (event.place_saved) this.placesDirty = false;
+    this.renderLocation(); this.renderPlaces();
+    if (event.preview) this.renderPreview(event.preview);
+    if (event.revisions) this.renderRevisions(event.revisions);
     this.renderList(); this.renderDevices(); this.renderPermissions(); this.renderTraining(); this.renderRuns();
     const selected = this.trainingSelect.value;
     this.trainingSelect.replaceChildren(...event.scenarios.map(s => {const option = el('option', s.name); option.value = s.id; return option;}));
@@ -144,21 +158,114 @@ export class AutomationsView {
     for (const node of this.sectionFeedback) {node.textContent = this.feedback.textContent; node.dataset.error = this.feedback.dataset.error ?? '';}
   }
 
+  private discardAllowed(): boolean {return !this.dirty || window.confirm('Отменить несохранённые изменения команды?');}
+
+  private renderLocation(): void {
+    if (!this.data) return;
+    const location = this.data.location;
+    this.locationRoot.replaceChildren(el('strong', `Сейчас: ${location.name ?? 'место не определено'}`));
+    this.locationRoot.append(this.label('Выбор места для голосовых команд', this.select(
+      [['auto', 'Определять автоматически по текущему городу'], ...this.data.places.map(p => [p.id, p.name] as [string, string])],
+      location.mode === 'auto' ? 'auto' : location.place_id ?? 'auto',
+      id => this.send({op: 'location', mode: id === 'auto' ? 'auto' : 'manual', place_id: id === 'auto' ? '' : id}))),
+      el('small', location.mode === 'auto' ? (location.city ? `Наблюдаемый город: ${location.city}` : 'Используется уже подключённое определение города. При неизвестном месте выбери его вручную.') : 'Ручной выбор сохранён и действует до переключения в автоматический режим.'));
+    if (this.lastDeleted) this.locationRoot.append(this.button('Отменить удаление команды', () => {const deleted = this.lastDeleted!; this.saving = true; this.send({op: 'restore', id: deleted.id, from_revision: deleted.revision, expected_revision: 0}); this.lastDeleted = null;}));
+  }
+
+  private renderPlaces(): void {
+    if (this.placesDirty) return;
+    this.placeRoot.replaceChildren();
+    for (const place of this.data?.places ?? []) this.placeRoot.append(this.placeForm(clone(place)));
+    this.placeRoot.append(this.button('Добавить своё место', () => {this.placesDirty = true; this.placeRoot.append(this.placeForm({id: newId(), revision: 0, name: 'Новое место', cities: []}));}), this.button('Отменить изменения мест', () => {this.placesDirty = false; this.renderPlaces();}));
+  }
+
+  private placeForm(place: Place): HTMLElement {
+    const form = el('div', '', 'place-card');
+    const name = el('input'); name.value = place.name; name.maxLength = 120; name.oninput = () => {place.name = name.value; this.placesDirty = true;};
+    const cities = el('textarea'); cities.value = place.cities.join('\n'); cities.rows = 2;
+    cities.placeholder = 'Tallinn\nТаллин'; cities.oninput = () => {place.cities = cities.value.split('\n').map(v => v.trim()).filter(Boolean); this.placesDirty = true;};
+    form.append(this.label('Название места', name), this.label('Города для автоматического выбора — каждый с новой строки', cities),
+      this.button('Сохранить место', () => this.send({op: 'place_save', place})),
+      this.button(place.revision ? 'Удалить место' : 'Отменить добавление', () => {if (place.revision) this.send({op: 'place_delete', id: place.id, revision: place.revision}); else form.remove();}));
+    return form;
+  }
+
+  private variantEditor(draft: Scenario): HTMLElement {
+    const root = el('section', '', 'variant-editor');
+    root.append(el('h3', 'Общие действия и версии для мест'), el('p', 'Общие шаги выполняются первыми. Затем — шаги версии, выбранной по текущему месту. Голосовые фразы принадлежат всей команде.', 'muted'));
+    const tabs = el('div', '', 'variant-tabs'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Версии команды');
+    const variants = draft.variants;
+    if (!variants.some(v => v.id === this.activeVariant)) this.activeVariant = '';
+    for (const item of [{id: '', name: 'Общие шаги'}, ...variants]) {
+      const button = this.button(item.name, () => {this.activeVariant = item.id; this.renderEditor();});
+      button.setAttribute('role', 'tab'); button.setAttribute('aria-selected', String(this.activeVariant === item.id)); tabs.append(button);
+    }
+    root.append(tabs);
+    const variant = variants.find(v => v.id === this.activeVariant);
+    if (variant) {
+      const fields = el('div', '', 'variant-fields');
+      const enabled = el('input'); enabled.type = 'checkbox'; enabled.checked = variant.enabled; enabled.onchange = () => {variant.enabled = enabled.checked; this.dirty = true;};
+      fields.append(this.label('Название версии', this.input(variant.name, v => variant.name = v)),
+        this.label('Место этой версии', this.select((this.data?.places ?? []).filter(p => p.id === variant.place_id || !variants.some(v => v.place_id === p.id)).map(p => [p.id, p.name]), variant.place_id, v => variant.place_id = v)), this.label('Версия включена', enabled),
+        this.button('Удалить версию', () => {if (window.confirm(`Удалить версию «${variant.name}» из черновика?`)) {draft.variants = variants.filter(v => v.id !== variant.id); this.activeVariant = ''; this.dirty = true; this.renderEditor();}}));
+      root.append(fields, el('h4', 'Условия этой версии')); this.conditionList(root, variant.conditions);
+      root.append(el('h4', `Шаги версии «${variant.name}»`), this.blocks(variant.actions));
+    } else root.append(el('h4', 'Общие шаги для всех мест'), this.blocks(draft.actions));
+    const available = (this.data?.places ?? []).filter(p => !draft.variants.some(v => v.place_id === p.id));
+    const additions = el('div', '', 'variant-add');
+    if (available.length) {
+      let placeId = available[0].id;
+      const target = this.select(available.map(p => [p.id, p.name]), placeId, v => placeId = v);
+      const create = (source?: Variant) => {const place = available.find(p => p.id === placeId)!; const added = addVariant(draft, place, source); this.activeVariant = added.id; this.dirty = true; this.renderEditor();};
+      additions.append(this.label(variant ? 'Место для новой версии или копии' : 'Место для новой версии', target), this.button('Добавить пустую версию', () => create()));
+      if (variant) additions.append(this.button('Скопировать версию в другое место', () => create(variant)));
+    } else additions.append(el('p', 'Для всех мест уже есть версии. Дополнительные места можно добавить в настройках выше.', 'muted'));
+    root.append(additions);
+    if (variants.length && !variant) root.append(el('p', 'Чтобы проверить определённую версию без выполнения, открой её вкладку и нажми «Безопасный тест черновика».', 'muted'));
+    return root;
+  }
+
+  private renderPreview(preview: Preview): void {
+    this.previewRoot.replaceChildren(el('h2', `Предварительный просмотр: ${preview.name}`), el('p', preview.message));
+    this.previewRoot.append(el('strong', preview.selection ? `Версия: ${preview.selection.variant_name}` : 'Общие шаги'));
+    for (const condition of preview.conditions) this.previewRoot.append(el('p', condition === null ? 'Условие не определено: состояние устройства не проверено' : condition ? 'Условие запуска выполнено' : 'Условие запуска не выполнено; реальный запуск пропустит команду'));
+    for (const step of preview.steps) {
+      const card = el('article', '', 'preview-step');
+      card.append(el('strong', `${step.path}. ${step.name ?? {delay: 'Задержка', parallel: 'Параллельно', sequence: 'Последовательность', if: 'IF / ELSE'}[step.kind] ?? step.capability}`), el('small', step.status === 'skipped' ? step.reason ?? 'Пропущено' : 'Запланировано; устройство не вызывалось'));
+      if (step.seconds !== undefined) card.append(el('p', `${step.seconds} секунд (ожидание не запускается)`));
+      if (step.condition_result !== undefined) card.append(el('p', `Условие IF: ${step.condition_result === null ? 'неизвестно; показаны обе ветки' : step.condition_result ? 'THEN' : 'ELSE'}`));
+      for (const [key, value] of Object.entries(step.parameters ?? {})) card.append(el('p', `${parameterNames[key] ?? key}: ${value === true ? 'Да' : value === false ? 'Нет' : String(value)}`));
+      if (step.risk === 'dangerous') card.append(el('p', 'Реальное выполнение потребует отдельного подтверждения.', 'error'));
+      this.previewRoot.append(card);
+    }
+    this.previewRoot.scrollIntoView({block: 'start', behavior: 'smooth'});
+  }
+
+  private renderRevisions(revisions: NonNullable<AutomationsEvent['revisions']>): void {
+    this.revisionRoot.replaceChildren(el('h3', 'Сохранённые редакции команды'));
+    const current = this.data?.scenarios.find(s => s.id === revisions.id);
+    for (const revision of revisions.items) {
+      const row = el('div', '', 'phrase-row');
+      row.append(el('span', `Редакция ${revision.revision} · ${new Date(revision.created_at).toLocaleString()}`), this.button('Восстановить редакцию', () => {if (this.discardAllowed()) {this.saving = true; this.send({op: 'restore', id: revisions.id, from_revision: revision.revision, expected_revision: current?.revision ?? 0});}})); this.revisionRoot.append(row);
+    }
+  }
+
   private renderList(): void {
     this.list.replaceChildren();
-    for (const scenario of this.data?.scenarios ?? []) {
+    const matches = searchCommands(this.data?.scenarios ?? [], this.searchText);
+    for (const scenario of matches) {
       const card = el('article', '', 'scenario-card');
-      card.append(el('h2', `${scenario.icon} ${scenario.name}`), el('p', scenario.description), el('small', `${scenario.enabled ? 'Включён' : 'Выключен'} · ${scenario.phrases.length} фраз · версия ${scenario.revision}`));
+      card.append(el('h2', `${scenario.icon} ${scenario.name}`), el('p', scenario.description), el('small', `${scenario.enabled ? 'Включён' : 'Выключен'} · ${scenario.phrases.length} фраз · ${scenario.variants.length} версий по местам · редакция ${scenario.revision}`));
       const actions = el('div', '', 'button-row');
       actions.append(this.button('Редактировать', () => {
         if (this.dirty && !window.confirm('Отбросить несохранённые изменения?')) return;
-        this.draft = clone(scenario); this.dirty = false; this.renderEditor();
-      }), this.button('Копировать', () => this.send({op: 'copy', id: scenario.id})), this.button('Запустить', () => this.send({op: 'run', id: scenario.id, revision: scenario.revision})));
+        this.draft = clone(scenario); this.activeVariant = ''; this.dirty = false; this.previewRoot.replaceChildren(); this.revisionRoot.replaceChildren(); this.renderEditor();
+      }), this.button('Копировать', () => {if (this.discardAllowed()) {this.saving = true; this.send({op: 'copy', id: scenario.id});}}), this.button('Запустить', () => this.send({op: 'run', id: scenario.id, revision: scenario.revision})));
       const run = actions.lastElementChild as HTMLButtonElement;
       run.disabled ||= !scenario.enabled || !scenario.triggers.some(t => t.kind === 'manual');
       card.append(actions); this.list.append(card);
     }
-    if (!this.data?.scenarios.length) this.list.append(el('p', 'Создай первый сценарий.'));
+    if (!matches.length) this.list.append(el('p', this.searchText ? 'Команд не найдено.' : 'Создай первую команду.'));
   }
 
   private renderEditor(): void {
@@ -166,7 +273,9 @@ export class AutomationsView {
     this.editor.replaceChildren();
     if (!draft) return;
     const form = el('form'); form.onsubmit = event => {event.preventDefault(); if (!this.online || this.saving) return; this.saving = true; this.feedback.textContent = 'Сохраняю…'; this.send({op: 'save', scenario: draft});};
-    const heading = el('div', '', 'section-heading'); heading.append(el('h2', 'Редактор сценария'), el('small', draft.id ? `Версия ${draft.revision}` : 'Ещё не сохранён'));
+    const heading = el('div', '', 'section-heading'); heading.append(el('h2', 'Редактор команды'), el('small', draft.id ? `Редакция ${draft.revision}` : 'Черновик'));
+    if (draft.id) heading.append(this.button('История редакций', () => this.send({op: 'revisions', id: draft.id})));
+    heading.append(this.button('Отменить изменения', () => {if (!this.discardAllowed()) return; const saved = this.data?.scenarios.find(s => s.id === draft.id); this.draft = saved ? clone(saved) : newScenario(); this.dirty = false; this.activeVariant = ''; this.renderEditor();}));
     const name = this.input(draft.name, v => draft.name = v); name.required = true; name.maxLength = 120;
     const description = el('textarea'); description.value = draft.description; description.maxLength = 1000; description.oninput = () => {draft.description = description.value; this.dirty = true;};
     const enabled = el('input'); enabled.type = 'checkbox'; enabled.checked = draft.enabled; enabled.onchange = () => {draft.enabled = enabled.checked; this.dirty = true;};
@@ -178,7 +287,8 @@ export class AutomationsView {
     form.append(el('h3', 'Переменные'));
     for (const variable of draft.variables) {
       const row = el('div', '', 'phrase-row');
-      row.append(this.label('Имя', this.input(variable.name, v => variable.name = v)), this.label('Тип', this.select([['number', 'Число'], ['string', 'Текст'], ['boolean', 'Да / нет']], variable.kind, v => {variable.kind = v; variable.default = v === 'number' ? 50 : v === 'boolean' ? true : ''; this.renderEditor();})), this.label('Значение', this.input(String(variable.default), v => variable.default = variable.kind === 'number' ? Number(v) : variable.kind === 'boolean' ? v === 'true' : v)), this.button('Удалить', () => {draft.variables.splice(draft.variables.indexOf(variable), 1); this.dirty = true; this.renderEditor();})); form.append(row);
+      const control = variable.kind === 'boolean' ? this.select([['true','Да'],['false','Нет']],String(variable.default), v => variable.default = v === 'true') : this.input(String(variable.default), v => variable.default = variable.kind === 'number' ? Number(v) : v, variable.kind === 'number' ? 'number' : 'text');
+      row.append(this.label('Имя', this.input(variable.name, v => variable.name = v)), this.label('Тип', this.select([['number', 'Число'], ['string', 'Текст'], ['boolean', 'Да / нет']], variable.kind, v => {variable.kind = v; variable.default = v === 'number' ? 50 : v === 'boolean' ? true : ''; this.renderEditor();})), this.label('Значение', control), this.button('Удалить', () => {draft.variables.splice(draft.variables.indexOf(variable), 1); this.dirty = true; this.renderEditor();})); form.append(row);
     }
     form.append(this.button('Добавить переменную', () => {draft.variables.push({name: `value${draft.variables.length + 1}`, kind: 'number', default: 50}); this.dirty = true; this.renderEditor();}));
     form.append(el('h3', 'Условия запуска'));
@@ -195,11 +305,11 @@ export class AutomationsView {
         ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].forEach((name, day) => {const check = el('input'); check.type = 'checkbox'; check.checked = trigger.weekdays.includes(day); check.onchange = () => {trigger.weekdays = check.checked ? [...trigger.weekdays, day] : trigger.weekdays.filter(d => d !== day); this.dirty = true;}; days.append(this.label(name, check));}); form.append(days);
       }
     }
-    form.append(el('h3', 'Действия'), this.blocks(draft.actions));
-    const controls = el('div', '', 'button-row'); const save = el('button', 'Сохранить'); save.type = 'submit'; save.className = 'primary'; save.disabled = !this.online;
-    controls.append(save, this.button('Проверить распознавание', () => {const phrase = window.prompt('Фраза для проверки (ничего не выполняется)'); if (phrase) this.send({op: 'recognize', text: phrase});}));
-    if (draft.id) controls.append(this.button('Тест: выполнить сохранённую версию', () => this.send({op: 'run', id: draft.id, revision: draft.revision})), this.button('Удалить сценарий', () => {if (window.confirm(`Удалить «${draft.name}»?`)) this.send({op: 'delete', id: draft.id, revision: draft.revision});}));
-    form.append(controls, el('p', 'Тест выполняет реальные действия сохранённой версии. Изменения сначала нужно сохранить.', 'muted')); this.editor.append(form);
+    form.append(this.variantEditor(draft));
+    const controls = el('div', '', 'button-row'); const save = el('button', 'Применить команду'); save.type = 'submit'; save.className = 'primary'; save.disabled = !this.online;
+    controls.append(save, this.button('Безопасный тест черновика', () => this.send({op: 'preview', scenario: draft, variant: this.activeVariant})), this.button('Проверить распознавание', () => {const phrase = window.prompt('Фраза для проверки (ничего не выполняется)'); if (phrase) this.send({op: 'recognize', text: phrase});}));
+    if (draft.id) controls.append(this.button('Выполнить сохранённую команду', () => this.send({op: 'run', id: draft.id, revision: draft.revision})), this.button('Удалить команду', () => {if (window.confirm(`Удалить «${draft.name}»?`)) {this.lastDeleted = {id: draft.id, revision: draft.revision}; this.send({op: 'delete', id: draft.id, revision: draft.revision});}}));
+    form.append(controls, el('p', 'Безопасный тест показывает план без обращения к устройствам. «Выполнить» запускает сохранённую команду и выбирает версию по текущему месту. Применение сразу обновляет голосовые команды.', 'muted')); this.editor.append(form);
   }
 
   private conditionList(root: HTMLElement, conditions: Condition[]): void {
@@ -210,7 +320,11 @@ export class AutomationsView {
     const row = el('div', '', 'condition-fields');
     row.append(this.label('Источник', this.select([['variable', 'Переменная'], ['available', 'Проверенная доступность'], ['time', 'Текущий час']], condition.source, v => {condition.source = v; condition.key = v === 'time' ? 'hour' : v === 'available' ? this.data?.capabilities[0]?.id ?? '' : this.draft?.variables[0]?.name ?? ''; condition.value = v === 'time' ? 22 : true; this.renderEditor();})));
     const keys: [string, string][] = condition.source === 'variable' ? (this.draft?.variables ?? []).map(v => [v.name, v.name]) : condition.source === 'available' ? (this.data?.capabilities ?? []).map(c => [c.id, c.name]) : [['hour', 'Час, 0–23']];
-    row.append(this.label('Параметр', this.select(keys, condition.key, v => condition.key = v)), this.label('Сравнение', this.select([['eq', '='], ['ne', '≠'], ['gt', '>'], ['lt', '<']], condition.operator, v => condition.operator = v)), this.label('Значение', this.input(String(condition.value), v => {condition.value = v === 'true' ? true : v === 'false' ? false : v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : v;})));
+    const variable = this.draft?.variables.find(v => v.name === condition.key);
+    const kind = condition.source === 'available' ? 'boolean' : condition.source === 'time' ? 'number' : variable?.kind ?? 'string';
+    const comparison: [Condition['operator'],string][] = kind === 'boolean' ? [['eq','='],['ne','≠']] : [['eq','='],['ne','≠'],['gt','>'],['lt','<']];
+    const control = kind === 'boolean' ? this.select([['true','Да'],['false','Нет']],String(condition.value),v => condition.value = v === 'true') : this.input(String(condition.value), v => condition.value = kind === 'number' ? Number(v) : v, kind === 'number' ? 'number' : 'text');
+    row.append(this.label('Параметр', this.select(keys, condition.key, v => {condition.key = v; condition.value = this.draft?.variables.find(item => item.name === v)?.default ?? (condition.source === 'time' ? 22 : true); condition.operator = 'eq'; this.renderEditor();})), this.label('Сравнение', this.select(comparison, condition.operator, v => condition.operator = v)), this.label('Значение', control));
     return row;
   }
   private blocks(blocks: Block[]): HTMLElement {
@@ -222,6 +336,8 @@ export class AutomationsView {
       card.ondrop = event => {event.preventDefault(); event.stopPropagation(); const source = this.dragSource; this.dragSource = null; if (source?.blocks === blocks) {const [item] = blocks.splice(source.index, 1); blocks.splice(index, 0, item); this.dirty = true; this.renderEditor();}};
       const heading = el('div', '', 'section-heading');
       heading.append(el('strong', `${index + 1}. ${{action: 'Действие', delay: 'Задержка', sequence: 'Последовательность', parallel: 'Параллельно', if: 'IF / ELSE'}[block.kind]}`), this.button('↑', () => {moveBlock(blocks, index, -1); this.dirty = true; this.renderEditor();}), this.button('↓', () => {moveBlock(blocks, index, 1); this.dirty = true; this.renderEditor();}), this.button('Удалить блок', () => {blocks.splice(index, 1); this.dirty = true; this.renderEditor();})); card.append(heading);
+      const enabled = el('input'); enabled.type = 'checkbox'; enabled.checked = block.enabled; enabled.onchange = () => {block.enabled = enabled.checked; this.dirty = true; this.renderEditor();}; card.dataset.enabled = String(block.enabled); card.append(this.label('Шаг включён', enabled));
+      if (block.kind === 'action') card.append(this.label('Доступность устройства', this.select([['required', 'Обязательный шаг'], ['optional', 'Пропустить, если устройство отсутствует']], block.required ? 'required' : 'optional', v => block.required = v === 'required')));
       card.append(this.label('При ошибке', this.select([['stop', 'Остановить сценарий'], ['continue', 'Продолжить, сохранив ошибку']], block.on_error, v => block.on_error = v)));
       if (block.kind === 'action') {
         card.append(this.label('Действие устройства', this.select((this.data?.capabilities ?? []).map(c => [c.id, c.name]), block.capability, v => {block.capability = v; block.parameters = {}; this.dirty = true; this.renderEditor();})));
@@ -259,7 +375,7 @@ export class AutomationsView {
     let control: HTMLInputElement | HTMLSelectElement;
     if (schema.enum || schema.type === 'boolean') {
       const options = schema.enum ?? [true, false];
-      control = this.select([['', required ? 'Выбери значение' : 'Не изменять'], ...options.map(v => [String(v), v === true ? 'Да' : v === false ? 'Нет' : String(v)] as [string, string])], block.parameters[key] === undefined ? '' : String(block.parameters[key]), assign);
+      control = this.select([['', required ? 'Выбери значение' : 'Не изменять'], ...options.map(v => [String(v), v === true ? 'Да' : v === false ? 'Нет' : valueNames[String(v)] ?? String(v)] as [string, string])], block.parameters[key] === undefined ? '' : String(block.parameters[key]), assign);
     } else {
       control = this.input(value === undefined ? '' : String(value), assign, ['integer', 'number'].includes(schema.type) ? 'number' : 'text');
       if (schema.minimum !== undefined) control.min = String(schema.minimum);
@@ -267,7 +383,8 @@ export class AutomationsView {
       if (schema.maxLength) control.maxLength = schema.maxLength;
       if (key === 'color') {control.placeholder = '#FF0020'; control.pattern = '#[0-9A-Fa-f]{6}'; control.oninput = () => {assign(control.value.toUpperCase()); this.dirty = true;};}
     }
-    control.required = required;
+    const active = this.draft?.variants.find(v => v.id === this.activeVariant);
+    control.required = required && block.enabled && (active?.enabled ?? true);
     row.append(this.label((parameterNames[key] ?? key) + (required ? ' *' : ''), control)); return row;
   }
 
@@ -326,9 +443,9 @@ export class AutomationsView {
     this.runRoot.replaceChildren();
     for (const run of this.data?.runs ?? []) {
       const details = el('details', '', 'scenario-run');
-      details.append(el('summary', `${run.name} · ${status[run.status] ?? run.status} · ${run.duration_s === undefined ? 'длительность ещё не измерена' : run.duration_s.toFixed(3) + ' с'} · ${new Date(run.started_at).toLocaleString()}`));
+      details.append(el('summary', `${run.name}${run.variant_name ? ' / ' + run.variant_name : ''} · ${status[run.status] ?? run.status} · ${run.duration_s === undefined ? 'длительность ещё не измерена' : run.duration_s.toFixed(3) + ' с'} · ${new Date(run.started_at).toLocaleString()}`));
       if (run.error) details.append(el('p', run.error, 'error'));
-      for (const step of run.steps) {const row = el('div'); row.append(el('p', `${step.path}. ${this.data?.capabilities.find(c => c.id === step.capability)?.name ?? step.kind} · ${status[step.status] ?? step.status} · ${step.duration_s?.toFixed(3) ?? '…'} с`)); if (step.result || step.error) row.append(el('pre', step.error ?? JSON.stringify(step.result, null, 2))); details.append(row);}
+      for (const step of run.steps) {const row = el('div'); row.append(el('p', `${step.path}. ${this.data?.capabilities.find(c => c.id === step.capability)?.name ?? step.kind} · ${status[step.status] ?? step.status} · ${step.duration_s?.toFixed(3) ?? '…'} с`)); if (step.reason) row.append(el('p', {disabled: 'Шаг выключен', unavailable: 'Устройство недоступно; необязательный шаг пропущен'}[step.reason] ?? step.reason)); if (step.result || step.error) row.append(el('pre', step.error ?? JSON.stringify(step.result, null, 2))); details.append(row);}
       this.runRoot.append(details);
     }
   }

@@ -41,6 +41,15 @@ class CapabilityRegistry:
             ("mac.open_app", "Открыть приложение", "mac", "open_app", []),
             ("display.brightness", "Яркость внешнего дисплея", "tv", "set_external_brightness", []),
             ("music.command", "Управление музыкой", "music", "music_command", ["automation"]),
+            ("audio.volume", "Громкость аудиоплеера", "music", "media_volume", ["automation"]),
+            (
+                "audio.control",
+                "Плеер: пауза, следующий трек и режимы",
+                "music",
+                "media_control",
+                ["automation"],
+            ),
+            ("music.play", "Включить музыку по названию", "music", "play_music", ["automation"]),
             (
                 "shortcut.run",
                 "Запустить разрешённую Shortcut",
@@ -100,7 +109,14 @@ class CapabilityRegistry:
 
         def check(blocks):
             for block in blocks:
+                if not block.enabled:
+                    continue
                 if block.kind == "action":
+                    if not block.required and (
+                        block.capability not in self.items
+                        or self.items[block.capability].tool not in self.tools
+                    ):
+                        continue
                     capability = self.get(block.capability)
                     parameters = {}
                     for key, value in block.parameters.items():
@@ -117,7 +133,12 @@ class CapabilityRegistry:
                 check(block.otherwise)
 
         check(scenario.actions)
-        for condition in scenario.conditions + list(self.conditions(scenario.actions)):
+        conditions = scenario.conditions + list(self.conditions(scenario.actions))
+        for variant in scenario.variants:
+            if variant.enabled:
+                check(variant.actions)
+                conditions += variant.conditions + list(self.conditions(variant.actions))
+        for condition in conditions:
             if condition.source == "variable" and condition.key not in variables:
                 raise ValueError("Условие ссылается на неизвестную переменную.")
             if condition.source == "available":
@@ -129,6 +150,8 @@ class CapabilityRegistry:
     @staticmethod
     def conditions(blocks):
         for block in blocks:
+            if not block.enabled:
+                continue
             if block.condition:
                 yield block.condition
             yield from CapabilityRegistry.conditions(block.children)
