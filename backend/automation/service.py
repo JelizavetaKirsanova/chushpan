@@ -270,6 +270,7 @@ class Automations:
             self.bus.publish(
                 {
                     "type": "automations",
+                    "editor_version": 2,
                     "scenarios": [s.model_dump(mode="json") for s in self.store.list()],
                     "capabilities": self.capabilities.catalogue(),
                     "runs": self.store.history(),

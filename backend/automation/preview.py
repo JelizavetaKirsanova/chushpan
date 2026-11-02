@@ -6,12 +6,16 @@ from backend.automation.engine import StepFailed
 async def preview(engine, scenario, *, variant="", values=None):
     effective, selection = engine.select(scenario, variant)
     resolved = engine.resolve(effective, values or {})
-    engine.capabilities.validate(effective)
+    errors = []
+    try:
+        engine.capabilities.validate(effective)
+    except ValueError as exc:
+        errors.append(str(exc))
     conditions = []
     for condition in effective.conditions:
         try:
             conditions.append(await engine.condition(condition, resolved))
-        except StepFailed:
+        except (StepFailed, KeyError, ValueError):
             conditions.append(None)
     steps = []
 
@@ -25,6 +29,8 @@ async def preview(engine, scenario, *, variant="", values=None):
                 "status": "planned",
                 "required": block.required,
             }
+            if i and effective.inter_block_delay_s:
+                step["delay_before_s"] = effective.inter_block_delay_s
             steps.append(step)
             if not block.enabled:
                 step.update(status="skipped", reason="Шаг выключен")
@@ -35,21 +41,27 @@ async def preview(engine, scenario, *, variant="", values=None):
                         status="skipped", reason="Устройство недоступно; шаг необязательный"
                     )
                 else:
-                    cap = engine.capabilities.get(block.capability)
-                    step.update(
-                        name=cap.name,
-                        parameters=engine.parameters(block, resolved),
-                        risk=engine.capabilities.risk(
-                            cap, cap.arguments(engine.parameters(block, resolved))
-                        ).value,
-                        availability="unavailable" if engine.unavailable(block) else "not_checked",
-                    )
+                    try:
+                        cap = engine.capabilities.get(block.capability)
+                        step.update(
+                            name=cap.name,
+                            device=cap.device,
+                            parameters=engine.parameters(block, resolved),
+                            risk=engine.capabilities.risk(
+                                cap, cap.arguments(engine.parameters(block, resolved))
+                            ).value,
+                            availability="unavailable"
+                            if engine.unavailable(block)
+                            else "not_checked",
+                        )
+                    except (ValueError, KeyError) as exc:
+                        step.update(status="invalid", reason=str(exc))
             elif block.kind == "delay":
                 step["seconds"] = block.seconds
             elif block.kind == "if":
                 try:
                     result = await engine.condition(block.condition, resolved)
-                except StepFailed:
+                except (StepFailed, KeyError, ValueError):
                     result = None
                 step["condition_result"] = result
                 if result is not False:
@@ -77,5 +89,7 @@ async def preview(engine, scenario, *, variant="", values=None):
         "selection": selection,
         "steps": steps,
         "conditions": conditions,
+        "errors": errors,
+        "timeout_s": effective.timeout_s,
         "message": "Безопасная проверка: инструменты, устройства и задержки не запускались.",
     }

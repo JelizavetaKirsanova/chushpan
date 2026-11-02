@@ -118,9 +118,18 @@ class Scenario(Model):
     triggers: list[Trigger] = Field(default_factory=lambda: [Trigger(), Trigger(kind="manual")])
     variables: list[Variable] = Field(default_factory=list)
     confirmation: Literal["auto", "always"] = "auto"
+    # Missing fields keep the meaning of documents written by the previous editor.
+    version_policy: Literal["append", "fallback"] = "append"
+    general_enabled: bool = True
+    inter_block_delay_s: float | int = Field(default=0, ge=0, le=60)
+    show_status: bool = True
+    error_policy: Literal["block", "stop", "continue"] = "block"
+    timeout_s: float | int | None = Field(default=None, ge=1, le=3600)
 
     @model_validator(mode="after")
     def valid(self):
+        if self.version_policy == "fallback" and not self.general_enabled and not self.variants:
+            raise ValueError("Выбери хотя бы одно местоположение сценария.")
         seen = set()
         for phrase in self.phrases:
             normalized = normalize_phrase(phrase)

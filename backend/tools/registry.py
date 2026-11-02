@@ -299,6 +299,8 @@ class ToolRegistry:
             "set_brightness": "mac",
             "set_volume": "mac",
             "open_app": "mac",
+            "manage_app": "mac",
+            "open_website": "mac",
             "mac_power": "mac",
             "set_external_brightness": "tv",
             "led_control": "led",

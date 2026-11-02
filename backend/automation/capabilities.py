@@ -39,6 +39,8 @@ class CapabilityRegistry:
             ("mac.brightness", "Яркость MacBook", "mac", "set_brightness", []),
             ("mac.volume", "Системная громкость", "mac", "set_volume", ["automation"]),
             ("mac.open_app", "Открыть приложение", "mac", "open_app", []),
+            ("mac.app", "Переключить / закрыть приложение", "mac", "manage_app", ["automation"]),
+            ("mac.website", "Открыть YouTube", "mac", "open_website", []),
             ("display.brightness", "Яркость внешнего дисплея", "tv", "set_external_brightness", []),
             ("music.command", "Управление музыкой", "music", "music_command", ["automation"]),
             ("audio.volume", "Громкость аудиоплеера", "music", "media_volume", ["automation"]),
@@ -173,7 +175,7 @@ class CapabilityRegistry:
                     "required": capability.required,
                     "permissions": capability.permissions,
                     "risk": "depends_on_parameters"
-                    if capability.id == "shortcut.run"
+                    if capability.id in {"shortcut.run", "mac.app"}
                     else (
                         self.tools._tools[capability.tool].risk or risk_for(capability.tool, {})
                     ).value,

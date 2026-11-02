@@ -4,6 +4,7 @@ import "./style.css";
 import "./workspace.css";
 import './dashboard.css';
 import './simple_workspace.css';
+import './scenario_editor.css';
 import { Workspace } from "./workspace";
 import { PerformancePanel } from './performance';
 

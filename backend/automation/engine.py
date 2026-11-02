@@ -30,6 +30,40 @@ class Engine:
         self.location = lambda: {"place_id": None, "name": None}
 
     def select(self, scenario, variant=""):
+        if scenario.version_policy == "fallback":
+            place = self.location()
+            selected = None
+            if variant != "general":
+                selected = next(
+                    (
+                        v
+                        for v in scenario.variants
+                        if (v.id == variant if variant else v.place_id == place.get("place_id"))
+                    ),
+                    None,
+                )
+            if variant and variant != "general" and selected is None:
+                raise ValueError("У сценария нет такой версии.")
+            if selected is not None:
+                if not selected.enabled:
+                    raise ValueError("Версия для выбранного места выключена.")
+                return scenario.model_copy(
+                    update={
+                        "actions": selected.actions,
+                        "conditions": [*scenario.conditions, *selected.conditions],
+                        "variants": [],
+                    }
+                ), {
+                    "variant_id": selected.id,
+                    "variant_name": selected.name,
+                    "place_id": selected.place_id,
+                    "place_name": place.get("name"),
+                    "current_place_id": place.get("place_id"),
+                    "selection": "manual" if variant else "auto",
+                }
+            if not scenario.general_enabled:
+                raise ValueError("Место неизвестно или для него нет версии. Выбери место вручную.")
+            return scenario.model_copy(update={"variants": []}), None
         if not scenario.variants:
             if variant:
                 raise ValueError("У команды нет такой версии.")
@@ -181,6 +215,10 @@ class Engine:
                 "message": "Событие уже зарегистрировано; повторного запуска нет.",
             }
         started = time.perf_counter()
+        run["options"] = {
+            "delay": effective.inter_block_delay_s,
+            "error_policy": effective.error_policy,
+        }
         if selection:
             run.update(selection)
         acquired = []
@@ -199,7 +237,8 @@ class Engine:
                 run["status"] = "skipped"
             else:
                 with measure("scenario_execution"):
-                    await self.blocks(effective.actions, values, run, approval=approval)
+                    async with asyncio.timeout(effective.timeout_s):
+                        await self.blocks(effective.actions, values, run, approval=approval)
                 statuses = {step["status"] for step in run["steps"]}
                 run["status"] = (
                     "failed"
@@ -220,6 +259,8 @@ class Engine:
             raise
         except StepUnverified as exc:
             run.update(status="unverified", error=str(exc))
+        except TimeoutError:
+            run.update(status="interrupted", error="Время сценария истекло. Автоповтора нет.")
         except (StepFailed, ValueError) as exc:
             run.update(status="failed", error=str(exc))
         except Exception:
@@ -241,6 +282,7 @@ class Engine:
             "failed": "остановлен с ошибкой",
             "unverified": "результат не подтверждён",
             "skipped": "нет шагов для выполнения или условия не выполнены",
+            "interrupted": "прерван; уже отправленные действия не отменяются",
         }
         run["message"] = f"Сценарий «{scenario.name}»: {labels.get(run['status'], run['status'])}."
         if run.get("error"):
@@ -249,12 +291,15 @@ class Engine:
 
     async def blocks(self, blocks, values, run, prefix="", approval=None):
         for index, block in enumerate(blocks):
+            if index and run.get("options", {}).get("delay", 0):
+                await asyncio.sleep(run["options"]["delay"])
             path = prefix + str(index + 1)
             try:
                 await self.block(block, values, run, path, approval)
             except StepFailed as exc:
                 run.setdefault("errors", []).append(str(exc))
-                if block.on_error == "stop":
+                policy = run.get("options", {}).get("error_policy", "block")
+                if policy == "stop" or policy == "block" and block.on_error == "stop":
                     raise
 
     async def block(self, block, values, run, path, approval=None):
@@ -276,37 +321,8 @@ class Engine:
             )
             self.store.update_run(run)
             return
-        if block.kind == "sequence":
-            await self.blocks(block.children, values, run, path + ".", approval)
-            return
-        if block.kind == "parallel":
-            resources = []
-            for child in block.children:
-                devices = {cap.device for cap, _ in self.operations([child], values)}
-                if any(devices & previous for previous in resources):
-                    raise StepFailed(
-                        "Параллельные ветки управляют одним устройством. "
-                        "Используй последовательность."
-                    )
-                resources.append(devices)
-            # Wait for every started branch even after a sibling fails; never orphan a write.
-            results = await asyncio.gather(
-                *(
-                    self.block(child, values, run, path + f".{i + 1}", approval)
-                    for i, child in enumerate(block.children)
-                ),
-                return_exceptions=True,
-            )
-            if any(isinstance(result, BaseException) for result in results):
-                raise StepFailed(
-                    "Ошибка параллельной ветки; результаты всех начатых веток сохранены."
-                )
-            return
-        if block.kind == "if":
-            selected = (
-                block.children if await self.condition(block.condition, values) else block.otherwise
-            )
-            await self.blocks(selected, values, run, path + ".", approval)
+        if block.kind in {"sequence", "parallel", "if"}:
+            await self.group(block, values, run, path, approval)
             return
         step = {
             "path": path,
@@ -384,3 +400,73 @@ class Engine:
         finally:
             step["duration_s"] = time.perf_counter() - start
             self.store.update_run(run)
+
+    async def group(self, block, values, run, path, approval):
+        step = {"path": path, "kind": block.kind, "capability": "", "status": "running"}
+        run["steps"].append(step)
+        self.store.update_run(run)
+        started = time.perf_counter()
+        try:
+            await self.group_body(block, values, run, path, approval)
+            statuses = {s["status"] for s in run["steps"] if s["path"].startswith(path + ".")}
+            step["status"] = next(
+                (
+                    state
+                    for state in (
+                        "failed",
+                        "blocked",
+                        "interrupted",
+                        "unverified",
+                        "sent",
+                        "confirmed",
+                    )
+                    if state in statuses
+                ),
+                "skipped",
+            )
+        except asyncio.CancelledError:
+            step["status"] = "interrupted"
+            raise
+        except Exception as exc:
+            step.update(
+                status="unverified" if isinstance(exc, StepUnverified) else "failed", error=str(exc)
+            )
+            raise
+        finally:
+            step["duration_s"] = time.perf_counter() - started
+            self.store.update_run(run)
+
+    async def group_body(self, block, values, run, path, approval):
+        if block.kind == "sequence":
+            await self.blocks(block.children, values, run, path + ".", approval)
+            return
+        if block.kind == "parallel":
+            resources = []
+            for child in block.children:
+                devices = {cap.device for cap, _ in self.operations([child], values)}
+                if any(devices & previous for previous in resources):
+                    raise StepFailed(
+                        "Параллельные ветки управляют одним устройством. "
+                        "Используй последовательность."
+                    )
+                resources.append(devices)
+            # Wait for every started branch even after a sibling fails; never orphan a write.
+            results = await asyncio.gather(
+                *(
+                    self.block(child, values, run, path + f".{i + 1}", approval)
+                    for i, child in enumerate(block.children)
+                ),
+                return_exceptions=True,
+            )
+            if any(isinstance(result, BaseException) for result in results):
+                raise StepFailed(
+                    "Ошибка параллельной ветки; результаты всех начатых веток сохранены."
+                )
+            return
+        if block.kind == "if":
+            yes = await self.condition(block.condition, values)
+            selected = block.children if yes else block.otherwise
+            await self.blocks(
+                selected, values, run, path + (".then." if yes else ".else."), approval
+            )
+            return
