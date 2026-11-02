@@ -6,19 +6,23 @@ import vm from 'node:vm';
 import {stripTypeScriptTypes} from 'node:module';
 import {Window} from 'happy-dom';
 import * as state from '../src/automation_state.ts';
+import * as workspaceState from '../src/workspace_state.ts';
 
 const source=readFileSync(new URL('../src/automations.ts',import.meta.url),'utf8');
 const html=readFileSync(new URL('../index.html',import.meta.url),'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'').replace(/<link\b[^>]*>/gi,'');
 const code=stripTypeScriptTypes(source,{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export \{.*\} from .*;\n/gm,'').replace('export class AutomationsView','class AutomationsView')+'\nexports.AutomationsView=AutomationsView;';
+const workspaceCode=stripTypeScriptTypes(readFileSync(new URL('../src/workspace.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace('export class Workspace','class Workspace')+'\nexports.Workspace=Workspace;';
 function fixture() {
   const window=new Window({url:'http://127.0.0.1:8879', settings:{disableJavaScriptEvaluation:true,disableCSSFileLoading:true,disableJavaScriptFileLoading:true}});
   window.document.write(html); window.confirm=()=>true;
   window.HTMLElement.prototype.scrollIntoView=()=>{};
   const requests: Record<string,unknown>[]=[];
-  const sandbox={...state,exports:{} as Record<string,unknown>,document:window.document,window,structuredClone,crypto,icon:()=>'<svg aria-hidden="true"></svg>'};
-  vm.runInNewContext(code,sandbox);
+  const sandbox={...state,...workspaceState,exports:{} as Record<string,unknown>,document:window.document,window,HTMLButtonElement:window.HTMLButtonElement,structuredClone,crypto,icon:()=>'<svg aria-hidden="true"></svg>'};
+  vm.runInNewContext(workspaceCode+code,sandbox);
+  const Workspace=sandbox.exports.Workspace as new (...args:unknown[])=>{navigate:(view:string)=>void};
+  const workspace=new Workspace(()=>{},()=>{},()=>{},()=>{},()=>{});
   const View=sandbox.exports.AutomationsView as new (send:(v:Record<string,unknown>)=>void,...args:unknown[])=>{connection:(v:boolean)=>void;receive:(v:unknown)=>void};
-  const view=new View(value=>requests.push(structuredClone(value)),()=>{},()=>{},()=>{});
+  const view=new View(value=>requests.push(structuredClone(value)),(view:string)=>workspace.navigate(view),()=>{},()=>{});
   view.connection(true);
   const data={type:'automations',scenarios:[] as state.Scenario[],capabilities:[{id:'mac.brightness',name:'Яркость MacBook',device:'mac',description:'Test transport',parameters:{level:{type:'integer',minimum:0,maximum:100}},required:['level'],permissions:[],risk:'state_change',availability:'not_checked'}],runs:[],training:[],devices:[],places:[{id:'dorm',revision:1,name:'Общага',cities:[]},{id:'home',revision:1,name:'Дом',cities:[]}],location:{place_id:'dorm',name:'Общага',mode:'manual'}};
   view.receive(data);
@@ -33,19 +37,19 @@ function fixture() {
   }
   function fill(text:string,value:string) {const input=field(text);input.value=value;input.dispatchEvent(new window.Event('input',{bubbles:true}) as unknown as Event);}
   function submit() {window.document.querySelector('.scenario-editor form')!.dispatchEvent(new window.Event('submit',{cancelable:true,bubbles:true}));}
-  return {window,view,data,requests,button,field,fill,submit};
+  return {window,view,workspace,data,requests,button,field,fill,submit};
 }
 
 test('real editor creates one command, common action and independently editable location copies with safe preview', async()=>{
   const f=fixture();try {
-    f.button('Новая команда'); f.fill('Название','Я спать');f.button('Добавить фразу');
+    f.button('Новый сценарий'); f.fill('Название','Я спать');f.button('Добавить фразу');
     const phrase=f.window.document.querySelector('[aria-label="Фраза 1"]')! as unknown as HTMLInputElement;
     phrase.value='Пора ложиться';phrase.dispatchEvent(new f.window.Event('input',{bubbles:true}) as unknown as Event);
-    f.button('+ Действие');f.fill('Уровень, % *','10');
+    f.button('Изменить яркость');f.fill('Уровень, % *','10');
     f.button('Добавить пустую версию');
-    f.button('+ Действие');f.fill('Уровень, % *','25');
+    f.button('Изменить яркость');f.fill('Уровень, % *','25');
     f.button('Скопировать версию в другое место');f.fill('Уровень, % *','40');
-    f.button('Безопасный тест черновика');
+    f.button('Безопасный тест');
     const preview=f.requests.at(-1)!;assert.equal(preview.op,'preview');
     const draft=preview.scenario as state.Scenario;
     assert.equal(draft.name,'Я спать');assert.equal(draft.phrases.length,1);assert.equal(draft.variants.length,2);
@@ -66,22 +70,22 @@ test('real editor creates one command, common action and independently editable 
 
 test('applied command is searchable, deletable and recoverable using backend revision contract', async()=>{
   const f=fixture();try {
-    f.button('Новая команда');f.fill('Название','Тихий вечер');f.submit();
+    f.button('Новый сценарий');f.fill('Название','Тихий вечер');f.submit();
     const saved={...(f.requests.at(-1)!.scenario as state.Scenario),id:'b'.repeat(32),revision:7};
     f.view.receive({...f.data,scenarios:[saved],saved:saved.id});
-    f.button('Удалить команду');assert.deepEqual(f.requests.at(-1),{op:'delete',id:saved.id,revision:7});
-    f.view.receive({...f.data,deleted:saved.id});f.button('Отменить удаление команды');
+    f.button('Удалить сценарий');assert.deepEqual(f.requests.at(-1),{op:'delete',id:saved.id,revision:7});
+    f.view.receive({...f.data,deleted:saved.id});f.button('Отменить удаление');
     assert.deepEqual(f.requests.at(-1),{op:'restore',id:saved.id,from_revision:7,expected_revision:0});
     f.view.receive({...f.data,scenarios:[saved],saved:saved.id});
     const search=f.window.document.querySelector('[aria-label="Поиск моих команд"]')! as unknown as HTMLInputElement;
     search.value='Нет такой';search.dispatchEvent(new f.window.Event('input') as unknown as Event);
-    assert.match(f.window.document.querySelector('.scenario-list')!.textContent,/Команд не найдено/);
+    assert.match(f.window.document.querySelector('.scenario-list')!.textContent,/Сценариев не найдено/);
   }finally{await f.window.happyDOM.close();}
 });
 
 test('step disabling, optional device and retained settings are submitted through actual controls', async()=>{
   const f=fixture();try {
-    f.button('Новая команда');f.button('+ Действие');f.fill('Уровень, % *','35');
+    f.button('Новый сценарий');f.button('Изменить яркость');f.fill('Уровень, % *','35');
     const optional=f.field('Доступность устройства');optional.value='optional';optional.dispatchEvent(new f.window.Event('change') as unknown as Event);
     const enabled=f.field('Шаг включён');enabled.checked=false;enabled.dispatchEvent(new f.window.Event('change') as unknown as Event);
     f.submit();const doc=f.requests.at(-1)!.scenario as state.Scenario;
@@ -100,8 +104,8 @@ test('actual place forms create custom location and editor can add a previously 
     const request=f.requests.at(-1)!;assert.equal(request.op,'place_save');
     const place={...(request.place as state.Place),revision:1};assert.equal(place.name,'Дача');assert.deepEqual(place.cities,['Новый город']);
     const snapshot={...f.data,places:[...f.data.places,place]};f.view.receive({...snapshot,place_saved:place.id});
-    f.button('Новая команда');const target=f.field('Место для новой версии');target.value=place.id;target.dispatchEvent(new f.window.Event('change') as unknown as Event);
-    f.button('Добавить пустую версию');f.button('Безопасный тест черновика');
+    f.button('Новый сценарий');const target=f.field('Место для новой версии');target.value=place.id;target.dispatchEvent(new f.window.Event('change') as unknown as Event);
+    f.button('Добавить пустую версию');f.button('Безопасный тест');
     const draft=f.requests.at(-1)!.scenario as state.Scenario;
     assert.equal(draft.variants.length,1);assert.equal(draft.variants[0].place_id,place.id);assert.equal(draft.variants[0].name,'Дача');
     const current=f.field('Выбор места для голосовых команд');current.value=place.id;current.dispatchEvent(new f.window.Event('change') as unknown as Event);
@@ -111,7 +115,7 @@ test('actual place forms create custom location and editor can add a previously 
 
 test('revision history restores through optimistic backend contract and applies restored editor data', async()=>{
   const f=fixture();try {
-    f.button('Новая команда');f.fill('Название','Сон');f.submit();
+    f.button('Новый сценарий');f.fill('Название','Сон');f.submit();
     const saved={...(f.requests.at(-1)!.scenario as state.Scenario),id:'c'.repeat(32),revision:7};
     f.view.receive({...f.data,scenarios:[saved],saved:saved.id});
     f.button('История редакций');assert.deepEqual(f.requests.at(-1),{op:'revisions',id:saved.id});
@@ -130,5 +134,149 @@ test('new interface explains one-time backend upgrade instead of crashing agains
     assert.doesNotThrow(()=>f.view.receive(legacy));
     assert.match(f.window.document.querySelector('.scenario-feedback')!.textContent,/один раз перезапусти/);
     assert.equal((f.window.document.querySelector('.automations-page .page-toolbar button') as unknown as HTMLButtonElement).disabled,true);
+  }finally{await f.window.happyDOM.close();}
+});
+
+function disclosure(f: ReturnType<typeof fixture>, selector: string) {
+  const details = f.window.document.querySelector(selector)!;
+  assert.ok(details, selector); (details as unknown as HTMLDetailsElement).open = true;
+  details.dispatchEvent(new f.window.Event('toggle'));
+}
+
+test('five primary destinations and a three-step editor keep advanced controls collapsed', async()=>{
+  const f=fixture();try {
+    assert.deepEqual([...f.window.document.querySelectorAll('.workspace-nav > button[data-view]')].map(n=>n.getAttribute('data-view')),['home','automations','devices','performance','settings']);
+    assert.equal(f.window.document.querySelector('.permissions-page'),null);
+    assert.ok(f.window.document.querySelector('.settings-page .permission-settings'));
+    f.button('Новый сценарий');
+    assert.deepEqual([...f.window.document.querySelectorAll('.editor-step > h2')].map(n=>n.textContent),['1. Название и фразы','2. Что сделать?','3. Готово']);
+    assert.equal((f.window.document.querySelector('.editor-advanced') as unknown as HTMLDetailsElement).open,false);
+    assert.equal(f.window.document.querySelector('.scenario-layout')!.getAttribute('data-editing'),'true');
+    assert.ok(f.window.document.querySelector('.editor-advanced .variant-editor'));
+    assert.equal(f.window.document.querySelector('form form'),null);
+    f.fill('Название','Уют');
+    for (let i=0;i<40;i++) {f.button('Добавить фразу');const input=f.window.document.querySelector(`[aria-label="Фраза ${i+1}"]`)! as unknown as HTMLInputElement;input.value=`Уютная фраза ${i}`;input.dispatchEvent(new f.window.Event('input') as unknown as Event);}
+    disclosure(f,'.action-picker');f.button('Изменить яркость');f.fill('Уровень, % *','27');
+    const field=f.field('Уровень, % *');assert.equal(field.min,'0');assert.equal(field.max,'100');
+    f.button('Сохранить сценарий');
+    const draft=f.requests.at(-1)!.scenario as state.Scenario;
+    assert.equal(draft.phrases.length,40);assert.equal(draft.confirmation,'auto');assert.ok(draft.triggers.some(t=>t.kind==='voice'));
+    assert.equal(draft.actions[0].capability,'mac.brightness');assert.equal(draft.actions[0].parameters.level,27);
+    assert.equal(f.requests.some(r=>r.op==='run'||r.op==='capture'),false);
+  }finally{await f.window.happyDOM.close();}
+});
+
+test('list switch preserves revisions without opening the editor; menu duplicates the saved command', async()=>{
+  const f=fixture();try {
+    const saved={...state.newScenario(),id:'d'.repeat(32),revision:4,name:'Тихий вечер',phrases:['Давай отдыхать'],actions:[{...state.newBlock('action','mac.brightness'),parameters:{level:20}}]};
+    f.view.receive({...f.data,scenarios:[saved]});
+    const toggle=f.window.document.querySelector('.scenario-list [role="switch"]')! as unknown as HTMLButtonElement;toggle.click();
+    const changed=f.requests.at(-1)!.scenario as state.Scenario;assert.equal(changed.enabled,false);assert.equal(changed.revision,4);assert.equal(changed.phrases[0],'Давай отдыхать');
+    f.view.receive({...f.data,scenarios:[{...changed,revision:5}],saved:saved.id});
+    assert.equal(f.window.document.querySelector('.scenario-layout')!.getAttribute('data-editing'),'false');
+    assert.equal(f.window.document.querySelector('.scenario-list [role="switch"]')!.getAttribute('aria-checked'),'false');
+    disclosure(f,'.scenario-menu');f.button('Дублировать');assert.deepEqual(f.requests.at(-1),{op:'copy',id:saved.id});
+    const copy={...changed,id:'e'.repeat(32),revision:1,name:'Тихий вечер (копия)',phrases:[]};
+    f.view.receive({...f.data,scenarios:[saved,copy],saved:copy.id});assert.equal(f.field('Название').value,copy.name);
+  }finally{await f.window.happyDOM.close();}
+});
+
+test('training belongs to the draft and conflicts are explained without discarding edits', async()=>{
+  const f=fixture();try {
+    f.button('Новый сценарий');f.fill('Название','Домой');disclosure(f,'.phrase-training');
+    const input=f.field('Новая фраза');input.value='Я вернулась';input.dispatchEvent(new f.window.Event('input') as unknown as Event);
+    f.button('Проверить понимание');assert.deepEqual(f.requests.at(-1),{op:'recognize',text:'Я вернулась'});
+    f.view.receive({...f.data,recognition:{scenario_id:null,confidence:.3,method:'semantic',candidates:[]}});
+    assert.match(f.window.document.querySelector('.scenario-recognition')!.textContent,/Добавь её к сценарию/);
+    assert.doesNotMatch(f.window.document.querySelector('.scenario-recognition')!.textContent,/confidence|semantic|%|embedding/i);
+    f.button('Добавить к фразам');f.submit();const draft=f.requests.at(-1)!.scenario as state.Scenario;assert.deepEqual(draft.phrases,['Я вернулась']);
+    assert.equal(f.requests.some(r=>r.op==='teach'||r.op==='capture'),false);
+    f.view.receive({...f.data,error:'Фраза уже используется другой командой: internal-id'});
+    const feedback=f.window.document.querySelector('.automations-page > .scenario-feedback')!;assert.match(feedback.firstElementChild!.textContent,/Измени её/);
+    assert.equal(feedback.querySelector('details')!.open,false);assert.equal(f.field('Название').value,'Домой');
+    f.submit();assert.equal(f.requests.at(-1)!.op,'save');
+  }finally{await f.window.happyDOM.close();}
+});
+
+test('device summaries and permission statuses hide technical diagnostics', async()=>{
+  const f=fixture();try {
+    f.view.receive({...f.data,devices:[{id:'mac',name:'MacBook',type:'system',status:'not_checked',actions:['mac.brightness'],permissions:[],note:'Описание подключения',details:{uuid:'test-device-uuid'}}],permissions:{scope:'test scope',items:[{id:'automation',name:'Управление приложениями',status:'unknown',note:'OSStatus -1744 test diagnostic',url:'x-apple.systempreferences:test'},{id:'bluetooth',name:'Bluetooth',status:'granted',note:'',url:''},{id:'other',name:'Другое',status:'unsupported',note:'',url:''}]}});
+    const row=f.window.document.querySelector('.device-row')!;
+    assert.equal(row.open,false);assert.match(row.querySelector('summary')!.textContent,/MacBook.*Яркость MacBook.*не проверено/);
+    assert.doesNotMatch(row.querySelector('summary')!.textContent,/uuid|mac\.brightness|OSStatus/);
+    const permissions=f.window.document.querySelector('.permission-list')!;
+    assert.deepEqual([...permissions.querySelectorAll('small')].map(n=>n.textContent),['Требуется доступ','Разрешено','Недоступно']);
+    assert.equal(permissions.querySelector('details')!.open,false);
+    assert.equal(permissions.querySelectorAll('a').length,1);
+    assert.ok(f.window.document.querySelector('.performance-page .scenario-history'));
+    assert.equal(f.window.document.querySelector('.automations-page .scenario-history'),null);
+  }finally{await f.window.happyDOM.close();}
+});
+
+test('reopening saved actions keeps rows compact, supports reorder and preserves nested settings', async()=>{
+  const f=fixture();try {
+    const saved={...state.newScenario(),id:'f'.repeat(32),revision:2,name:'Вечер',actions:[{...state.newBlock('action','mac.brightness'),parameters:{level:20}},{...state.newBlock('delay'),seconds:5}],variables:[{name:'level',kind:'number' as const,default:20}]};
+    f.view.receive({...f.data,scenarios:[saved]});(f.window.document.querySelector('.scenario-open')! as unknown as HTMLButtonElement).click();
+    const rows=[...f.window.document.querySelectorAll('.scenario-block')];assert.equal(rows.length,2);assert.ok(rows.every(row=>!row.open));
+    disclosure(f,'.scenario-block');f.button('↓',rows[0] as unknown as ParentNode);f.submit();
+    const draft=f.requests.at(-1)!.scenario as state.Scenario;assert.equal(draft.actions[0].kind,'delay');assert.equal(draft.actions[1].parameters.level,20);assert.equal(draft.variables[0].name,'level');
+    f.view.connection(false);assert.equal((f.window.document.querySelector('.editor-save .primary') as unknown as HTMLButtonElement).disabled,true);
+    f.view.connection(true);assert.equal((f.window.document.querySelector('.scenario-block .action-controls button') as unknown as HTMLButtonElement).disabled,true);
+  }finally{await f.window.happyDOM.close();}
+});
+
+test('primary navigation selects its parent and keeps chat history and memory reachable',async()=>{
+  const f=fixture();try {
+    const destinations=['home','automations','devices','performance','settings'];
+    for(const view of destinations){
+      (f.window.document.querySelector(`.workspace-nav [data-view="${view}"]`)! as unknown as HTMLButtonElement).click();
+      assert.equal(f.window.document.querySelector('.hud')!.getAttribute('data-view'),view);
+      assert.equal(f.window.document.querySelector('.workspace-nav [aria-current]')!.getAttribute('data-view'),view);
+    }
+    for(const [view,parent] of [['history','home'],['calendar','home'],['day','home'],['memory','settings'],['diagnostics','performance']]) {
+      f.workspace.navigate(view);assert.equal(f.window.document.querySelector('.workspace-nav [aria-current]')!.getAttribute('data-view'),parent);
+    }
+    assert.ok(f.window.document.querySelector('.hud > .chat-navigation [data-go="history"]'));
+    assert.ok(f.window.document.querySelector('.settings-page [data-go="memory"]'));
+    assert.equal(f.window.document.querySelector('.talk .chat-navigation'),null);
+  }finally{await f.window.happyDOM.close();}
+});
+
+test('disabled copies explain voice availability and can be enabled in advanced settings',async()=>{
+  const f=fixture();try {
+    const copy={...state.newScenario(),id:'a'.repeat(32),revision:1,enabled:false,name:'Копия'};
+    f.view.receive({...f.data,scenarios:[copy],saved:copy.id});
+    assert.match(f.window.document.querySelector('.editor-save > p')!.textContent,/Сценарий выключен/);
+    disclosure(f,'.editor-advanced');
+    const enabled=f.field('Сценарий включён');enabled.checked=true;enabled.dispatchEvent(new f.window.Event('change') as unknown as Event);
+    f.submit();assert.equal((f.requests.at(-1)!.scenario as state.Scenario).enabled,true);
+    assert.ok(f.window.document.querySelector('.settings-page #settings-items')!.closest('details')!.querySelector('#autostart'));
+    assert.equal(f.window.document.querySelector('.hud > .bottom'),null);
+  }finally{await f.window.happyDOM.close();}
+});
+
+test('choosing a registered device action opens its real parameter form without running it',async()=>{
+  const f=fixture();try {
+    f.view.receive({...f.data,devices:[{id:'mac',name:'MacBook',type:'system',status:'connected',actions:['mac.brightness'],permissions:[],note:''}]});
+    disclosure(f,'.device-row');f.button('Яркость MacBook',f.window.document.querySelector('.device-detail')! as unknown as ParentNode);
+    assert.equal(f.window.document.querySelector('.hud')!.getAttribute('data-view'),'automations');
+    assert.equal(f.field('Название').value,'Яркость MacBook');f.fill('Уровень, % *','42');f.button('Безопасный тест');
+    assert.equal(f.requests.at(-1)!.op,'preview');const draft=f.requests.at(-1)!.scenario as state.Scenario;assert.equal(draft.actions[0].capability,'mac.brightness');assert.equal(draft.actions[0].parameters.level,42);
+    assert.equal(f.requests.some(r=>r.op==='run'||r.op==='probe'),false);
+  }finally{await f.window.happyDOM.close();}
+});
+
+test('LED colour and approved Shortcut use typed controls and retain the real Shortcut name',async()=>{
+  const f=fixture();try {
+    const data={...f.data,capabilities:[...f.data.capabilities,{id:'led.set',name:'Питание, цвет и яркость ленты',device:'led',description:'',parameters:{color:{type:'string',pattern:'#[0-9A-F]{6}'},brightness:{type:'integer',minimum:0,maximum:100}},required:[],permissions:['bluetooth'],risk:'state_change',availability:'not_checked'},{id:'shortcut.run',name:'Запустить разрешённую Shortcut',device:'shortcuts',description:'',parameters:{name:{type:'string',enum:['Youtube sleep']}},required:['name'],permissions:['shortcuts'],risk:'depends_on_parameters',availability:'not_checked'}]};
+    f.view.receive(data);f.button('Новый сценарий');f.fill('Название','Свет');f.button('Установить цвет и яркость');
+    const color=f.field('Цвет');assert.equal(color.type,'color');color.value='#ff3040';color.dispatchEvent(new f.window.Event('input') as unknown as Event);
+    f.fill('Яркость, %','15');f.button('Запустить команду');
+    const name=f.field('Название *');assert.equal(name.tagName,'SELECT');name.value='Youtube sleep';name.dispatchEvent(new f.window.Event('change') as unknown as Event);
+    f.submit();const draft=f.requests.at(-1)!.scenario as state.Scenario;assert.deepEqual(draft.actions[0].parameters,{color:'#FF3040',brightness:15});assert.equal(draft.actions[1].parameters.name,'Youtube sleep');
+    const saved={...draft,id:'b'.repeat(32),revision:1,actions:[draft.actions[0],{...draft.actions[1],parameters:{name:'youtube sleep'}}]};
+    f.view.receive({...data,scenarios:[saved],saved:saved.id});f.button('Безопасный тест');
+    assert.equal((f.requests.at(-1)!.scenario as state.Scenario).actions[1].parameters.name,'Youtube sleep');
+    assert.equal(f.requests.some(r=>r.op==='run'),false);
   }finally{await f.window.happyDOM.close();}
 });

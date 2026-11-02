@@ -3,6 +3,7 @@ import {AutomationsView} from './automations';
 import "./style.css";
 import "./workspace.css";
 import './dashboard.css';
+import './simple_workspace.css';
 import { Workspace } from "./workspace";
 import { PerformancePanel } from './performance';
 

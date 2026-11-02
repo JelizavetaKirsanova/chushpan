@@ -1,0 +1,25 @@
+/* Shared shell: five destinations, quiet surfaces and progressive disclosure. */
+.hud:not([data-view=home]):not([data-ambient=true]) { grid-template-columns:200px minmax(0,1fr); }
+.hud .workspace-page { background:#1d1923;padding:38px clamp(24px,4vw,64px) 60px;min-width:0; }
+.workspace-nav { background:#211c28;border-right-color:#ffffff09;gap:5px; }
+.workspace-nav button[aria-current] { background:#b897d51c;border-color:transparent;box-shadow:none; }
+.workspace-nav>button { border-radius:8px; }
+.workspace-page .page-heading small { display:none; }.workspace-page .page-heading h1 { font-size:29px;letter-spacing:-.7px;font-weight:600;margin:0 0 10px; }.workspace-page .page-heading p { color:#ac9eb7;margin:0 0 28px;font-size:13px; }
+.hud .workspace-page button.primary { background:#b494c8;border-color:#b494c8;color:#211725;box-shadow:none;font-weight:550; }
+.automations-page>.page-toolbar { justify-content:space-between;gap:14px;max-width:880px;width:100%;margin:0 auto 20px; }.automations-page>.page-toolbar input { max-width:340px;flex:1; }.automations-page>.page-toolbar button { white-space:nowrap; }
+.hud .settings-page>.settings-card { background:transparent;border:0;border-bottom:1px solid #ffffff0d;border-radius:0;padding:20px 0;margin:0;max-width:880px;box-shadow:none; }.settings-card>summary { font-size:14px;color:#e4dbe9; }.settings-card>form,.settings-card>section { padding:20px 0 4px; }.settings-card>.settings-list { padding-top:16px; }.settings-card>p { font-size:12px;color:#a99bb5; }.settings-page>.dialogue-settings { background:none;border:0; }.settings-page .page-toolbar { margin-bottom:10px; }.settings-page details form input,.settings-page details form select { max-width:100%; }
+.chat-navigation { display:flex;gap:12px;align-items:center;margin-bottom:10px; }.chat-navigation button { border:0;background:none;color:#d4c0e1;font-size:11px;padding:3px 0; }.chat-navigation button:last-child { margin-left:auto;font-size:18px; }.recent-dialogues { margin:0 0 18px;font-size:12px;color:#bda9ce; }.recent-dialogues .recent-heading { display:none; }.recent-dialogues .recent-search { max-width:260px;margin-top:12px; }.recent-dialogues .recent-conversations { max-width:170px;max-height:180px; }.recent-dialogues .recent-conversation { color:#dfd0ea;border:0;background:none;text-align:left;font-size:12px;display:block;padding:8px; }
+@media(min-width:981px) { .hud:not([data-view=home]) .workspace-nav { padding-inline:13px; }.hud:not([data-view=home]) .nav-brand { font-size:17px; } }
+@media(max-width:980px) { .hud:not([data-view=home]):not([data-ambient=true]) { grid-template-columns:72px minmax(0,1fr); }.hud .workspace-page { padding:28px 25px 55px; } }
+@media(max-width:760px) { .hud:not([data-view=home]):not([data-ambient=true]) { height:100dvh;min-height:0;grid-template-columns:62px minmax(0,1fr);grid-template-rows:minmax(0,1fr);overflow:hidden; }.hud:not([data-view=home]) .workspace-nav { position:static;height:auto; }.hud .workspace-page { padding:24px 18px 40px;min-height:0;overflow:auto; }.automations-page>.page-toolbar { align-items:center; }.automations-page>.page-toolbar input { flex-basis:100%;max-width:none; }.automations-page>.page-toolbar .primary { width:100%; }.chat-navigation { gap:9px; } }
+.hud>.chat-navigation { grid-column:2;grid-row:1;align-self:start;justify-self:start;margin:132px 20px 0;z-index:5;padding:8px 12px;border-radius:10px;background:#211b2be0;backdrop-filter:blur(12px); }
+.hud:not([data-view=home])>.chat-navigation,.hud[data-ambient=true]>.chat-navigation { display:none; }
+@media(max-width:760px) { .hud>.chat-navigation { margin-top:128px;gap:14px; } }
+/* Match the visible destination, including pages reached from its local links. */
+.workspace-nav button[aria-current] { background:transparent;border-color:transparent;box-shadow:none; }
+.hud:is([data-view=home],[data-view=history],[data-view=calendar],[data-view=day]) .workspace-nav [data-view=home],
+.hud[data-view=automations] .workspace-nav [data-view=automations],
+.hud[data-view=devices] .workspace-nav [data-view=devices],
+.hud:is([data-view=performance],[data-view=diagnostics]) .workspace-nav [data-view=performance],
+.hud:is([data-view=settings],[data-view=memory]) .workspace-nav [data-view=settings] { background:#b897d52b;border-color:transparent;color:#faf4ff;box-shadow:none; }
+.hud .settings-page .bottom { position:static;display:flex;flex-wrap:wrap;gap:12px;padding:18px 0 0;background:none;border-color:#ffffff0a;margin-top:16px; }
