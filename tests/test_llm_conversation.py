@@ -173,7 +173,9 @@ def test_thinking_reaches_the_tool_followup_but_never_history(tmp_path):
     conv = Conversation(s, OllamaClient(s.llm, client=client), store, tools=registry)
 
     async def go():
-        return "".join([part async for part in conv.reply("Открой Safari")])
+        return "".join(
+            [part async for part in conv.reply("Открой Safari и расскажи о его возможностях")]
+        )
 
     assert asyncio.run(go()) == "Safari открыт."
     assert payloads[1]["messages"][-2]["thinking"] == "private test marker"

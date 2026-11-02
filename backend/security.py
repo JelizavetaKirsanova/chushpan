@@ -280,20 +280,47 @@ def risk_for(name: str, arguments: dict) -> Risk:
     return Risk.READ
 
 
+APP_ALIASES = {
+    "safari": ("сафари",),
+    "finder": ("файндер", "файндере"),
+    "terminal": ("терминал",),
+    "intellij idea": ("intellij", "идея"),
+    "intellij": ("идея",),
+    "textedit": ("текстэдит",),
+    "youtube music": ("ютуб музыка", "ютуб мьюзик"),
+}
+
+
+def local_app_name(text: str) -> str | None:
+    """Only an exact known app name/alias is eligible for a deterministic route."""
+    value = text.casefold().removesuffix(".app").strip()
+    names = {
+        "Safari",
+        "Finder",
+        "Terminal",
+        "TextEdit",
+        "IntelliJ IDEA",
+        "Telegram",
+        "Discord",
+        "Notes",
+        "Calendar",
+        "Calculator",
+    }
+    return next(
+        (
+            name
+            for name in sorted(names)
+            if value in (name.casefold(), *APP_ALIASES.get(name.casefold(), ()))
+        ),
+        None,
+    )
+
+
 def app_mentioned(name: str, text: str) -> bool:
     name = name.casefold().removesuffix(".app").strip()
-    aliases = {
-        "safari": ("сафари",),
-        "finder": ("файндер", "файндере"),
-        "terminal": ("терминал",),
-        "intellij idea": ("intellij", "идея"),
-        "intellij": ("идея",),
-        "textedit": ("текстэдит",),
-        "youtube music": ("ютуб музыка", "ютуб мьюзик"),
-    }
     return bool(name) and any(
         re.search(r"(?<!\w)" + re.escape(alias) + r"(?!\w)", text.casefold())
-        for alias in (name, *aliases.get(name, ()))
+        for alias in (name, *APP_ALIASES.get(name, ()))
     )
 
 

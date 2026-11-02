@@ -130,7 +130,9 @@ async def _volume_settings() -> dict:
     return parse_volume(vol) or {}
 
 
-async def set_volume(level: int | None = None, mute: bool | None = None) -> dict:
+async def set_volume(
+    level: int | None = None, mute: bool | None = None, direction: str | None = None
+) -> dict:
     said = (user_text.get() or "").casefold()
     if re.search(r"музык|песн|трек|youtube|spotify", said) and not re.search(
         r"\bmac\b|маке|мака|системн|компьютер", said
@@ -140,10 +142,18 @@ async def set_volume(level: int | None = None, mute: bool | None = None) -> dict
             "Это громкость Mac. Для музыки вызови media_volume, "
             f"direction={direction!r}; level передавай только при явном проценте."
         )
-    if level is None and mute is None:
+    if direction is not None and (
+        direction not in {"up", "down"} or level is not None or mute is not None
+    ):
+        raise ToolError("Задай либо относительное изменение громкости, либо уровень/mute.")
+    if level is None and mute is None and direction is None:
         raise ToolError("give a level (0-100) or mute true/false")
     before = await _volume_settings()
     current = before.get("volume_percent")
+    if direction:
+        if current is None:
+            raise ToolError("Текущая громкость не прочитана; относительное изменение отменено.")
+        level = max(0, min(100, current + (10 if direction == "up" else -10)))
     if level is not None:
         level = max(0, min(100, int(level)))
     if (mute or level == 0) and current and not before.get("muted"):
@@ -177,7 +187,7 @@ async def open_app(name: str) -> dict:
     code, out = await run("open", "-a", name)
     if code:
         raise ToolError(f"application not found: {name}")
-    return {"ok": True, "opened": name}
+    return {"submitted": True, "opened": name}
 
 
 def system_tools(s: Settings) -> list[Tool]:
@@ -189,7 +199,9 @@ def system_tools(s: Settings) -> list[Tool]:
             raise ToolError("macOS не приняла запрос на открытие YouTube.")
         return {"submitted": True, "message": "Запрос на открытие YouTube передан macOS."}
 
-    async def set_requested_volume(level: int | None = None, mute: bool | None = None) -> dict:
+    async def set_requested_volume(
+        level: int | None = None, mute: bool | None = None, direction: str | None = None
+    ) -> dict:
         said = (user_text.get() or "").casefold()
         if (
             s.media.provider == "youtube_music"
@@ -211,7 +223,7 @@ def system_tools(s: Settings) -> list[Tool]:
             if re.search(r"выключи.{0,15}(?:звук|музык)|заглуши", said):
                 level, direction = 0, ""
             return await MediaService(s).media_volume(direction=direction, level=level)
-        return await set_volume(level, mute)
+        return await set_volume(level, mute, direction)
 
     async def open_requested(name: str) -> dict:
         if name.strip().casefold() in ("youtube music", "ютуб музыка", "ютуб мьюзик"):
@@ -317,6 +329,11 @@ def system_tools(s: Settings) -> list[Tool]:
             parameters={
                 "level": {"type": "integer", "description": "Volume from 0 to 100"},
                 "mute": {"type": "boolean", "description": "true to mute, false to unmute"},
+                "direction": {
+                    "type": "string",
+                    "enum": ["up", "down"],
+                    "description": "Relative change by 10 points; no level or mute",
+                },
             },
             capability=cap,
             reply=volume_reply if s.locale.lang == "ru" else None,

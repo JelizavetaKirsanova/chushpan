@@ -6,6 +6,8 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from backend.latency import PIPELINE_REVISION
+
 SCHEMA = """CREATE TABLE IF NOT EXISTS request_traces (
 request_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, conversation_id INTEGER,
 kind TEXT NOT NULL, status TEXT NOT NULL, first_content_s REAL, total_s REAL,
@@ -14,11 +16,9 @@ CREATE INDEX IF NOT EXISTS idx_trace_created ON request_traces(created_at);
 """
 
 
-def aggregate(rows):
+def aggregate(rows, metric="first_content_s"):
     samples = sorted(
-        r["first_content_s"]
-        for r in rows
-        if r["status"] == "completed" and r["first_content_s"] is not None
+        r[metric] for r in rows if r["status"] == "completed" and r.get(metric) is not None
     )
     n = len(samples)
     return {
@@ -26,6 +26,10 @@ def aggregate(rows):
         "measured": n,
         "failed": sum(r["status"] == "failed" for r in rows),
         "cancelled": sum(r["status"] in {"cancelled", "interrupted"} for r in rows),
+        "incomplete": sum(r["status"] in {"unknown", "running"} for r in rows),
+        "rejected": sum(r["status"] == "rejected" for r in rows),
+        "awaiting_confirmation": sum(r["status"] == "awaiting_confirmation" for r in rows),
+        "unmeasured": sum(r["status"] == "completed" and r.get(metric) is None for r in rows),
         "mean_s": sum(samples) / n if n else None,
         "median_s": (samples[(n - 1) // 2] + samples[n // 2]) / 2 if n else None,
         "p95_s": samples[math.ceil(n * 0.95) - 1] if n else None,
@@ -113,7 +117,7 @@ class PerformanceHistory:
         rows = [
             dict(r)
             for r in self.store.db.execute(
-                "SELECT request_id,created_at,kind,status,first_content_s,total_s,provider "
+                "SELECT request_id,created_at,kind,status,first_content_s,total_s,provider,data "
                 "FROM request_traces WHERE created_at>=? AND kind!='activation' "
                 "ORDER BY created_at DESC",
                 (since,),
@@ -121,6 +125,7 @@ class PerformanceHistory:
         ]
         recent = []
         for row in rows:
+            row["metadata"] = json.loads(row.pop("data"))["metadata"]
             if row["status"] == "running" and row["request_id"] not in self.active:
                 row["status"] = "unknown"
         for row in rows[:100]:
@@ -139,14 +144,47 @@ class PerformanceHistory:
             "days": days,
             "summary": aggregate(rows),
             "providers": {
-                p: aggregate([r for r in rows if r["provider"] == p]) for p in ("gemini", "ollama")
+                p: aggregate([r for r in rows if r["provider"] == p])
+                for p in ("gemini", "ollama", None)
             },
+            "kinds": {
+                kind: aggregate([r for r in rows if r["kind"] == kind])
+                for kind in ("voice", "text")
+            },
+            "completion": {
+                kind: aggregate([r for r in rows if r["kind"] == kind], "total_s")
+                for kind in ("voice", "text")
+            },
+            "comparison": {
+                kind: {
+                    label: aggregate(
+                        [
+                            r
+                            for r in rows
+                            if r["kind"] == kind
+                            and (r["metadata"].get("pipeline_revision") == PIPELINE_REVISION)
+                            == is_current
+                        ]
+                    )
+                    for label, is_current in (("before", False), ("after", True))
+                }
+                for kind in ("voice", "text")
+            },
+            "benchmarks": self.benchmarks(),
             "requests": recent,
             "activations": activations,
             "active": max(self.active.values(), key=lambda p: p.origin).snapshot()
             if self.active
             else None,
         }
+
+    def benchmarks(self):
+        from pathlib import Path
+
+        from backend.benchmark_reports import comparison
+
+        path = self.store.db.execute("PRAGMA database_list").fetchone()[2]
+        return comparison(Path(path).parent / "latency-benchmarks") if path else None
 
     def bind(self, bus, timezone):
         self.bus = bus

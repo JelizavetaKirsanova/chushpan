@@ -112,6 +112,37 @@ class BrowserAction(StrictModel):
         return "open_website", {"site": self.parameters.site}
 
 
+class VolumeParameters(StrictModel):
+    level: int | None = Field(default=None, ge=0, le=100)
+    direction: Literal["up", "down"] | None = None
+
+    @model_validator(mode="after")
+    def one_mode(self):
+        if (self.level is None) == (self.direction is None):
+            raise ValueError("Нужен уровень либо направление изменения громкости.")
+        return self
+
+
+class VolumeAction(StrictModel):
+    device: Literal["mac_sound"] = "mac_sound"
+    parameters: VolumeParameters
+
+    def call(self):
+        return "set_volume", self.parameters.model_dump(exclude_none=True)
+
+
+class AppParameters(StrictModel):
+    name: str = Field(min_length=1, max_length=80, pattern=r"^[\w][\w .-]*$")
+
+
+class AppAction(StrictModel):
+    device: Literal["application"] = "application"
+    parameters: AppParameters
+
+    def call(self):
+        return "open_app", {"name": self.parameters.name}
+
+
 class TVParameters(StrictModel):
     volume: Literal["quieter"] = "quieter"
 
@@ -125,7 +156,7 @@ class TVAction(StrictModel):
 
 
 Action = Annotated[
-    LEDAction | DisplayAction | MusicAction | BrowserAction | TVAction,
+    LEDAction | DisplayAction | MusicAction | BrowserAction | TVAction | VolumeAction | AppAction,
     Field(discriminator="device"),
 ]
 
@@ -166,13 +197,13 @@ def led_action(args):
 
 
 def _display(text):
-    if not re.search(r"\b(?:mac|мак|макбука?|экран[ае]?|диспле[йя])\b", text):
+    if not re.search(r"\b(?:mac|macbook|мак|макбука?|экран[ае]?|диспле[йя])\b", text):
         return None
-    if not re.match(r"(?:убавь|уменьши|сделай|поставь|установи)\b", text):
+    if not re.match(r"(?:убавь|уменьши|сделай|поставь|установи|яркость)\b", text):
         return None
     rest = re.sub(
         r"\b(?:убавь|уменьши|сделай|поставь|установи|мне|яркость|яркости|"
-        r"mac|мак|макбука?|экран[ае]?|диспле[йя]|на|до|процентов|процента)\b|%",
+        r"mac|macbook|мак|макбука?|экран[ае]?|диспле[йя]|на|до|процентов|процента)\b|%",
         " ",
         text,
     )
@@ -198,7 +229,9 @@ def _control_target(text):
     text = re.sub(r"^(?:и|а)\s+", "", text.strip())
     text = re.sub(r"^(?:" + "|".join(_VERBS) + r"|открой|запусти)\s+", "", text)
     text = re.sub(r"^(?:мне|мою|мой|моей|эту)\s+", "", text)
-    if re.match(rf"^(?:{_TARGET}|яркост[ьи]|mac|мак|экран[ае]?|телевизор)\b", text):
+    if re.match(
+        rf"^(?:{_TARGET}|яркост[ьи]|mac|macbook|мак|экран[ае]?|телевизор|звук|громкость)\b", text
+    ):
         return True
     words = text.split()
     return any(color_rgb(" ".join(words[:size])) for size in (1, 2, 3))
@@ -213,7 +246,7 @@ def compile_plan(text, *, comfortable_brightness=None):
         return None
     command = command_text(text).replace("ё", "е").strip(".!? ")
     if not re.match(
-        r"^(?:" + "|".join(_VERBS) + rf"|открой|запусти|яркост[ьи]|{_TARGET})\b", command
+        r"^(?:" + "|".join(_VERBS) + rf"|открой|запусти|яркост[ьи]|громкость|{_TARGET})\b", command
     ):
         return None  # Mentioning a color in a fact, quote or question is not control.
     candidate = any(_control_target(part) for part in re.split(r"\s+(?:и|а)\s+|,\s*", command))
@@ -246,6 +279,10 @@ def compile_plan(text, *, comfortable_brightness=None):
         return ControlPlan(
             actions=[DisplayAction(parameters=Brightness(brightness=legacy[1]["level"]))]
         )
+    if legacy and legacy[0] == "set_volume":
+        return ControlPlan(actions=[VolumeAction(parameters=VolumeParameters(**legacy[1]))])
+    if legacy and legacy[0] == "open_app":
+        return ControlPlan(actions=[AppAction(parameters=AppParameters(**legacy[1]))])
     if re.fullmatch(r"(?:сделай )?телевизор потише|убавь громкость телевизора", command):
         return ControlPlan(actions=[TVAction()])
     parts = [
@@ -279,6 +316,12 @@ def compile_plan(text, *, comfortable_brightness=None):
             routed = route(part)
             if routed and routed[0] == "open_website":
                 action = BrowserAction()
+            elif routed and routed[0] == "set_volume":
+                action = VolumeAction(parameters=VolumeParameters(**routed[1]))
+            elif routed and routed[0] == "set_brightness":
+                action = DisplayAction(parameters=Brightness(brightness=routed[1]["level"]))
+            elif routed and routed[0] == "open_app":
+                action = AppAction(parameters=AppParameters(**routed[1]))
             else:
                 part = re.sub(r"^музыку (включи|поставь)$", r"\1 музыку", part)
                 if music_parse(part):
@@ -339,8 +382,18 @@ class ControlSession:
             if self.binding != binding or self.clock() >= self.expires or self.device is None:
                 return ControlPlan(clarification="Для какого устройства изменить яркость?")
             rest = re.sub(r"^(?:нет[, ]+лучше|лучше|и яркость)\s*", "", value)
-            target = "ленты" if self.device == "led_strip" else "Mac"
-            text = f"Поставь яркость {target} {rest}"
+            if self.device == "mac_sound":
+                text = f"Поставь громкость {rest}"
+            else:
+                target = "ленты" if self.device == "led_strip" else "Mac"
+                text = f"Поставь яркость {target} {rest}"
+        if (
+            self.device == "mac_sound"
+            and self.binding == binding
+            and self.clock() < self.expires
+            and re.fullmatch(r"(?:еще |ещё )?(?:по)?(?:тише|громче)", value)
+        ):
+            text = "Сделай звук " + ("тише" if "тише" in value else "громче")
         try:
             return compile_plan(text, comfortable_brightness=comfortable_brightness)
         except ValueError:
@@ -442,6 +495,10 @@ class ControlSession:
                     or result.get("physical_confirmed")
                     or name == "set_brightness"
                     and result.get("level") == arguments.get("level")
+                    or name == "set_volume"
+                    and result.get("ok") is True
+                    and isinstance(result.get("volume_percent"), int)
+                    and ("level" not in arguments or result["volume_percent"] == arguments["level"])
                     or name == "music_command"
                     and result.get("ok")
                     and (
@@ -469,7 +526,7 @@ class ControlSession:
         if (
             len(plan.actions) == 1
             and good
-            and plan.actions[0].device in {"led_strip", "mac_display"}
+            and plan.actions[0].device in {"led_strip", "mac_display", "mac_sound"}
         ):
             self.device, self.expires, self.binding = (
                 plan.actions[0].device,

@@ -157,6 +157,50 @@ def estimated_tokens(value):
     return (len(text.encode("utf-8")) + 3) // 4
 
 
+def older_dialogue_excerpt(history, query, max_chars=1200):
+    """Extractive summary, never an invented fact or an additional model request.
+
+    Tool payloads and instructions are not promoted to a system message. Keep a
+    few original question/answer fragments; the full originals remain in SQLite.
+    """
+    words = set(re.findall(r"[а-яёa-z]{4,}", query.casefold()))
+    turns, current = [], []
+    for row in history:
+        if row["role"] == "user":
+            if current:
+                turns.append(current)
+            current = []
+        if row["role"] in {"user", "assistant"} and row.get("content"):
+            current.append(row)
+    if current:
+        turns.append(current)
+    ranked = sorted(
+        enumerate(turns),
+        key=lambda item: (
+            len(
+                words
+                & set(
+                    re.findall(
+                        r"[а-яёa-z]{4,}", " ".join(row["content"] for row in item[1]).casefold()
+                    )
+                )
+            ),
+            item[0],
+        ),
+        reverse=True,
+    )[:2]
+    lines = []
+    for _, turn in sorted(ranked):
+        for row in turn:
+            label = "Пользователь" if row["role"] == "user" else "Ассистент"
+            content = " ".join(row["content"].split())
+            fragment = content[:240]
+            if len(content) > 240:
+                fragment = fragment.rsplit(" ", 1)[0] + "…"
+            lines.append(f"{label}: {fragment}")
+    return "\n".join(lines)[:max_chars]
+
+
 def fit_local_context(messages, tools, num_ctx):
     """Keep system/current tool round intact; trim only older complete turns."""
     if not messages:

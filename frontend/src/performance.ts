@@ -9,11 +9,16 @@ export type RequestTrace = {request_id: string; created_at: string; kind: string
   marks: Record<string, number>; metadata: Record<string, string | number | boolean | null>;
   errors: string[]; stages: TimingStage[]};
 export type TraceSummary = {count: number; measured: number; failed: number; cancelled: number;
+  incomplete?: number; rejected?: number; awaiting_confirmation?: number; unmeasured?: number;
   mean_s: number | null; median_s: number | null; p95_s: number | null; max_s: number | null;
   over: Record<string, number | null>};
 export type TraceRow = Pick<RequestTrace, 'request_id' | 'created_at' | 'kind' | 'status' | 'total_s' | 'first_content_s' | 'metadata'>;
+type BenchmarkSummary = {summary: TraceSummary; categories: Record<string, TraceSummary>; configuration: {model: string; num_ctx: number}};
 export type PerformanceEvent = {type: 'performance_live' | 'performance_detail'; trace: RequestTrace | null}
-  | {type: 'performance_stats'; days: number; summary: TraceSummary; providers: Record<string, TraceSummary>; requests: TraceRow[]; active?: RequestTrace | null; activations?: RequestTrace[]}
+  | {type: 'performance_stats'; days: number; summary: TraceSummary; providers: Record<string, TraceSummary>; requests: TraceRow[]; active?: RequestTrace | null; activations?: RequestTrace[];
+     kinds?: Record<string, TraceSummary>; completion?: Record<string, TraceSummary>;
+     comparison?: Record<string, {before: TraceSummary; after: TraceSummary}>;
+     benchmarks?: {before: BenchmarkSummary; after: BenchmarkSummary} | null}
   | {type: 'performance_error'; message: string};
 
 const labels: Record<string, string> = {reply_queue: 'Ожидание очереди ответа', stt: 'Распознавание речи', local_routing: 'Маршрутизация',
@@ -21,7 +26,8 @@ const labels: Record<string, string> = {reply_queue: 'Ожидание очер�
   led_normalization: 'Нормализация команды подсветки', led_intent: 'Намерение подсветки', led_selection: 'Выбор инструмента LED', led_authorization: 'Разрешение на подсветку', led_request: 'Запрос к ленте', ble_connect: 'Подключение BLE', ble_write: 'Запись BLE', led_delivery: 'Отправка команды LED', led_result: 'Результат подсветки', led_reply: 'Ответ о подсветке',
   context_memory: 'Память и контекст', model_retry: 'Повтор после проверки ответа', model_total: 'Поток ответа LLM', llm_attempt: 'Попытка запроса', llm_transport: 'Поток Ollama', model_thinking: 'Обдумывание модели',
   tool_execution: 'Инструмент', tts_queue: 'Очередь TTS', tts_model_ready: 'Подготовка голоса',
-  tts_generation: 'Синтез звука', tts_playback: 'Озвучка ответа', waiting_playback: 'Реплика ожидания',
+  tts_text_preparation: 'Подготовка текста и произношения', tts_generation: 'Синтез звука', tts_playback: 'Озвучка ответа', waiting_playback: 'Реплика ожидания',
+  gemini_first_event: 'Gemini: сеть и ожидание первого события', gemini_stream_total: 'Gemini: весь поток',
   model_first_text: 'LLM: первое содержимое', model_first_chunk: 'LLM: первый результат',
   provider_first_chunk: 'Провайдер: первый результат', vad_wait: 'Определение конца речи',
   wake_detection: 'Распознавание обращения', local_execution: 'Локальная команда',
@@ -38,6 +44,7 @@ function el(tag: string, value = '', cls = ''): HTMLElement {
 
 export class PerformancePanel {
   private days = 1;
+  private kind = 'voice';
   private online = false;
   private live: RequestTrace | null = null;
   private selected: RequestTrace | null = null;
@@ -50,6 +57,9 @@ export class PerformancePanel {
       this.days = Number((e.target as HTMLSelectElement).value); this.refresh();
     });
     node('performance-refresh').addEventListener('click', () => this.refresh());
+    node('performance-kind').addEventListener('change', e => {
+      this.kind = (e.target as HTMLSelectElement).value; this.refresh();
+    });
     setInterval(() => this.tick(), 200);
   }
   connection(online: boolean): void {
@@ -98,17 +108,34 @@ export class PerformancePanel {
           this.live = null; node('performance-live').textContent = 'Активных запросов нет.';
         }
       }
-      const s = event.summary;
+      const s = event.kinds?.[this.kind] ?? event.summary;
       node('performance-summary').replaceChildren(...[
         ['Средний отклик', seconds(s.mean_s)], ['Медиана', seconds(s.median_s)],
         ['p95', seconds(s.p95_s)], ['Самый долгий отклик', seconds(s.max_s)],
-        ['Запросов', String(s.count)], ['Ошибки запросов / отмены', `${s.failed} / ${s.cancelled}`],
+        ['Запросов', String(s.count)], ['Ошибки / отмены / незавершённые', `${s.failed} / ${s.cancelled} / ${s.incomplete ?? 0}`],
         ...[5, 10, 15].map(t => [`Дольше ${t} с`, s.over[String(t)] == null ? '—' : `${s.over[String(t)]!.toFixed(1)} %`]),
       ].map(([label, value]) => { const n = el('div', '', 'perf-card'); n.append(el('small', label), el('strong', value)); return n; }));
-      node('performance-samples').textContent = `Отклик — до содержательного звука для голоса, до текста для чата. ${s.measured} измеренных завершённых ответов. Ошибки, отмены и отсутствие звука не заменяются нулём. Последние 100 запросов ниже.`;
+      node('performance-samples').textContent = `Отклик — до содержательного звука для голоса, до текста для чата. ${s.measured} измеренных завершённых ответов. Без измерения: ${s.unmeasured ?? 0}; отклонено: ${s.rejected ?? 0}; ждут подтверждения: ${s.awaiting_confirmation ?? 0}. Полное завершение ${seconds(event.completion?.[this.kind]?.median_s)} (p50), включая озвучку; отдельно от отклика. Ошибки и отмены не заменяются нулём.`;
       node('performance-providers').replaceChildren(...Object.entries(event.providers).map(([p, v]) =>
-        el('p', `${p === 'gemini' ? 'Gemini' : 'Ollama'}: ${v.count} запросов · средний ${seconds(v.mean_s)} · p95 ${seconds(v.p95_s)}`)));
-      node('performance-requests').replaceChildren(...event.requests.map(row => {
+        el('p', `${p === 'gemini' ? 'Gemini' : p === 'ollama' ? 'Ollama' : 'Без LLM'} (все виды ввода): ${v.count} запросов · средний ${seconds(v.mean_s)} · p95 ${seconds(v.p95_s)}`)));
+      const statsLine = (label: string, value: TraceSummary) => el('p', `${label}: p50 ${seconds(value.median_s)} · p95 ${seconds(value.p95_s)} · среднее ${seconds(value.mean_s)} · максимум ${seconds(value.max_s)} · ${value.measured}/${value.count} измерено; ошибки ${value.failed}, отмены ${value.cancelled}, незавершённые ${value.incomplete ?? 0}, отклонено ${value.rejected ?? 0}`);
+      const comparison = node('performance-comparison');
+      comparison.replaceChildren(el('h3', 'Запросы в приложении'), el('p', 'Период и вид ввода выбраны выше. До / после обновления тракта; состав запросов может различаться.', 'perf-note'));
+      const cohorts = event.comparison?.[this.kind];
+      if (cohorts) comparison.append(statsLine('До', cohorts.before), statsLine('После', cohorts.after));
+      const bench = node('performance-benchmarks');
+      bench.replaceChildren(el('h3', 'Контрольный локальный прогон'));
+      if (event.benchmarks) {
+        bench.append(el('p', 'Одинаковый набор запросов. Реальные LLM и Silero; инструменты заменены стендом. Измеряется готовность PCM, без микрофона и воспроизведения. Эти значения не входят в статистику слышимого ответа.', 'perf-note'),
+          statsLine('До', event.benchmarks.before.summary), statsLine('После', event.benchmarks.after.summary));
+        const categories: Record<string,string> = {led:'Подсветка',brightness:'Яркость',volume:'Громкость',app:'Приложение',compound:'Составная команда',scenario:'Сценарий',dialogue:'Диалог',explanation:'Объяснение',context:'Контекст',long_answer:'Длинный ответ',device_error:'Ошибка устройства'};
+        for (const [key, after] of Object.entries(event.benchmarks.after.categories)) {
+          const before = event.benchmarks.before.categories[key];
+          bench.append(el('p', `${categories[key] ?? key}: p50 ${seconds(before?.median_s)} → ${seconds(after.median_s)} · p95 ${seconds(before?.p95_s)} → ${seconds(after.p95_s)} · измерено ${before?.measured ?? 0} → ${after.measured}`));
+        }
+        bench.append(el('p', `Модель: ${event.benchmarks.after.configuration.model} · контекст ${event.benchmarks.after.configuration.num_ctx}. Холодная загрузка учитывается в отчёте отдельно.`, 'perf-note'));
+      } else bench.append(el('p', 'Пара сопоставимых контрольных прогонов пока не сохранена.', 'perf-note'));
+      node('performance-requests').replaceChildren(...event.requests.filter(row => row.kind === this.kind).map(row => {
         const button = el('button', '', 'perf-request') as HTMLButtonElement;
         const slow = row.first_content_s != null && row.first_content_s > 5;
         button.append(el('span', `${new Date(row.created_at).toLocaleString()} · ${row.kind === 'voice' ? 'Голос' : 'Текст'}${row.metadata.input_mode === 'replay' ? ' · запись' : ''}`),
@@ -144,9 +171,11 @@ export class PerformancePanel {
     heading.append(el('h2', `Запрос ${trace.request_id.slice(0, 8)}`),
       el('p', `${statuses[trace.status] ?? trace.status} · отклик ${seconds(trace.first_content_s)} · всего ${seconds(trace.total_s)}`),
       el('p', `${trace.metadata.provider ?? 'Локально'} · ${trace.metadata.model ?? 'Без LLM'} · обдумывание: ${trace.metadata.thinking == null ? '—' : trace.metadata.thinking ? 'включено' : 'выключено'}`),
+      el('p', `Маршрут: ${trace.metadata.route ?? 'Не измерен'} · тип: ${trace.metadata.request_class ?? 'Не измерен'} · причина переключения: ${reasons[String(trace.metadata.reason)] ?? trace.metadata.reason ?? '—'}`),
       el('p', `LLM: до первого токена ${seconds(ttft)} · весь цикл ${seconds(model ? timeline(model, duration).seconds : null)}`),
       el('p', `Первый звук: ${seconds(trace.first_audio_s ?? trace.marks.first_audio)} · содержательная речь: ${seconds(trace.first_content_s)} · пауза после ожидания: ${seconds(waitingGap)} · паузы между фрагментами: ${seconds(trace.stages.filter(s=>s.stage==='playback_gap').reduce((sum,s)=>sum+s.seconds,0))}`),
       el('p', `Токены: вход ${trace.metadata.prompt_eval_count ?? '—'}, выход ${trace.metadata.eval_count ?? '—'} · fallback: ${trace.metadata.fallback ? 'да' : 'нет'} · повторы: ${trace.metadata.retry ?? 0}`),
+      el('p', `Контекст: ${trace.metadata.context_messages ?? '—'} сообщений · ${trace.metadata.context_chars ?? '—'} символов · оценка ${trace.metadata.context_estimated_tokens ?? '—'} токенов · генерация ${typeof trace.metadata.tokens_per_second === 'number' ? trace.metadata.tokens_per_second.toFixed(1) : '—'} токенов/с`),
       el('p', `Самый длительный этап всего ответа: ${longest ? labels[longest.stage] ?? longest.stage : '—'}. Строки используют общую шкалу: пересекающиеся интервалы не суммируются.`));
     if (trace.kind === 'activation') {
       heading.append(el('p', `Whisper: logprob ${trace.metadata.min_avg_logprob ?? '—'} · no_speech_prob ${trace.metadata.max_no_speech_prob ?? '—'} · compression_ratio ${trace.metadata.max_compression_ratio ?? '—'}. Значения движка, без выдуманной вероятности обращения.`));

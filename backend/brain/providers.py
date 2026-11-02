@@ -153,6 +153,15 @@ class GeminiClient:
         return "\n\n".join(system), contents
 
     async def chat_stream(self, messages: list[Message], tools=None) -> AsyncIterator[ChatChunk]:
+        started = time.perf_counter()
+        if profile := current.get():
+            from backend.brain.followups import estimated_tokens
+
+            profile.update(
+                context_chars=sum(len(m.get("content") or "") for m in messages),
+                context_estimated_tokens=estimated_tokens(messages),
+                context_messages=len(messages),
+            )
         system, contents = self._messages(messages)
         declarations = [
             types.FunctionDeclaration(
@@ -206,6 +215,7 @@ class GeminiClient:
                             parts = candidate.content.parts if candidate.content else []
                             if wire_first and any(p.text or p.function_call for p in parts or []):
                                 wire_first = False
+                                record("gemini_first_event", time.perf_counter() - started)
                                 if profile := current.get():
                                     profile.mark("first_llm_token")
                                 if progress := _wire_progress.get():
@@ -245,6 +255,7 @@ class GeminiClient:
                         if not emitted and not calls:
                             raise LLMError("Gemini вернул пустой потоковый ответ.")
                         usage = last_response.usage_metadata if last_response else None
+                        record("gemini_stream_total", time.perf_counter() - started)
                         yield ChatChunk(
                             content="" if stream_text else "".join(buffered_text),
                             done=True,
@@ -460,7 +471,16 @@ class FallbackClient:
                 if secondary:
                     candidates.append(self.secondary)
                 candidates.append(self.local)
-        cloud_deadline = time.perf_counter() + self.primary.cfg.timeout_s
+        simple = bool(context and tools == [] and simple_request(context.text) and not after_tool)
+        # Bound the entire wait for a first usable result, rather than paying a
+        # full timeout for every cloud model. Once text arrives, idle timeout
+        # governs streaming. Pinned signed tool rounds retain their full budget.
+        budget = self.primary.cfg.timeout_s
+        if pinned is None:
+            budget = min(budget, self.primary.cfg.first_result_budget_s)
+            if simple:
+                budget = min(budget, self.primary.cfg.simple_timeout_s)
+        cloud_deadline = time.perf_counter() + budget
         for index, candidate in enumerate(candidates):
             attempt_started = time.perf_counter()
             succeeded = False

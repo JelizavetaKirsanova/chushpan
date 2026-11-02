@@ -38,6 +38,7 @@ class UtteranceSegmenter:
         self.start_frames = frames_for(cfg.start_ms)
         self.min_speech_frames = frames_for(cfg.min_speech_ms)
         self.silence_frames = frames_for(cfg.silence_ms)
+        self.adaptive_endpoint = cfg.adaptive_endpoint
         self.max_frames = frames_for(cfg.max_utterance_s * 1000)
         self.tail_frames = frames_for(cfg.tail_ms) if cfg.tail_ms else 0
         self._preroll: deque[np.ndarray] = deque(
@@ -52,6 +53,22 @@ class UtteranceSegmenter:
         self._run = 0
         self._speech = 0
         self._silence = 0
+        self._longest_pause = 0
+
+    @property
+    def endpoint_frames(self):
+        if not self.adaptive_endpoint:
+            return self.silence_frames
+        # Never shorten the user's configured pause. Deliberate longer speech
+        # and previously observed pauses get more room; quiet syllables continue
+        # to use release hysteresis. Hard maximum remains max_utterance_s.
+        extra = frames_for(200) if self._speech * FRAME_MS >= 3000 else 0
+        return max(
+            self.silence_frames,
+            min(
+                frames_for(1100), max(self.silence_frames + extra, round(self._longest_pause * 1.5))
+            ),
+        )
 
     def process(self, frame: np.ndarray, prob: float) -> SegmentEvent:
         if not self.in_speech:
@@ -67,13 +84,15 @@ class UtteranceSegmenter:
 
         self._frames.append(frame)
         if prob >= self.release:
+            self._longest_pause = max(self._longest_pause, self._silence)
             self._silence = 0
             if prob >= self.threshold:
                 self._speech += 1
         else:
             self._silence += 1
 
-        if self._silence >= self.silence_frames or len(self._frames) >= self.max_frames:
+        endpoint = self.endpoint_frames
+        if self._silence >= endpoint or len(self._frames) >= self.max_frames:
             frames, speech, silence = self._frames, self._speech, self._silence
             self.reset()
             if speech < self.min_speech_frames:
@@ -81,7 +100,7 @@ class UtteranceSegmenter:
             keep = len(frames) - max(0, silence - self.tail_frames)
             return SegmentEvent(
                 utterance=np.concatenate(frames[:keep]),
-                end_reason="silence" if silence >= self.silence_frames else "max_duration",
+                end_reason="silence" if silence >= endpoint else "max_duration",
                 onset_at_buffer_start=len(frames) == speech + silence,
                 silence_s=silence * FRAME_MS / 1000,
                 speech_ms=speech * FRAME_MS,

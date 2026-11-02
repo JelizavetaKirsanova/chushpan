@@ -113,7 +113,19 @@ class Tool:
         planned = (
             context is not None
             and risk != Risk.DANGEROUS
-            and self.name in {"led_control", "set_brightness", "music_command", "open_website"}
+            and self.name
+            in {
+                "led_control",
+                "set_brightness",
+                "set_volume",
+                "open_app",
+                "music_command",
+                "open_website",
+            }
+            # New routes preserve any tool-specific veto. Standard volume/app
+            # tools use the default guard; this exact validated grant authorizes
+            # only their requested compound step or bound follow-up.
+            and (self.name not in {"set_volume", "open_app"} or self.intent is None)
             and planned_operation.get()
             == (context.request_id, self.name, json.dumps(args, sort_keys=True))
         )

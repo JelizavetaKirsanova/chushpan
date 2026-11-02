@@ -13,7 +13,16 @@ from uuid import uuid4
 from backend.brain.privacy import contains_secret
 
 _SAFE = re.compile(r"^[A-Za-z0-9_.:/-]{1,120}$")
+PIPELINE_REVISION = "2026-11-low-latency"
 _META = {
+    "pipeline_revision",
+    "route",
+    "request_class",
+    "context_chars",
+    "context_estimated_tokens",
+    "context_messages",
+    "tool_schema_chars",
+    "tokens_per_second",
     "provider",
     "model",
     "tool",
@@ -73,7 +82,7 @@ class Profile:
     status: str = "running"
     result_status: str | None = None
     marks: dict = field(default_factory=dict)
-    info: dict = field(default_factory=dict)
+    info: dict = field(default_factory=lambda: {"pipeline_revision": PIPELINE_REVISION})
     errors: list[str] = field(default_factory=list)
     ended: float | None = None
     observer: object = field(default=None, repr=False)

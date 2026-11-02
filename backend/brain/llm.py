@@ -83,7 +83,16 @@ class OllamaClient:
         if isinstance(user, str) and simple_request(user) and not self.cfg.think_for_simple:
             payload["think"] = False
         if profile := current.get():
-            profile.update(provider="ollama", model=self.cfg.model, thinking=payload["think"])
+            from backend.brain.followups import estimated_tokens
+
+            profile.update(
+                provider="ollama",
+                model=self.cfg.model,
+                thinking=payload["think"],
+                context_chars=sum(len(m.get("content") or "") for m in messages),
+                context_estimated_tokens=estimated_tokens(messages),
+                context_messages=len(messages),
+            )
         if tools:
             payload["tools"] = tools
         return payload
@@ -195,6 +204,8 @@ class OllamaClient:
                         chunk.stats = {
                             k: v for k, v in data.items() if k.endswith(("count", "duration"))
                         }
+                        if chunk.tokens_per_second is not None:
+                            chunk.stats["tokens_per_second"] = chunk.tokens_per_second
                     yield chunk
             outcome = "ok"
         finally:

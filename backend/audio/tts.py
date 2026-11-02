@@ -15,7 +15,7 @@ from typing import Protocol
 
 import numpy as np
 
-from backend.latency import current, measure
+from backend.latency import Profile, current, measure
 
 OnStart = Callable[[], None]
 OnLevel = Callable[[float], None]
@@ -118,13 +118,39 @@ class PiperSpeaker:
 
         self._load()
         cfg = SynthesisConfig(length_scale=self.length_scale)
-        spoken = speech_text(text, self.pronunciations, self.speech_language)
+        with measure("tts_text_preparation"):
+            spoken = speech_text(text, self.pronunciations, self.speech_language)
         chunks = [c.audio_int16_array for c in self._voice.synthesize(spoken, syn_config=cfg)]
         return np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.int16)
 
     @property
     def sample_rate(self) -> int:
         return self._voice.config.sample_rate
+
+    async def _synth_measured(self, text: str) -> np.ndarray:
+        """Collect worker timings locally, publish them only on the event loop."""
+        parent = current.get()
+        worker = Profile(origin=parent.origin) if parent else None
+
+        def synth():
+            token = current.set(worker)
+            try:
+                return self._synth(text)
+            finally:
+                current.reset(token)
+
+        try:
+            return await asyncio.get_running_loop().run_in_executor(self._synth_pool, synth)
+        finally:
+            if parent and worker:
+                for row in list(worker.stages):
+                    if row["end_s"] is not None:
+                        parent.interval(
+                            row["stage"],
+                            worker.origin + row["start_s"],
+                            worker.origin + row["end_s"],
+                            row["outcome"],
+                        )
 
     def _play(
         self,
@@ -276,7 +302,16 @@ class PiperSpeaker:
         try:
             # Synthesize sentence N+1 while sentence N is playing.
             async for sentence in sentences:
+                # Keep two sentences ahead without synthesizing an entire long
+                # answer while playback is still on sentence one. Never block
+                # the event loop on the thread queue, including on cancellation.
+                while audio_q.qsize() >= 2 and not stop.is_set() and not player.done():
+                    await asyncio.sleep(0.01)
                 if stop.is_set():
+                    break
+                if player.done():
+                    if not player.result():
+                        stop.set()
                     break
                 if self.first_sentence_at is None:
                     self.first_sentence_at = time.perf_counter()
@@ -293,7 +328,9 @@ class PiperSpeaker:
                     audio = self._ready.pop(sentence, None)
                 if audio is None:
                     with measure("tts_generation"):
-                        audio = await loop.run_in_executor(self._synth_pool, self._synth, sentence)
+                        audio = await self._synth_measured(sentence)
+                if stop.is_set():
+                    break
                 if self.audio_enqueued_at is None:
                     self.audio_enqueued_at = time.perf_counter()
                     if profile:
@@ -368,9 +405,10 @@ class SileroSpeaker(PiperSpeaker):
         import torch
 
         self._load()
-        spoken = speech_text(text, self.pronunciations, "ru")
-        # Silero marks stress before the vowel with '+', Piper uses a combining acute.
-        spoken = re.sub(r"([аеёиоуыэюя])\u0301", r"+\1", spoken, flags=re.IGNORECASE)
+        with measure("tts_text_preparation"):
+            spoken = speech_text(text, self.pronunciations, "ru")
+            # Silero marks stress before the vowel with '+', Piper uses a combining acute.
+            spoken = re.sub(r"([аеёиоуыэюя])\u0301", r"+\1", spoken, flags=re.IGNORECASE)
         with torch.inference_mode():
             audio = self._voice.apply_tts(
                 text=spoken,

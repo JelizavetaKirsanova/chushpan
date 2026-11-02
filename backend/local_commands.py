@@ -2,7 +2,7 @@
 
 import re
 
-from backend.security import command_text
+from backend.security import command_text, local_app_name
 
 
 def route(text: str, *, control_session=None, binding=None, comfortable_brightness=None):
@@ -10,6 +10,7 @@ def route(text: str, *, control_session=None, binding=None, comfortable_brightne
         plan = control_session.plan(text, binding, comfortable_brightness)
         if plan is not None:
             return "device_plan", plan
+    from backend.led import _NUMBERS
     from backend.led import parse as led_parse
 
     if led_parse(text) is not None:
@@ -17,6 +18,12 @@ def route(text: str, *, control_session=None, binding=None, comfortable_brightne
     command = command_text(text).rstrip(".!? ")
     if re.fullmatch(r"(?:открой|запусти) (?:youtube|ютуб|ютьюб)", command):
         return "open_website", {"site": "youtube"}
+    app = re.fullmatch(r"(?:открой|запусти)(?: приложение)? ([\w][\w .-]{0,79})", command)
+    if app:
+        # Exact requested name only. Existing registry checks still validate the
+        # application, caller, permissions and original explicit request.
+        if name := local_app_name(app[1]):
+            return "open_app", {"name": name}
     if re.fullmatch(r"который час|сколько времени|текущее время|скажи время", command):
         return "current_time", {}
     weather = re.fullmatch(
@@ -61,14 +68,30 @@ def route(text: str, *, control_session=None, binding=None, comfortable_brightne
     if re.fullmatch(r"(?:какая|покажи) яркость(?: mac| макбука)?", command):
         return "get_brightness", {}
     match = re.fullmatch(
-        r"(?:сделай|поставь) (?:системную )?громкость(?: mac| мака)?"
-        r"(?: на)? (\d{1,3})(?:\s*%| процентов)?",
+        r"(?:(?:сделай|установи|поставь) )?(?:системную )?громкость(?: mac| мака)?"
+        r"(?: на)? (\d{1,3}|[а-яё]+(?: [а-яё]+){0,2})(?:\s*%| процент(?:ов|а)?)?",
         command,
     )
-    if match and 0 <= int(match[1]) <= 100:
-        return "set_volume", {"level": int(match[1])}
+    if match:
+        amount = re.sub(r"\s+процент(?:ов|а)?$", "", match[1])
+        level = int(amount) if amount.isdigit() else _NUMBERS.get(amount)
+        if level is not None and 0 <= level <= 100:
+            return "set_volume", {"level": level}
+    quieter = re.fullmatch(
+        r"(?:(?:сделай )?(?:звук|громкость)(?: mac| мака)? (?:по)?тише|"
+        r"(?:убавь|уменьши|снизь) (?:звук|громкость)(?: mac| мака)?)",
+        command,
+    )
+    louder = re.fullmatch(
+        r"(?:(?:сделай )?(?:звук|громкость)(?: mac| мака)? (?:по)?громче|"
+        r"(?:прибавь|увеличь|повысь) (?:звук|громкость)(?: mac| мака)?)",
+        command,
+    )
+    if quieter or louder:
+        return "set_volume", {"direction": "down" if quieter else "up"}
     match = re.fullmatch(
-        r"(?:сделай|установи|поставь) яркость(?: mac| макбука)?(?: на)? (\d{1,3})"
+        r"(?:(?:сделай|установи|поставь) )?яркость(?: mac| macbook| макбука| экрана)?"
+        r"(?: на)? (\d{1,3})"
         r"(?:\s*%| процентов)?",
         command,
     )

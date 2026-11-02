@@ -15,7 +15,7 @@ from backend.brain.response_mode import simple_request
 from backend.config import GeminiConfig, LLMConfig, Settings
 from backend.context import DeviceContext, RequestContext, request_scope
 from backend.hud.bus import HudBus
-from backend.latency import Profile, current, measure
+from backend.latency import PIPELINE_REVISION, Profile, current, measure
 from backend.memory.store import MemoryStore
 from backend.performance import aggregate
 from backend.tools.clock import clock_tools
@@ -122,7 +122,12 @@ def test_trace_contains_no_prompt_results_or_secret_error_text():
     p.fail("error contains private prompt and password")
     dumped = json.dumps(p.snapshot())
     assert "private" not in dumped and "password" not in dumped
-    assert p.info == {"model": "qwen3:8b", "provider": "ollama", "thinking": False}
+    assert p.info == {
+        "pipeline_revision": PIPELINE_REVISION,
+        "model": "qwen3:8b",
+        "provider": "ollama",
+        "thinking": False,
+    }
 
 
 def test_text_history_and_trace_share_one_request_id():

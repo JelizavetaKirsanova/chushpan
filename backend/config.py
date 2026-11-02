@@ -126,6 +126,8 @@ class GeminiConfig(BaseModel):
     timeout_s: float = Field(default=15, ge=5, le=120)
     attempt_timeout_s: float = Field(default=6, ge=1, le=120)
     stream_idle_timeout_s: float = Field(default=4, ge=1, le=30)
+    first_result_budget_s: float = Field(default=8, ge=1, le=120)
+    simple_timeout_s: float = Field(default=3, ge=1, le=30)
     simple_use_fallback_model: bool = True  # plain requests use configured secondary, then local
     max_output_tokens: int = Field(default=2048, ge=128, le=8192)
     context_messages: int = Field(default=24, ge=0, le=30)
@@ -208,6 +210,7 @@ class VADConfig(BaseModel):
     start_ms: int = 96
     min_speech_ms: int = 300
     silence_ms: int = 700  # pause that ends an utterance
+    adaptive_endpoint: bool = True  # preserve the configured floor; allow natural longer pauses
     preroll_ms: int = 300
     tail_ms: int = Field(default=256, ge=0, le=2000)
     max_utterance_s: float = 30
