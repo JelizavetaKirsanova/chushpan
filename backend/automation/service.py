@@ -33,11 +33,12 @@ class Automations:
     def __init__(self, tools, settings, memory):
         self.tools, self.s = tools, settings
         self.store = ScenarioStore(memory)
-        self.locations = Locations(memory)
+        self.locations = Locations(memory, settings)
         self.capabilities = CapabilityRegistry(tools, settings)
         self.matcher = Matcher(self.store)
         self.engine = Engine(self.store, self.capabilities)
         self.engine.location = self.locations.current
+        self.engine.refresh_location = self.locations.refresh
         self.jobs = set()
         self.bus = None
         self.scheduler = None
@@ -270,7 +271,7 @@ class Automations:
             self.bus.publish(
                 {
                     "type": "automations",
-                    "editor_version": 2,
+                    "editor_version": 3,
                     "scenarios": [s.model_dump(mode="json") for s in self.store.list()],
                     "capabilities": self.capabilities.catalogue(),
                     "runs": self.store.history(),
@@ -365,6 +366,15 @@ class Automations:
             elif op == "place_delete":
                 self.locations.delete(value["id"], value["revision"], self.store.list())
                 self.publish(message="Место удалено.")
+            elif op in {"location_connect", "location_refresh"}:
+                if op == "location_connect":
+                    if value.get("consent") is not True:
+                        raise ValueError("Для запроса геолокации нужно согласие.")
+                    self.locations.select("auto")
+                await self.locations.refresh(request_access=op == "location_connect", force=True)
+                self.publish(
+                    message=self.locations.current().get("message", "Текущее место обновлено.")
+                )
             elif op == "location":
                 self.locations.select(value["mode"], value.get("place_id", ""))
                 self.publish(

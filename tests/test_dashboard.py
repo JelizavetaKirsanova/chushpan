@@ -114,7 +114,13 @@ def test_location_permission_is_scoped_and_only_coarse_coordinates_are_saved():
     async def run():
         store, dashboard, events = environment()
         dashboard.personal.read.return_value = {
-            "location": {"city": "Таллин", "latitude": 59.437123, "longitude": 24.745234}
+            "location": {
+                "city": "Таллин",
+                "latitude": 59.437123,
+                "longitude": 24.745234,
+                "accuracy_m": 100,
+                "measured_at": datetime.now(UTC).isoformat(),
+            }
         }
         dashboard.weather.forecast.return_value = {"now": {"temperature": 5}, "days": []}
         await dashboard.read_location(True)

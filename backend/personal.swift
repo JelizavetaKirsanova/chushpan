@@ -4,7 +4,7 @@ import EventKit
 import Foundation
 
 // A small, stable app identity lets macOS ask for these two permissions explicitly.
-// No writes to the event store, no network and no continuous location tracking.
+// No calendar writes or continuous tracking. City lookup uses the macOS geocoder.
 final class LocationReader: NSObject, CLLocationManagerDelegate {
     let manager = CLLocationManager()
     var completion: (([String: Any]) -> Void)?
@@ -53,8 +53,9 @@ final class LocationReader: NSObject, CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last,
               location.horizontalAccuracy >= 0,
-              location.horizontalAccuracy <= 25000,
-              abs(location.timestamp.timeIntervalSinceNow) < 300 else { return }
+              location.horizontalAccuracy <= (cityOnly ? 3000 : 25000),
+              location.timestamp.timeIntervalSinceNow <= 0,
+              location.timestamp.timeIntervalSinceNow > -300 else { return }
         if cityOnly {
             guard !resolving else { return }
             resolving = true
@@ -67,7 +68,10 @@ final class LocationReader: NSObject, CLLocationManagerDelegate {
                 self?.finish(["city": city, "country": places?.first?.country ?? "",
                     "latitude": (location.coordinate.latitude * 10).rounded() / 10,
                     "longitude": (location.coordinate.longitude * 10).rounded() / 10,
-                    "timezone": TimeZone.current.identifier])
+                    "timezone": TimeZone.current.identifier,
+                    "country_code": places?.first?.isoCountryCode ?? "",
+                    "accuracy_m": location.horizontalAccuracy,
+                    "measured_at": ISO8601DateFormatter().string(from: location.timestamp)])
             }
             return
         }

@@ -118,9 +118,10 @@ class Scenario(Model):
     triggers: list[Trigger] = Field(default_factory=lambda: [Trigger(), Trigger(kind="manual")])
     variables: list[Variable] = Field(default_factory=list)
     confirmation: Literal["auto", "always"] = "auto"
-    # Missing fields keep the meaning of documents written by the previous editor.
-    version_policy: Literal["append", "fallback"] = "append"
-    general_enabled: bool = True
+    # The root actions are the mandatory General version, even when its list is empty.
+    schema_version: Literal[2] = 2
+    version_policy: Literal["fallback"] = "fallback"
+    general_enabled: Literal[True] = True
     inter_block_delay_s: float | int = Field(default=0, ge=0, le=60)
     show_status: bool = True
     error_policy: Literal["block", "stop", "continue"] = "block"
@@ -128,8 +129,6 @@ class Scenario(Model):
 
     @model_validator(mode="after")
     def valid(self):
-        if self.version_policy == "fallback" and not self.general_enabled and not self.variants:
-            raise ValueError("Выбери хотя бы одно местоположение сценария.")
         seen = set()
         for phrase in self.phrases:
             normalized = normalize_phrase(phrase)
@@ -153,8 +152,31 @@ class Scenario(Model):
             raise ValueError("Идентификаторы версий должны различаться.")
         if len({v.place_id for v in self.variants}) != len(self.variants):
             raise ValueError("Для одного места допускается одна версия команды.")
-        if visit(self.actions) + sum(visit(v.actions) for v in self.variants) > 500:
-            raise ValueError("В одном сценарии допускается до 500 блоков.")
+        if any(
+            visit(actions) > 500 for actions in [self.actions, *(v.actions for v in self.variants)]
+        ):
+            raise ValueError("В одной версии сценария допускается до 500 блоков.")
         if contains_secret(self.model_dump_json()):
             raise ValueError("Не сохраняй ключи, пароли и токены в сценарии.")
         return self
+
+
+def upgrade_document(data: dict[str, Any]) -> dict[str, Any]:
+    """Decode an old stored document; never use this to relax validation of a new API save."""
+    from copy import deepcopy
+
+    if data.get("schema_version", 1) != 1:
+        return data
+    upgraded = deepcopy(data)
+    common = upgraded.get("actions", [])
+    if upgraded.get("version_policy", "append") == "append":
+        # Materialize the former prefix once into independent local versions. The runner
+        # then executes exactly one list. Both nested parameters and disabled steps survive.
+        for version in upgraded.get("variants", []):
+            version["actions"] = deepcopy(common) + version.get("actions", [])
+    elif upgraded.get("general_enabled") is False:
+        # Previously disabled General actions must not unexpectedly become live effects.
+        # Their complete original document is retained in the migration backup/revisions.
+        upgraded["actions"] = []
+    upgraded.update(schema_version=2, version_policy="fallback", general_enabled=True)
+    return upgraded

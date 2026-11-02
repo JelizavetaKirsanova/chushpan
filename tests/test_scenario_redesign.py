@@ -1,7 +1,6 @@
 """Editor documents, backwards compatibility and guarded execution; all effects are mocked."""
 
 import asyncio
-import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -65,13 +64,12 @@ def test_missing_place_uses_general_but_disabled_version_is_never_bypassed(rig):
     assert effective.actions == scenario.actions
     rig.service.locations.select("manual", "home")
     scenario.variants[1].enabled = False
-    with pytest.raises(ValueError, match="выключена"):
-        rig.service.engine.select(scenario)
-    scenario.general_enabled = False
+    effective, selected = rig.service.engine.select(scenario)
+    assert effective.actions == scenario.actions
+    assert selected["variant_id"] == "general"
     rig.service.locations.select("auto")
-    with pytest.raises(ValueError, match="Место неизвестно"):
-        rig.service.engine.select(scenario)
-    with pytest.raises(ValueError, match="нет такой версии"):
+    assert rig.service.engine.select(scenario)[1]["variant_id"] == "general"
+    with pytest.raises(ValueError, match="Версия"):
         rig.service.engine.select(scenario, "f" * 32)
 
 
@@ -110,56 +108,26 @@ def test_preview_reports_invalid_parameters_and_absent_device_in_place(rig):
     rig.brightness.assert_not_awaited()
 
 
-def test_legacy_json_hydration_never_rewrites_source_and_revision_is_a_backup(rig, tmp_path):
-    scenario = independent(rig)
-    raw = scenario.model_dump()
-    for key in (
-        "version_policy",
-        "general_enabled",
-        "inter_block_delay_s",
-        "show_status",
-        "error_policy",
-        "timeout_s",
-    ):
-        raw.pop(key)
-    original = json.dumps(raw, ensure_ascii=False)
-    rig.memory.db.execute("UPDATE scenarios SET data=? WHERE id=?", (original, scenario.id))
-    rig.memory.db.execute(
-        "UPDATE scenario_revisions SET data=? WHERE scenario_id=?", (original, scenario.id)
-    )
-    rig.memory.db.commit()
-    old = rig.service.store.get(scenario.id)
-    assert old.version_policy == "append"
-    assert old.timeout_s is None
-    rig.service.locations.select("manual", "home")
-    effective, _ = rig.service.engine.select(old)
-    assert [b.parameters["level"] for b in effective.actions] == [10, 30]
-    assert (
-        rig.memory.db.execute("SELECT data FROM scenarios WHERE id=?", (old.id,)).fetchone()[0]
-        == original
-    )
-    saved = rig.service.store.save(
-        old.model_copy(
+def test_new_document_settings_survive_save_restore_and_database_reopen(rig, tmp_path):
+    original = independent(rig)
+    changed = rig.service.store.save(
+        original.model_copy(
             update={
-                "version_policy": "fallback",
                 "inter_block_delay_s": 0.5,
                 "show_status": False,
-                "error_policy": "continue",
                 "timeout_s": 60,
             }
         )
     )
-    assert rig.service.store.revision(old.id, old.revision).version_policy == "append"
-    assert rig.service.store.get(saved.id) == saved
-    restored = rig.service.store.restore(saved.id, old.revision, saved.revision)
-    assert restored.version_policy == "append"
-    assert restored.variants == old.variants
-    # Reopen a separate database through the actual store, including all new fields.
+    assert rig.service.store.get(changed.id).inter_block_delay_s == 0.5
+    restored = rig.service.store.restore(changed.id, original.revision, changed.revision)
+    assert restored.timeout_s == original.timeout_s
+    assert restored.variants == original.variants
     memory = MemoryStore(tmp_path / "editor.sqlite")
     try:
         store = ScenarioStore(memory)
-        copied = store.save(saved.model_copy(update={"id": "", "revision": 0}))
-        assert store.get(copied.id).model_dump() == copied.model_dump()
+        copied = store.save(changed.model_copy(update={"id": "", "revision": 0}))
+        assert store.get(copied.id) == copied
     finally:
         memory.close()
 
@@ -260,6 +228,7 @@ def test_if_and_sequence_receive_actual_receipts_matching_simulation_paths(rig):
 
 def test_dispatch_keeps_settings_and_reports_selected_version_after_manual_run(rig):
     scenario = independent(rig)
+    rig.service.locations.select("manual", "dorm")
     rig.service.bus = HudBus()
     queue = rig.service.bus.subscribe()
     rig.service.conv = rig.conv
@@ -325,7 +294,7 @@ def test_editor_websocket_save_reopen_and_simulate_without_device_effects(rig, t
             {"type": "automations", "value": {"op": "save", "scenario": draft.model_dump()}}
         )
         reply = ws.receive_json()
-        assert reply["editor_version"] == 2
+        assert reply["editor_version"] == 3
         saved = next(s for s in reply["scenarios"] if s["id"] == reply["saved"])
         assert saved["timeout_s"] == 60 and saved["inter_block_delay_s"] == 0.5
         ws.send_json(

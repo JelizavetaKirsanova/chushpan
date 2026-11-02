@@ -14,7 +14,7 @@ interface Device {id: string; name: string; type: string; status: string; action
 interface Permission {id: string; name: string; status: string; note: string; url: string}
 interface PreviewStep {delay_before_s?: number; availability?: string; device?: string; path: string; kind: string; status: string; name?: string; capability: string; parameters?: Record<string, Json>; seconds?: number; reason?: string; condition_result?: boolean | null; risk?: string}
 interface Preview {errors?: string[]; timeout_s?: number | null; status: 'dry_run'; name: string; message: string; selection: {variant_name: string; place_name?: string} | null; steps: PreviewStep[]; conditions: (boolean | null)[]}
-export interface AutomationsEvent {editor_version?: number; places: Place[]; location: {place_id: string | null; name: string | null; mode: 'auto' | 'manual'; status?: string; city?: string; message?: string}; revisions?: {id: string; items: {revision: number; name: string; created_at: string}[]}; preview?: Preview; place_saved?: string; type: 'automations'; scenarios: Scenario[]; capabilities: Capability[]; runs: Run[]; devices: Device[]; training: {id: number; scenario_id: string; phrase: string; operation: string; created_at: string}[]; permissions?: {items: Permission[]; error?: string; scope: string}; error?: string; message?: string; saved?: string; updated?: string; deleted?: string; recognition?: Recognition; captured?: string; result?: {message?: string; error?: string; status?: string}}
+export interface AutomationsEvent {editor_version?: number; places: Place[]; location: {place_id: string | null; name: string | null; mode: 'auto' | 'manual'; status?: string; city?: string; message?: string; geolocation_enabled?: boolean; reason?: string}; revisions?: {id: string; items: {revision: number; name: string; created_at: string}[]}; preview?: Preview; place_saved?: string; type: 'automations'; scenarios: Scenario[]; capabilities: Capability[]; runs: Run[]; devices: Device[]; training: {id: number; scenario_id: string; phrase: string; operation: string; created_at: string}[]; permissions?: {items: Permission[]; error?: string; scope: string}; error?: string; message?: string; saved?: string; updated?: string; deleted?: string; recognition?: Recognition; captured?: string; result?: {message?: string; error?: string; status?: string}}
 
 const el = <T extends keyof HTMLElementTagNameMap>(tag: T, value = '', className = ''): HTMLElementTagNameMap[T] => {
   const node = document.createElement(tag); node.textContent = value; node.className = className; return node;
@@ -45,6 +45,7 @@ export class AutomationsView {
   private dragSource: {blocks: Block[]; index: number} | null = null;
   private sectionFeedback: HTMLElement[] = [];
   private activeVariant = '';
+  private pendingPlace = '';
   private searchText = '';
   private placeRoot = el('div', '', 'place-settings');
   private locationRoot = el('div', '', 'location-selection');
@@ -74,7 +75,7 @@ export class AutomationsView {
     page.querySelector('.page-heading p')!.textContent = 'Скажи одну фразу — Чушпан сделает остальное.';
     const toolbar = el('div', '', 'page-toolbar');
     const search = el('input'); search.type = 'search'; search.placeholder = 'Найти сценарий'; search.setAttribute('aria-label', 'Поиск моих команд'); search.oninput = () => {this.searchText = search.value; this.renderList();};
-    const create = this.button('+ Создать сценарий', () => {if (!this.discardAllowed()) return; this.draft = newScenario(); this.draft.name = ''; this.pendingPhrase = ''; this.activeVariant = ''; this.dirty = false; this.advancedOpen = false; this.previewRoot.replaceChildren(); this.revisionRoot.replaceChildren(); this.renderEditor();}); create.className = 'primary';
+    const create = this.button('+ Создать сценарий', () => {if (!this.discardAllowed()) return; this.draft = newScenario(); this.pendingPlace = ''; this.draft.name = ''; this.pendingPhrase = ''; this.activeVariant = ''; this.dirty = false; this.advancedOpen = false; this.previewRoot.replaceChildren(); this.revisionRoot.replaceChildren(); this.renderEditor();}); create.className = 'primary';
     const placeFilter = this.select([['', 'Все места'], ['general', 'Общий'], ...(this.data?.places ?? []).map(p => [p.id, p.name] as [string, string])], '', value => {this.placeFilter = value; this.renderList();}, false);
     placeFilter.setAttribute('aria-label', 'Фильтр по местоположению'); placeFilter.id = 'scenario-place-filter';
     toolbar.append(search, placeFilter, create);
@@ -137,7 +138,7 @@ export class AutomationsView {
   receive(event: HudEvent): void {
     if (event.type === 'dashboard') {const stamp = JSON.stringify(event.location); if (stamp !== this.locationStamp) {this.locationStamp = stamp; if (this.online) this.send({op: 'refresh'});} return;}
     if (event.type !== 'automations') return;
-    if (!Array.isArray(event.places) || !event.location || event.editor_version !== 2) {
+    if (!Array.isArray(event.places) || !event.location || event.editor_version !== 3) {
       this.online = false;
       this.feedback.textContent = 'Для загрузки обновления один раз перезапусти Чушпана. После этого команды и версии будут применяться без перезапуска.';
       document.querySelectorAll<HTMLButtonElement | HTMLSelectElement>('.automations-page button, .automation-section button, .permission-settings button, .place-settings button, .location-selection select').forEach(control => control.disabled = true);
@@ -182,7 +183,7 @@ export class AutomationsView {
   }
 
   private document(scenario: Scenario): Scenario {
-    return Object.assign(newScenario(), {version_policy: 'append'}, clone(scenario));
+    return Object.assign(newScenario(), clone(scenario));
   }
   private discardAllowed(): boolean {return !this.dirty || window.confirm('Отменить несохранённые изменения сценария?');}
   private glyph(name: string): HTMLElement {
@@ -227,15 +228,20 @@ export class AutomationsView {
   private renderLocation(): void {
     if (!this.data) return;
     const location = this.data.location;
-    const choices: [string, string][] = [['auto', 'Автоматически'], ...this.data.places.map(p => [p.id, p.name] as [string, string])];
-    const currentPlace = this.select(choices, location.mode === 'auto' ? 'auto' : location.place_id ?? 'auto', () => {});
+    const choices: [string, string][] = [['auto', 'Автоматически'], ['general', 'Другое место — Общий'], ...this.data.places.map(p => [p.id, p.name] as [string, string])];
+    const currentPlace = this.select(choices, location.mode === 'auto' ? 'auto' : location.place_id ?? (location.mode === 'manual' ? 'general' : 'auto'), () => {});
     currentPlace.setAttribute('aria-label', 'Текущее место');
     currentPlace.onchange = () => this.send({op: 'location', mode: currentPlace.value === 'auto' ? 'auto' : 'manual', place_id: currentPlace.value === 'auto' ? '' : currentPlace.value});
-    this.editorLocationRoot.replaceChildren(el('span', `Сейчас: ${location.name ?? 'место неизвестно'}`), currentPlace);
+    const caption = location.status === 'confirming' ? 'Уточняю город · Общий' : location.city ? `${location.city} · ${location.name ?? 'Общий'}` : location.name ?? 'место неизвестно · Общий';
+    this.editorLocationRoot.replaceChildren(el('span', `Сейчас: ${caption}`), currentPlace);
+    if (location.mode === 'auto') {
+      const connect = this.button(location.geolocation_enabled ? 'Обновить город' : 'Включить геолокацию macOS', () => this.send(location.geolocation_enabled ? {op: 'location_refresh'} : {op: 'location_connect', consent: true})); connect.className = 'location-connect'; this.editorLocationRoot.append(connect);
+      if (location.reason === 'location_permission' || location.reason === 'location_disabled') {const settings = el('a', 'Разрешить геолокацию в настройках macOS'); settings.href = 'x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices'; settings.title = 'Службы геолокации → Чушпан — утро'; this.editorLocationRoot.append(settings);}
+    }
     this.locationRoot.replaceChildren(el('strong', `Сейчас: ${location.name ?? 'место не определено'}`));
     this.locationRoot.append(this.label('Выбор места для голосовых команд', this.select(
-      [['auto', 'Определять автоматически по текущему городу'], ...this.data.places.map(p => [p.id, p.name] as [string, string])],
-      location.mode === 'auto' ? 'auto' : location.place_id ?? 'auto',
+      [['auto', 'Определять автоматически по текущему городу'], ['general', 'Другое место — Общий'], ...this.data.places.map(p => [p.id, p.name] as [string, string])],
+      location.mode === 'auto' ? 'auto' : location.place_id ?? (location.mode === 'manual' ? 'general' : 'auto'),
       id => this.send({op: 'location', mode: id === 'auto' ? 'auto' : 'manual', place_id: id === 'auto' ? '' : id}), false)),
       el('small', location.mode === 'auto' ? (location.city ? `Наблюдаемый город: ${location.city}` : 'Используется уже подключённое определение города. При неизвестном месте выбери его вручную.') : 'Ручной выбор сохранён и действует до переключения в автоматический режим.'));
 
@@ -253,37 +259,58 @@ export class AutomationsView {
     const name = el('input'); name.value = place.name; name.maxLength = 120; name.oninput = () => {place.name = name.value; this.placesDirty = true;};
     const cities = el('textarea'); cities.value = place.cities.join('\n'); cities.rows = 2;
     cities.placeholder = 'Tallinn\nТаллин'; cities.oninput = () => {place.cities = cities.value.split('\n').map(v => v.trim()).filter(Boolean); this.placesDirty = true;};
-    form.append(this.label('Название места', name), this.label('Города для автоматического выбора — каждый с новой строки', cities),
+    form.append(this.label('Название места', name), this.label('Названия городов (для справки)', cities),
       this.button('Сохранить место', () => this.send({op: 'place_save', place})),
       this.button(place.revision ? 'Удалить место' : 'Отменить добавление', () => {if (place.revision) this.send({op: 'place_delete', id: place.id, revision: place.revision}); else form.remove();}));
     return form;
   }
 
+  private createVersion(draft: Scenario, place: Place, copyGeneral: boolean): void {
+    const added = addVariant(draft, place);
+    if (copyGeneral) added.actions = clone(draft.actions);
+    this.activeVariant = added.id; this.pendingPlace = ''; this.dirty = true;
+    this.previewRoot.replaceChildren(); this.renderEditor();
+  }
+  private deleteVersion(draft: Scenario, variant: Variant): void {
+    if (!window.confirm(`Удалить версию «${variant.name}» и её блоки? Общий сценарий останется.`)) return;
+    draft.variants = draft.variants.filter(v => v.id !== variant.id);
+    this.activeVariant = ''; this.dirty = true; this.previewRoot.replaceChildren(); this.renderEditor();
+  }
+  private versionTabs(draft: Scenario): HTMLElement {
+    const root = el('div', '', 'version-tabs-editor');
+    root.append(el('span', 'Версии сценария', 'field-caption'));
+    const tabs = el('div', '', 'variant-tabs'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Версии сценария');
+    const general = this.button('', () => {this.activeVariant = ''; this.pendingPlace = ''; this.previewRoot.replaceChildren(); this.renderEditor();});
+    general.append(el('span', 'Общий'), el('small', 'Другие города · место неизвестно')); general.setAttribute('role', 'tab'); general.setAttribute('aria-label', 'Общий'); general.setAttribute('aria-selected', String(!this.activeVariant)); general.title = 'Обязательная версия. Используется, если подходящей локальной версии нет.'; tabs.append(general);
+    const places = this.data?.places ?? [];
+    for (const place of [...places.filter(p => ['dorm', 'home'].includes(p.id)), ...places.filter(p => !['dorm', 'home'].includes(p.id))]) {
+      const variant = draft.variants.find(v => v.place_id === place.id);
+      if (!variant && !['dorm', 'home'].includes(place.id)) continue;
+      const name = place.id === 'dorm' ? 'Общага' : place.id === 'home' ? 'Дом' : variant?.name ?? place.name;
+      const usage = place.id === 'dorm' ? 'Таллинн' : place.id === 'home' ? 'Силламяэ' : 'Ручной выбор';
+      const tab = this.button('', () => {if (variant) {this.activeVariant = variant.id; this.pendingPlace = '';} else this.pendingPlace = place.id; this.previewRoot.replaceChildren(); this.renderEditor();});
+      const title = variant ? name : `+ ${name}`;
+      tab.append(el('span', title), el('small', `${usage}${variant && !variant.enabled ? ' · выключена' : ''}`)); tab.setAttribute('aria-label', title); tab.title = usage;
+      if (variant) {tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(this.activeVariant === variant.id));} else tab.className = 'add-version-tab';
+      tabs.append(tab);
+    }
+    root.append(tabs);
+    const place = places.find(p => p.id === this.pendingPlace);
+    if (place && !draft.variants.some(v => v.place_id === place.id)) {
+      const proposal = el('div', '', 'version-create'); proposal.append(el('strong', `Создать версию «${place.name}»`), el('small', 'У каждой версии свои блоки. Изменения не затронут Общий.'), this.button('Создать пустую версию', () => this.createVersion(draft, place, false)), this.button('Скопировать блоки из общей', () => this.createVersion(draft, place, true)), this.button('Отмена', () => {this.pendingPlace = ''; this.renderEditor();})); root.append(proposal);
+    }
+    return root;
+  }
   private variantEditor(draft: Scenario): HTMLElement {
     const root = el('section', '', 'variant-editor');
-    root.append(el('h3', 'Общие действия и версии для мест'), el('p', 'Голосовые фразы общие для всех мест. Здесь можно настроить условия и дополнительные версии.', 'muted'));
-    const variants = draft.variants;
-    if (!variants.some(v => v.id === this.activeVariant)) this.activeVariant = '';
-    const variant = variants.find(v => v.id === this.activeVariant);
-    if (variant) {
-      const fields = el('div', '', 'variant-fields');
-      const enabled = el('input'); enabled.type = 'checkbox'; enabled.checked = variant.enabled; enabled.onchange = () => {variant.enabled = enabled.checked; this.dirty = true;};
-      fields.append(this.label('Название версии', this.input(variant.name, v => variant.name = v)),
-        this.label('Место этой версии', this.select((this.data?.places ?? []).filter(p => p.id === variant.place_id || !variants.some(v => v.place_id === p.id)).map(p => [p.id, p.name]), variant.place_id, v => variant.place_id = v)), this.label('Версия включена', enabled),
-        this.button('Удалить версию', () => {if (window.confirm(`Удалить версию «${variant.name}» из черновика?`)) {draft.variants = variants.filter(v => v.id !== variant.id); this.activeVariant = ''; this.dirty = true; this.renderEditor();}}));
-      root.append(fields, el('h4', 'Условия этой версии')); this.conditionList(root, variant.conditions);
-    }
-    const available = (this.data?.places ?? []).filter(p => !draft.variants.some(v => v.place_id === p.id));
-    const additions = el('div', '', 'variant-add');
+    const variant = draft.variants.find(v => v.id === this.activeVariant);
+    if (variant) {root.append(el('h3', 'Условия локальной версии'), this.checkbox('Версия включена', variant.enabled, v => {variant.enabled = v; this.renderEditor();})); this.conditionList(root, variant.conditions);}
+    const available = (this.data?.places ?? []).filter(p => !['dorm', 'home'].includes(p.id) && !draft.variants.some(v => v.place_id === p.id));
     if (available.length) {
       let placeId = available[0].id;
-      const target = this.select(available.map(p => [p.id, p.name]), placeId, v => placeId = v, false);
-      const create = (source?: Variant) => {const place = available.find(p => p.id === placeId)!; const added = addVariant(draft, place, source); this.activeVariant = added.id; this.dirty = true; this.previewRoot.replaceChildren(); this.renderEditor();};
-      additions.append(this.label(variant ? 'Место для новой версии или копии' : 'Место для новой версии', target), this.button('Добавить пустую версию', () => create()));
-      if (variant) additions.append(this.button('Скопировать версию в другое место', () => create(variant)));
-    } else additions.append(el('p', 'Для всех мест уже есть версии. Дополнительные места можно добавить в настройках приложения.', 'muted'));
-    root.append(additions);
-    if (variants.length && !variant) root.append(el('p', 'Чтобы проверить определённую версию без выполнения, открой её вкладку и нажми «Безопасный тест».', 'muted'));
+      root.append(this.label('Другое сохранённое место', this.select(available.map(p => [p.id, p.name]), placeId, v => placeId = v, false)), this.button('Создать версию другого места', () => {this.pendingPlace = placeId; this.renderEditor();}));
+    }
+    root.append(el('p', 'Общий существует всегда. Автоматический выбор: Таллинн → Общага, Силламяэ → Дом, остальные города → Общий.', 'muted'));
     return root;
   }
 
@@ -322,11 +349,11 @@ export class AutomationsView {
   private edit(scenario: Scenario): void {
     if (!this.discardAllowed()) return;
     this.feedback.replaceChildren(); delete this.feedback.dataset.error;
-    this.draft = this.document(scenario); this.pendingPhrase = ''; this.activeVariant = ''; this.dirty = false; this.advancedOpen = false;
+    this.draft = this.document(scenario); this.pendingPlace = ''; this.pendingPhrase = ''; this.activeVariant = ''; this.dirty = false; this.advancedOpen = false;
     this.previewRoot.replaceChildren(); this.revisionRoot.replaceChildren(); this.recognition.replaceChildren(); this.phraseText = ''; this.renderEditor();
   }
   private runButton(scenario: Scenario): HTMLButtonElement {
-    const button = this.button('Запустить на устройствах', () => {if (this.dirty) {this.feedback.textContent = 'Сначала сохрани изменения.'; return;} if (this.running) return; const version = scenario.variants.find(v => v.id === this.activeVariant)?.name ?? 'Общий'; if (window.confirm(`Запустить «${scenario.name}», версия «${version}», на реальных устройствах?`)) {this.running = true; this.editor.querySelectorAll<HTMLButtonElement>('.real-run').forEach(button => button.disabled = true); this.send({op: 'run', id: scenario.id, revision: scenario.revision, variant: this.activeVariant || (scenario.version_policy === 'fallback' ? 'general' : '')});}});
+    const button = this.button('Запустить на устройствах', () => {if (this.dirty) {this.feedback.textContent = 'Сначала сохрани изменения.'; return;} if (this.running) return; if (window.confirm(`Запустить «${scenario.name}» на реальных устройствах? Версия будет выбрана по текущему месту.`)) {this.running = true; this.editor.querySelectorAll<HTMLButtonElement>('.real-run').forEach(button => button.disabled = true); this.send({op: 'run', id: scenario.id, revision: scenario.revision, variant: ''});}});
     button.className = 'real-run';
     button.disabled ||= this.dirty || !scenario.enabled || !scenario.triggers.some(t => t.kind === 'manual'); return button;
   }
@@ -347,13 +374,13 @@ export class AutomationsView {
     this.list.replaceChildren();
     const filter = document.querySelector<HTMLSelectElement>('#scenario-place-filter');
     if (filter) {const values = [['', 'Все места'], ['general', 'Общий'], ...(this.data?.places ?? []).map(p => [p.id, p.name])]; filter.replaceChildren(...values.map(([value, name]) => {const option = el('option', name); option.value = value; return option;})); filter.value = this.placeFilter;}
-    const matches = searchCommands(this.data?.scenarios ?? [], this.searchText).filter(s => !this.placeFilter || (this.placeFilter === 'general' ? s.general_enabled !== false : s.variants.some(v => v.place_id === this.placeFilter)));
+    const matches = searchCommands(this.data?.scenarios ?? [], this.searchText).filter(s => !this.placeFilter || (this.placeFilter === 'general' ? true : s.variants.some(v => v.place_id === this.placeFilter)));
     for (const scenario of matches) {
       const row = el('article', '', 'scenario-card');
       const open = this.button('', () => this.edit(scenario)); open.className = 'scenario-open'; open.setAttribute('aria-label', `Открыть сценарий ${scenario.name}`);
       const text = el('span', '', 'scenario-summary');
       const total = countBlocks(scenario.actions) + scenario.variants.reduce((n, v) => n + countBlocks(v.actions), 0);
-      text.append(el('strong', scenario.name), el('small', scenario.phrases.map(p => `«${p}»`).join(' · ') || 'Запуск кнопкой'), el('small', `${[...(scenario.general_enabled !== false ? ['Общий'] : []), ...scenario.variants.map(v => v.name)].join(' · ')}   ·   Блоков: ${total}   ·   ${scenario.enabled ? 'Включён' : 'Выключен'}`, 'scenario-meta'));
+      text.append(el('strong', scenario.name), el('small', scenario.phrases.map(p => `«${p}»`).join(' · ') || 'Запуск кнопкой'), el('small', `${['Общий', ...scenario.variants.map(v => v.name)].join(' · ')}   ·   Блоков: ${total}   ·   ${scenario.enabled ? 'Включён' : 'Выключен'}`, 'scenario-meta'));
       open.append(el('span', scenario.icon, 'scenario-icon'), text);
       const enabled = this.button('', () => {if (this.draft?.id === scenario.id && !this.discardAllowed()) return; this.toggling.add(scenario.id); this.send({op: 'save', scenario: {...clone(scenario), enabled: !scenario.enabled}});}); enabled.className = 'scenario-switch'; enabled.setAttribute('role', 'switch'); enabled.setAttribute('aria-checked', String(scenario.enabled)); enabled.setAttribute('aria-label', `Сценарий ${scenario.name} включён`);
       const menu = el('details', '', 'scenario-menu'); menu.append(el('summary', '⋯')); menu.firstElementChild!.setAttribute('aria-label', `Действия со сценарием ${scenario.name}`);
@@ -372,14 +399,14 @@ export class AutomationsView {
     page.dataset.editing = String(!!draft);
     this.editor.parentElement!.dataset.editing = String(!!draft);
     if (!draft) return;
+    if (!draft.variants.some(v => v.id === this.activeVariant)) this.activeVariant = '';
     const form = el('form');
     form.addEventListener('input', () => {this.previewRoot.replaceChildren(); for (const button of form.querySelectorAll<HTMLButtonElement>('.real-run')) button.disabled = true;});
     form.addEventListener('change', () => {this.previewRoot.replaceChildren(); for (const button of form.querySelectorAll<HTMLButtonElement>('.real-run')) button.disabled = true;});
     const saveDraft = () => {
       if (!this.online || this.saving || !this.commitPhrase()) return;
       if (!form.reportValidity()) return;
-      if (!draft.general_enabled && !draft.variants.length) {this.feedback.textContent = 'Выбери хотя бы одно местоположение.'; return;}
-      this.saving = true; this.feedback.textContent = 'Сохраняю…'; this.send({op: 'save', scenario: draft}); form.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('input,button,select,textarea').forEach(control => control.disabled = true);
+            this.saving = true; this.feedback.textContent = 'Сохраняю…'; this.send({op: 'save', scenario: draft}); form.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('input,button,select,textarea').forEach(control => control.disabled = true);
     };
     form.onsubmit = event => {event.preventDefault(); saveDraft();};
     const heading = el('div', '', 'editor-heading');
@@ -410,37 +437,19 @@ export class AutomationsView {
     phrases.append(entry, plus);
     fields.append(this.label('Название', name), el('span', 'Фразы для вызова', 'field-caption'), phrases);
     first.append(icons, fields);
-    const locations = el('div', '', 'scenario-locations'); locations.append(el('span', 'Местоположение', 'field-caption'));
-    const locationsControl = el('div', '', 'scenario-location-options');
-    for (const place of [{id: 'general', name: 'Общий'}, ...(this.data?.places ?? [])]) {
-      const selected = place.id === 'general' ? draft.general_enabled : draft.variants.some(v => v.place_id === place.id);
-      const option = this.button('', () => {
-        if (place.id === 'general') {draft.general_enabled = !draft.general_enabled; this.activeVariant = draft.general_enabled ? '' : draft.variants[0]?.id ?? '';}
-        else if (!selected) {this.activeVariant = addVariant(draft, place as Place).id;}
-        else {const variant = draft.variants.find(v => v.place_id === place.id)!; if (variant.actions.length && !window.confirm(`Удалить версию «${place.name}» и её блоки из черновика?`)) return; draft.variants = draft.variants.filter(v => v.id !== variant.id); if (this.activeVariant === variant.id) this.activeVariant = draft.general_enabled ? '' : draft.variants[0]?.id ?? '';}
-        this.dirty = true; this.previewRoot.replaceChildren(); this.renderEditor();
-      });
-      option.append(this.glyph(place.id === 'general' ? 'home' : place.id === 'dorm' ? 'building' : 'pin'), el('span', place.id === 'home' && place.name === 'Дом' ? 'Дом (Силламяэ)' : place.name)); option.setAttribute('aria-pressed', String(selected)); option.setAttribute('aria-label', `Местоположение: ${place.name}`); if (place.id === 'general' && draft.version_policy === 'append') {option.disabled = true; option.title = 'В прежнем порядке общие блоки обязательны. Порядок можно изменить в дополнительных настройках.';} locationsControl.append(option);
-    }
-    locations.append(locationsControl, el('small', 'Можно выбрать несколько')); first.append(locations, this.editorLocationRoot); this.renderLocation();
+    first.append(this.versionTabs(draft), this.editorLocationRoot); this.renderLocation();
     const second = el('section', '', 'editor-step scenario-constructor');
     const blockHeading = el('div', '', 'scenario-section-heading'); const h = el('h2', 'Блоки сценария'); h.prepend(this.glyph('layers')); blockHeading.append(h, el('span', 'Выполняются по порядку ↓', 'muted')); second.append(blockHeading);
     const variant = draft.variants.find(v => v.id === this.activeVariant);
-    if (draft.variants.length) {
-      const tabs = el('div', '', 'variant-tabs'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Версии для мест');
-      for (const item of [...(draft.general_enabled ? [{id: '', name: 'Общий'}] : []), ...draft.variants]) {const tab = this.button(item.name, () => {this.activeVariant = item.id; this.previewRoot.replaceChildren(); this.renderEditor();}); tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(this.activeVariant === item.id)); tabs.append(tab);}
-      second.append(tabs, el('p', draft.version_policy === 'append' ? 'Сохранён прежний порядок: общие блоки, затем версия места.' : 'Версия места заменяет общую. Общий сценарий используется там, где нет отдельной версии.', 'variant-hint'));
-      if (variant) {
-        const tools = el('div', '', 'variant-copy');
-        const targets = [...(draft.general_enabled ? [{id: '', name: 'Общий'}] : []), ...draft.variants.filter(v => v.id !== variant.id)];
-        if (targets.length) {
-          let destination = targets[0].id;
-          tools.append(this.select(targets.map(v => [v.id, v.name]), destination, v => destination = v, false), this.button('Копировать блоки', () => {const target = draft.variants.find(v => v.id === destination)?.actions ?? draft.actions; if (target.length && !window.confirm('Заменить блоки выбранной версии копией?')) return; target.splice(0, target.length, ...clone(variant.actions)); this.dirty = true; this.renderEditor();}));
-          tools.querySelector('select')!.setAttribute('aria-label', 'Куда скопировать блоки');
-        }
-        second.append(tools);
-      }
+    second.append(el('p', 'Запускается одна версия по текущему месту. Вкладки меняют только редактируемую версию.', 'variant-hint'));
+    const targets = [{id: '', name: 'Общий'}, ...draft.variants].filter(v => v.id !== this.activeVariant);
+    const tools = el('div', '', 'variant-copy');
+    if (targets.length) {
+      let destination = targets[0].id;
+      tools.append(this.select(targets.map(v => [v.id, v.name]), destination, v => destination = v, false), this.button('Копировать блоки', () => {const target = draft.variants.find(v => v.id === destination)?.actions ?? draft.actions; if (target.length && !window.confirm('Заменить блоки выбранной версии копией?')) return; target.splice(0, target.length, ...clone(variant?.actions ?? draft.actions)); this.dirty = true; this.renderEditor();})); tools.querySelector('select')!.setAttribute('aria-label', 'Куда скопировать блоки');
     }
+    if (variant) tools.append(this.button('Удалить версию', () => this.deleteVersion(draft, variant)));
+    if (tools.childElementCount) second.append(tools);
     second.append(this.blocks(variant?.actions ?? draft.actions, false));
     const extra = el('section', '', 'editor-step scenario-options'); const extraHeading = el('h2', 'Дополнительно'); extraHeading.prepend(this.glyph('settings')); extra.append(extraHeading);
     const options = el('div', '', 'scenario-quick-options');
@@ -449,7 +458,7 @@ export class AutomationsView {
     extra.append(options, el('p', 'Чувствительные действия всегда проходят обязательные проверки разрешений.', 'muted'));
     const advanced = el('details', '', 'editor-advanced'); advanced.open = this.advancedOpen; advanced.ontoggle = () => this.advancedOpen = advanced.open; advanced.append(el('summary', 'Другие настройки'), this.advancedEditor(draft), this.revisionRoot, this.trainingRoot); extra.append(advanced);
     const third = el('section', '', 'editor-step editor-save');
-    const controls = el('div', '', 'button-row'); controls.append(this.button('Проверить сценарий', () => {if (!this.commitPhrase()) return; this.send({op: 'preview', scenario: draft, variant: this.activeVariant || (draft.version_policy === 'fallback' ? 'general' : '')});}));
+    const controls = el('div', '', 'button-row'); controls.append(this.button('Проверить сценарий', () => {if (!this.commitPhrase()) return; this.send({op: 'preview', scenario: draft, variant: this.activeVariant || 'general'});}));
     if (draft.id) {const run = this.runButton(draft); run.disabled ||= this.dirty; controls.append(run);}
     third.append(controls, el('p', !draft.enabled ? 'Сценарий выключен.' : !draft.triggers.some(t => t.kind === 'voice') ? 'Голосовой запуск выключен.' : 'Проверка — безопасная симуляция. Реальный запуск доступен после сохранения.', 'muted'), this.previewRoot, this.executionRoot);
     form.append(heading, first, second, extra, third); this.editor.append(form); this.renderTraining(); this.renderRuns();
@@ -482,7 +491,7 @@ export class AutomationsView {
         ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].forEach((name, day) => {const check = el('input'); check.type = 'checkbox'; check.checked = trigger.weekdays.includes(day); check.onchange = () => {trigger.weekdays = check.checked ? [...trigger.weekdays, day] : trigger.weekdays.filter(d => d !== day); this.dirty = true;}; days.append(this.label(name, check));}); form.append(days);
       }
     }
-    form.append(this.label('Выбор версии', this.select([['fallback', 'Версия места заменяет общую'], ['append', 'Общие блоки, затем версия места (прежний порядок)']], draft.version_policy, v => {draft.version_policy = v; if (v === 'append') draft.general_enabled = true; this.renderEditor();})), this.label('При ошибке', this.select([['block', 'Как указано в каждом блоке'], ['stop', 'Остановить сценарий'], ['continue', 'Продолжить, сохранив ошибку']], draft.error_policy, v => draft.error_policy = v)));
+    form.append(this.label('При ошибке', this.select([['block', 'Как указано в каждом блоке'], ['stop', 'Остановить сценарий'], ['continue', 'Продолжить, сохранив ошибку']], draft.error_policy, v => draft.error_policy = v)));
     const timeout = this.input(draft.timeout_s === null ? '' : String(draft.timeout_s), v => draft.timeout_s = v === '' ? null : Number(v), 'number'); timeout.min = '1'; timeout.max = '3600'; timeout.placeholder = 'Без ограничения'; form.append(this.label('Ограничение времени, с', timeout));
     form.append(el('h3', 'Порядок выполнения'), this.blockTools(draft.variants.find(v => v.id === this.activeVariant)?.actions ?? draft.actions), this.variantEditor(draft));
     if (draft.revision) form.append(this.button('История редакций', () => this.send({op: 'revisions', id: draft.id})), this.runButton(draft), this.button('Удалить сценарий', () => this.remove(draft)));

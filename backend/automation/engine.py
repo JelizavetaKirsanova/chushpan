@@ -28,72 +28,42 @@ class Engine:
         self.locks = capabilities.tools.device_locks
         self.device_state = {}
         self.location = lambda: {"place_id": None, "name": None}
+        self.refresh_location = None
 
     def select(self, scenario, variant=""):
-        if scenario.version_policy == "fallback":
-            place = self.location()
-            selected = None
-            if variant != "general":
-                selected = next(
-                    (
-                        v
-                        for v in scenario.variants
-                        if (v.id == variant if variant else v.place_id == place.get("place_id"))
-                    ),
-                    None,
-                )
-            if variant and variant != "general" and selected is None:
-                raise ValueError("У сценария нет такой версии.")
-            if selected is not None:
-                if not selected.enabled:
-                    raise ValueError("Версия для выбранного места выключена.")
-                return scenario.model_copy(
-                    update={
-                        "actions": selected.actions,
-                        "conditions": [*scenario.conditions, *selected.conditions],
-                        "variants": [],
-                    }
-                ), {
-                    "variant_id": selected.id,
-                    "variant_name": selected.name,
-                    "place_id": selected.place_id,
-                    "place_name": place.get("name"),
-                    "current_place_id": place.get("place_id"),
-                    "selection": "manual" if variant else "auto",
-                }
-            if not scenario.general_enabled:
-                raise ValueError("Место неизвестно или для него нет версии. Выбери место вручную.")
-            return scenario.model_copy(update={"variants": []}), None
-        if not scenario.variants:
-            if variant:
-                raise ValueError("У команды нет такой версии.")
-            return scenario, None
         place = self.location()
-        if variant:
+        selected = None
+        if variant and variant != "general":
             selected = next((v for v in scenario.variants if v.id == variant), None)
-        else:
-            if not place.get("place_id"):
-                raise ValueError("Место не определено. Выбери место в разделе «Мои команды».")
-            selected = next((v for v in scenario.variants if v.place_id == place["place_id"]), None)
-        if selected is None or not selected.enabled:
-            raise ValueError(
-                "Для выбранного места нет включённой версии команды. "
-                "Добавь или включи её в разделе «Мои команды»."
+        elif not variant:
+            selected = next(
+                (v for v in scenario.variants if v.place_id == place.get("place_id") and v.enabled),
+                None,
             )
-        effective = scenario.model_copy(
+        if variant and variant != "general" and (selected is None or not selected.enabled):
+            raise ValueError("Версия не найдена или выключена.")
+        if selected is None:
+            return scenario.model_copy(update={"variants": []}), {
+                "variant_id": "general",
+                "variant_name": "Общий",
+                "place_id": None,
+                "place_name": place.get("city") or place.get("name"),
+                "current_place_id": place.get("place_id"),
+                "selection": "manual" if variant else place.get("mode", "auto"),
+            }
+        return scenario.model_copy(
             update={
-                "actions": [*scenario.actions, *selected.actions],
+                "actions": selected.actions,
                 "conditions": [*scenario.conditions, *selected.conditions],
                 "variants": [],
             }
-        )
-        return effective, {
+        ), {
             "variant_id": selected.id,
             "variant_name": selected.name,
             "place_id": selected.place_id,
+            "place_name": place.get("city") or place.get("name"),
             "current_place_id": place.get("place_id"),
-            "place_name": place.get("name"),
-            "selection": "manual" if variant else "auto",
+            "selection": "manual" if variant else place.get("mode", "auto"),
         }
 
     def unavailable(self, block):
@@ -183,8 +153,15 @@ class Engine:
             raise ActionDenied("Сценарии выполняются только из авторизованной локальной сессии.")
         if not scenario.enabled:
             raise ActionDenied("Сценарий отключён.")
+        if self.refresh_location is not None:
+            await self.refresh_location()
         with measure("action_planning"):
-            effective, selection = self.select(scenario, variant)
+            effective, selection = self.select(scenario)
+            if variant and variant != selection["variant_id"]:
+                raise ActionDenied(
+                    "Версия выбирается по текущему месту. Сначала измени место "
+                    "или используй безопасную проверку выбранной вкладки."
+                )
             self.capabilities.validate(effective)
             values = self.resolve(effective, values or {})
             operations = list(self.operations(effective.actions, values))

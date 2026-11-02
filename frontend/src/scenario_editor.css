@@ -127,3 +127,17 @@
   .scenario-editor .action-summary>.action-inline { grid-column:3/-1;grid-row:2;width:100%;margin:2px 0 0;order:initial; }
   .scenario-editor .action-summary>.block-more { grid-column:5;grid-row:1;margin:0; }
 }
+.version-tabs-editor { grid-column:1/-1;display:grid;gap:12px; }
+.version-tabs-editor .variant-tabs { gap:8px;border:0; }
+.hud .scenario-editor .version-tabs-editor .variant-tabs button { display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:12px 16px;border:1px solid #ffffff12;border-radius:12px;background:#ffffff03;color:#d3c9dc; }
+.hud .scenario-editor .version-tabs-editor .variant-tabs [aria-selected=true] { border-color:#b880e075;background:#9957c52b;color:#f6edff;box-shadow:inset 0 -2px 0 #c28aed; }
+.version-tabs-editor button>span { font-size:14px; }
+.version-tabs-editor button>small { font-size:10px;color:#aea0bc; }
+.hud .scenario-editor .version-tabs-editor .add-version-tab { border-style:dashed;color:#c696e9; }
+.version-create { display:flex;flex-wrap:wrap;gap:10px;padding:16px;background:#b879d70a;border:1px solid #b17dd53a;border-radius:12px; }
+.version-create>strong,.version-create>small { flex-basis:100%; }
+.version-create>small { color:#aea1bb;font-size:12px; }
+.hud .scenario-editor .version-create button { padding:9px 13px;font-size:12px;border-radius:9px; }
+.editor-location-current { flex-wrap:wrap; }
+.hud .scenario-editor .location-connect { font-size:11px;padding:6px 10px;color:#d3adee;border-color:#b77cdb33;background:#b77cdb09; }
+.editor-location-current>a { color:#c9a3e5;font-size:11px;text-decoration:none; }

@@ -13,6 +13,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
+from backend.automation.locations import CITY_PLACES, native_observation
+from backend.automation.models import normalize_phrase
 from backend.brain.privacy import contains_secret
 from backend.memory.store import _now
 from backend.personal import PersonalContext
@@ -76,6 +78,9 @@ class Dashboard:
         automations = getattr(self.conv.tools, "automations", None)
         if automations:
             automations.locations.provider = lambda: self.location
+            automations.locations.refresher = lambda access: self.read_location(
+                access, refresh_weather=False
+            )
         if self.location.get("city"):
             self.location = {**self.location, "status": "stale"}
         try:
@@ -106,6 +111,13 @@ class Dashboard:
                 pass
 
     def publish(self):
+        if self.location.get("source") == "macos" and self.location.get("status") == "ready":
+            if native_observation(self.location)["status"] != "ready":
+                self.location = {
+                    **self.location,
+                    "status": "stale",
+                    "message": "Последний город устарел. Для сценариев используется Общий.",
+                }
         pending = None
         confirmations = getattr(self.conv.tools, "confirmations", None)
         if confirmations:
@@ -374,6 +386,11 @@ class Dashboard:
                 "updated_at": _now(),
             }
             self.store.set_preference("dashboard", "location_enabled", False)
+            automations = getattr(self.conv.tools, "automations", None)
+            if automations:
+                automations.locations.select(
+                    "manual", CITY_PLACES.get(normalize_phrase(self.location["city"]), "general")
+                )
             self.store.set_preference("dashboard", "location", self.location)
             self.publish()
             await self.read_weather()
@@ -385,7 +402,7 @@ class Dashboard:
             }
             self.publish()
 
-    async def read_location(self, request_access=False):
+    async def read_location(self, request_access=False, *, refresh_weather=True):
         self.location = {**self.location, "status": "loading", "message": "Определяю город на Mac…"}
         self.publish()
         try:
@@ -397,26 +414,21 @@ class Dashboard:
         except (ToolError, OSError, TimeoutError):
             result = {}
         self.native_timezone(result)
-        if not result.get("city"):
+        observed = native_observation(result)
+        if observed["status"] != "ready":
             self.location = {
                 **self.location,
                 "status": "error",
+                "error_code": observed["error_code"],
                 "message": "Город не определён. Разреши геопозицию для «Чушпан — утро» "
                 "в настройках macOS или выбери город вручную.",
             }
         else:
-            self.location = {
-                "city": result["city"],
-                "latitude": round(float(result["latitude"]), 1),
-                "longitude": round(float(result["longitude"]), 1),
-                "status": "ready",
-                "source": "macos",
-                "updated_at": _now(),
-            }
+            self.location = observed
             self.store.set_preference("dashboard", "location_enabled", True)
             self.store.set_preference("dashboard", "location", self.location)
         self.publish()
-        if self.location.get("status") == "ready":
+        if refresh_weather and self.location.get("status") == "ready":
             await self.read_weather()
 
     async def read_weather(self):
@@ -675,7 +687,7 @@ end run"""
                 if (woke or now >= next_location) and self.store.preference(
                     "dashboard", "location_enabled"
                 ) is True:
-                    next_location = now + 900
+                    next_location = now + 120
                     self.spawn("location", self.read_location())
                 if (woke or now >= next_weather) and self.location.get("city"):
                     next_weather = now + 1200

@@ -24,7 +24,7 @@ function fixture() {
   const View=sandbox.exports.AutomationsView as new (send:(v:Record<string,unknown>)=>void,...args:unknown[])=>{connection:(v:boolean)=>void;receive:(v:unknown)=>void};
   const view=new View(value=>requests.push(structuredClone(value)),(view:string)=>workspace.navigate(view),()=>{},()=>{});
   view.connection(true);
-  const data={type:'automations',editor_version:2,scenarios:[] as state.Scenario[],capabilities:[{id:'mac.brightness',name:'Яркость MacBook',device:'mac',description:'Test transport',parameters:{level:{type:'integer',minimum:0,maximum:100}},required:['level'],permissions:[],risk:'state_change',availability:'not_checked'}],runs:[],training:[],devices:[],places:[{id:'dorm',revision:1,name:'Общага',cities:[]},{id:'home',revision:1,name:'Дом',cities:[]}],location:{place_id:'dorm',name:'Общага',mode:'manual'}};
+  const data={type:'automations',editor_version:3,scenarios:[] as state.Scenario[],capabilities:[{id:'mac.brightness',name:'Яркость MacBook',device:'mac',description:'Test transport',parameters:{level:{type:'integer',minimum:0,maximum:100}},required:['level'],permissions:[],risk:'state_change',availability:'not_checked'}],runs:[],training:[],devices:[],places:[{id:'dorm',revision:1,name:'Общага',cities:[]},{id:'home',revision:1,name:'Дом',cities:[]}],location:{place_id:'dorm',name:'Общага',mode:'manual'}};
   view.receive(data);
   function button(text:string, root=window.document as unknown as ParentNode) {
     const found=[...root.querySelectorAll('button')].find(node=>node.textContent===text || node.getAttribute('aria-label')===text);
@@ -45,9 +45,9 @@ test('real editor creates one command, common action and independently editable 
   const f=fixture();try {
     f.button('+ Создать сценарий'); f.fill('Название','Я спать');f.phrase('Пора ложиться');
     f.button('Яркость MacBook');f.fill('Уровень, % *','10');
-    f.button('Добавить пустую версию');
+    f.button('+ Общага');f.button('Создать пустую версию');
     f.button('Яркость MacBook');f.fill('Уровень, % *','25');
-    f.button('Скопировать версию в другое место');f.fill('Уровень, % *','40');
+    f.button('+ Дом');f.button('Скопировать блоки из общей');f.fill('Уровень, % *','40');
     f.button('Проверить сценарий');
     const preview=f.requests.at(-1)!;assert.equal(preview.op,'preview');
     const draft=preview.scenario as state.Scenario;
@@ -103,8 +103,8 @@ test('actual place forms create custom location and editor can add a previously 
     const request=f.requests.at(-1)!;assert.equal(request.op,'place_save');
     const place={...(request.place as state.Place),revision:1};assert.equal(place.name,'Дача');assert.deepEqual(place.cities,['Новый город']);
     const snapshot={...f.data,places:[...f.data.places,place]};f.view.receive({...snapshot,place_saved:place.id});
-    f.button('+ Создать сценарий');f.fill('Название','Дача');const target=f.field('Место для новой версии');target.value=place.id;target.dispatchEvent(new f.window.Event('change') as unknown as Event);
-    f.button('Добавить пустую версию');f.button('Проверить сценарий');
+    f.button('+ Создать сценарий');f.fill('Название','Дача');const target=f.field('Другое сохранённое место');target.value=place.id;target.dispatchEvent(new f.window.Event('change') as unknown as Event);
+    f.button('Создать версию другого места');f.button('Создать пустую версию');f.button('Проверить сценарий');
     const draft=f.requests.at(-1)!.scenario as state.Scenario;
     assert.equal(draft.variants.length,1);assert.equal(draft.variants[0].place_id,place.id);assert.equal(draft.variants[0].name,'Дача');
     const current=f.field('Выбор места для голосовых команд');current.value=place.id;current.dispatchEvent(new f.window.Event('change') as unknown as Event);
@@ -296,12 +296,12 @@ test('tags use Enter, reject normalized duplicates, and save a pending phrase wi
   }finally{await f.window.happyDOM.close();}
 });
 
-test('location chips, tabs and copy edit independent action lists without changing current place',async()=>{
+test('mandatory General, optional tabs and copy edit independent action lists without changing current place',async()=>{
   const f=fixture();try {
     f.button('+ Создать сценарий');f.fill('Название','Сон');
     f.button('Яркость MacBook');f.fill('Уровень, % *','10');
-    f.button('Местоположение: Общага');f.button('Яркость MacBook');f.fill('Уровень, % *','20');
-    f.button('Местоположение: Дом');f.button('Яркость MacBook');f.fill('Уровень, % *','30');
+    f.button('+ Общага');f.button('Создать пустую версию');f.button('Яркость MacBook');f.fill('Уровень, % *','20');
+    f.button('+ Дом');f.button('Создать пустую версию');f.button('Яркость MacBook');f.fill('Уровень, % *','30');
     const target=f.window.document.querySelector('[aria-label="Куда скопировать блоки"]')! as unknown as HTMLSelectElement;
     const dormId=Array.from(target.options).find(n=>n.textContent==='Общага')!.value;
     target.value=dormId;target.dispatchEvent(new f.window.Event('change') as unknown as Event);f.button('Копировать блоки');
@@ -369,11 +369,59 @@ test('simulation displays invalid and unavailable steps; real runs require a sep
     f.view.receive({...f.data,scenarios:[saved],preview:{status:'dry_run',name:'Вечер',message:'Устройства не запускались.',selection:null,conditions:[],errors:['Проверь параметры'],steps:[{path:'1',kind:'action',capability:'mac.brightness',status:'invalid',reason:'Некорректная яркость',device:'mac'},{path:'2',kind:'action',capability:'mac.brightness',status:'planned',availability:'unavailable'}]}});
     assert.match(f.window.document.querySelector('.command-preview')!.textContent,/Некорректная яркость/);assert.match(f.window.document.querySelector('.command-preview')!.textContent,/Устройство недоступно/);
     f.window.confirm=()=>false;f.button('Запустить на устройствах');assert.equal(f.requests.some(r=>r.op==='run'),false);
-    f.window.confirm=()=>true;f.button('Запустить на устройствах');assert.deepEqual(f.requests.at(-1),{op:'run',id:saved.id,revision:2,variant:'general'});
+    f.window.confirm=()=>true;f.button('Запустить на устройствах');assert.deepEqual(f.requests.at(-1),{op:'run',id:saved.id,revision:2,variant:''});
     f.view.receive({...f.data,scenarios:[saved],runs:[{id:'test-run',scenario_id:saved.id,name:saved.name,status:'sent',started_at:'2026-11-02T12:00:00Z',steps:[{path:'1',kind:'action',capability:'mac.brightness',status:'sent'}]}]});
     assert.match(f.window.document.querySelector('.scenario-execution')!.textContent,/физический результат не подтверждён/);
     assert.match(f.window.document.querySelector('.scenario-dialogue-status')!.textContent,/Вечер/);
     f.view.receive({...f.data,scenarios:[{...saved,show_status:false}],runs:[{id:'test-run',scenario_id:saved.id,name:saved.name,status:'confirmed',started_at:'2026-11-02T12:00:00Z',steps:[]}]});
     assert.equal(f.window.document.querySelector('.scenario-dialogue-status')!.textContent,'');
+  }finally{await f.window.happyDOM.close();}
+});
+
+test('General cannot be removed; plus tabs offer an empty version or an independent General copy',async()=>{
+  const f=fixture();try {
+    f.button('+ Создать сценарий');f.fill('Название','Единый сценарий');
+    assert.equal(f.window.document.querySelectorAll('.variant-tabs [role="tab"]').length,1);
+    assert.ok(f.window.document.querySelector('[aria-label="+ Общага"]'));
+    assert.ok(f.window.document.querySelector('[aria-label="+ Дом"]'));
+    assert.equal(f.window.document.querySelector('.scenario-location-options'),null);
+    assert.equal([...f.window.document.querySelectorAll('button')].some(n=>n.textContent==='Удалить общую версию'),false);
+    f.button('Яркость MacBook');f.fill('Уровень, % *','10');
+    f.button('+ Общага');assert.ok(f.window.document.querySelector('.version-create'));
+    f.button('Скопировать блоки из общей');f.fill('Уровень, % *','15');
+    f.button('+ Дом');f.button('Создать пустую версию');
+    assert.match(f.window.document.querySelector('.blocks-empty')!.textContent,/первое действие/);
+    f.window.confirm=()=>false;f.button('Удалить версию');
+    assert.equal(f.window.document.querySelectorAll('.variant-tabs [role="tab"]').length,3);
+    f.window.confirm=()=>true;f.button('Удалить версию');
+    assert.equal(f.window.document.querySelectorAll('.variant-tabs [role="tab"]').length,2);
+    assert.equal(f.field('Уровень, % *').value,'10');
+    assert.equal([...f.window.document.querySelectorAll('.variant-copy button')].some(n=>n.textContent==='Удалить версию'),false);
+    f.submit();const draft=f.requests.at(-1)!.scenario as state.Scenario;
+    assert.equal(draft.general_enabled,true);assert.equal(draft.schema_version,2);assert.equal(draft.version_policy,'fallback');
+    assert.equal(draft.actions[0].parameters.level,10);assert.equal(draft.variants[0].actions[0].parameters.level,15);
+    assert.match(f.window.document.querySelector('.variant-tabs')!.textContent,/Таллинн/);
+    assert.match(f.window.document.querySelector('.variant-tabs')!.textContent,/Силламяэ/);
+  }finally{await f.window.happyDOM.close();}
+});
+
+test('location controls request macOS consent only by an explicit click and preserve manual priority',async()=>{
+  const f=fixture();try {
+    f.view.receive({...f.data,location:{place_id:null,name:null,mode:'auto',status:'unknown',geolocation_enabled:false}});
+    f.button('+ Создать сценарий');
+    assert.match(f.window.document.querySelector('.editor-location-current')!.textContent,/место неизвестно.*Общий/);
+    assert.equal(f.requests.some(r=>r.op==='location_connect'||r.op==='location_refresh'),false);
+    f.button('Включить геолокацию macOS');assert.deepEqual(f.requests.at(-1),{op:'location_connect',consent:true});
+    const select=f.window.document.querySelector('[aria-label="Текущее место"]')! as unknown as HTMLSelectElement;
+    select.value='home';select.dispatchEvent(new f.window.Event('change'));
+    assert.deepEqual(f.requests.at(-1),{op:'location',mode:'manual',place_id:'home'});
+    f.view.receive({...f.data,location:{place_id:'home',name:'Дом',mode:'manual',status:'ready'}});
+    assert.equal(f.window.document.querySelector('.editor-location-current .location-connect'),null);
+    const manual=f.window.document.querySelector('[aria-label="Текущее место"]')! as unknown as HTMLSelectElement;
+    manual.value='auto';manual.dispatchEvent(new f.window.Event('change'));
+    assert.deepEqual(f.requests.at(-1),{op:'location',mode:'auto',place_id:''});
+    f.view.receive({...f.data,location:{place_id:'dorm',name:'Общага',city:'Таллинн',mode:'auto',status:'ready',geolocation_enabled:true}});
+    assert.match(f.window.document.querySelector('.editor-location-current')!.textContent,/Таллинн.*Общага/);
+    f.button('Обновить город');assert.deepEqual(f.requests.at(-1),{op:'location_refresh'});
   }finally{await f.window.happyDOM.close();}
 });

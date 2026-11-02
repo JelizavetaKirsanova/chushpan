@@ -39,7 +39,7 @@ def command(rig):
     )
 
 
-def test_one_phrase_chooses_independent_place_versions_and_shared_steps(rig):
+def test_one_phrase_chooses_one_independent_place_version(rig):
     scenario = command(rig)
 
     async def run():
@@ -47,7 +47,7 @@ def test_one_phrase_chooses_independent_place_versions_and_shared_steps(rig):
         assert "проверен" in await ask(rig.conv, "Мой ритуал сна")
         rig.service.locations.select("manual", "home")
         assert "проверен" in await ask(rig.conv, "Мой ритуал сна")
-        assert [c.kwargs["level"] for c in rig.brightness.await_args_list] == [10, 25, 10, 40]
+        assert [c.kwargs["level"] for c in rig.brightness.await_args_list] == [25, 40]
         history = rig.service.store.history(scenario.id)
         assert [h["variant_name"] for h in history] == ["Дом", "Общага"]
         assert len({h["scenario_id"] for h in history}) == 1
@@ -56,36 +56,46 @@ def test_one_phrase_chooses_independent_place_versions_and_shared_steps(rig):
     asyncio.run(run())
 
 
-def test_unknown_place_missing_version_and_disabled_version_never_run_shared_steps(rig):
+def test_unknown_place_missing_version_and_disabled_version_use_general(rig):
     scenario = command(rig)
 
     async def run():
-        answer = await ask(rig.conv, "Мой ритуал сна")
-        assert "Место не определено" in answer
-        rig.brightness.assert_not_awaited()
+        assert "проверен" in await ask(rig.conv, "Мой ритуал сна")
         rig.service.locations.select("manual", "home")
         edited = rig.service.store.save(
             scenario.model_copy(update={"variants": [scenario.variants[0]]})
         )
-        assert "нет включённой версии" in await ask(rig.conv, "Мой ритуал сна")
-        rig.brightness.assert_not_awaited()
+        assert "проверен" in await ask(rig.conv, "Мой ритуал сна")
         disabled = edited.variants[0].model_copy(update={"enabled": False})
         rig.service.store.save(edited.model_copy(update={"variants": [disabled]}))
         rig.service.locations.select("manual", "dorm")
-        assert "нет включённой версии" in await ask(rig.conv, "Мой ритуал сна")
-        rig.brightness.assert_not_awaited()
+        assert "проверен" in await ask(rig.conv, "Мой ритуал сна")
+        assert [call.kwargs["level"] for call in rig.brightness.await_args_list] == [10, 10, 10]
 
     asyncio.run(run())
 
 
 def test_auto_uses_fresh_existing_city_and_custom_user_aliases(rig):
-    observed = {"city": "Tallinn", "status": "ready", "updated_at": datetime.now(UTC).isoformat()}
+    observed = {
+        "city": "Tallinn",
+        "status": "ready",
+        "source": "macos",
+        "measured_at": datetime.now(UTC).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
+        "latitude": 59.4,
+        "longitude": 24.7,
+        "accuracy_m": 100,
+    }
+    rig.memory.set_preference("dashboard", "location_enabled", True)
     rig.service.locations.provider = lambda: observed
     assert rig.service.locations.current()["place_id"] == "dorm"
     custom = rig.service.locations.save(Place(name="Дача", cities=["Новый город"]))
     observed["city"] = "Новый город"
+    assert rig.service.locations.current()["place_id"] is None
+    rig.service.locations.select("manual", custom.id)
     assert rig.service.locations.current()["place_id"] == custom.id
-    observed["updated_at"] = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    rig.service.locations.select("auto")
+    observed["measured_at"] = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
     assert rig.service.locations.current()["place_id"] is None
     observed.update(status="stale", updated_at=datetime.now(UTC).isoformat())
     assert rig.service.locations.current()["place_id"] is None
@@ -211,7 +221,7 @@ def test_safe_preview_uses_selected_variant_conditions_and_never_calls_device_or
     assert result["status"] == "dry_run" and result["selection"]["variant_name"] == "Дом"
     assert [
         s["parameters"]["level"] for s in result["steps"] if s.get("parameters", {}).get("level")
-    ] == [10, 40]
+    ] == [40]
     rig.brightness.assert_not_awaited()
     rig.led.assert_not_awaited()
     rig.power.assert_not_awaited()
@@ -254,14 +264,7 @@ def test_apply_updates_voice_immediately_without_restart_or_modifying_other_plac
             await ask(rig.conv, "Мой ритуал сна")
             rig.service.locations.select("manual", "dorm")
             await ask(rig.conv, "Мой ритуал сна")
-            assert [c.kwargs["level"] for c in rig.brightness.await_args_list] == [
-                10,
-                40,
-                10,
-                60,
-                10,
-                25,
-            ]
+            assert [c.kwargs["level"] for c in rig.brightness.await_args_list] == [40, 60, 25]
             assert not rig.conv.llm.requests
         finally:
             await rig.service.close()
@@ -365,7 +368,7 @@ def test_websocket_apply_preview_place_switch_voice_and_restore_use_same_command
                 for r in e.get("runs", [])
             )
         )
-        assert [c.kwargs["level"] for c in rig.brightness.await_args_list] == [10, 25]
+        assert [c.kwargs["level"] for c in rig.brightness.await_args_list] == [25]
         document = next(s for s in first["scenarios"] if s["id"] == identifier)
         document["variants"][1]["actions"][0]["parameters"]["level"] = 60
         send("save", scenario=document)
@@ -382,7 +385,7 @@ def test_websocket_apply_preview_place_switch_voice_and_restore_use_same_command
                 for r in e.get("runs", [])
             )
         )
-        assert [c.kwargs["level"] for c in rig.brightness.await_args_list] == [10, 25, 10, 60]
+        assert [c.kwargs["level"] for c in rig.brightness.await_args_list] == [25, 60]
         send("restore", id=identifier, from_revision=1, expected_revision=2)
         restored = until(lambda e: e.get("saved") == identifier)
         restored_doc = next(s for s in restored["scenarios"] if s["id"] == identifier)

@@ -3,7 +3,7 @@
 import json
 from uuid import uuid4
 
-from backend.automation.models import Scenario, normalize_phrase
+from backend.automation.models import Scenario, normalize_phrase, upgrade_document
 from backend.memory.store import _now
 
 SCHEMA = """
@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS scenario_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_scenario_runs ON scenario_runs(scenario_id, started_at);
 CREATE TABLE IF NOT EXISTS scenario_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scenario_migration_backups (
+ scenario_id TEXT NOT NULL, revision INTEGER NOT NULL, data TEXT NOT NULL,
+ created_at TEXT NOT NULL, PRIMARY KEY(scenario_id, revision)
+);
 CREATE TABLE IF NOT EXISTS scenario_revisions (
  scenario_id TEXT NOT NULL, revision INTEGER NOT NULL, data TEXT NOT NULL,
  created_at TEXT NOT NULL, PRIMARY KEY(scenario_id, revision)
@@ -37,10 +41,32 @@ class ScenarioStore:
         self.db.executescript(SCHEMA)
         self.generation = 0
         self.on_run_change = None
+        self.migrate()
+
+    @staticmethod
+    def decode(raw):
+        return Scenario.model_validate(upgrade_document(json.loads(raw)))
+
+    def migrate(self):
+        if not self.memory.memory_available:
+            return
+        with self.memory.memory_transaction():
+            rows = list(self.db.execute("SELECT id,revision,data FROM scenarios"))
+            for row in rows:
+                raw = json.loads(row["data"])
+                if raw.get("schema_version", 1) != 1:
+                    continue
+                migrated = self.decode(row["data"])
+                # The original bytes are immutable and separate from the normal restore UI.
+                self.db.execute(
+                    "INSERT OR IGNORE INTO scenario_migration_backups VALUES (?,?,?,?)",
+                    (row["id"], row["revision"], row["data"], _now()),
+                )
+                self.save(migrated)
 
     def list(self):
         return [
-            Scenario.model_validate_json(r[0])
+            self.decode(r[0])
             for r in self.db.execute("SELECT data FROM scenarios ORDER BY updated_at, id")
         ]
 
@@ -48,7 +74,7 @@ class ScenarioStore:
         row = self.db.execute("SELECT data FROM scenarios WHERE id=?", (identifier,)).fetchone()
         if not row:
             raise ValueError("Сценарий удалён или не найден.")
-        return Scenario.model_validate_json(row[0])
+        return self.decode(row[0])
 
     def save(self, scenario):
         self.memory._require_memory()
@@ -128,7 +154,7 @@ class ScenarioStore:
         ).fetchone()
         if not row:
             raise ValueError("Сохранённая редакция не найдена.")
-        return Scenario.model_validate_json(row[0])
+        return self.decode(row[0])
 
     def restore(self, identifier, revision, expected):
         with self.memory.memory_transaction():
