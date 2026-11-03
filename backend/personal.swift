@@ -1,4 +1,5 @@
 import AppKit
+import CoreWLAN
 import CoreLocation
 import EventKit
 import Foundation
@@ -148,7 +149,7 @@ guard args.count == 3,
       let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { exit(1) }
 let requestAccess = request["request_access"] as? Bool ?? false
 let parts = Set(request["parts"] as? [String] ?? ["calendar", "location"])
-guard !parts.isEmpty, parts.isSubset(of: ["calendar", "location"]) else { exit(1) }
+guard !parts.isEmpty, parts.isSubset(of: ["calendar", "location", "signals"]) else { exit(1) }
 let location = LocationReader()
 var output: [String: Any] = [:]
 var finished = 0
@@ -165,6 +166,10 @@ func save(_ key: String, _ value: [String: Any]) {
 DispatchQueue.main.async {
     // Request sequentially, so two privacy dialogs never compete for attention.
     Task { @MainActor in
+        if parts.contains("signals") {
+            let interface = CWWiFiClient.shared().interface()
+            save("signals", ["ssid": interface?.ssid() ?? "", "bssid": interface?.bssid() ?? ""])
+        }
         if parts.contains("calendar") {
             let calendar = await calendarEvents(requestAccess: requestAccess, day: request["date"] as? String)
             save("calendar", calendar)

@@ -36,12 +36,22 @@ def apply_pronunciations(text: str, pronunciations: dict[str, str]) -> str:
     )
 
 
-def speech_text(text: str, pronunciations: dict[str, str], language: str | None) -> str:
+def speech_text(
+    text: str,
+    pronunciations: dict[str, str],
+    language: str | None,
+    *,
+    normalize_numbers=True,
+    normalize_english=True,
+) -> str:
     if language == "ru":
         from backend.audio.russian import normalize
         from backend.audio.sentences import clean_for_speech
 
-        return clean_for_speech(normalize(text, pronunciations), "ru")
+        return clean_for_speech(
+            normalize(text, pronunciations, numbers=normalize_numbers, foreign=normalize_english),
+            "ru",
+        )
     return apply_pronunciations(text, pronunciations)
 
 
@@ -83,6 +93,9 @@ class PiperSpeaker:
         self.voice_path = voice_path
         self.device = device
         self.length_scale = length_scale
+        self.volume, self.pause_ms = 1.0, 0
+        self.rate = self.pitch = "medium"
+        self.normalize_numbers = self.normalize_english = True
         self.pronunciations = pronunciations or {}
         self._voice = None
         self._synth_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
@@ -119,7 +132,13 @@ class PiperSpeaker:
         self._load()
         cfg = SynthesisConfig(length_scale=self.length_scale)
         with measure("tts_text_preparation"):
-            spoken = speech_text(text, self.pronunciations, self.speech_language)
+            spoken = speech_text(
+                text,
+                self.pronunciations,
+                self.speech_language,
+                normalize_numbers=self.normalize_numbers,
+                normalize_english=self.normalize_english,
+            )
         chunks = [c.audio_int16_array for c in self._voice.synthesize(spoken, syn_config=cfg)]
         return np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.int16)
 
@@ -341,6 +360,19 @@ class PiperSpeaker:
                             if is_waiting_only(sentence)
                             else "tts_audio_enqueued"
                         )
+                if self.volume != 1.0:
+                    audio = np.clip(audio.astype(np.float32) * self.volume, -32768, 32767).astype(
+                        np.int16
+                    )
+                if self.pause_ms:
+                    audio = np.concatenate(
+                        (
+                            audio,
+                            np.zeros(
+                                round(self.sample_rate * self.pause_ms / 1000), dtype=np.int16
+                            ),
+                        )
+                    )
                 audio_q.put((sentence, audio))
         except BaseException:
             stop.set()
@@ -406,12 +438,29 @@ class SileroSpeaker(PiperSpeaker):
 
         self._load()
         with measure("tts_text_preparation"):
-            spoken = speech_text(text, self.pronunciations, "ru")
+            spoken = speech_text(
+                text,
+                self.pronunciations,
+                "ru",
+                normalize_numbers=self.normalize_numbers,
+                normalize_english=self.normalize_english,
+            )
             # Silero marks stress before the vowel with '+', Piper uses a combining acute.
             spoken = re.sub(r"([аеёиоуыэюя])\u0301", r"+\1", spoken, flags=re.IGNORECASE)
         with torch.inference_mode():
+            if self.rate != "medium" or self.pitch != "medium":
+                from html import escape
+
+                source = {
+                    "ssml_text": (
+                        f'<speak><prosody rate="{self.rate}" pitch="{self.pitch}">'
+                        f"{escape(spoken)}</prosody></speak>"
+                    )
+                }
+            else:
+                source = {"text": spoken}
             audio = self._voice.apply_tts(
-                text=spoken,
+                **source,
                 speaker=self.speaker,
                 sample_rate=self.sample_rate,
                 put_accent=True,

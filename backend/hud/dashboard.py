@@ -255,6 +255,7 @@ class Dashboard:
         elif op == "calendar_disable":
             self.cancel_job("calendar")
             self.store.set_preference("dashboard", "calendar_enabled", False)
+            self.s._calendar_disabled = True
             self.calendar.clear()
             self.publish()
         elif op == "calendar_open":
@@ -501,6 +502,7 @@ class Dashboard:
                 }
             else:
                 self.store.set_preference("dashboard", "calendar_enabled", True)
+                self.s._calendar_disabled = False
                 self.calendar[day] = {
                     "status": "ready",
                     "date": day,

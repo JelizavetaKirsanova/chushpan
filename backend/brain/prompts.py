@@ -357,7 +357,9 @@ def _prompt_ru(
     )
     if s.user.form_of_address:
         address += f" Её выбранное обращение: «{s.user.form_of_address}»."
-    address += " Обращайся к ней на «ты», в женском роде, без формальных титулов."
+    address += (
+        f" Обращайся к ней на «{s.user.address_mode}», в женском роде, без формальных титулов."
+    )
     where = f" Местоположение: {s.location.display_name}." if s.location.display_name else ""
     hemi = ""
     if s.location.latitude is not None:
@@ -460,7 +462,7 @@ def build_system_prompt(
             return (
                 f"Ты — {s.assistant_name}, тот же персональный ассистент. "
                 "Распознавание речи локальное; ответ даёт выбранный провайдер модели. "
-                "Обращайся к пользовательнице на ты, в женском роде. "
+                f"Обращайся к пользовательнице на {s.user.address_mode}, в женском роде. "
                 f"Имя пользовательницы: {s.user.name or 'не задано'}. "
                 f"Выбранное обращение: {s.user.form_of_address or 'не задано'}. "
                 f"Часовой пояс: {s.location.tz_name}.\n"

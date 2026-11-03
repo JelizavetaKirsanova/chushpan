@@ -97,6 +97,36 @@ class Tool:
 
     async def invoke(self, **arguments: Any) -> Any:
         args = validate_arguments(arguments, self.parameters, self.required)
+        if store := getattr(self, "settings_store", None):
+            policy = store.preference("settings", "access") or {}
+            dependencies = {
+                "night_mode": {
+                    "set_brightness",
+                    "set_external_brightness",
+                    "set_volume",
+                    "run_shortcut",
+                    "led_control",
+                    "open_website",
+                },
+                "music_command": {
+                    "play_music",
+                    "music_playlist",
+                    "media_control",
+                    "media_volume",
+                    "media_seek",
+                    "now_playing",
+                },
+            }
+            if {self.name, *dependencies.get(self.name, set())} & set(
+                policy.get("disabled_tools", [])
+            ):
+                raise ActionDenied("Действие отключено в настройках доступа.")
+            if self.name in {"open_app", "manage_app"} and str(
+                args.get("name", "")
+            ).casefold().removesuffix(".app") in {
+                v.casefold().removesuffix(".app") for v in policy.get("blocked_apps", [])
+            }:
+                raise ActionDenied("Доступ к этому приложению отключён в настройках.")
         context = request_context.get()
         risk = (
             self.risk_resolver(args)

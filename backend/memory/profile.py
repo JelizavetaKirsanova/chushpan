@@ -157,6 +157,11 @@ class ProfileMemory:
             return None
         if not self.store.preference("memory", "habits_opt_in"):
             return None
+        from backend.settings_models import MemoryPolicy
+
+        policy = MemoryPolicy.model_validate(self.store.preference("settings", "memory") or {})
+        if policy.automatic == "off" or "habit" in policy.excluded:
+            return None
         if name == "night_mode" and not (result.get("shortcut_started") and result.get("ok")):
             return None
         if name == "open_app" and not result.get("opened") and not result.get("ok"):
@@ -171,6 +176,9 @@ class ProfileMemory:
             event["offered"] = True
         self.store.set_preference("habits", key, event)
         if offer:
+            if policy.automatic == "ask":
+                self.propose("Повторяющееся действие: " + key, "habit", "habit:" + key)
+                return "Замеченную привычку можно подтвердить в настройках памяти."
             self.store.save_memory(
                 "Повторяющееся действие: " + key,
                 category="habit",
@@ -201,6 +209,8 @@ class ProfileMemory:
         )
 
     def character(self) -> dict:
+        if hasattr(self.store, "_personalities"):
+            return self.store._personalities.legacy()
         values = DEFAULT_CHARACTER.copy()
         for row in self.store.memories():
             key = row["semantic_key"].removeprefix("character:")
@@ -217,7 +227,17 @@ class ProfileMemory:
         c = request_context.get()
         if c is None or not c.device.authenticated:
             return
+        from backend.settings_models import MemoryPolicy
+
+        policy = MemoryPolicy.model_validate(self.store.preference("settings", "memory") or {})
+        if policy.automatic == "off":
+            return
         for category, key, value in extract(text):
+            if category in policy.excluded:
+                continue
+            if policy.automatic == "ask":
+                self.propose(value, category, key)
+                continue
             self.store.save_memory(
                 value,
                 category=category,
@@ -227,12 +247,28 @@ class ProfileMemory:
                 confidence=1,
             )
 
+    def propose(self, value, category, key):
+        from uuid import uuid4
+
+        pending = self.store.preference("memory", "pending") or []
+        if not any(row["key"] == key and row["content"] == value for row in pending):
+            pending.append({"id": uuid4().hex, "content": value, "category": category, "key": key})
+            self.store.set_preference("memory", "pending", pending[-30:])
+
     def relevant(self, text: str, limit: int = 6, budget: int = 1600) -> list[dict]:
+        from datetime import UTC, datetime, timedelta
+
+        from backend.settings_models import MemoryPolicy
+
+        policy = MemoryPolicy.model_validate(self.store.preference("settings", "memory") or {})
+        cutoff = (datetime.now(UTC) - timedelta(days=policy.temporary_days)).isoformat()
         query = tokens(text)
         rows = [
             r
             for r in self.store.memories()
             if r["status"] == "active"
+            and r["category"] not in policy.excluded
+            and (r["category"] not in {"episode", "habit"} or r["updated_at"] >= cutoff)
             and not r["sensitive"]
             and not _SENSITIVE.search(r["content"])
             and safe_memory(r["content"])
@@ -408,6 +444,8 @@ class ProfileMemory:
                 "message": "; ".join(f"{LABELS[k]}: {v}/10" for k, v in self.character().items())
             }
         if action == "character":
+            if hasattr(self.store, "_personalities"):
+                self.store._personalities.update_legacy(json.loads(value))
             with self.store.memory_transaction():
                 for key, number in json.loads(value).items():
                     self.store.save_memory(

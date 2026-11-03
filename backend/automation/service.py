@@ -130,7 +130,20 @@ class Automations:
         parsed = json.loads(values)
         if not isinstance(parsed, dict):
             raise ValueError("Параметры сценария должны быть объектом.")
-        return await self.engine.run(scenario, values=parsed, variant=variant)
+        result = await self.engine.run(scenario, values=parsed, variant=variant)
+        self.notify_result(result)
+        return result
+
+    def notify_result(self, result):
+        preferences = self.store.memory.preference("settings", "notifications") or {}
+        if self.bus and preferences.get("scenarios") is True and result.get("message"):
+            self.bus.publish(
+                {
+                    "type": "notice",
+                    "message": result["message"],
+                    "error": result.get("status") not in {"confirmed", "sent", "skipped"},
+                }
+            )
 
     def validate_document(self, scenario):
         for variant in scenario.variants:
@@ -544,6 +557,48 @@ class Automations:
                     if not scenario.enabled:
                         continue
                     for trigger in scenario.triggers:
+                        if now.weekday() not in trigger.weekdays:
+                            continue
+                        if trigger.kind == "condition":
+                            if not scenario.conditions:
+                                continue
+                            # A manual personality lock must not consume a rising edge.
+                            if scenario.description.startswith("Характер: ") and (
+                                self.store.memory.preference("personality", "selection") or {}
+                            ).get("locked"):
+                                self.store.memory.set_preference(
+                                    "automation_conditions", scenario.id, False
+                                )
+                                continue
+                            await self.locations.refresh()
+                            values = self.engine.resolve(scenario, {})
+                            matches = all(
+                                [
+                                    await self.engine.condition(c, values)
+                                    for c in scenario.conditions
+                                ]
+                            )
+                            previous = (
+                                self.store.memory.preference("automation_conditions", scenario.id)
+                                or False
+                            )
+                            self.store.memory.set_preference(
+                                "automation_conditions", scenario.id, matches
+                            )
+                            if not matches or previous:
+                                continue
+                            event_id = f"condition:{scenario.id}:{time.time_ns()}"
+                            effective, _ = self.engine.select(scenario)
+                            if scenario.confirmation == "always" or any(
+                                self.capabilities.risk(cap, args) == Risk.DANGEROUS
+                                for cap, args in self.engine.operations(effective.actions, values)
+                            ):
+                                self.publish(
+                                    error="Условный сценарий требует ручного подтверждения."
+                                )
+                                continue
+                            self.spawn(self.scheduled_run(scenario, event_id))
+                            continue
                         if (
                             trigger.kind != "schedule"
                             or trigger.at != now.strftime("%H:%M")
@@ -582,7 +637,8 @@ class Automations:
         context = RequestContext(self.conv.device, "Расписание сценария")
         try:
             with request_scope(context):
-                await self.engine.run(scenario, event_id=event_id)
+                result = await self.engine.run(scenario, event_id=event_id)
+                self.notify_result(result)
             self.publish()
         except (ValueError, ActionDenied) as exc:
             self.publish(error=str(exc))

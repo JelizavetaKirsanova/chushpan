@@ -5,6 +5,10 @@ import { phaseLabels } from './workspace_state';
 
 const node = (id: string) => document.getElementById(id)!;
 const paths: Record<string, string> = {
+  heart: 'M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z',
+  shield: 'M12 3 3 7v5c0 5 9 10 9 10s9-5 9-10V7ZM8 12l3 3 5-6',
+  cpu: 'M5 5h14v14H5ZM9 9h6v6H9ZM9 2v3m6-3v3m-6 14v3m6-3v3M2 9h3m-3 6h3m14-6h3m-3 6h3',
+  link: 'M10 13a5 5 0 0 0 7 0l4-4a5 5 0 0 0-7-7l-2 2m2 7a5 5 0 0 0-7 0l-4 4a5 5 0 0 0 7 7l2-2',
   chat: 'M21 11a8 8 0 0 1-8 8H5l-3 3v-9a8 8 0 1 1 19-2Z',
   history: 'M3 12a9 9 0 1 0 3-6M3 3v6h6M12 7v5l3 2',
   calendar: 'M8 2v4m8-4v4M3 9h18M5 4h14a2 2 0 0 1 2 2v14H3V6a2 2 0 0 1 2-2Zm2 9h2m3 0h2m3 0h1M7 17h2m3 0h2',

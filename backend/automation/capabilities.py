@@ -36,6 +36,13 @@ class CapabilityRegistry:
         self.tools, self.s = tools, settings
         self.items: dict[str, Capability] = {}
         definitions = [
+            (
+                "assistant.personality",
+                "Выбрать характер Чушпана",
+                "assistant",
+                "set_personality_profile",
+                [],
+            ),
             ("mac.brightness", "Яркость MacBook", "mac", "set_brightness", []),
             ("mac.volume", "Системная громкость", "mac", "set_volume", ["automation"]),
             ("mac.open_app", "Открыть приложение", "mac", "open_app", []),
@@ -147,6 +154,8 @@ class CapabilityRegistry:
                 self.get(condition.key)
             if condition.source == "time" and condition.key != "hour":
                 raise ValueError("Для времени поддерживается только час (hour).")
+            if condition.source == "location" and condition.key != "place":
+                raise ValueError("Для места поддерживается только профиль (place).")
         return scenario
 
     @staticmethod
@@ -165,6 +174,10 @@ class CapabilityRegistry:
             parameters = json.loads(json.dumps(capability.parameters))
             if capability.id == "shortcut.run":
                 parameters["name"]["enum"] = list(self.s.shortcuts.allowed)
+            if capability.id == "assistant.personality":
+                profiles = getattr(self.tools, "personality_profiles", None)
+                if profiles:
+                    parameters["profile_id"]["enum"] = [p.id for p in profiles.list()]
             result.append(
                 {
                     "id": capability.id,
@@ -196,6 +209,12 @@ class CapabilityRegistry:
             return "failed"
         if result.get("status") == "confirmation_required":
             return "blocked"
+        if tool == "set_personality_profile":
+            return (
+                "confirmed"
+                if result.get("ok") is True and result.get("profile_id") == args.get("profile_id")
+                else "unverified"
+            )
         if tool in {"set_brightness", "set_external_brightness"}:
             return "confirmed" if result.get("level") == args.get("level") else "unverified"
         if (
@@ -204,6 +223,12 @@ class CapabilityRegistry:
             and all(
                 result.get({"level": "volume_percent", "mute": "muted"}[key]) == value
                 for key, value in args.items()
+                if key in {"level", "mute"}
+            )
+            and (
+                "direction" not in args
+                or type(result.get("volume_percent")) is int
+                and 0 <= result["volume_percent"] <= 100
             )
         ):
             return "confirmed"

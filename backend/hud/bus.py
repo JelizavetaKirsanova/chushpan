@@ -38,6 +38,7 @@ STICKY = {
     "addressee",
     "performance_live",
     "voice_settings",
+    "settings_center",
 }
 TRANSCRIPT_LINES = 8
 QUEUE_SIZE = 512  # ~15 s of audio levels; a stalled client loses the oldest events

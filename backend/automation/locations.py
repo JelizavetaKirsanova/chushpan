@@ -80,6 +80,9 @@ class Locations:
         self._last_attempt = None
         self._stable = None
         self._candidate = None
+        self.signal_observation = {}
+        self.signal_reader = self.read_signals if settings is not None else None
+        self._signal_attempt = None
         self.db.execute(
             "CREATE TABLE IF NOT EXISTS scenario_places (id TEXT PRIMARY KEY, data TEXT NOT NULL)"
         )
@@ -192,6 +195,28 @@ class Locations:
             "geolocation_enabled": self.memory.preference("dashboard", "location_enabled") is True,
             "message": "Место неизвестно — используется Общий.",
         }
+        signals = self.signal_observation
+        if signals.get("source") == "macos" and 0 <= observation_age(signals) <= 60:
+            seen = {(v["kind"], v["key"]) for v in signals.get("signals", [])}
+            matches = [
+                p for p in self.list() if any((v["kind"], v["key"]) in seen for v in p.signals)
+            ]
+            if len(matches) == 1:
+                return {
+                    "place_id": matches[0].id,
+                    "name": matches[0].name,
+                    "city": None,
+                    "mode": "auto",
+                    "status": "ready",
+                    "reason": "explicit_signal_binding",
+                    "message": "Явная привязка к текущему Wi-Fi или подключённому устройству.",
+                }
+            if len(matches) > 1:
+                return {
+                    **unknown,
+                    "reason": "signal_conflict",
+                    "message": "Сигналы указывают на разные места — используется Общий.",
+                }
         if (
             observed.get("status") != "ready"
             or not 0 <= observation_age(observed) <= LOCATION_TTL_S
@@ -270,11 +295,14 @@ class Locations:
     async def refresh(self, *, request_access=False, force=False):
         if (self.memory.preference("automation", "location") or {}).get("mode") == "manual":
             return self.current()
+        if any(p.signals for p in self.list()):
+            await self.refresh_signals(force=force)
         if (
             not request_access
             and self.memory.preference("dashboard", "location_enabled") is not True
         ):
             return self.current()
+
         async with self._refresh_lock:
             current = self.current()
             if not force and current["status"] == "ready":
@@ -301,3 +329,36 @@ class Locations:
                     )
                 # The dashboard refresher marks its own observation loading/error before awaiting.
             return self.current()
+
+    async def refresh_signals(self, *, force=False):
+        if (
+            not force
+            and self._signal_attempt is not None
+            and time.monotonic() - self._signal_attempt < 30
+        ):
+            return self.signal_observation
+        self._signal_attempt = time.monotonic()
+        self.signal_observation = {
+            "source": "macos",
+            "updated_at": datetime.now(UTC).isoformat(),
+            "signals": [],
+        }
+        if self.signal_reader:
+            try:
+                async with asyncio.timeout(8):
+                    observed = await self.signal_reader()
+                    self.signal_observation = {
+                        **observed,
+                        "source": "macos",
+                        "updated_at": datetime.now(UTC).isoformat(),
+                    }
+            except (OSError, ToolError, TimeoutError, ValueError):
+                self.signal_observation["error"] = (
+                    "Текущие сигналы недоступны. Старые привязки не считаются наблюдением."
+                )
+        return self.signal_observation
+
+    async def read_signals(self):
+        from backend.context_signals import read_signals
+
+        return await read_signals(self.settings)

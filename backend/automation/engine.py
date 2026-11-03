@@ -127,6 +127,8 @@ class Engine:
             actual = values[condition.key]
         elif condition.source == "time":
             actual = datetime.now(ZoneInfo(self.capabilities.s.location.tz_name)).hour
+        elif condition.source == "location":
+            actual = self.location().get("place_id") or "general"
         else:
             # No guessed connection status. Only an explicitly observed probe/operation counts.
             cap = self.capabilities.get(condition.key)

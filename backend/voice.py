@@ -176,6 +176,7 @@ async def reply_aloud(
     min_chars: int,
     on_token: Callable[[str], None] | None = None,
     on_start: Callable[[], None] | None = None,
+    on_silent_token: Callable[[str], None] | None = None,
 ) -> bool:
     # Own the callback and both kinds of playback until cancellation cleanup completes.
     lock = getattr(speaker, "_reply_lock", None)
@@ -202,6 +203,18 @@ async def reply_aloud(
                     profile.result_status = "rejected"
                     trace("REQUEST_REJECTED", reason="empty_text")
                     return False
+                if store is not None:
+                    from backend.settings_models import silent_reply
+
+                    if silent_reply(store, conv.s):
+                        async for piece in conv.reply(user_text):
+                            if piece and on_token:
+                                on_token(piece)
+                            if piece and on_silent_token:
+                                on_silent_token(piece)
+                        if finish := getattr(conv, "finish_reply", None):
+                            await finish(False)
+                        return True
                 completed = await _reply_aloud(
                     conv, speaker, user_text, min_chars, on_token, on_start
                 )
@@ -841,6 +854,16 @@ class VoiceLoop:
             self.bus.publish({"type": "dialogue_settings_result", "ok": False})
             return
         self.s.dialogue = config
+        if store := getattr(self.conv, "store", None):
+            store.set_preference("voice", "controls", controls(self.s).model_dump())
+            store.set_preference(
+                "voice",
+                "dialogue",
+                {
+                    "nameless_interruptions": config.nameless_interruptions,
+                    "addressee_strictness": config.addressee_strictness,
+                },
+            )
         if not config.enabled:
             self._close_session()
             if not self.busy and self.use_wake:
@@ -937,12 +960,36 @@ class VoiceLoop:
 
     def announce(self, text: str) -> None:
         """Speak something unprompted as soon as Jarvis is not busy or being spoken to."""
+        store = getattr(self.conv, "store", None)
+        if store:
+            from backend.settings_models import quiet_now, silent_reply
+
+            policy = store.preference("settings", "notifications") or {}
+            quiet = quiet_now(store, self.s)
+            if policy.get("reminders") is False or quiet and quiet.pause_initiative:
+                return
+            if silent_reply(store, self.s):
+                self.bus.publish({"type": "notice", "message": text, "error": False})
+                return
         self.pending.append(text)
         self._maybe_announce()
 
     def _maybe_announce(self) -> None:
         if not self.pending or self.busy:
             return
+        if store := getattr(self.conv, "store", None):
+            from backend.settings_models import quiet_now, silent_reply
+
+            quiet = quiet_now(store, self.s)
+            suppressed = (store.preference("settings", "notifications") or {}).get(
+                "reminders"
+            ) is False or bool(quiet and quiet.pause_initiative)
+            if suppressed or silent_reply(store, self.s):
+                texts, self.pending = self.pending, []
+                if not suppressed:
+                    for text in texts:
+                        self.bus.publish({"type": "notice", "message": text, "error": False})
+                return
         if self.wake_task and not self.wake_task.done():
             return
         if self.state.state not in (State.SLEEPING, State.LISTENING) or self.segmenter.in_speech:
@@ -1019,6 +1066,11 @@ class VoiceLoop:
         return True
 
     async def _handle_text(self, text: str, speak: bool) -> None:
+        if center := getattr(self, "settings_center", None):
+            await center.cancel_previews()
+            center.capture_target = None
+            if center.capture_timer:
+                center.capture_timer.cancel()
         profile = current.get()
         profile.update(input_mode="text")
         self.conv.store.performance.attach(profile, self.conv.id)
@@ -1032,7 +1084,14 @@ class VoiceLoop:
         try:
             if speak:
                 await reply_aloud(
-                    self.conv, self.speaker, text, self.s.tts.sentence_min_chars, on_start=on_start
+                    self.conv,
+                    self.speaker,
+                    text,
+                    self.s.tts.sentence_min_chars,
+                    on_start=on_start,
+                    on_silent_token=lambda piece: self.bus.publish(
+                        {"type": "reply", "delta": piece}
+                    ),
                 )
             else:
                 async with contextlib.aclosing(self.conv.reply(text)) as stream:
@@ -1533,12 +1592,17 @@ class VoiceLoop:
         profile.update(
             wake_enabled=self.use_wake, **(getattr(self.stt, "last_confidence", None) or {})
         )
+        settings_center = getattr(self, "settings_center", None)
+        if settings_center and settings_center.capture(text, decoder_confident(self.stt)):
+            return
         if not decoder_confident(self.stt) or echoes_output(
             text, self.speaker, now=time.perf_counter()
         ):
             profile.result_status = "rejected"
             profile.update(reason="uncertain_stt_or_echo")
             return
+        if settings_center:
+            await settings_center.cancel_previews()
         original_text = text
         automations = getattr(getattr(self.conv, "tools", None), "automations", None)
         if (
@@ -1734,6 +1798,7 @@ class VoiceLoop:
                 s.tts.sentence_min_chars,
                 on_token=echo,
                 on_start=on_start,
+                on_silent_token=lambda piece: self.bus.publish({"type": "reply", "delta": piece}),
             )
         except LLMError as exc:
             profile.fail(type(exc).__name__)
@@ -1857,6 +1922,13 @@ async def _run_voice(
     boot = BootProgress(bus, steps)
 
     # The profile decides how long Ollama keeps the model (D-37).
+    store = MemoryStore.open_resilient(s.db_path)
+    from backend.settings_models import apply_persisted
+
+    try:
+        apply_persisted(s, store)
+    except (ValueError, TypeError):
+        log.warning("SETTINGS invalid_saved_value using_config")
     llm = create_llm(
         s.model_copy(
             update={"llm": s.llm.model_copy(update={"keep_alive": s.resources.keep_alive})}
@@ -1878,7 +1950,6 @@ async def _run_voice(
     boot.done("ollama")
     # Before the model: the system prompt names the place (cached after the first run).
     await boot.track("location", resolve_location(s))
-    store = MemoryStore.open_resilient(s.db_path)
     try:
         if saved_controls := store.preference("voice", "controls"):
             apply_controls(s, saved_controls)
@@ -2093,6 +2164,9 @@ async def _run_voice(
         keep_stt_loaded=bool(use_wake and s.wakeword.phrase),
     )
     loop.state.add_listener(resources.on_state)
+    from backend.settings_center import SettingsCenter
+
+    settings_center = SettingsCenter(s, store, conv, bus, loop=loop)
     if media:
         loop.state.add_listener(media.on_state)
     if loop.state.state is State.SLEEPING:
@@ -2132,6 +2206,7 @@ async def _run_voice(
         loop._close_session()
         timers.cancel_all()
         resources.close()
+        await settings_center.close()
         if loop.busy:
             speaker.interrupt()
             loop.task.cancel()

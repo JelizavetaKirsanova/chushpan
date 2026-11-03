@@ -1,10 +1,10 @@
 /** Shared data-only editor operations; snapshots and location variants stay independent. */
 export type Json = string | number | boolean | null | {[key: string]: Json} | Json[];
-export interface Condition {source: 'variable' | 'available' | 'time'; key: string; operator: 'eq' | 'ne' | 'gt' | 'lt'; value: Json}
+export interface Condition {source: 'variable' | 'available' | 'time' | 'location'; key: string; operator: 'eq' | 'ne' | 'gt' | 'lt'; value: Json}
 export interface Block {kind: 'action' | 'delay' | 'sequence' | 'parallel' | 'if'; capability: string; parameters: Record<string, Json>; seconds: number; condition: Condition | null; children: Block[]; otherwise: Block[]; on_error: 'stop' | 'continue'; enabled: boolean; required: boolean}
 export interface Variant {id: string; name: string; place_id: string; enabled: boolean; actions: Block[]; conditions: Condition[]}
-export interface Place {id: string; revision: number; name: string; cities: string[]}
-export interface Scenario {id: string; revision: number; name: string; description: string; icon: string; enabled: boolean; mode: 'exact' | 'smart'; phrases: string[]; actions: Block[]; variants: Variant[]; conditions: Condition[]; triggers: {kind: 'voice' | 'manual' | 'schedule'; at: string; weekdays: number[]}[]; variables: {name: string; kind: 'number' | 'string' | 'boolean'; default: Json}[]; confirmation: 'auto' | 'always'; schema_version: 2; version_policy: 'fallback'; general_enabled: true; inter_block_delay_s: number; show_status: boolean; error_policy: 'block' | 'stop' | 'continue'; timeout_s: number | null}
+export interface Place {id: string; revision: number; name: string; cities: string[]; signals?: {kind:string;key:string;name:string}[]}
+export interface Scenario {id: string; revision: number; name: string; description: string; icon: string; enabled: boolean; mode: 'exact' | 'smart'; phrases: string[]; actions: Block[]; variants: Variant[]; conditions: Condition[]; triggers: {kind: 'voice' | 'manual' | 'schedule' | 'condition'; at: string; weekdays: number[]}[]; variables: {name: string; kind: 'number' | 'string' | 'boolean'; default: Json}[]; confirmation: 'auto' | 'always'; schema_version: 2; version_policy: 'fallback'; general_enabled: true; inter_block_delay_s: number; show_status: boolean; error_policy: 'block' | 'stop' | 'continue'; timeout_s: number | null}
 export const clone = <T>(value: T): T => structuredClone(value);
 export const newId = (): string => crypto.randomUUID().replaceAll('-', '');
 export function newBlock(kind: Block['kind'] = 'action', capability = ''): Block {

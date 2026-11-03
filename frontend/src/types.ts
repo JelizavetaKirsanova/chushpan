@@ -124,6 +124,7 @@ export interface ExportedEvent {
 }
 
 type HudPayload =
+  | import('./settings_center').SettingsEvent
   | import('./automations').AutomationsEvent
   | VoiceSettingsEvent
   | DashboardEvent

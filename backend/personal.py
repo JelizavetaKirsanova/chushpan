@@ -73,7 +73,7 @@ class PersonalContext:
     ) -> dict:
         from datetime import date
 
-        if not parts or set(parts) - {"calendar", "location"}:
+        if not parts or set(parts) - {"calendar", "location", "signals"}:
             raise ValueError("Неизвестный источник личных данных.")
         if day is not None:
             day = date.fromisoformat(day).isoformat()

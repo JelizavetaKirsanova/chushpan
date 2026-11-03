@@ -75,6 +75,7 @@ class UserConfig(BaseModel):
     name: str | None = None
     gender: str = "neutral"  # female | male | neutral (Portuguese values also accepted)
     form_of_address: str | None = None  # None = language default (madam/sir, senhora/senhor)
+    address_mode: Literal["ты", "вы"] = "ты"
 
     @property
     def kind(self) -> str:

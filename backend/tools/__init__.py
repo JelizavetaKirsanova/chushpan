@@ -138,6 +138,10 @@ def build_registry(
     profile = ProfileMemory(store) if "memory" in enabled and store is not None else None
     if profile:
         tools.append(profile.tool())
+    if store is not None:
+        from backend.personality import personality_tool
+
+        tools.append(personality_tool(store))
     registry = ToolRegistry(
         [*tools, *(extra or [])],
         # The legacy native morning helper is local-only until its own Agent port exists.

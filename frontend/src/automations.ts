@@ -480,13 +480,13 @@ export class AutomationsView {
     form.append(el('h3', 'Условия запуска'));
     this.conditionList(form, draft.conditions);
     form.append(el('h3', 'Триггеры'));
-    for (const kind of ['voice', 'manual', 'schedule'] as const) {
+    for (const kind of ['voice', 'manual', 'schedule', 'condition'] as const) {
       const trigger = draft.triggers.find(t => t.kind === kind);
       const checkbox = el('input'); checkbox.type = 'checkbox'; checkbox.checked = !!trigger;
       checkbox.onchange = () => {draft.triggers = draft.triggers.filter(t => t.kind !== kind); if (checkbox.checked) draft.triggers.push({kind, at: '22:00', weekdays: [0,1,2,3,4,5,6]}); this.dirty = true; this.renderEditor();};
-      form.append(this.label({voice: 'По голосовой фразе', manual: 'Кнопка запуска / тестирования', schedule: 'По расписанию'}[kind], checkbox));
-      if (trigger?.kind === 'schedule') {
-        form.append(this.label('Время в часовом поясе Чушпана', this.input(trigger.at, v => trigger.at = v, 'time')));
+      form.append(this.label({voice: 'По голосовой фразе', manual: 'Кнопка запуска / тестирования', schedule: 'По расписанию', condition: 'При выполнении условий'}[kind], checkbox));
+      if (trigger?.kind === 'schedule' || trigger?.kind === 'condition') {
+        if (trigger.kind === 'schedule') form.append(this.label('Время в часовом поясе Чушпана', this.input(trigger.at, v => trigger.at = v, 'time')));
         const days = el('div', '', 'button-row');
         ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].forEach((name, day) => {const check = el('input'); check.type = 'checkbox'; check.checked = trigger.weekdays.includes(day); check.onchange = () => {trigger.weekdays = check.checked ? [...trigger.weekdays, day] : trigger.weekdays.filter(d => d !== day); this.dirty = true;}; days.append(this.label(name, check));}); form.append(days);
       }
@@ -506,12 +506,12 @@ export class AutomationsView {
   }
   private conditionEditor(condition: Condition): HTMLElement {
     const row = el('div', '', 'condition-fields');
-    row.append(this.label('Источник', this.select([['variable', 'Переменная'], ['available', 'Проверенная доступность'], ['time', 'Текущий час']], condition.source, v => {condition.source = v; condition.key = v === 'time' ? 'hour' : v === 'available' ? this.data?.capabilities[0]?.id ?? '' : this.draft?.variables[0]?.name ?? ''; condition.value = v === 'time' ? 22 : true; this.renderEditor();})));
-    const keys: [string, string][] = condition.source === 'variable' ? (this.draft?.variables ?? []).map(v => [v.name, v.name]) : condition.source === 'available' ? (this.data?.capabilities ?? []).map(c => [c.id, c.name]) : [['hour', 'Час, 0–23']];
+    row.append(this.label('Источник', this.select([['variable', 'Переменная'], ['available', 'Проверенная доступность'], ['time', 'Текущий час'], ['location', 'Текущее место']], condition.source, v => {condition.source = v; condition.key = v === 'location' ? 'place' : v === 'time' ? 'hour' : v === 'available' ? this.data?.capabilities[0]?.id ?? '' : this.draft?.variables[0]?.name ?? ''; condition.value = v === 'location' ? 'general' : v === 'time' ? 22 : true; this.renderEditor();})));
+    const keys: [string, string][] = condition.source === 'variable' ? (this.draft?.variables ?? []).map(v => [v.name, v.name]) : condition.source === 'available' ? (this.data?.capabilities ?? []).map(c => [c.id, c.name]) : condition.source === 'location' ? [['place', 'Место']] : [['hour', 'Час, 0–23']];
     const variable = this.draft?.variables.find(v => v.name === condition.key);
     const kind = condition.source === 'available' ? 'boolean' : condition.source === 'time' ? 'number' : variable?.kind ?? 'string';
     const comparison: [Condition['operator'],string][] = kind === 'boolean' ? [['eq','='],['ne','≠']] : [['eq','='],['ne','≠'],['gt','>'],['lt','<']];
-    const control = kind === 'boolean' ? this.select([['true','Да'],['false','Нет']],String(condition.value),v => condition.value = v === 'true') : this.input(String(condition.value), v => condition.value = kind === 'number' ? Number(v) : v, kind === 'number' ? 'number' : 'text');
+    const control = condition.source === 'location' ? this.select([['general','Общий'],...(this.data?.places??[]).map(p=>[p.id,p.name] as [string,string])], String(condition.value),v=>condition.value=v) : kind === 'boolean' ? this.select([['true','Да'],['false','Нет']],String(condition.value),v => condition.value = v === 'true') : this.input(String(condition.value), v => condition.value = kind === 'number' ? Number(v) : v, kind === 'number' ? 'number' : 'text');
     row.append(this.label('Параметр', this.select(keys, condition.key, v => {condition.key = v; condition.value = this.draft?.variables.find(item => item.name === v)?.default ?? (condition.source === 'time' ? 22 : true); condition.operator = 'eq'; this.renderEditor();})), this.label('Сравнение', this.select(comparison, condition.operator, v => condition.operator = v)), this.label('Значение', control));
     return row;
   }

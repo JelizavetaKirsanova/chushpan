@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Literal
 from uuid import uuid4
@@ -36,7 +37,7 @@ class Variable(Model):
 
 
 class Condition(Model):
-    source: Literal["variable", "available", "time"] = "variable"
+    source: Literal["variable", "available", "time", "location"] = "variable"
     key: str = Field(min_length=1, max_length=120)
     operator: Literal["eq", "ne", "gt", "lt"] = "eq"
     value: Any = True
@@ -68,7 +69,7 @@ class Block(Model):
 
 
 class Trigger(Model):
-    kind: Literal["voice", "manual", "schedule"] = "voice"
+    kind: Literal["voice", "manual", "schedule", "condition"] = "voice"
     at: str = Field(default="22:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     weekdays: list[int] = Field(default_factory=lambda: list(range(7)))
 
@@ -93,12 +94,28 @@ class Place(Model):
     revision: int = Field(default=0, ge=0)
     name: str = Field(min_length=1, max_length=120)
     cities: list[str] = Field(default_factory=list)
+    signals: list[dict[str, str]] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
     def valid(self):
+        for signal in self.signals:
+            if (
+                set(signal) != {"kind", "key", "name"}
+                or signal["kind"] not in {"wifi", "device"}
+                or not re.fullmatch(r"[a-f0-9]{64}", signal["key"])
+                or not 0 < len(signal["name"]) <= 120
+            ):
+                raise ValueError(
+                    "Привязываются только явно выбранные наблюдаемые Wi-Fi и устройства."
+                )
         if any(not city.strip() or len(city) > 120 for city in self.cities):
             raise ValueError("Название города должно содержать от 1 до 120 символов.")
-        if contains_secret(self.model_dump_json()):
+        # Signal keys are fixed-length hashes of observations, never credentials.
+        human = {
+            **self.model_dump(),
+            "signals": [{"kind": s["kind"], "name": s["name"]} for s in self.signals],
+        }
+        if contains_secret(json.dumps(human, ensure_ascii=False)):
             raise ValueError("Секреты нельзя сохранять в настройках места.")
         return self
 

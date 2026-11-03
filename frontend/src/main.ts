@@ -5,6 +5,8 @@ import "./workspace.css";
 import './dashboard.css';
 import './simple_workspace.css';
 import './scenario_editor.css';
+import './settings_center.css';
+import {SettingsCenterUI} from './settings_center';
 import { Workspace } from "./workspace";
 import { PerformancePanel } from './performance';
 
@@ -43,6 +45,7 @@ const voiceSettings = new VoiceSettingsPanel(value => link.voice(value));
 const core = new Character(byId('character'), tap);
 const dashboard = new DashboardView(value => link.dashboard(value), value => link.chat(value), view => workspace.navigate(view), value => link.historySearch(value), core, value => panels.weather(value));
 const automations = new AutomationsView(value => link.automations(value), view => workspace.navigate(view), () => link.send('wake'), text => link.chat({text}));
+const settingsCenter = new SettingsCenterUI(value => link.settings(value), value => link.automations(value), view => workspace.navigate(view));
 
 function setMode(next: Mode): void {
   mode = next;
@@ -179,6 +182,7 @@ function onEvent(e: HudEvent): void {
   dashboard.receive(e);
   voiceSettings.receive(e);
   automations.receive(e);
+  settingsCenter.receive(e);
   switch (e.type) {
     case "notice":
       hud.dataset.activity = "error";
@@ -232,6 +236,7 @@ const link = new Link(onEvent, (online) => {
   dashboard.connection(online);
   voiceSettings.connection(online);
   automations.connection(online);
+  settingsCenter.connection(online);
   if (online) link.voiceStatus();
   exportButton.disabled = !online;
   if (!online) {

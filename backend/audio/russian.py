@@ -186,7 +186,14 @@ def _date(m: re.Match) -> str:
     return f"{day} {months[month - 1]}, год {integer(year)}"
 
 
-def normalize(text: str, pronunciations: dict[str, str] | None = None, *, diagnostics=None) -> str:
+def normalize(
+    text: str,
+    pronunciations: dict[str, str] | None = None,
+    *,
+    diagnostics=None,
+    numbers=True,
+    foreign=True,
+) -> str:
     """Prepare a speech copy; literal content stays in the original UI/history only."""
     text = unicodedata.normalize("NFC", text)
     from backend.audio.abbreviations import expand, protected_compound
@@ -201,46 +208,54 @@ def normalize(text: str, pronunciations: dict[str, str] | None = None, *, diagno
         return " фрагмент в тексте "
 
     text = PROTECTED.sub(protect, text)
-    # Grouping spaces are accepted only in complete three-digit groups.
-    text = re.sub(
-        r"(?<!\w)\d{1,3}(?:[ \u00a0\u202f]\d{3})+(?!\d)", lambda m: re.sub(r"\s", "", m[0]), text
-    )
+    if numbers:
+        # Grouping spaces are accepted only in complete three-digit groups.
+        text = re.sub(
+            r"(?<!\w)\d{1,3}(?:[ \u00a0\u202f]\d{3})+(?!\d)",
+            lambda m: re.sub(r"\s", "", m[0]),
+            text,
+        )
 
-    text = re.sub(r"\b(\d{1,2})[./](\d{1,2})[./](\d{4})\b", _date, text)
-    text = re.sub(
-        r"\b(\d{4})-(\d{2})-(\d{2})\b",
-        lambda m: _date(re.match(r"(\d+)/(\d+)/(\d+)", f"{m[3]}/{m[2]}/{m[1]}")),
-        text,
-    )
+        text = re.sub(r"\b(\d{1,2})[./](\d{1,2})[./](\d{4})\b", _date, text)
+        text = re.sub(
+            r"\b(\d{4})-(\d{2})-(\d{2})\b",
+            lambda m: _date(re.match(r"(\d+)/(\d+)/(\d+)", f"{m[3]}/{m[2]}/{m[1]}")),
+            text,
+        )
 
-    def clock(m):
-        h, minute = int(m[1]), int(m[2])
-        if h > 23 or minute > 59 or (m[3] and int(m[3][1:]) > 59):
-            return m[0]
-        result = integer(h) + " " + form(h, ("час", "часа", "часов"))
-        result += " " + integer(minute, "f") + " " + form(minute, ("минута", "минуты", "минут"))
-        if m[3]:
-            second = int(m[3][1:])
-            result += (
-                " " + integer(second, "f") + " " + form(second, ("секунда", "секунды", "секунд"))
-            )
-        return result
+        def clock(m):
+            h, minute = int(m[1]), int(m[2])
+            if h > 23 or minute > 59 or (m[3] and int(m[3][1:]) > 59):
+                return m[0]
+            result = integer(h) + " " + form(h, ("час", "часа", "часов"))
+            result += " " + integer(minute, "f") + " " + form(minute, ("минута", "минуты", "минут"))
+            if m[3]:
+                second = int(m[3][1:])
+                result += (
+                    " "
+                    + integer(second, "f")
+                    + " "
+                    + form(second, ("секунда", "секунды", "секунд"))
+                )
+            return result
 
-    text = re.sub(r"\b(\d{1,2}):(\d{2})(:\d{2})?\b", clock, text)
-    # Versions are recognized before decimals and before replacing product names.
-    text = re.sub(
-        r"\b([A-Za-z][A-Za-z ]*|версия|версии)\s+(\d+(?:\.\d+)+)\b",
-        lambda m: m[1] + " " + " точка ".join(integer(int(n)) for n in m[2].split(".")),
-        text,
-    )
-    text = re.sub(
-        r"(?<!\w)([-−]?\d+)/(\d+)(?!\w)",
-        lambda m: number(m[1]) + " делённое на " + integer(int(m[2])),
-        text,
-    )
+        text = re.sub(r"\b(\d{1,2}):(\d{2})(:\d{2})?\b", clock, text)
+        # Versions are recognized before decimals and before replacing product names.
+        text = re.sub(
+            r"\b([A-Za-z][A-Za-z ]*|версия|версии)\s+(\d+(?:\.\d+)+)\b",
+            lambda m: m[1] + " " + " точка ".join(integer(int(n)) for n in m[2].split(".")),
+            text,
+        )
+        text = re.sub(
+            r"(?<!\w)([-−]?\d+)/(\d+)(?!\w)",
+            lambda m: number(m[1]) + " делённое на " + integer(int(m[2])),
+            text,
+        )
     from backend.audio.foreign import NAMES
 
-    dictionary = {k.casefold(): v for k, v in {**DEFAULT_PRONUNCIATIONS, **NAMES}.items()}
+    dictionary = {
+        k.casefold(): v for k, v in {**DEFAULT_PRONUNCIATIONS, **(NAMES if foreign else {})}.items()
+    }
     dictionary.update({k.casefold(): v for k, v in (pronunciations or {}).items() if k})
     pattern = (
         r"(?<!\w)(?:"
@@ -257,21 +272,23 @@ def normalize(text: str, pronunciations: dict[str, str] | None = None, *, diagno
         return number(value, words[3]) + " " + label
 
     units = "|".join(re.escape(k) for k in sorted(UNITS, key=len, reverse=True))
-    text = re.sub(rf"(?<!\w)({NUMBER})\s*({units})(?!\w)", unit, text, flags=re.I)
+    if numbers:
+        text = re.sub(rf"(?<!\w)({NUMBER})\s*({units})(?!\w)", unit, text, flags=re.I)
 
-    def contextual(m):
-        after = text[m.end() :].lstrip().casefold()
-        gender = (
-            "n"
-            if re.match(r"видео\b|окно\b|сообщени", after)
-            else "f"
-            if re.match(r"минут|секунд|часовн|страниц|верси|песн|задач|попыт|ошибк", after)
-            else "m"
-        )
-        return number(m[0], gender)
+        def contextual(m):
+            after = text[m.end() :].lstrip().casefold()
+            gender = (
+                "n"
+                if re.match(r"видео\b|окно\b|сообщени", after)
+                else "f"
+                if re.match(r"минут|секунд|часовн|страниц|верси|песн|задач|попыт|ошибк", after)
+                else "m"
+            )
+            return number(m[0], gender)
 
-    text = re.sub(rf"(?<!\w){NUMBER}(?!\w)", contextual, text)
+        text = re.sub(rf"(?<!\w){NUMBER}(?!\w)", contextual, text)
     from backend.audio.foreign import prepare_foreign
 
-    text = prepare_foreign(text, pronunciations, diagnostics=diagnostics)
+    if foreign:
+        text = prepare_foreign(text, pronunciations, diagnostics=diagnostics)
     return re.sub(r"\s+", " ", text).strip()

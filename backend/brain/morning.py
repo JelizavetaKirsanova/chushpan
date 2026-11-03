@@ -81,7 +81,14 @@ class MorningRoutine:
     async def stream(self, conv: Conversation) -> AsyncIterator[str]:
         from backend.brain.briefing import BriefingData, weather_brief, weather_sentence
 
-        personal_task = asyncio.create_task(self._guard(self.personal.read()))
+        calendar_disabled = getattr(self.s, "_calendar_disabled", False)
+        personal_task = asyncio.create_task(
+            self._guard(
+                self.personal.read(parts=("location",))
+                if calendar_disabled
+                else self.personal.read()
+            )
+        )
         news_task = (
             asyncio.create_task(self._guard(self.news.delfi_headlines(), 20)) if self.news else None
         )
@@ -119,7 +126,11 @@ class MorningRoutine:
                     yield item["title"].rstrip(".!? ") + ". "
             else:
                 yield "Свежие заголовки Delfi сейчас недоступны. "
-            yield calendar_sentences(context.get("calendar") or {}) + " "
+            yield (
+                "Календарь отключён в настройках. "
+                if calendar_disabled
+                else calendar_sentences(context.get("calendar") or {}) + " "
+            )
             # The caller starts music only after the audio player has drained this stream.
         finally:
             for task in (personal_task, news_task):
