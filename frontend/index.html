@@ -111,11 +111,12 @@
         <form id="voice-settings" class="settings-card"><h2>Голос и обращение</h2>
           <p id="microphone-status" role="status">Состояние микрофона неизвестно.</p>
           <label>Чувствительность активации<select id="voice-sensitivity" disabled><option value="conservative">Консервативная</option><option value="balanced">Сбалансированная</option><option value="sensitive">Повышенная</option></select></label><p id="voice-thresholds" class="muted"></p>
-          <label>Режим общения<select id="voice-mode" disabled><option value="name_only">Только по имени</option><option value="dialogue">Непрерывный диалог в пределах окна</option></select></label>
+          <label>Режим общения<select id="voice-mode" disabled><option value="name_only">Только по имени</option><option value="dialogue">Диалог в пределах окна</option><option value="continuous">Постоянное прослушивание без имени</option></select></label>
           <label>Ожидание продолжения, секунд<input id="voice-duration" type="number" min="10" max="300" step="1" required disabled></label>
           <label class="check-label"><input id="voice-barge" type="checkbox" disabled> Разрешить перебивание ассистента</label>
           <label class="check-label"><input id="voice-noise" type="checkbox" disabled> Подавление фонового шума</label><p id="voice-noise-status" class="muted"></p>
-          <p class="muted">В обоих режимах первый запрос требует обращения. Окно диалога закрывается по тишине. <span id="voice-session-limit"></span> «Чушпан, стоп» и кнопка остановки доступны отдельно.</p>
+          <details><summary>Речь и фоновые звуки</summary><label>Фильтрация фоновой речи<select id="voice-background" disabled><option value="balanced">Связанные реплики и вопросы</option><option value="strict">Строгая: вопросы и однозначные команды</option></select></label><label>Порог VAD<input id="voice-vad" type="number" min="0.1" max="0.95" step="0.05" required disabled></label><label>Минимум речи, мс<input id="voice-min-speech" type="number" min="80" max="1000" step="1" required disabled></label><p class="muted">Высокий VAD может пропускать тихую речь; короткий минимум пропускает больше шумов. Начни со стандартных значений и проверь в своей комнате. Микрофон можно вручную отключить в настройках приложения → Система.</p></details>
+          <p class="muted">Режимы по имени и диалога требуют первого обращения. Постоянное прослушивание может принимать постороннюю речь — выбирай его осознанно. Окно диалога закрывается по тишине. <span id="voice-session-limit"></span> «Чушпан, стоп» и кнопка остановки доступны отдельно.</p>
           <button type="submit" disabled>Применить настройки голоса</button><p id="voice-feedback" role="status"></p>
         </form>
         <details class="settings-card"><summary>Дополнительные ограничения диалога</summary>

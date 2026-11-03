@@ -16,6 +16,24 @@ def route(text: str, *, control_session=None, binding=None, comfortable_brightne
     if led_parse(text) is not None:
         return "led_control", {"command": text}
     command = command_text(text).rstrip(".!? ")
+    # Remove grammatical fillers; recognize a read intent with complete coverage,
+    # regardless of whether the date precedes or follows the noun.
+    calendar_words = re.sub(r"[,!?]", " ", command)
+    calendar_words = re.sub(r"\b(?:у меня|мне|там|на|в|блять|нахуй)\b", " ", calendar_words)
+    calendar_words = " ".join(calendar_words.split())
+    calendar_words = re.sub(r"\b(?:сегодня|завтра|\d{4}-\d{2}-\d{2})\b", " ", calendar_words)
+    calendar_words = " ".join(calendar_words.split())
+    if not re.search(r'[«»"“”`\n;]', text) and (
+        re.fullmatch(
+            r"(?:покажи|посмотри|проверь|прочитай) календар[ье]",
+            calendar_words,
+        )
+        or re.fullmatch(r"(?:какие|что) (?:планы|события)", calendar_words)
+    ):
+        day = "tomorrow" if "завтра" in command else "today"
+        if date := re.search(r"\b\d{4}-\d{2}-\d{2}\b", command):
+            day = date[0]
+        return "get_calendar", {"day": day}
     if re.fullmatch(r"(?:открой|запусти) (?:youtube|ютуб|ютьюб)", command):
         return "open_website", {"site": "youtube"}
     app = re.fullmatch(r"(?:открой|запусти)(?: приложение)? ([\w][\w .-]{0,79})", command)
@@ -90,7 +108,7 @@ def route(text: str, *, control_session=None, binding=None, comfortable_brightne
     if quieter or louder:
         return "set_volume", {"direction": "down" if quieter else "up"}
     match = re.fullmatch(
-        r"(?:(?:сделай|установи|поставь) )?яркость(?: mac| macbook| макбука| экрана)?"
+        r"(?:(?:сделай|установи|поставь) )?яркость(?: mac| macbook| макбука| экрана)"
         r"(?: на)? (\d{1,3})"
         r"(?:\s*%| процентов)?",
         command,

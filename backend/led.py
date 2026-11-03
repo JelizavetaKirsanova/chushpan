@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from backend.config import LEDConfig, Settings
 from backend.latency import measure
-from backend.security import Risk, command_text
+from backend.security import Risk, command_text, control_text
 from backend.tools.registry import DeviceUnavailable, Tool, ToolError
 
 log = logging.getLogger(__name__)
@@ -104,7 +104,7 @@ def _parse_single(text: str) -> dict | None:
     """
     if not isinstance(text, str) or len(text) > 1000 or re.search(r'[«»"“”`\n;]', text):
         return None
-    text = command_text(text).replace("ё", "е")
+    text = control_text(text)
     text = re.sub(r"[‐‑‒–—]", "-", text)
     # A frustrated lead-in is not the action. Accept the explicit final clause only
     # after "ладно", when the discarded part contains no device/action instructions.
@@ -167,7 +167,7 @@ def _parse_single(text: str) -> dict | None:
 
 
 def _combined(text: str, comfortable_brightness: int | None) -> dict | None:
-    body = command_text(text).replace("ё", "е").strip(".!? ")
+    body = control_text(text)
     body = re.sub(r"[‐‑‒–—]", "-", body)
     body = re.sub(r"тепл(?:ый|ую|ой|ым) свет\b", "теплый белый", body)
     subjective = bool(re.search(r"(?:только )?не слишком ярк(?:ий|ую|ой|о)", body))

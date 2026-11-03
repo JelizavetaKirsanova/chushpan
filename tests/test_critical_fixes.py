@@ -127,8 +127,9 @@ def test_normalization_keeps_negation_quotes_and_compound_boundaries(text):
 
 def test_brightness_and_light_aliases_match_intent_guard():
     assert parse("включи свет") == {"action": "on"}
-    assert route("Поставь яркость 20%") == ("set_brightness", {"level": 20})
-    assert explicit_request("set_brightness", {"level": 20}, "Поставь яркость 20%")
+    assert route("Поставь яркость экрана 20%") == ("set_brightness", {"level": 20})
+    assert explicit_request("set_brightness", {"level": 20}, "Поставь яркость экрана 20%")
+    assert not explicit_request("set_brightness", {"level": 20}, "Поставь яркость ленты 20%")
 
 
 def test_youtube_opens_fixed_website_without_model_or_arbitrary_url(monkeypatch):

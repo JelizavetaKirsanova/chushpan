@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from backend.dialogue import CLOSE, CONTROLS, normalize
+from backend.dialogue import CLOSE, CONTROLS, close_requested, normalize
 from backend.security import confirmation_code
 
 
@@ -41,6 +41,7 @@ class TaskSnapshot:
                 "Команда ленты записана по Bluetooth. Физическое выполнение не подтверждено."
             ),
             "failed": "Предыдущая задача вернула ошибку или отказ. Успех не подтверждён.",
+            "partial": "Предыдущая задача выполнена частично. Общий успех не подтверждён.",
             "cancelled": "Ожидание предыдущей задачи отменено. Фактический результат неизвестен.",
             "confirmation_required": (
                 "Предыдущая задача запросила подтверждение. Без него не запускаю."
@@ -92,6 +93,7 @@ def decide(
     followup_pending: bool = False,
     control_context: bool = False,
     continuation_window: bool = False,
+    background_filter: str = "balanced",
 ) -> Decision:
     value = normalize(text)
     if not signals.confirmed or signals.echo:
@@ -112,6 +114,8 @@ def decide(
         return Decision("low", "other_person_or_third_person")
     if strictness == "addressed":
         return Decision("medium", "strict_wake_required")
+    if close_requested(text):
+        return Decision("high", "session_close", "continuation")
     from backend.led import parse as led_parse
 
     if led_parse(text) is not None:
@@ -135,6 +139,8 @@ def decide(
         return Decision("high", "anchored_control", "continuation")
     if confirmation_pending and confirmation_code(text) is not None:
         return Decision("high", "bound_confirmation", "continuation")
+    if continuation_window and topic and value in {"да", "нет", "отмена", "включай"}:
+        return Decision("high", "short_dialogue_reply", "continuation")
     if topic and re.fullmatch(
         r"а (?:можешь |можно )?(?:пример (?:показать|привести)|покажи пример)", value
     ):
@@ -157,6 +163,23 @@ def decide(
             r"\b(?:открой|включи|выключи|запусти|поставь|установи|удали|выполни)\b", value
         )
         background = re.match(r"^(?:они |он |она |телевизор |музыка играет)", value)
-        if not embedded_action and not background and not set(value.split()) <= ambiguous:
+        conversational = re.match(
+            r"^(?:как(?:ой|ая|ое|ие|ую|им)? |почему |зачем |что |кто |где |когда |сколько |"
+            r"мне |у меня |я (?:хочу|думаю|не понял|не поняла|имел|имела|устал|устала)|"
+            r"ты (?:можешь|умеешь)|объясни |расскажи )",
+            re.sub(r"^(?:а |ну и |ну )", "", value),
+        )
+        if (
+            not embedded_action
+            and not background
+            and conversational
+            and not set(value.split()) <= ambiguous
+        ):
+            if background_filter == "strict" and not re.match(
+                r"^(?:а )?(?:как(?:ой|ая|ое|ие|ую|им)?|почему|зачем|что|кто|где|когда|"
+                r"сколько|объясни|расскажи)\b",
+                value,
+            ):
+                return Decision("medium", "background_filter")
             return Decision("high", "active_dialogue", "continuation")
     return Decision("medium", "recipient_unclear")

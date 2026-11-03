@@ -14,7 +14,7 @@ from uuid import uuid4
 from backend.brain.privacy import contains_secret
 
 _SAFE = re.compile(r"^[A-Za-z0-9_.:/-]{1,120}$")
-PIPELINE_REVISION = "2026-11-03-voice-stream-completion"
+PIPELINE_REVISION = "2026-11-03-intent-context-reliability"
 _META = {
     "pipeline_revision",
     "error_component",
@@ -44,6 +44,10 @@ _META = {
     "thinking_level",
     "streaming",
     "route_reason",
+    "intent",
+    "target",
+    "result_status",
+    "context_used",
     "queue_depth",
     "timeout_s",
     "eval_count",

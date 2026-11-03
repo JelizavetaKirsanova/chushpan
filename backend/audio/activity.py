@@ -16,10 +16,13 @@ SENSITIVITY = {
 class VoiceControls(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     sensitivity: Literal["conservative", "balanced", "sensitive"] = "balanced"
-    mode: Literal["name_only", "dialogue"] = "dialogue"
+    mode: Literal["name_only", "dialogue", "continuous"] = "dialogue"
     continuation_s: int = Field(default=20, ge=10, le=300)
     allow_barge_in: bool = False
     noise_suppression: bool = True
+    vad_threshold: float | None = Field(default=None, ge=0.1, le=0.95)
+    min_speech_ms: int | None = Field(default=None, ge=80, le=1000)
+    background_filter: Literal["balanced", "strict"] = "balanced"
 
 
 def controls(settings):
@@ -38,10 +41,17 @@ def controls(settings):
     )
     return VoiceControls(
         sensitivity=sensitivity,
-        mode="dialogue" if settings.dialogue.enabled else "name_only",
+        mode="continuous"
+        if not settings.wakeword.enabled
+        else "dialogue"
+        if settings.dialogue.enabled
+        else "name_only",
         continuation_s=settings.dialogue.duration_s,
         allow_barge_in=settings.audio.barge_in,
         noise_suppression=settings.audio.noise_suppression,
+        vad_threshold=settings.vad.threshold,
+        min_speech_ms=settings.vad.min_speech_ms,
+        background_filter=settings.dialogue.background_filter,
     )
 
 
@@ -50,7 +60,7 @@ def apply_controls(settings, value):
     threshold, logprob, silence = SENSITIVITY[config.sensitivity]
     settings.wakeword = settings.wakeword.model_copy(
         update={
-            "enabled": True,
+            "enabled": config.mode != "continuous",
             "threshold": threshold,
             "min_avg_logprob": logprob,
             "max_no_speech_prob": silence,
@@ -63,6 +73,13 @@ def apply_controls(settings, value):
         update={
             "enabled": config.mode == "dialogue",
             "duration_s": config.continuation_s,
+            "background_filter": config.background_filter,
+        }
+    )
+    settings.vad = settings.vad.model_copy(
+        update={
+            **({"threshold": config.vad_threshold} if config.vad_threshold is not None else {}),
+            **({"min_speech_ms": config.min_speech_ms} if config.min_speech_ms is not None else {}),
         }
     )
     return config

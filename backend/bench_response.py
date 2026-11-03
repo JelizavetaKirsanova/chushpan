@@ -42,6 +42,67 @@ CASES = (
     ("long_answer", "Расскажи, как образуются облака. Дай три коротких пункта.", ()),
 )
 
+ROUTING_CASES = (
+    ("led_color", "Сделай ленту розовой"),
+    ("led_word_order", "Включи розовый на ленте"),
+    ("led_brightness", "Сделай яркость ленты 30%"),
+    ("led_short", "Ленту на 100%"),
+    ("led_compound", "Сделай ленту белой на 100%"),
+    ("light_pink", "Сделай светло-розовую ленту"),
+    ("volume", "Сделай громкость Mac 30%"),
+    ("display", "Сделай яркость экрана 30%"),
+    ("ambiguous", "Сделай яркость 30%"),
+    ("multi_device", "Выключи ленту и включи музыку"),
+)
+
+
+async def benchmark_routing(runs):
+    """Real intent/conversation code, with no model, audio or device handler invoked."""
+    from backend.brain.llm import ChatChunk
+
+    class Model:
+        calls = 0
+
+        async def chat_stream(self, *args, **kwargs):
+            self.calls += 1
+            yield ChatChunk(content="Без реальной модели.", done=True)
+
+    rows = []
+    for case, prompt in ROUTING_CASES:
+        for iteration in range(runs):
+            settings = Settings(language="ru-RU")
+            settings.led.enabled = True
+            store, calls, model = MemoryStore(":memory:"), [], Model()
+            try:
+                conversation = Conversation(
+                    settings, model, store, tools=safe_registry(settings, store, calls)
+                )
+                start = time.perf_counter()
+                async for _ in conversation.reply(prompt):
+                    pass
+                elapsed = time.perf_counter() - start
+                trace = json.loads(
+                    store.db.execute(
+                        "SELECT data FROM request_traces ORDER BY created_at DESC LIMIT 1"
+                    ).fetchone()[0]
+                )
+                rows.append(
+                    {
+                        "case": case,
+                        "iteration": iteration,
+                        "seconds": elapsed,
+                        "model_calls": model.calls,
+                        "tools": [call["tool"] for call in calls],
+                        "status": trace["status"],
+                    }
+                )
+            finally:
+                store.close()
+    return {
+        "method": "real routing and conversation; mocked LLM and tool handlers; no mic or playback",
+        "rows": rows,
+    }
+
 
 def drain_pcm(audio_queue, *_callbacks):
     # Deliberately do not invoke playback callbacks: PCM readiness is not audible sound.
@@ -293,15 +354,24 @@ def main():
     parser.add_argument(
         "--stt", action="store_true", help="Synthetic offline STT; no LLM or playback"
     )
+    parser.add_argument(
+        "--routing-only", action="store_true", help="Intent routing only; no models or audio"
+    )
     args = parser.parse_args()
     if not 1 <= args.runs <= 10:
         parser.error("runs must be 1–10")
     if args.stt and (args.cases or args.model or args.no_think or args.num_ctx):
         parser.error("--stt does not use LLM options")
+    if args.routing_only and (
+        args.stt or args.cases or args.model or args.no_think or args.num_ctx
+    ):
+        parser.error("--routing-only does not use STT, TTS or LLM options")
     logging.basicConfig(level=logging.ERROR)
     settings = Settings()
     report = (
-        asyncio.run(benchmark_stt(settings, args.runs))
+        asyncio.run(benchmark_routing(args.runs))
+        if args.routing_only
+        else asyncio.run(benchmark_stt(settings, args.runs))
         if args.stt
         else asyncio.run(
             benchmark(
@@ -317,7 +387,7 @@ def main():
     )
     output = settings.data_path / "latency-benchmarks"
     output.mkdir(parents=True, exist_ok=True)
-    prefix = "stt-" if args.stt else ""
+    prefix = "routing-" if args.routing_only else "stt-" if args.stt else ""
     target = output / f"{prefix}{args.label}-{time.time_ns()}.json"
     target.write_text(json.dumps(report, ensure_ascii=False, indent=2))
     print(json.dumps({"report": str(target)}))

@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from backend.automation.capabilities import UnsupportedCapability
 from backend.automation.models import Variable
 from backend.context import request_context, scenario_operation
 from backend.latency import current, measure
@@ -164,7 +165,12 @@ class Engine:
                     "Версия выбирается по текущему месту. Сначала измени место "
                     "или используй безопасную проверку выбранной вкладки."
                 )
-            self.capabilities.validate(effective)
+            try:
+                self.capabilities.validate(effective)
+            except UnsupportedCapability:
+                raise ActionDenied(
+                    "Действие сценария отключено или не поддерживается. Ничего не отправлено."
+                ) from None
             values = self.resolve(effective, values or {})
             operations = list(self.operations(effective.actions, values))
             args, summary, approval = self.identity(scenario, values, selection, variant)

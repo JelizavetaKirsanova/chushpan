@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def calendar_sentences(data: dict, now: datetime | None = None) -> str:
+def calendar_sentences(data: dict, now: datetime | None = None, *, days: int = 2) -> str:
     if data.get("error") or "events" not in data:
         return (
             "Календарь прочитать не удалось. Разреши приложению «Чушпан — утро» доступ "
@@ -33,6 +33,8 @@ def calendar_sentences(data: dict, now: datetime | None = None) -> str:
     today = now.astimezone(tz).date()
     pieces = []
     for offset, label in enumerate(("Сегодня", "Завтра")):
+        if offset >= days:
+            break
         day = today + timedelta(days=offset)
         start = datetime.combine(day, datetime.min.time(), tz)
         end = datetime.combine(day + timedelta(days=1), datetime.min.time(), tz)

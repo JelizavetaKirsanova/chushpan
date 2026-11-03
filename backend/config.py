@@ -231,6 +231,7 @@ class DialogueConfig(BaseModel):
     nameless_interruptions: bool = False
     addressee_strictness: Literal["contextual", "addressed"] = "contextual"
     max_session_s: float = Field(default=180, ge=30, le=900)
+    background_filter: Literal["balanced", "strict"] = "balanced"
 
 
 class WakeWordConfig(BaseModel):
@@ -250,6 +251,8 @@ class WakeWordConfig(BaseModel):
 
 class ToolsConfig(BaseModel):
     control_context_s: int = Field(default=60, ge=5, le=180)
+    default_brightness_device: Literal["ask", "led_strip", "mac_display"] = "ask"
+    ambiguity_rule: Literal["context_then_ask", "always_ask"] = "context_then_ask"
     # weather | news | system | timers | clock | memory | media. Remove one to hide it.
     enabled: list[str] = Field(
         default_factory=lambda: [

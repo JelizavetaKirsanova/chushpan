@@ -72,11 +72,14 @@ def test_registry_call_never_raises():
         ]
 
     out = [json.loads(r) for r in asyncio.run(go())]
-    assert out[0] == {"echo": "oi"}
-    assert out[1] == {"echo": "json string"}
-    assert out[2] == {"echo": ""}
-    assert out[3] == {"error": "service down"}
-    assert out[4] == {"error": "ValueError: boom"}
+    assert out[0] == {"echo": "oi", "result_status": "success"}
+    assert out[1] == {"echo": "json string", "result_status": "success"}
+    assert out[2] == {"echo": "", "result_status": "success"}
+    assert out[3] == {"error": "service down", "result_status": "failed"}
+    assert out[4] == {
+        "error": "Инструмент завершился ошибкой. Результат не подтверждён.",
+        "result_status": "failed",
+    }
     assert "unknown tool" in out[5]["error"]
     assert "not valid JSON" in out[6]["error"]
 
@@ -129,7 +132,7 @@ def test_conversation_runs_tools_and_answers(tmp_path):
     assert msgs[-1] == {
         "role": "tool",
         "tool_name": "echo",
-        "content": '{"echo": "14"}',
+        "content": '{"echo": "14", "result_status": "success"}',
         "tool_call_id": "c1",
     }
     assert conv.last_stats.tools == ["echo"]
@@ -141,7 +144,11 @@ def test_conversation_runs_tools_and_answers(tmp_path):
             "content": "",
             "tool_calls": [{"function": {"name": "echo", "arguments": {"text": "14"}}}],
         },
-        {"role": "tool", "content": '{"echo": "14"}', "tool_name": "echo"},
+        {
+            "role": "tool",
+            "content": '{"echo": "14", "result_status": "success"}',
+            "tool_name": "echo",
+        },
         {"role": "assistant", "content": "Fazem 14 graus."},
     ]
 
@@ -186,7 +193,7 @@ def test_follow_up_sees_earlier_tool_calls(tmp_path):
     ]
     call = msgs[2]["tool_calls"][0]["function"]
     assert call == {"name": "echo", "arguments": {"text": "timer 1"}}
-    assert msgs[3]["content"] == '{"echo": "timer 1"}'  # short: kept for "cancel it"
+    assert json.loads(msgs[3]["content"]) == {"echo": "timer 1", "result_status": "success"}
     assert json.loads(msgs[7]["content"]) == json.loads(STALE_RESULT)  # long and stale
 
 

@@ -48,8 +48,9 @@ from backend.context import (
     voice_control_command,
     voice_led_command,
     voice_music_command,
+    voice_session,
 )
-from backend.dialogue import CLOSE, CONTROLS, follow_up, normalize, private_headset
+from backend.dialogue import CONTROLS, close_requested, follow_up, normalize, private_headset
 from backend.hud import HudBus
 from backend.latency import Profile, current, measure
 from backend.memory.store import MemoryStore
@@ -592,13 +593,15 @@ class VoiceLoop:
         if status == "result":
             status = "unknown"
             if isinstance(result, dict):
-                if result.get("status") == "confirmation_required":
+                if result.get("result_status") == "requires_confirmation":
                     status = "confirmation_required"
-                elif result.get("error") or result.get("ok") is False:
+                elif result.get("result_status") == "partial_success":
+                    status = "partial"
+                elif result.get("result_status") == "failed" or result.get("error"):
                     status = "failed"
                 elif name == "led_control" and result.get("written") is True:
                     status = "submitted"
-                elif result.get("ok") is True:
+                elif result.get("result_status") == "success":
                     status = "completed"
         self.task_snapshots[execution_id] = TaskSnapshot(owner, name, status, self.clock())
         if status == "running":
@@ -654,6 +657,7 @@ class VoiceLoop:
             ),
             control_context=control_context,
             continuation_window=self._follow_up_ready and self.session_active,
+            background_filter=self.s.dialogue.background_filter,
         )
         if (
             prompted
@@ -812,6 +816,9 @@ class VoiceLoop:
         self._session_remaining = 0
         self._follow_up_ready = False
         self._session_started_at = None
+        self.last_accepted_topic = ""
+        if close := getattr(self.conv, "close_interaction", None):
+            close()
         if self._session_timer:
             self._session_timer.cancel()
             self._session_timer = None
@@ -853,7 +860,12 @@ class VoiceLoop:
                 raise ValueError("Дождись завершения ответа или останови его.")
             updated = self.s.model_copy(deep=True)
             selected = apply_controls(updated, value)
-            if not self.use_wake and not self.wake and not updated.wakeword.phrase:
+            if (
+                selected.mode != "continuous"
+                and not self.use_wake
+                and not self.wake
+                and not updated.wakeword.phrase
+            ):
                 raise ValueError("Для включения ONNX-активации нужен перезапуск приложения.")
             if selected.noise_suppression and self.input_processor is None:
                 raise ValueError("Шумоподавление недоступно: модуль WebRTC не загружен.")
@@ -862,16 +874,28 @@ class VoiceLoop:
             store = getattr(self.conv, "store", None)
             if store:
                 store.set_preference("voice", "controls", selected.model_dump())
-            self.s.audio, self.s.wakeword, self.s.dialogue = (
+            self.s.audio, self.s.wakeword, self.s.dialogue, self.s.vad = (
                 updated.audio,
                 updated.wakeword,
                 updated.dialogue,
+                updated.vad,
             )
             self.wake_phrase = self.s.wakeword.phrase
-            self.use_wake = True
+            self.use_wake = selected.mode != "continuous"
             if self.wake:
                 self.wake.threshold = self.s.wakeword.threshold
-            self._go_to_sleep()
+            from backend.audio.vad import UtteranceSegmenter
+
+            self.segmenter = UtteranceSegmenter(self.s.vad)
+            if self.use_wake:
+                self._go_to_sleep()
+            else:
+                self._close_session()
+                self.listen_deadline = None
+                self.flush_audio()
+                self.vad.reset()
+                if self.state.state is State.SLEEPING:
+                    self.state.to(State.LISTENING)
             self._publish_voice()
             self.bus.publish(
                 {
@@ -1205,6 +1229,7 @@ class VoiceLoop:
         music_token = voice_music_command.set(None)
         led_token = voice_led_command.set(None)
         control_token = voice_control_command.set(None)
+        session_token = voice_session.set(None)
         self.bus.request_id = owner
         trace("REQUEST_RECEIVED", source="audio" if kind == "voice" else "text")
         failed = True
@@ -1260,6 +1285,7 @@ class VoiceLoop:
             voice_music_command.reset(music_token)
             voice_led_command.reset(led_token)
             voice_control_command.reset(control_token)
+            voice_session.reset(session_token)
 
     def _after_turn(self, task: asyncio.Task) -> None:
         if task is not self.task:
@@ -1438,7 +1464,7 @@ class VoiceLoop:
             if request is None and self.nameless_ready:
                 acoustic = evidence(audio)
                 if (
-                    normalize(text) in CONTROLS | CLOSE
+                    (normalize(text) in CONTROLS or close_requested(text))
                     and acoustic.usable
                     and acoustic.active_ms >= 320
                     and decoder_confident(self.stt)
@@ -1808,6 +1834,10 @@ class VoiceLoop:
                 self._recognition(text, "rejected", decision.reason)
                 return
             voice_addressed.set(decision.kind == "direct")
+            if self.session_active or session_input:
+                device = getattr(self.conv, "device", None)
+                if device and device.authenticated:
+                    voice_session.set((device.device_id, device.session_id))
             if decision.kind == "music":
                 voice_music_command.set(text)
             elif decision.kind == "led":
@@ -1840,13 +1870,20 @@ class VoiceLoop:
             self._session_accepted = self.state.request_id
             return
         signing_off = is_sign_off(text, s.assistant_name)
-        if normalize(text) in CLOSE:
+        if close_requested(text):
+            if not self.use_wake:
+                # An explicit close ends continuous listening too; resume only on wake.
+                self.use_wake = self.s.wakeword.enabled = True
+                if not self.wake and not self.wake_phrase:
+                    self.wake_phrase = f"эй {self.s.assistant_name}"
+                    self.s.wakeword.phrase = self.wake_phrase
             answer = "Хорошо. Позови, когда понадоблюсь."
             self.conv.add_exchange(text, answer)
             self.bus.publish({"type": "user", "text": text})
             self.request_sleep()
             self._close_session()
             self._publish_session()
+            self._publish_voice()
 
             def on_close_start():
                 if self.state.state is State.THINKING:

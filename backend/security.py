@@ -43,7 +43,7 @@ def command_text(text: str) -> str:
     text = " ".join(text.casefold().split()).strip()
     text = re.sub(
         r"^(?:(?:привет|здравствуй|добрый (?:день|вечер)|доброе утро)[, .!]+)?"
-        r"(?:эй[, .!]+)?(?:чушпа[́]?н|jarvis|джарвис)[, .!:]+",
+        r"(?:(?:эй|хей|хэй|hey)[, .!]+)?(?:чушпа[́]?н|чушпэн|chushpan|jarvis|джарвис)[, .!:]+",
         "",
         text,
     )
@@ -73,6 +73,16 @@ def command_text(text: str) -> str:
     text = infinitives.get(first, first) + separator + rest
     text = re.sub(r"^(сделай|поставь|установи|включи|выключи|открой|запусти) мне ", r"\1 ", text)
     return text
+
+
+def control_text(text: str) -> str:
+    """Grammatical normalization for device plans; the original request stays intact."""
+    value = command_text(text).replace("ё", "е").strip(".!? ")
+    value = re.sub(r"(?<=[а-яa-z])(?=\d)|(?<=\d)(?=[а-яa-z])", " ", value)
+    value = re.sub(r"^(?:а\s+)?теперь[, ]+", "", value)
+    value = re.sub(r"\b(?:чуть|немного|немножко)\s+(?=(?:по)?темнее|(?:по)?ярче)", "", value)
+    value = re.sub(r"\b(?:потемнее|темнее)\b", "тусклее", value)
+    return value
 
 
 def screen_requested(text: str) -> bool:
@@ -200,6 +210,9 @@ def explicit_request(name: str, arguments: dict, text: str) -> bool:
         return bool(
             re.match(r"измени|сделай|увеличь|уменьши|прибавь|убавь|установи|поставь|set", command)
             and re.search(r"яркост|brightness", command)
+            and re.search(
+                r"\b(?:mac|macbook|мак|макбука?|экран[ае]?|диспле[йя]|display|screen)\b", command
+            )
         )
     if name == "take_screenshot":
         return bool(

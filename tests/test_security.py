@@ -138,7 +138,10 @@ def test_safe_read_needs_no_confirmation():
         "get_system_status", "read", handler, {"topic": {"type": "string", "enum": ["battery"]}}
     )
     registry = ToolRegistry([tool])
-    assert json.loads(run(registry.call(tool.name, {"topic": "battery"}))) == {"percent": 18}
+    assert json.loads(run(registry.call(tool.name, {"topic": "battery"}))) == {
+        "percent": 18,
+        "result_status": "success",
+    }
     assert not registry.confirmations.pending
 
 

@@ -53,6 +53,12 @@ class DialogueExtras(Strict):
     addressee_strictness: Literal["contextual", "addressed"] = "contextual"
 
 
+class CommandControls(Strict):
+    context_s: int = Field(default=60, ge=5, le=180)
+    default_brightness_device: Literal["ask", "led_strip", "mac_display"] = "ask"
+    ambiguity_rule: Literal["context_then_ask", "always_ask"] = "context_then_ask"
+
+
 class Models(Strict):
     provider: Literal["ollama", "gemini"] = "gemini"
     local_model: str = Field(default="qwen3:8b", pattern=r"^[a-zA-Z0-9_.:/-]{1,120}$")
@@ -125,6 +131,7 @@ CATEGORIES = {
     "quiet": QuietHours,
     "notifications": Notifications,
     "about": AboutMe,
+    "commands": CommandControls,
 }
 
 
@@ -154,6 +161,11 @@ def silent_reply(store, settings):
 def apply_persisted(settings, store):
     """Applied before model/voice initialization, without rewriting config files."""
     settings._calendar_disabled = store.preference("dashboard", "calendar_enabled") is False
+    if value := store.preference("settings", "commands"):
+        commands = CommandControls.model_validate(value)
+        settings.tools.control_context_s = commands.context_s
+        settings.tools.default_brightness_device = commands.default_brightness_device
+        settings.tools.ambiguity_rule = commands.ambiguity_rule
     if not hasattr(settings, "_ui_performance_base"):
         settings._ui_performance_base = {
             "think": settings.llm.think,

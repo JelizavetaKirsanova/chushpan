@@ -44,6 +44,7 @@ def build_registry(
     from backend.memory.profile import ProfileMemory
     from backend.night import NightRoutine
     from backend.shortcuts import shortcut_tools
+    from backend.tools.calendar import calendar_tool
     from backend.tools.clock import clock_tools
     from backend.tools.mac import mac_tools
     from backend.tools.media import MediaService, media_tools
@@ -68,6 +69,7 @@ def build_registry(
         tools += news_tools(s, news)
     if "system" in enabled:
         tools += system_tools(s)
+        tools.append(calendar_tool(s, store))
         tools += mac_tools(s, desktop)
         tools += vision_tools(s, desktop)
         tools += shortcut_tools(s)

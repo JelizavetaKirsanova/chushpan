@@ -11,6 +11,10 @@ from backend.security import risk_for
 from backend.tools.validation import validate_arguments
 
 
+class UnsupportedCapability(ValueError):
+    """A static capability lookup failed before any device operation."""
+
+
 @dataclass
 class Capability:
     id: str
@@ -102,7 +106,7 @@ class CapabilityRegistry:
 
     def get(self, identifier):
         if identifier not in self.items or self.items[identifier].tool not in self.tools:
-            raise ValueError(f"Действие {identifier!r} отключено или не поддерживается.")
+            raise UnsupportedCapability(f"Действие {identifier!r} отключено или не поддерживается.")
         return self.items[identifier]
 
     def risk(self, capability, arguments):

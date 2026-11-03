@@ -33,7 +33,7 @@ from backend.tools.registry import ToolError, user_text
         ("Чушпан, можешь сделать звук потише?", [("set_volume", {"direction": "down"})]),
         ("Пожалуйста, прибавь громкость", [("set_volume", {"direction": "up"})]),
         ("Установи громкость тридцать пять процентов", [("set_volume", {"level": 35})]),
-        ("Яркость на 50 процентов", [("led_control", None)]),
+        ("Яркость ленты на 50 процентов", [("led_control", None)]),
         ("Яркость MacBook на 50 процентов", [("set_brightness", {"level": 50})]),
         ("Запусти приложение Сафари", [("open_app", {"name": "Safari"})]),
         (

@@ -117,9 +117,13 @@ class Conversation:
         self.on_tool: Callable[[str], None] | None = None  # the HUD shows tools as they run
         from backend.intents import ControlSession
 
-        self.controls = ControlSession(settings.tools.control_context_s)
+        self.controls = ControlSession(
+            settings.tools.control_context_s,
+            default_brightness_device=settings.tools.default_brightness_device,
+            ambiguity_rule=settings.tools.ambiguity_rule,
+        )
         self._capabilities = self.tools.capabilities(settings.locale.lang)
-        # Same list every turn: Ollama renders tools into the cached prompt prefix.
+        # Stable within a request; refresh between turns when integrations change.
         self._schemas = self.tools.schemas() or None
 
     @property
@@ -347,13 +351,19 @@ class Conversation:
                 self.store.clear_preference("dialogue_pending", str(self.id))
 
     def reset(self) -> None:
-        self.tools.confirmations.clear(RequestContext(self.device, ""))
-        self.store.clear_preference("dialogue_pending", str(self.id))
-        self._morning_music_pending = False
+        self.close_interaction()
         self.id = self.store.new_conversation()
         if self.device.authenticated:
             self.store.session_conversation(self.device.session_id, self.id)
         self._reply_lock = self.store.conversation_lock(self.id)
+
+    def close_interaction(self) -> None:
+        """Drop session authority and proposals without deleting conversation history."""
+        self.controls.clear()
+        self.tools.confirmations.clear(RequestContext(self.device, ""))
+        with contextlib.suppress(sqlite3.Error):
+            self.store.clear_preference("dialogue_pending", str(self.id))
+        self._morning_music_pending = False
 
     def pending_followup(self):
         if not self.device.authenticated:
@@ -1185,6 +1195,10 @@ class Conversation:
             return
         profile = current.get()
         context_interval = profile.begin("context_memory") if profile else None
+        # Local commands return before this point. Refresh only for an actual model
+        # request and keep its prefix stable across tool rounds.
+        self._capabilities = self.tools.capabilities(self.s.locale.lang)
+        self._schemas = self.tools.schemas() or None
         from backend.audio.waiting import trace as voice_trace
 
         voice_trace("REQUEST_ROUTE", route="model", provider=type(self.llm).__name__)

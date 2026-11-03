@@ -19,7 +19,7 @@ function fixture() {
   const traitEntries=[['sarcasm','Сарказм','Стиль'],['profanity','Мат','Стиль'],['humor','Юмор','Стиль'],['boldness','Дерзость','Стиль'],['emotionality','Эмоциональность','Общение'],['verbosity','Болтливость','Общение'],['care','Заботливость','Общение'],['formality','Формальность','Общение'],['initiative','Инициативность','Поведение'],['energy','Энергичность','Поведение'],['directness','Прямолинейность','Поведение'],['curiosity','Любознательность','Поведение']];
   const profile={id:'mine',revision:1,name:'Мой характер',description:'Локальный профиль',builtin:false,traits:Object.fromEntries(traitEntries.map(([key])=>[key,50])),communication:{address:'ты',preferred_addresses:[],unwanted_addresses:[],favorite_expressions:[],forbidden_expressions:[],jokes:'normal',allow_profanity:true,response_style:'adaptive',use_context:true,errors:'direct',irritation:'calm',serious:'supportive'},instructions:'',technical_detail:70};
   const state:SettingsState={type:'settings_center',version:1,profiles:[profile,{...structuredClone(profile),id:'calm',name:'Спокойный помощник',builtin:true}],active:{id:'mine',reason:'Выбран вручную',locked:false},traits:Object.fromEntries(traitEntries.map(([key,name,group])=>[key,{name,group}])),values:{
-    studio:{voice:'eugene',rate:'medium',pitch:'medium',volume:100,pause_ms:0,pronunciations:{},normalize_numbers:true,normalize_english:true,wake_phrase:'эй чушпан',silence_ms:650,adaptive_endpoint:true,text_only:false},
+    commands:{context_s:60,default_brightness_device:'ask',ambiguity_rule:'context_then_ask'},studio:{voice:'eugene',rate:'medium',pitch:'medium',volume:100,pause_ms:0,pronunciations:{},normalize_numbers:true,normalize_english:true,wake_phrase:'эй чушпан',silence_ms:650,adaptive_endpoint:true,text_only:false},
     memory:{automatic:'auto',excluded:[],temporary_days:30},models:{provider:'ollama',local_model:'qwen3:8b',cloud_model:'gemini-3.8-flash',cloud_fallback:'gemini-3.5-flash',fallback:true,mode:'balanced'},access:{disabled_tools:[],blocked_apps:[]},quiet:{enabled:false,start:'23:00',end:'07:00',weekdays:[0,1,2,3,4,5,6],mute:true,pause_initiative:true},notifications:{reminders:true,scenarios:false},about:{name:'Пользовательница',address:'',preferences:''}},
     memory:[],memory_pending:[],habits_opt_in:false,engine:'silero',voices:['eugene','aidar'],voice_support:{rate:true,pitch:true,expression:false},permissions:null,models:{installed:['qwen3:8b']},location:{name:'Общий',mode:'auto'},places:[{id:'home',revision:1,name:'Дом',cities:[]}],signals:{signals:[{kind:'wifi',key:'a'.repeat(64),name:'Тестовая сеть'}]},rules:[],integrations:[],actions:[],recent_actions:[],last_errors:[]};
   view.connection(true);view.receive(state);
@@ -27,13 +27,40 @@ function fixture() {
   return {window,view,state,requests,button};
 }
 
-test('all eight categories open separately and back preserves legacy forms',async()=>{
+test('settings categories open separately and back preserves legacy forms',async()=>{
   const f=fixture();try {
-    const pages=['personality','voice','memory','models','access','places','integrations','advanced'];
+    const pages=['personality','voice','commands','memory','models','access','places','integrations','advanced'];
     for(const page of pages){f.view.open(page);assert.equal(f.window.document.getElementById('settings-home')!.hidden,true);assert.ok(f.window.document.getElementById('settings-content')!.childElementCount);f.button('‹ Все настройки');assert.equal(f.window.document.getElementById('settings-home')!.hidden,false);}
     f.view.open('voice');assert.ok(f.window.document.getElementById('settings-content')!.contains(f.window.document.getElementById('voice-settings')));
     f.view.open('advanced');assert.ok(f.window.document.getElementById('settings-content')!.contains(f.window.document.getElementById('ambient-settings')));
     assert.equal(f.window.document.querySelectorAll('#voice-settings').length,1);
+  } finally {await f.window.happyDOM.abort();}
+});
+
+test('command controls save device policy and show truthful session history',async()=>{
+  const f=fixture();try {
+    f.view.receive({...f.state,command_history:[{at:1700000000,devices:['led_strip'],tools:['led_control'],result_status:'unverified'}]});
+    f.view.open('commands');
+    const form=f.window.document.querySelector('form[data-category="commands"]')!;
+    const context=form.querySelector<HTMLInputElement>('[data-field="context_s"]')!;
+    assert.equal(context.min,'5');assert.equal(context.max,'180');context.value='25';
+    form.querySelector<HTMLSelectElement>('[data-field="default_brightness_device"]')!.value='led_strip';
+    form.querySelector<HTMLSelectElement>('[data-field="ambiguity_rule"]')!.value='always_ask';
+    form.dispatchEvent(new f.window.Event('submit',{cancelable:true}));
+    assert.deepEqual(f.requests.at(-1),{op:'save',category:'commands',value:{context_s:25,default_brightness_device:'led_strip',ambiguity_rule:'always_ask'}});
+    assert.match(f.window.document.getElementById('settings-content')!.textContent!,/Результат не подтверждён/);
+    assert.match(f.window.document.getElementById('settings-content')!.textContent!,/LED-лента/);
+  } finally {await f.window.happyDOM.abort();}
+});
+
+test('advanced voice options expose bounded VAD, background filtering and continuous mode',async()=>{
+  const f=fixture();try {
+    f.view.open('voice');
+    assert.ok(f.window.document.querySelector('#voice-mode option[value="continuous"]'));
+    assert.equal((f.window.document.getElementById('voice-vad') as unknown as HTMLInputElement).min,'0.1');
+    assert.ok(f.window.document.getElementById('voice-background'));
+    assert.ok(f.window.document.getElementById('voice-min-speech'));
+    assert.equal(f.requests.some(r=>['listen','wake_test'].includes(String(r.op))),false);
   } finally {await f.window.happyDOM.abort();}
 });
 

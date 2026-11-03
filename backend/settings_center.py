@@ -14,6 +14,7 @@ from backend.personality import TRAITS, PersonalityProfile, personalities
 from backend.settings_models import (
     CATEGORIES,
     AboutMe,
+    CommandControls,
     Models,
     Studio,
     apply_persisted,
@@ -35,6 +36,11 @@ class SettingsCenter:
         self.closed = False
         self.clients = []
         self.defaults = {
+            "commands": CommandControls(
+                context_s=settings.tools.control_context_s,
+                default_brightness_device=settings.tools.default_brightness_device,
+                ambiguity_rule=settings.tools.ambiguity_rule,
+            ).model_dump(),
             "studio": Studio(
                 voice=settings.voice_name,
                 input_device=settings.audio.input_device,
@@ -133,6 +139,7 @@ class SettingsCenter:
             "recent_actions": automations.store.history()[:20] if automations else [],
             "last_errors": self.errors(),
             "preview": self.last_preview,
+            "command_history": self.conv.controls.history,
         }
 
     def publish(self, **extra):
@@ -187,23 +194,41 @@ class SettingsCenter:
                     "media_volume",
                 ],
             ),
-            "calendar": ("Apple Calendar", []),
+            "calendar": ("Apple Calendar", ["get_calendar"]),
             "mac": ("macOS", ["open_app", "set_brightness", "set_volume"]),
         }
         disabled = self.value("access")["disabled_tools"]
         observed = (
             self.conv.tools.automations.engine.device_state if self.conv.tools.automations else {}
         )
+
+        def status_for(key, names):
+            if (
+                key == "calendar"
+                and self.store.preference("dashboard", "calendar_enabled") is False
+            ):
+                return "not_configured"
+            if not any(self.conv.tools.enabled(name) for name in names):
+                return "not_configured"
+            checks = [
+                self.conv.tools.availability[n] for n in names if n in self.conv.tools.availability
+            ]
+            if checks:
+                return max(checks, key=lambda v: v["updated_at"])["status"]
+            return observed.get(key, {}).get("status", "unknown")
+
         return [
             {
                 "id": key,
                 "name": name,
                 "tools": [t for t in tools if t in self.conv.tools],
                 "enabled": any(t not in disabled and t in self.conv.tools for t in tools)
-                if tools
-                else self.store.preference("dashboard", "calendar_enabled") is True,
+                and (
+                    key != "calendar"
+                    or self.store.preference("dashboard", "calendar_enabled") is not False
+                ),
                 "supported": key == "calendar" or any(t in self.conv.tools for t in tools),
-                "status": observed.get(key, {}).get("status", "not_checked"),
+                "status": status_for(key, tools),
                 "error": observed.get(key, {}).get("error"),
                 "details": list(self.s.shortcuts.allowed) if key == "shortcuts" else [],
             }
@@ -483,13 +508,20 @@ class SettingsCenter:
         if category not in CATEGORIES:
             raise ValueError("Неизвестная категория.")
         selected = CATEGORIES[category].model_validate(values)
+        if category == "commands" and self.loop and self.loop.busy:
+            raise ValueError("Дождись завершения текущей команды перед изменением контекста.")
         if category == "studio":
             self.validate_studio(selected.model_dump())
         if category == "access" and set(selected.disabled_tools) - set(self.conv.tools.names):
             raise ValueError("Неизвестное действие.")
         self.store.set_preference("settings", category, selected.model_dump())
-        if category in {"studio", "models", "about"}:
+        if category in {"studio", "models", "about", "commands"}:
             apply_persisted(self.s, self.store)
+        if category == "commands":
+            self.conv.controls.ttl_s = self.s.tools.control_context_s
+            self.conv.controls.default_brightness_device = self.s.tools.default_brightness_device
+            self.conv.controls.ambiguity_rule = self.s.tools.ambiguity_rule
+            self.conv.controls.clear()
         if category == "studio":
             self.apply_studio(selected.model_dump())
         if category == "models":

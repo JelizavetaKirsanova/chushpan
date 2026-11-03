@@ -17,10 +17,12 @@ from backend.context import (
     voice_control_command,
     voice_led_command,
     voice_music_command,
+    voice_session,
 )
+from backend.latency import current, measure
 from backend.led import _NUMBERS, _TARGET, _VERBS, color_rgb
 from backend.led import parse as led_parse
-from backend.security import command_text
+from backend.security import control_text
 
 
 class StrictModel(BaseModel):
@@ -165,7 +167,7 @@ class ControlPlan(StrictModel):
     intent: Literal["compound_control"] = "compound_control"
     actions: list[Action] = Field(default_factory=list, max_length=8)
     clarification: str | None = None
-    clarification_kind: Literal["led_brightness"] | None = None
+    clarification_kind: Literal["led_brightness", "brightness_target"] | None = None
 
     @model_validator(mode="after")
     def executable_or_question(self):
@@ -237,14 +239,14 @@ def _control_target(text):
     return any(color_rgb(" ".join(words[:size])) for size in (1, 2, 3))
 
 
-def compile_plan(text, *, comfortable_brightness=None):
+def compile_plan(text, *, comfortable_brightness=None, brightness_target=None):
     """Full coverage grammar: unknown words or conflicts never produce a partial plan."""
     from backend.local_commands import route
     from backend.music import parse as music_parse
 
     if not isinstance(text, str) or len(text) > 1000:
         return None
-    command = command_text(text).replace("ё", "е").strip(".!? ")
+    command = control_text(text)
     if not re.match(
         r"^(?:" + "|".join(_VERBS) + rf"|открой|запусти|яркост[ьи]|громкость|{_TARGET})\b", command
     ):
@@ -258,6 +260,28 @@ def compile_plan(text, *, comfortable_brightness=None):
             if candidate
             else None
         )
+    explicit_led = bool(re.search(rf"\b(?:{_TARGET})\b", command))
+    explicit_display = bool(
+        re.search(r"\b(?:mac|macbook|мак|макбука?|экран[ае]?|диспле[йя])\b", command)
+    )
+    # Device-free brightness is ambiguous even though an individual legacy parser
+    # has a default. Resolve the target once before any handler gets the command.
+    if (
+        not explicit_led
+        and not explicit_display
+        and re.fullmatch(
+            r"(?:(?:сделай|поставь|установи|убавь|уменьши|прибавь|увеличь) )?"
+            r"яркост[ьи](?: (?:на|до))?(?: [\w %]+)?",
+            command,
+        )
+    ):
+        if brightness_target not in {"led_strip", "mac_display"}:
+            return ControlPlan(
+                clarification="Яркость ленты или экрана Mac?",
+                clarification_kind="brightness_target",
+            )
+        command += " ленты" if brightness_target == "led_strip" else " экрана"
+        text = command
     if args := led_parse(text, comfortable_brightness=comfortable_brightness):
         action = led_action(args)
         return ControlPlan(actions=[action]) if action else None
@@ -356,16 +380,61 @@ def compile_plan(text, *, comfortable_brightness=None):
 
 
 class ControlSession:
-    def __init__(self, ttl_s=60, clock=time.monotonic):
+    def __init__(
+        self,
+        ttl_s=60,
+        clock=time.monotonic,
+        *,
+        default_brightness_device="ask",
+        ambiguity_rule="context_then_ask",
+    ):
         self.clock, self.ttl_s = clock, ttl_s
+        self.default_brightness_device = default_brightness_device
+        self.ambiguity_rule = ambiguity_rule
         self.device = None
         self.expires = 0
         self.binding = None
         self.completed = OrderedDict()
         self.pending_brightness = None
+        self.pending_target = None
+        self.sent_state = {}
+        self.confirmed_state = {}
+        self.previous_confirmed = {}
+        self.last_action = None
+        self.history = []
 
     def plan(self, text, binding, comfortable_brightness=None):
-        value = command_text(text).strip(".!? ")
+        with measure("context_resolution"):
+            return self._plan(text, binding, comfortable_brightness)
+
+    def _plan(self, text, binding, comfortable_brightness=None):
+        value = control_text(text)
+        if self.binding is not None and (self.binding != binding or self.clock() >= self.expires):
+            self.clear()
+        fresh = self.binding == binding and self.clock() < self.expires and self.device is not None
+        target = self.device if fresh and self.ambiguity_rule == "context_then_ask" else None
+        if profile := current.get():
+            explicit_target = re.search(
+                rf"\b(?:{_TARGET}|mac|macbook|мак|макбука?|экран[ае]?|диспле[йя])\b", value
+            )
+            profile.update(context_used=bool(target and not explicit_target))
+        if target not in {"led_strip", "mac_display"}:
+            target = self.default_brightness_device
+        pending_target = self.pending_target
+        if (
+            pending_target
+            and pending_target["binding"] == binding
+            and self.clock() < pending_target["expires"]
+        ):
+            selected = (
+                "led_strip"
+                if re.fullmatch(rf"(?:для )?(?:{_TARGET})", value)
+                else "mac_display"
+                if re.fullmatch(r"(?:для )?(?:экран[ае]?|диспле[йя]|mac|мак)", value)
+                else None
+            )
+            if selected:
+                return compile_plan(pending_target["text"], brightness_target=selected)
         pending = self.pending_brightness
         if pending:
             number = re.sub(r"^на\s+", "", value)
@@ -377,6 +446,55 @@ class ControlSession:
                         clarification="Уточнение истекло. Повтори просьбу об устройстве."
                     )
                 return compile_plan(pending["text"], comfortable_brightness=level)
+        relative = re.fullmatch(
+            r"(?:(?:сделай|поставь) )?(?:(?:ее|его|это) )?(?:по)?(ярче|тусклее)", value
+        )
+        resume = value in {"включи обратно", "включи снова"}
+        restore = re.fullmatch(r"верни (?:(?:предыдущий|прежний) (цвет|уровень)|как было)", value)
+        if relative or resume or restore:
+            if not fresh:
+                return ControlPlan(clarification="Для какого устройства изменить состояние?")
+            if restore:
+                previous = self.previous_confirmed.get(self.device, {})
+                params = {
+                    k: v
+                    for k, v in previous.items()
+                    if not restore[1] or k == ("color" if restore[1] == "цвет" else "brightness")
+                }
+                if not params:
+                    return ControlPlan(
+                        clarification="Предыдущее фактическое состояние не подтверждено. "
+                        "Назови нужный цвет или уровень."
+                    )
+                if self.device == "led_strip":
+                    return ControlPlan(actions=[LEDAction(parameters=LEDParameters(**params))])
+                if self.device == "mac_display" and "brightness" in params:
+                    return ControlPlan(
+                        actions=[
+                            DisplayAction(parameters=Brightness(brightness=params["brightness"]))
+                        ]
+                    )
+                return ControlPlan(
+                    clarification="Не могу достоверно восстановить предыдущий параметр "
+                    "этого устройства."
+                )
+            if self.device != "led_strip":
+                return ControlPlan(
+                    clarification="Назови абсолютную яркость выбранного экрана в процентах."
+                )
+            return ControlPlan(
+                actions=[
+                    LEDAction(
+                        parameters=LEDParameters(
+                            **(
+                                {"power": True}
+                                if resume
+                                else {"brightness_delta": 10 if relative[1] == "ярче" else -10}
+                            )
+                        )
+                    )
+                ]
+            )
         continuation = re.match(r"^(?:нет[, ]+лучше|лучше|и яркость)\b", value)
         if continuation:
             if self.binding != binding or self.clock() >= self.expires or self.device is None:
@@ -395,14 +513,26 @@ class ControlSession:
         ):
             text = "Сделай звук " + ("тише" if "тише" in value else "громче")
         try:
-            return compile_plan(text, comfortable_brightness=comfortable_brightness)
+            with measure("intent_parsing"):
+                return compile_plan(
+                    control_text(text),
+                    comfortable_brightness=comfortable_brightness,
+                    brightness_target=target,
+                )
         except ValueError:
             return ControlPlan(clarification="Параметры противоречат друг другу. Уточни команду.")
 
-    def clear(self):
+    def clear(self, *, keep_state=False):
         self.device = None
         self.expires = 0
+        self.binding = None
         self.pending_brightness = None
+        self.pending_target = None
+        if not keep_state:
+            self.sent_state.clear()
+            self.confirmed_state.clear()
+            self.previous_confirmed.clear()
+            self.last_action = None
 
     async def execute(self, plan, conv):
         context = request_context.get()
@@ -415,16 +545,29 @@ class ControlSession:
                 "error": "План не совпадает с исходным запросом авторизованной сессии.",
                 "steps": [],
             }
-        if not voice_addressed.get() and context.text not in {
-            voice_led_command.get(),
-            voice_music_command.get(),
-            voice_control_command.get(),
-        }:
+        if (
+            not voice_addressed.get()
+            and voice_session.get() != context.binding
+            and context.text
+            not in {
+                voice_led_command.get(),
+                voice_music_command.get(),
+                voice_control_command.get(),
+            }
+        ):
             return {"error": "Для выполнения нужен прямой запрос к Чушпану.", "steps": []}
         if plan.clarification:
+            if profile := current.get():
+                profile.update(intent="device_control", target="ambiguous", reason="clarification")
             self.clear()
             if plan.clarification_kind == "led_brightness":
                 self.pending_brightness = {
+                    "text": context.text,
+                    "binding": binding,
+                    "expires": self.clock() + self.ttl_s,
+                }
+            elif plan.clarification_kind == "brightness_target":
+                self.pending_target = {
                     "text": context.text,
                     "binding": binding,
                     "expires": self.clock() + self.ttl_s,
@@ -450,7 +593,10 @@ class ControlSession:
         # Sequential by default: several operations may share Safari or the Mac agent.
         # An error stops only dependent writes inside one device's own transaction.
         for action in plan.actions:
-            name, arguments = action.call()
+            with measure("tool_routing"):
+                name, arguments = action.call()
+            if profile := current.get():
+                profile.update(intent="device_control", target=action.device, tool=name)
             if name is None or name not in conv.tools:
                 result = {
                     "error": "Управление громкостью телевизора не подключено."
@@ -507,6 +653,11 @@ class ControlSession:
                 )
                 else "unverified"
             )
+            from backend.tools.registry import result_status
+
+            canonical = result.get("result_status") or result_status(name, arguments, result)
+            if canonical == "failed":
+                status = "failed"
             steps.append(
                 {
                     "device": action.device,
@@ -514,20 +665,54 @@ class ControlSession:
                     "arguments": arguments,
                     "result": result,
                     "status": status,
+                    "result_status": canonical,
                 }
             )
+            self.last_action = {
+                "device": action.device,
+                "tool": name,
+                "status": canonical,
+                "updated_at": self.clock(),
+            }
+            if status == "partial":
+                self.confirmed_state.pop(action.device, None)
+                self.previous_confirmed.pop(action.device, None)
+            if status in {"sent", "confirmed"}:
+                params = action.parameters.model_dump(exclude_none=True)
+                self.sent_state[action.device] = {
+                    **self.sent_state.get(action.device, {}),
+                    **params,
+                }
+                if status == "confirmed":
+                    self.previous_confirmed[action.device] = dict(
+                        self.confirmed_state.get(action.device, {})
+                    )
+                    self.confirmed_state[action.device] = {
+                        **self.confirmed_state.get(action.device, {}),
+                        **params,
+                    }
+                else:
+                    # A newer unverified write invalidates knowledge of the affected
+                    # fields. Keep the sent values separate from physical evidence.
+                    known = self.confirmed_state.get(action.device, {})
+                    for field in params:
+                        known.pop(field, None)
+                    if "brightness_delta" in params:
+                        known.pop("brightness", None)
+                    self.previous_confirmed.pop(action.device, None)
             replies.append(
                 result.get("error")
                 or conv.tools.direct_reply(name, result)
                 or "Результат действия проверить не удалось."
             )
         good = any(step["status"] in {"sent", "confirmed", "partial"} for step in steps)
-        self.clear()
-        if (
+        keep_context = (
             len(plan.actions) == 1
             and good
             and plan.actions[0].device in {"led_strip", "mac_display", "mac_sound"}
-        ):
+        )
+        self.clear(keep_state=keep_context)
+        if keep_context:
             self.device, self.expires, self.binding = (
                 plan.actions[0].device,
                 self.clock() + self.ttl_s,
@@ -547,5 +732,28 @@ class ControlSession:
             else "sent",
             "plan": plan.model_dump(mode="json", exclude_none=True),
         }
+        receipt["result_status"] = (
+            "partial_success"
+            if receipt["status"] == "partial"
+            else "failed"
+            if receipt["status"] == "failed"
+            else "success"
+            if receipt["status"] == "confirmed"
+            else "unverified"
+        )
+        self.history.append(
+            {
+                "at": time.time(),
+                "result_status": receipt["result_status"],
+                "devices": [a.device for a in plan.actions],
+                "tools": [s["tool"] for s in steps if s["tool"]],
+            }
+        )
+        self.history[:] = self.history[-30:]
+        if profile := current.get():
+            profile.update(
+                result_status=receipt["result_status"],
+                target=plan.actions[0].device if len(plan.actions) == 1 else "multiple",
+            )
         self.completed[key] = receipt
         return receipt

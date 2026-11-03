@@ -30,6 +30,7 @@ const labels: Record<string, string> = {model_output_queue: 'Ожидание о
   intent_detection: 'Определение намерения', scenario_search: 'Поиск сценария', action_planning: 'Планирование действий', scenario_execution: 'Выполнение сценария', scenario_action: 'Действие сценария', result_verification: 'Проверка результата', scenario_interpretation: 'Уточнение сценария моделью',
   led_normalization: 'Нормализация команды подсветки', led_intent: 'Намерение подсветки', led_selection: 'Выбор инструмента LED', led_authorization: 'Разрешение на подсветку', led_request: 'Запрос к ленте', ble_connect: 'Подключение BLE', ble_write: 'Запись BLE', led_delivery: 'Отправка команды LED', led_result: 'Результат подсветки', led_reply: 'Ответ о подсветке',
   context_memory: 'Память и контекст', model_retry: 'Повтор после проверки ответа', model_total: 'Поток ответа LLM', llm_attempt: 'Попытка запроса', llm_transport: 'Поток Ollama', model_thinking: 'Обдумывание модели',
+  intent_parsing: 'Разбор команды', context_resolution: 'Разрешение контекста', tool_routing: 'Выбор инструмента',
   tool_execution: 'Инструмент', tts_queue: 'Очередь TTS', tts_model_ready: 'Подготовка голоса',
   tts_text_preparation: 'Подготовка текста и произношения', tts_generation: 'Синтез звука', tts_playback: 'Озвучка ответа', waiting_playback: 'Реплика ожидания',
   gemini_first_event: 'Gemini: сеть и ожидание первого события', gemini_stream_total: 'Gemini: весь поток',
@@ -209,6 +210,9 @@ export class PerformancePanel {
     const spans = trace.stages.filter(s => !/first_|response_total|_attempt_/.test(s.stage));
     const longest = [...spans].sort((a,b) => timeline(b, duration).seconds - timeline(a, duration).seconds)[0];
     const heading = el('div', '', 'perf-detail-heading');
+    const targets:Record<string,string>={led_strip:'LED-лента',mac_display:'Экран Mac',mac_sound:'Звук Mac',music:'Музыка',multiple:'Несколько устройств'};
+    const outcomes:Record<string,string>={success:'Подтверждено',partial_success:'Частично выполнено',failed:'Не выполнено',unverified:'Не подтверждено',requires_confirmation:'Нужно подтверждение'};
+    if(trace.metadata.intent)heading.append(el('p',`Намерение: ${trace.metadata.intent==='device_control'?'Управление устройством':trace.metadata.intent} · устройство: ${targets[String(trace.metadata.target)]??trace.metadata.target??'—'} · инструмент: ${trace.metadata.tool??'—'} · результат: ${outcomes[String(trace.metadata.result_status)]??trace.metadata.result_status??'—'}`));
     const model = trace.stages.find(s => s.stage === 'model_total');
     if(trace.metadata.min_avg_logprob!=null)heading.append(el('p',`Whisper: logprob ${trace.metadata.min_avg_logprob} · no_speech ${trace.metadata.max_no_speech_prob??'—'} · compression ${trace.metadata.max_compression_ratio??'—'}. Это показатели декодера, не вероятность обращения.`));
     if(trace.metadata.stt_result!=null||trace.metadata.error_component!=null)heading.append(el('p',`Голосовой тракт: STT ${trace.metadata.stt_result??'не завершён'} · символов ${trace.metadata.stt_chars??'—'} · конец записи ${trace.metadata.recording_end??'—'} · аудио ${seconds(trace.metadata.audio_duration_s as number|undefined)} · причина ${reasons[String(trace.metadata.reason)]??trace.metadata.reason??'—'} · ошибка ${trace.metadata.error_component??'нет'}${trace.metadata.error_line!=null?':'+trace.metadata.error_line:''}`));

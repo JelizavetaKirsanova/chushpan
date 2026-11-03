@@ -2,8 +2,10 @@ import type { HudEvent } from './types';
 
 export interface VoiceControls {
   sensitivity: 'conservative' | 'balanced' | 'sensitive';
-  mode: 'name_only' | 'dialogue'; continuation_s: number;
+  mode: 'name_only' | 'dialogue' | 'continuous'; continuation_s: number;
   allow_barge_in: boolean; noise_suppression: boolean;
+  vad_threshold?: number|null; min_speech_ms?: number|null;
+  background_filter?: 'balanced'|'strict';
 }
 export type VoiceSettingsEvent = ({type: 'voice_settings'} & VoiceControls & {
   activation_enabled: boolean; wake_source: string; wake_threshold: number;
@@ -24,6 +26,9 @@ export class VoiceSettingsPanel {
         continuation_s: Number((node('voice-duration') as HTMLInputElement).value),
         allow_barge_in: (node('voice-barge') as HTMLInputElement).checked,
         noise_suppression: (node('voice-noise') as HTMLInputElement).checked,
+        vad_threshold:Number((node('voice-vad') as HTMLInputElement).value),
+        min_speech_ms:Number((node('voice-min-speech') as HTMLInputElement).value),
+        background_filter:(node('voice-background') as HTMLSelectElement).value as VoiceControls['background_filter'],
       };
       if (!(node('voice-settings') as HTMLFormElement).reportValidity()) return;
       node('voice-feedback').textContent = 'Применяю настройки…'; this.send(value);
@@ -44,6 +49,9 @@ export class VoiceSettingsPanel {
       (node('voice-duration') as HTMLInputElement).value = String(event.continuation_s);
       (node('voice-barge') as HTMLInputElement).checked = event.allow_barge_in;
       (node('voice-noise') as HTMLInputElement).checked = event.noise_available && event.noise_suppression;
+      (node('voice-vad') as HTMLInputElement).value=String(event.vad_threshold??0.5);
+      (node('voice-min-speech') as HTMLInputElement).value=String(event.min_speech_ms??300);
+      (node('voice-background') as HTMLSelectElement).value=event.background_filter??'balanced';
     }
     (node('voice-noise') as HTMLInputElement).disabled = !this.online || !event.noise_available;
     node('voice-session-limit').textContent = `Предел одной сессии: ${event.max_session_s} с.`;

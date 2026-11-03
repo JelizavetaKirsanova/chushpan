@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+import time
 from collections.abc import Awaitable, Callable, Iterable
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
@@ -19,6 +20,7 @@ from backend.context import (
     voice_led_command,
     voice_music_command,
     voice_read_followup,
+    voice_session,
 )
 from backend.latency import current
 from backend.mac_agent import MacAgent, authorized_operation
@@ -38,6 +40,56 @@ if TYPE_CHECKING:
     from backend.brain.morning import MorningRoutine
 
 log = logging.getLogger(__name__)
+
+
+def result_status(name, arguments, result, risk=None):
+    """Shared factual outcome; delivery and physical verification remain separate."""
+    if not isinstance(result, dict):
+        return "unverified"
+    if result.get("status") == "confirmation_required":
+        return "requires_confirmation"
+    if result.get("delivery_state") == "partial":
+        return "partial_success"
+    if name == "run_scenario":
+        if result.get("status") in {"unverified", "interrupted", "sent"}:
+            return "unverified"
+        if result.get("status") == "confirmed":
+            return "success"
+        if result.get("status") == "failed" and any(
+            step.get("status") in {"confirmed", "sent"} for step in result.get("steps", [])
+        ):
+            return "partial_success"
+    if (
+        result.get("error")
+        or result.get("ok") is False
+        or result.get("execution_status") == "failed"
+        or result.get("status") in {"not_found", "failed", "blocked"}
+    ):
+        return "failed"
+    if (
+        result.get("physical_confirmed") is True
+        or result.get("device_state_confirmed") is True
+        or result.get("playback_confirmed") is True
+    ):
+        return "success"
+    if result.get("written") or result.get("submitted") or result.get("state") == "playing":
+        return "unverified"
+    if name == "set_brightness" and type(result.get("level")) is int:
+        return "success" if result["level"] == arguments.get("level") else "failed"
+    if (
+        name == "set_volume"
+        and result.get("ok") is True
+        and type(result.get("volume_percent")) is int
+    ):
+        return (
+            "success"
+            if "level" not in arguments or arguments["level"] == result["volume_percent"]
+            else "failed"
+        )
+    if name == "music_command" and result.get("ok") and result.get("state") == "paused":
+        return "success"
+    return "success" if (risk or risk_for(name, arguments)) == Risk.READ else "unverified"
+
 
 # What the user said this turn, set by Conversation.reply: a tool can check that the user
 # really asked for what the model is doing (see `remember`). None outside a conversation.
@@ -190,6 +242,9 @@ class Tool:
         )
         if (
             not voice_addressed.get()
+            and not (
+                context and context.device.authenticated and voice_session.get() == context.binding
+            )
             and approved_action.get() is None
             and not local_music
             and not local_led
@@ -273,6 +328,7 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
         self.on_execution: Callable[[int, str, str, Any], None] | None = None
         self._execution_id = 0
+        self.availability = {}
         for tool in tools:
             self.add(tool)
 
@@ -298,7 +354,44 @@ class ToolRegistry:
         return list(self._tools)
 
     def schemas(self) -> list[dict[str, Any]]:
-        return [t.schema() for t in self._tools.values()]
+        return [t.schema() for t in self._tools.values() if self.enabled(t.name)]
+
+    def enabled(self, name):
+        tool = self._tools.get(name)
+        if tool is None:
+            return False
+        store = getattr(tool, "settings_store", None)
+        return not store or name not in (store.preference("settings", "access") or {}).get(
+            "disabled_tools", []
+        )
+
+    def availability_for(self, name):
+        if not self.enabled(name):
+            return "not_configured"
+        return self.availability.get(name, {}).get("status", "unknown")
+
+    def observe_availability(self, name, result):
+        if not isinstance(result, dict):
+            return
+        code = result.get("error_code") or result.get("code")
+        code = {
+            "permission_denied": "requires_permission",
+            "calendar_permission": "requires_permission",
+            "app_not_installed": "not_configured",
+            "not_configured": "not_configured",
+            "service_timeout": "temporarily_unavailable",
+            "device_unavailable": "temporarily_unavailable",
+        }.get(code, code)
+        status = (
+            code
+            if code in {"not_configured", "requires_permission", "temporarily_unavailable"}
+            else "execution_error"
+            if result.get("result_status") in {"failed", "partial_success"}
+            else "available"
+            if result.get("result_status") == "success"
+            else "unknown"
+        )
+        self.availability[name] = {"status": status, "updated_at": time.monotonic()}
 
     def direct_reply(self, name: str, result: Any) -> str | None:
         tool = self._tools.get(name)
@@ -315,9 +408,26 @@ class ToolRegistry:
     def capabilities(self, lang: str) -> list[str]:
         out: list[str] = []
         for tool in self._tools.values():
+            if not self.enabled(tool.name):
+                continue
             text = tool.capability.get(lang) or tool.capability.get("en")
             if text and text not in out:
                 out.append(text)
+        labels = {
+            "unknown": "доступность ещё не проверена",
+            "available": "последняя проверка успешна",
+            "not_configured": "не настроено или выключено",
+            "requires_permission": "требует разрешения",
+            "temporarily_unavailable": "временно недоступно",
+            "execution_error": "ошибка последнего выполнения",
+        }
+        states = [
+            f"{name}: {labels[self.availability_for(name)]}"
+            for name in self.names
+            if self._tools[name].capability or name == "get_calendar"
+        ]
+        if states and lang == "ru":
+            out.append("Состояние зарегистрированных интеграций: " + "; ".join(states))
         return out
 
     async def call(self, name: str, arguments: dict[str, Any] | str | None) -> str:
@@ -337,7 +447,20 @@ class ToolRegistry:
         except asyncio.CancelledError:
             notify("cancelled")
             raise
-        notify("result", json.loads(result))
+        decoded = json.loads(result)
+        if isinstance(decoded, dict):
+            tool = self._tools.get(name)
+            risk = tool.risk if tool else None
+            # Handlers never grant themselves success. The common classifier also
+            # covers guard failures and confirmation responses returned before execution.
+            decoded["result_status"] = decoded.get("result_status") or result_status(
+                name, {}, decoded, risk
+            )
+            self.observe_availability(name, decoded)
+            if profile := current.get():
+                profile.update(result_status=decoded["result_status"])
+            result = _dump(decoded)
+        notify("result", decoded)
         return result
 
     async def _call(self, name: str, arguments: dict[str, Any] | str | None) -> str:
@@ -384,6 +507,13 @@ class ToolRegistry:
         try:
             args = validate_arguments(arguments, tool.parameters, tool.required)
             result = await tool.handler(**args)
+            if isinstance(result, dict):
+                risk = (
+                    tool.risk_resolver(args)
+                    if tool.risk_resolver
+                    else tool.risk or risk_for(name, args)
+                )
+                result = {**result, "result_status": result_status(name, args, result, risk)}
             if isinstance(result, dict) and (result.get("error") or result.get("ok") is False):
                 outcome = "error"
                 if profile:
@@ -413,7 +543,16 @@ class ToolRegistry:
             )
             if profile:
                 profile.fail(type(exc).__name__)
-            return _dump({"error": str(exc)})
+            return _dump(
+                {
+                    "error": str(exc),
+                    **(
+                        {"error_code": "requires_permission"}
+                        if isinstance(exc, PermissionError)
+                        else {}
+                    ),
+                }
+            )
         except sqlite3.Error:
             outcome = "error"
             if profile:
@@ -423,8 +562,8 @@ class ToolRegistry:
             outcome = "error"
             if profile:
                 profile.fail(type(exc).__name__)
-            log.exception("Tool %s failed", name)
-            return _dump({"error": f"{type(exc).__name__}: {exc}"})
+            log.error("Tool failed tool=%s type=%s", name, type(exc).__name__)
+            return _dump({"error": "Инструмент завершился ошибкой. Результат не подтверждён."})
         finally:
             if profile:
                 profile.end(

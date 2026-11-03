@@ -23,7 +23,7 @@ from backend.tools.registry import Tool, ToolRegistry
         ("Чушпан. Сколько времени?", "current_time", {}),
         ("Какая громкость?", "get_system_status", {"topic": "volume"}),
         ("Сделай громкость Mac 30%", "set_volume", {"level": 30}),
-        ("Установи яркость 25%", "set_brightness", {"level": 25}),
+        ("Установи яркость экрана 25%", "set_brightness", {"level": 25}),
     ],
 )
 def test_local_routes_remain_guarded_without_model(text, name, args):

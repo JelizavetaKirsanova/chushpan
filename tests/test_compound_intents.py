@@ -526,11 +526,13 @@ def test_subjective_screen_request_does_not_let_the_model_invent_a_percentage(ri
     asyncio.run(run())
 
 
-def test_existing_unqualified_mac_brightness_route_is_preserved(rig, monkeypatch):
+def test_unqualified_brightness_asks_then_binds_explicit_device(rig, monkeypatch):
     async def run():
         conv, store, screen, player, opened = setup(rig, monkeypatch)
         try:
-            assert "Яркость 25 процентов" in await ask(conv, "Установи яркость 25%")
+            assert "ленты или экрана" in await ask(conv, "Установи яркость 25%")
+            screen.assert_not_awaited()
+            assert "Яркость 25 процентов" in await ask(conv, "экран")
             screen.assert_awaited_once_with("desktop_brightness", level=25)
             rig.factory.assert_not_called()
         finally:

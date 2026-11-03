@@ -5,6 +5,29 @@ import re
 from backend.security import command_text, confirmation_code
 
 CLOSE = {"закрой сессию", "заверши диалог", "закончи разговор", "на сегодня всё"}
+_CLOSE_REQUEST = re.compile(
+    r"(?:отключись|не слушай(?: меня)?|перестань слушать|"
+    r"(?:я )?(?:сейчас |уже )?не с тобой (?:сейчас )?(?:разговариваю|болтаю)(?: сейчас)?)"
+    r"(?:[, .!]+(?:я )?(?:сейчас |уже )?не с тобой (?:разговариваю|болтаю))?"
+)
+
+
+def close_requested(text):
+    value = command_text(text).strip(".!? ")
+    normalized = normalize(text)
+    return (
+        normalized in CLOSE
+        or bool(_CLOSE_REQUEST.fullmatch(value))
+        or bool(
+            re.fullmatch(
+                r"(?:(?:ты )?можешь микрофон отключить )?"
+                r"я (?:уже |сейчас )?не с тобой (?:болтаю|разговариваю)(?: сейчас)?",
+                normalized,
+            )
+        )
+    )
+
+
 CONTROLS = {
     "расскажи подробнее",
     "нет я имела в виду другое",

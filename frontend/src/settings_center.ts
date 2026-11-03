@@ -17,6 +17,7 @@ export interface SettingsState {type:'settings_center'; version:number; values:R
   signals:{signals?:Signal[];error?:string}; rules:Scenario[];
   integrations:{id:string;name:string;tools:string[];enabled:boolean;supported:boolean;status:string;error:string|null;details:string[]}[];
   actions:{id:string;description:string;risk:string;enabled:boolean}[]; recent_actions:Values[];
+  command_history?:{at:number;devices:string[];tools:string[];result_status:string}[];
   last_errors:{created_at:string;errors:string[];model:string}[]; preview?:Preview[];
   training?:{phrase:string;operation:string}[]; selected?:string; captured?:string; message?:string;error?:string}
 interface Signal {kind:string;key:string;name:string}
@@ -28,6 +29,7 @@ export type SettingsEvent = SettingsState | ({type:'settings_preview'} & Preview
 const categories = [
   ['personality','Характер и личность','Настроение, привычки общения и твой собственный Чушпан','sparkles'],
   ['voice','Голос и прослушивание','Голос, произношение и разговор без лишних повторов','mic'],
+  ['commands','Команды и устройства','Выбор устройства, контекст и последние действия','settings'],
   ['memory','Память и обучение','Важное о тебе и то, чему Чушпан научился','heart'],
   ['models','Модели и производительность','Скорость, качество и доступность моделей','cpu'],
   ['access','Доступ и безопасность','Разрешения, приложения и границы самостоятельности','shield'],
@@ -40,7 +42,7 @@ const el = (tag:string, text='', cls='') => {const n=document.createElement(tag)
 const id = (value:string) => document.getElementById(value)!;
 const clone = <T>(value:T):T => structuredClone(value);
 const sec = (value:number|null|undefined) => value == null ? 'не измерено' : `${value.toFixed(2)} с`;
-const timeLabels:Record<string,string> = {ready:'Доступен',error:'Ошибка',not_checked:'Ещё не проверено',observed:'Прочитано',unavailable:'Недоступен',connected:'Подключено',granted:'Разрешено',denied:'Нет доступа',manual:'Проверь в macOS',unknown:'Не определено',unsupported:'Не используется'};
+const timeLabels:Record<string,string> = {available:'Доступно',not_configured:'Не настроено',temporarily_unavailable:'Временно недоступно',requires_permission:'Требует разрешения',execution_error:'Ошибка выполнения',ready:'Доступен',error:'Ошибка',not_checked:'Ещё не проверено',observed:'Прочитано',unavailable:'Недоступен',connected:'Подключено',granted:'Разрешено',denied:'Нет доступа',manual:'Проверь в macOS',unknown:'Не определено',unsupported:'Не используется'};
 
 export class SettingsCenterUI {
   private state:SettingsState|null=null;
@@ -139,6 +141,7 @@ export class SettingsCenterUI {
     if(!this.state){content.append(el('p','Настройки появятся после подключения к Чушпану.','settings-empty'));return;}
     if(this.page==='personality')this.personality(content);
     if(this.page==='voice')this.voice(content);
+    if(this.page==='commands')this.commands(content);
     if(this.page==='memory')this.memory(content);
     if(this.page==='models')this.models(content);
     if(this.page==='access')this.access(content);
@@ -166,6 +169,21 @@ export class SettingsCenterUI {
     const save=this.button('Сохранить',()=>{},true);save.type='submit';save.className='primary';form.append(save);
     form.onsubmit=e=>{e.preventDefault();if(!form.reportValidity())return;const out=clone(values);form.querySelectorAll<HTMLInputElement|HTMLSelectElement|HTMLTextAreaElement>('[data-field]').forEach(input=>{const key=input.dataset.field!;out[key]=input.dataset.kind==='checkbox'?(input as HTMLInputElement).checked:['range','number'].includes(input.dataset.kind!)?(input.value===''?null:Number(input.value)):input.dataset.kind==='list'?input.value.split('\n').map(s=>s.trim()).filter(Boolean):input.value;});this.write({op:'save',category,value:out});};
     return form;
+  }
+  private commands(root:HTMLElement):void {
+    root.append(this.form('commands',[
+      ['default_brightness_device','Яркость без названия устройства','select',[['ask','Уточнять'],['led_strip','LED-лента'],['mac_display','Экран Mac']]],
+      ['ambiguity_rule','Использование контекста','select',[['context_then_ask','Сначала свежий контекст, затем выбор по умолчанию'],['always_ask','Не выбирать устройство из контекста']]],
+      ['context_s','Время контекста команд, с','number'],
+    ]));
+    const context=root.querySelector<HTMLInputElement>('[data-field="context_s"]')!;context.min='5';context.max='180';
+    root.append(el('p','Явно названное устройство всегда имеет приоритет. Отправленные Bluetooth-команды не считаются подтверждённым состоянием. Смена темы или завершение диалога сбрасывает контекст.','settings-help'));
+    const history=this.section('Последние действия','Только текущий запуск. Тексты речи и личные данные здесь не сохраняются.');
+    const devices:Record<string,string>={led_strip:'LED-лента',mac_display:'Экран Mac',mac_sound:'Звук Mac',music:'Музыка',browser:'Браузер',application:'Приложение',tv:'Телевизор'};
+    const outcomes:Record<string,string>={success:'Подтверждено',partial_success:'Частично выполнено',failed:'Не выполнено',unverified:'Результат не подтверждён',requires_confirmation:'Нужно подтверждение'};
+    for(const row of [...(this.state!.command_history??[])].reverse())history.append(el('p',`${new Date(row.at*1000).toLocaleTimeString('ru-RU')} · ${row.devices.map(d=>devices[d]??d).join(', ')} · ${outcomes[row.result_status]??row.result_status}`));
+    if(!this.state!.command_history?.length)history.append(el('p','Действий пока нет.','settings-empty'));
+    history.append(this.button('Открыть диагностику команд',()=>this.navigate('performance')));root.append(history);
   }
   private personality(root:HTMLElement):void {
     const state=this.state!;this.draft??=clone(state.profiles.find(p=>p.id===this.selected)??state.profiles[0]);const draft=this.draft;
@@ -269,6 +287,6 @@ export class SettingsCenterUI {
     const quiet=this.section('Тихие часы','В заданное время ответы остаются в тексте. Можно отдельно остановить инициативные напоминания.');const form=this.form('quiet',[['enabled','Включить тихие часы','checkbox'],['start','Начало','time'],['end','Окончание','time'],['mute','Не произносить ответы вслух','checkbox'],['pause_initiative','Не проявлять инициативу','checkbox']]);const days=new Set(this.state!.values.quiet.weekdays as number[]);const weekdays=el('div','','settings-weekdays');['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].forEach((day,n)=>{const check=this.input(days.has(n),'checkbox');check.onchange=()=>check.checked?days.add(n):days.delete(n);weekdays.append(this.label(day,check));});form.append(weekdays);const original=form.onsubmit;form.onsubmit=e=>{this.state!.values.quiet.weekdays=[...days].sort();original?.call(form,e);};quiet.append(form);root.append(quiet,this.form('notifications',[['reminders','Произносить напоминания и таймеры','checkbox'],['scenarios','Сообщать о завершении сценариев','checkbox']]));
     const backup=this.section('Резервная копия','Настройки, профили, сценарии и память. API-ключи, пароли и история разговоров в обычный экспорт не входят.');const file=this.input('','file');file.accept='.json,application/json';file.onchange=async()=>{const selected=file.files?.[0];if(!selected)return;if(selected.size>2000000){this.feedback('Размер копии должен быть до 2 МБ.',true);return;}try{this.send({op:'import_preview',document:JSON.parse(await selected.text())});}catch{this.feedback('Не удалось прочитать JSON-файл.',true);}};backup.append(this.button('Экспортировать локальную копию',()=>this.send({op:'export',scope:'all'}),true),this.label('Восстановить из файла',file));const result=el('div');result.id='settings-backup-result';backup.append(result);root.append(backup);
     const diagnostics=this.section('Диагностика');diagnostics.append(this.button('Задержки, компоненты и ошибки',()=>this.navigate('performance')),this.button('Разрешения и доступность устройств',()=>this.open('access')));root.append(diagnostics);
-    const reset=this.section('Сброс категории','Обычный сброс не удаляет историю разговоров или воспоминания.');const category=this.select([['personality','Характер активного профиля'],['studio','Голосовая студия'],['memory','Правила памяти'],['models','Модели'],['about','Обо мне'],['quiet','Тихие часы'],['notifications','Уведомления'],['access','Ограничения действий'],['places','Привязки мест и ручной выбор'],['integrations','Ограничения интеграций'],['advanced','Тихие часы, уведомления и Ambient']],'personality');reset.append(this.label('Что сбросить',category),this.button('Сбросить выбранную категорию',()=>{if(window.confirm('Сбросить только выбранную категорию? История и память останутся.'))this.write({op:'reset',category:category.value,confirm:true});},true));root.append(reset);
+    const reset=this.section('Сброс категории','Обычный сброс не удаляет историю разговоров или воспоминания.');const category=this.select([['personality','Характер активного профиля'],['studio','Голосовая студия'],['commands','Команды и устройства'],['memory','Правила памяти'],['models','Модели'],['about','Обо мне'],['quiet','Тихие часы'],['notifications','Уведомления'],['access','Ограничения действий'],['places','Привязки мест и ручной выбор'],['integrations','Ограничения интеграций'],['advanced','Тихие часы, уведомления и Ambient']],'personality');reset.append(this.label('Что сбросить',category),this.button('Сбросить выбранную категорию',()=>{if(window.confirm('Сбросить только выбранную категорию? История и память останутся.'))this.write({op:'reset',category:category.value,confirm:true});},true));root.append(reset);
   }
 }
