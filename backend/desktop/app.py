@@ -396,7 +396,7 @@ class Application(_Api):
                         if macos.permissions()["microphone"] == "granted" and not self.smoke:
                             from backend import autostart
 
-                            if not autostart.enabled():
+                            if not autostart.status().pid:
                                 self.control({"op": "listen", "enabled": True})
                 if self.menu_state:
                     from PyObjCTools.AppHelper import callAfter

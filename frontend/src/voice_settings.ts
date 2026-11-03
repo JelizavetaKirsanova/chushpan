@@ -50,7 +50,8 @@ export class VoiceSettingsPanel {
     node('voice-thresholds').textContent = event.wake_source === 'whisper'
       ? `Whisper: средний logprob ≥ ${event.min_avg_logprob}; no_speech_prob ≤ ${event.max_no_speech_prob}. Это метрики декодера, не вероятность обращения.`
       : `Порог ONNX detector: ${event.wake_threshold}.`;
-    node('microphone-status').textContent = event.microphone === 'stopped' ? 'Микрофон не запущен'
+    node('microphone-status').textContent = event.microphone === 'starting' ? 'Подготовка распознавания и голоса · микрофон ещё выключен'
+      : event.microphone === 'stopped' ? 'Микрофон не запущен'
       : !event.activation_enabled ? 'Внимание: включено постоянное прослушивание без обращения'
       : event.state === 'sleeping' ? 'Микрофон ждёт обращения «Эй, Чушпан»'
       : event.state === 'speaking' ? 'Идёт озвучка · проверяются только разрешённые перебивания'

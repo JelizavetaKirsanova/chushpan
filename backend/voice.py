@@ -550,6 +550,7 @@ class VoiceLoop:
         self._next_wake_check = 0.0
         self.input_processor = None
         self.microphone_running = False
+        self.microphone_starting = False
         self._accepted_audio_events = deque(maxlen=64)
         self.task_snapshots: dict[int, TaskSnapshot] = {}
         registry = getattr(conv, "tools", None)
@@ -768,7 +769,13 @@ class VoiceLoop:
                 "noise_active": bool(
                     self.input_processor and self.input_processor.noise_suppression
                 ),
-                "microphone": "listening" if self.microphone_running else "stopped",
+                "microphone": (
+                    "starting"
+                    if self.microphone_starting
+                    else "listening"
+                    if self.microphone_running
+                    else "stopped"
+                ),
                 "state": self.state.state.value,
             }
         )

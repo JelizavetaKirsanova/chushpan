@@ -37,6 +37,8 @@ const native = () => (window as unknown as {pywebview?: {api?: NativeApi}}).pywe
 export class DashboardView {
   private online = false;
   private busy = false;
+  private microphone = "unknown";
+  private currentStatus = "";
   private data: DashboardData | null = null;
   private pending = '';
   private month = new Date().getMonth();
@@ -115,9 +117,15 @@ export class DashboardView {
     this.pending = text; this.chat({text, speak: (node('chat-speak') as HTMLInputElement).checked}); this.controls();
   }
   private command(text: string): void { if (this.online && this.data?.ready && !this.busy) { this.setAmbient(false); this.navigate('home'); this.chat({text}); } }
-  private status(text: string): void { node('nav-state').textContent = text; node('caption-state').textContent = text; }
+  private status(text: string): void {
+    this.currentStatus=text;
+    if(this.online&&!this.busy&&this.microphone==='stopped')text='Микрофон выключен';
+    else if(this.online&&!this.busy&&this.microphone==='starting')text='Подготовка микрофона';
+    node('nav-state').textContent=text;node('caption-state').textContent=text;
+  }
   receive(event: HudEvent): void {
-    if (event.type === 'dashboard') { this.data = event; this.hasLocation = !!event.location.city; this.render(); }
+    if (event.type === 'voice_settings') {this.microphone=event.microphone;this.status(this.currentStatus);}
+    else if (event.type === 'dashboard') { this.data = event; this.hasLocation = !!event.location.city; this.render(); }
     else if (event.type === 'dashboard_stats') this.renderStats(event);
     else if (event.type === 'dashboard_calendar') { this.selected = event.date; this.renderEvents(node('calendar-events'), event); node('calendar-selected-title').textContent = this.dateLabel(event.date); this.renderMonth(); }
     else if (event.type === 'history') this.renderRecent(event.conversations);

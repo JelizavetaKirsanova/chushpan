@@ -164,3 +164,50 @@ def test_smoke_mode_blocks_recording_migration_and_system_autostart(action):
     result = app.desktop_action(action)
     assert result["ok"] is False
     assert "проверочном режиме" in result["message"]
+
+
+def test_desktop_publishes_preparing_and_muting_during_load_never_opens_input():
+    async def run():
+        engine = DesktopEngine(None, "token")
+        warm_started, release = asyncio.Event(), asyncio.Event()
+        changes, starts = [], []
+
+        class Microphone:
+            def start(self):
+                starts.append(True)
+
+            def stop(self):
+                pass
+
+            def flush(self):
+                pass
+
+        loop = SimpleNamespace(
+            command=lambda _: None,
+            _close_session=lambda: None,
+            microphone_running=False,
+            microphone_starting=False,
+        )
+        loop._publish_voice = lambda: changes.append(
+            (loop.microphone_starting, loop.microphone_running)
+        )
+
+        async def warm():
+            warm_started.set()
+            await release.wait()
+
+        stream = engine.capture(Microphone(), loop, warm)
+        pending = asyncio.create_task(anext(stream))
+        engine.set_listening(True)
+        await asyncio.wait_for(warm_started.wait(), 1)
+        assert changes[-1] == (True, False)
+        engine.set_listening(False)
+        assert changes[-1] == (False, False)
+        release.set()
+        await asyncio.sleep(0)
+        assert starts == []
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+        await stream.aclose()
+
+    asyncio.run(run())

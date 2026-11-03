@@ -79,6 +79,7 @@ class DesktopEngine:
 
     def set_listening(self, enabled):
         if enabled:
+            self.error = ""
             self.enabled.set()
         else:
             self.enabled.clear()
@@ -88,6 +89,7 @@ class DesktopEngine:
                 self.loop.command("stop")
                 self.loop._close_session()
                 self.loop.microphone_running = False
+                self.loop.microphone_starting = False
                 self.loop._publish_voice()
         self.changed.set()
 
@@ -138,6 +140,8 @@ class DesktopEngine:
         while True:
             await self.enabled.wait()
             try:
+                loop.microphone_starting = True
+                loop._publish_voice()
                 if not loaded:
                     self.components.update(voice="loading", whisper="loading", wake="loading")
                     await warmup()
@@ -145,6 +149,7 @@ class DesktopEngine:
                 if not self.enabled.is_set():
                     continue
                 mic.start()
+                loop.microphone_starting = False
                 self.error = ""
                 loop.microphone_running = True
                 loop._publish_voice()
@@ -173,6 +178,7 @@ class DesktopEngine:
                 mic.stop()
                 mic.flush()
                 loop.microphone_running = False
+                loop.microphone_starting = False
                 loop._publish_voice()
 
 

@@ -1,3 +1,4 @@
+import {microphonePresentation, requestMicrophone, type MicrophoneApi} from './voice_activation';
 import {VoiceSettingsPanel} from './voice_settings';
 import {AutomationsView} from './automations';
 import "./style.css";
@@ -27,6 +28,7 @@ const byId = (id: string) => document.getElementById(id)!;
 let t = stringsFor(document.documentElement.lang);
 let hello: Hello | null = null;
 let mode: Mode = "offline";
+let microphone = "unknown";
 let toolTimer = 0;
 const performancePanel = new PerformancePanel(days => link.performance(days), id => link.trace(id));
 const workspace = new Workspace(id => link.history(id), value => link.dialogue(value), () => link.send("sleep"), value => link.music(value), id => id ? performancePanel.open(id) : performancePanel.refresh());
@@ -37,6 +39,12 @@ const panels = new Panels(t);
 panels.setStrings(t);
 
 function tap(): void {
+  if (microphone === 'starting') return;
+  if (microphone === 'stopped' && !['offline', 'booting', 'thinking', 'speaking'].includes(mode)) {
+    const api=(window as unknown as {pywebview?:{api?:MicrophoneApi}}).pywebview?.api;
+    void requestMicrophone(api,()=>{microphone='starting';setMode(mode);},message=>{microphone='stopped';setMode(mode);note(message,true);});
+    return;
+  }
   if (mode === "sleeping") link.send("wake");
   else if (mode === "listening" || mode === "thinking" || mode === "speaking") link.send("sleep");
 }
@@ -53,7 +61,8 @@ function setMode(next: Mode): void {
   hud.dataset.state = next;
   hud.dataset.activity = next;
   core.setMode(next);
-  const label = t.states[next];
+  const mic = microphonePresentation(next, microphone);
+  const label = mic?.label ?? t.states[next];
   byId("state-label").textContent = label;
   byId("caption-state").textContent = label;
   const name = hello?.name ?? "Чушпан";
@@ -64,12 +73,12 @@ function setMode(next: Mode): void {
   }
   else if (next === "listening") hint = t.hints.listening;
   else if (next === "offline") hint = t.hints.offline;
-  byId("caption-hint").textContent = hint;
+  byId("caption-hint").textContent = mic?.hint ?? hint;
   if (next !== "thinking") showTool(null);
-  const micLabel = next === "sleeping" ? "Начать разговор" : next === "offline" ? "Нет соединения" : "Завершить разговор";
+  const micLabel = mic?.button ?? (next === "sleeping" ? "Начать разговор" : next === "offline" ? "Нет соединения" : "Завершить разговор");
   byId('listen-control-label').textContent = micLabel;
   byId('listen-control').setAttribute('aria-label', micLabel);
-  (byId("listen-control") as HTMLButtonElement).disabled = next === "offline" || next === "booting";
+  (byId("listen-control") as HTMLButtonElement).disabled = next === "offline" || next === "booting" || microphone === "starting";
 }
 
 function showTool(name: string | null): void {
@@ -177,6 +186,7 @@ function greet(h: Hello): void {
 function onEvent(e: HudEvent): void {
   if (e.type === "hello") requestEvents.reset();
   if (!requestEvents.accept(e)) return;
+  if(e.type === "voice_settings") microphone=e.microphone;
   workspace.receive(e);
   performancePanel.receive(e);
   dashboard.receive(e);
@@ -184,6 +194,7 @@ function onEvent(e: HudEvent): void {
   automations.receive(e);
   settingsCenter.receive(e);
   switch (e.type) {
+    case "voice_settings": return setMode(mode);
     case "notice":
       hud.dataset.activity = "error";
       return note(e.message, e.error);
@@ -240,6 +251,7 @@ const link = new Link(onEvent, (online) => {
   if (online) link.voiceStatus();
   exportButton.disabled = !online;
   if (!online) {
+    microphone="unknown";
     setMode("offline");
     autostartButton.hidden = true;
   }
