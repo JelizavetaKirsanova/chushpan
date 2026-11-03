@@ -1875,6 +1875,7 @@ async def _run_voice(
     started_at: float | None = None,
     hud: bool | None = None,
     at_login: bool = False,
+    desktop=None,
 ) -> int:
     from backend.audio.capture import Microphone, SilenceWatch
     from backend.audio.stt import WhisperSTT
@@ -1895,10 +1896,11 @@ async def _run_voice(
         use_briefing = False
     use_hud = s.hud.enabled if hud is None else hud
 
-    bus = HudBus()
+    bus = desktop.bus if desktop else HudBus()
     bus.publish({"type": "state", "state": "booting"})
-    autostart_switch(s, bus)
-    server = HudServer(s, bus) if use_hud else None
+    if desktop is None:
+        autostart_switch(s, bus)
+    server = HudServer(s, bus) if use_hud and desktop is None else None
     if server and not await server.start():
         server = None
     window = None
@@ -1949,7 +1951,8 @@ async def _run_voice(
             return 1
     boot.done("ollama")
     # Before the model: the system prompt names the place (cached after the first run).
-    await boot.track("location", resolve_location(s))
+    if desktop is None:
+        await boot.track("location", resolve_location(s))
     try:
         if saved_controls := store.preference("voice", "controls"):
             apply_controls(s, saved_controls)
@@ -2069,18 +2072,24 @@ async def _run_voice(
     # Everything loads at once behind the loading screen; the briefing is then written
     # and synthesized in full, so at 100% it is spoken without a pause (D-38).
     fetching = asyncio.create_task(gather_data()) if use_briefing else None
-    loading = asyncio.gather(
-        ready("voice", speaker.warmup()),
-        ready("model", conv.prime()),
-        ready("whisper", stt.warmup()),
-        ready("wake", asyncio.to_thread(load_wake)),
-    )
+
+    async def load_voice():
+        return await asyncio.gather(
+            ready("voice", speaker.warmup()),
+            ready("model", conv.prime()),
+            ready("whisper", stt.warmup()),
+            ready("wake", asyncio.to_thread(load_wake)),
+        )
+
+    loading = asyncio.ensure_future(load_voice()) if desktop is None else None
     speaking: asyncio.Task | None = None
     briefing_text = ""
     try:
         with console.status("Загрузка языковой модели, Whisper и голоса…"):
-            _, _, _, wake = await loading
-            if s.locale.lang == "ru" and isinstance(speaker, SileroSpeaker):
+            wake = None
+            if loading is not None:
+                _, _, _, wake = await loading
+            if desktop is None and s.locale.lang == "ru" and isinstance(speaker, SileroSpeaker):
                 try:
                     started_cache = time.perf_counter()
                     await speaker.prepare_wait_phrases()
@@ -2144,7 +2153,8 @@ async def _run_voice(
     loop.echo_ready = aec is not None and s.audio.echo_cancellation
     loop.input_processor = aec
     loop._publish_voice()
-    loop.headset_verified = await asyncio.to_thread(private_headset, s.audio)
+    if desktop is None:
+        loop.headset_verified = await asyncio.to_thread(private_headset, s.audio)
     loop._publish_session()
 
     async def show_footprint() -> None:
@@ -2163,6 +2173,8 @@ async def _run_voice(
         on_change=on_resources,
         keep_stt_loaded=bool(use_wake and s.wakeword.phrase),
     )
+    if desktop:
+        resources.loaded = False
     loop.state.add_listener(resources.on_state)
     from backend.settings_center import SettingsCenter
 
@@ -2173,7 +2185,7 @@ async def _run_voice(
         resources.on_state(None, State.SLEEPING)
     if speaking:
         loop.brief(speaking)
-    if server:
+    if server or desktop:
         # After the briefing's fetch: the news are then a cache hit.
         background += start_feeds(s, bus, weather, news)
         background += dashboard.start(loop)
@@ -2181,24 +2193,48 @@ async def _run_voice(
     loop.flush_audio = mic.flush
     silence = SilenceWatch()
 
-    try:
-        try:
-            mic.start()
-            loop.microphone_running = True
-            loop._publish_voice()
-        except Exception as exc:  # noqa: BLE001 - clean up models/window on input failure
-            from backend.permissions import instruction
+    async def desktop_warmup():
+        # A failed LLM warmup does not disable local STT or settings.
+        await desktop.ensure_ollama()
+        results = await asyncio.gather(
+            speaker.warmup(),
+            stt.warmup(),
+            asyncio.to_thread(load_wake),
+            conv.prime(),
+            return_exceptions=True,
+        )
+        for name, result in zip(("voice", "whisper", "wake", "model"), results, strict=True):
+            desktop.components[name] = "error" if isinstance(result, BaseException) else "ready"
+        if any(isinstance(result, BaseException) for result in results[:3]):
+            raise RuntimeError("STT, TTS или модель активации недоступны")
+        loop.wake = results[2]
+        loop.use_wake = use_wake
+        resources.loaded = True
+        if use_wake and loop.state.state is State.LISTENING:
+            loop.state.to(State.SLEEPING)
 
-            log.warning("Microphone failed to start: %s", type(exc).__name__)
-            console.print("Не удалось открыть микрофон. " + instruction("microphone"))
-            return 1
+    async def standard_capture():
+        mic.start()
+        loop.microphone_running = True
+        loop._publish_voice()
         async for frame in mic.frames():
+            yield frame
+
+    try:
+        capture = desktop.capture(mic, loop, desktop_warmup) if desktop else standard_capture()
+        async for frame in capture:
             if silence(frame):
                 console.print(f"[red]{MIC_DENIED}[/]")
             for cleaned in aec.process(frame) if aec else (frame,):
                 loop.on_frame(cleaned)
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
+    except Exception as exc:
+        from backend.permissions import instruction
+
+        log.warning("Audio capture failed: %s", type(exc).__name__)
+        console.print("Не удалось открыть микрофон. " + instruction("microphone"))
+        return 1
     finally:
         mic.stop()
         loop.microphone_running = False

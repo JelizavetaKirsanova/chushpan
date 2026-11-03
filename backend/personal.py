@@ -20,6 +20,10 @@ class PersonalContext:
         self._lock = asyncio.Lock()
 
     async def helper(self) -> Path:
+        from backend.paths import native_helper
+
+        if bundled := native_helper("Чушпан — утро.app"):
+            return bundled
         source = ROOT_DIR / "backend/personal.swift"
         cache = self.s.data_path / "native"
         app = cache / "Чушпан — утро.app"
@@ -94,13 +98,15 @@ class PersonalContext:
                     )
                 )
                 try:
+                    from backend.paths import DESKTOP
+
+                    command = (
+                        [str(app / "Contents/MacOS/chushpan-personal")]
+                        if DESKTOP
+                        else ["open", "-W", "-n", "-g", str(app), "--args"]
+                    )
                     await process(
-                        "open",
-                        "-W",
-                        "-n",
-                        "-g",
-                        str(app),
-                        "--args",
+                        *command,
                         str(request),
                         str(result),
                         timeout=65,

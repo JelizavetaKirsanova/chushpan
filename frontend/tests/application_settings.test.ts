@@ -1,0 +1,23 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {stripTypeScriptTypes} from 'node:module';
+import vm from 'node:vm';
+import {Window} from 'happy-dom';
+const code=stripTypeScriptTypes(readFileSync(new URL('../src/application_settings.ts',import.meta.url),'utf8'),{mode:'transform'}).replace('export async function applicationSettings','async function applicationSettings')+'\nexports.render=applicationSettings;';
+test('native settings save preferences and microphone is explicit',async()=>{
+  const window=new Window();const root=window.document.createElement('div');window.document.body.append(root);
+  const calls:unknown[][]=[];
+  const api={desktop_status:async()=>({version:'test',data_path:'/private/data',login:'off',preferences:{auto_listen:false},permissions:{microphone:'denied'},worker:{state:'paused',components:{whisper:'on_demand'}}}),desktop_preferences:async(value:unknown)=>{calls.push(['preferences',value]);return {ok:true,message:'saved'};},desktop_action:async(...args:unknown[])=>{calls.push(args);return {ok:true,message:'done'};}};
+  Object.assign(window,{pywebview:{api}});
+  const sandbox={exports:{} as Record<string,unknown>,document:window.document,window};vm.runInNewContext(code,sandbox);
+  await (sandbox.exports.render as (root:unknown)=>Promise<void>)(root);
+  assert.equal(calls.length,0);
+  const buttons=[...root.querySelectorAll('button')];
+  buttons.find(b=>b.textContent==='Включить прослушивание')!.click();await Promise.resolve();
+  assert.equal(calls[0][0],'listen');
+  buttons.find(b=>b.textContent==='Сохранить параметры приложения')!.click();await Promise.resolve();
+  assert.equal(calls[1][0],'preferences');assert.equal((calls[1][1] as Record<string,boolean>).auto_listen,false);
+  assert.match(root.textContent!,/Запрещено/);
+  await window.happyDOM.abort();
+});

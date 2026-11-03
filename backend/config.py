@@ -20,11 +20,12 @@ from pydantic_settings import (
 )
 
 from backend.i18n import Locale, get_locale, normalize_code
+from backend.paths import DESKTOP, RESOURCE_ROOT, USER_ROOT
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
+ROOT_DIR = RESOURCE_ROOT
 CONFIG_FILE = ROOT_DIR / "config.yaml"
-LOCAL_CONFIG_FILE = ROOT_DIR / "config.local.yaml"
-ENV_FILE = ROOT_DIR / ".env"
+LOCAL_CONFIG_FILE = USER_ROOT / "config.local.yaml"
+ENV_FILE = USER_ROOT / ".env"
 WAKEWORD_VERSION = "v0.1"  # openWakeWord pre-trained model version
 
 # Flat variables for personal data, mapped onto the nested settings.
@@ -377,7 +378,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="JARVIS_",
         env_nested_delimiter="__",
-        env_file=ROOT_DIR / ".env",
+        env_file=ENV_FILE,
         env_file_encoding="utf-8",
         yaml_file=(CONFIG_FILE, LOCAL_CONFIG_FILE),
         yaml_file_encoding="utf-8",
@@ -415,7 +416,13 @@ class Settings(BaseSettings):
 
     @property
     def data_path(self) -> Path:
-        path = self.data_dir if self.data_dir.is_absolute() else ROOT_DIR / self.data_dir
+        path = (
+            USER_ROOT / "data"
+            if DESKTOP
+            else self.data_dir
+            if self.data_dir.is_absolute()
+            else USER_ROOT / self.data_dir
+        )
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -435,7 +442,7 @@ class Settings(BaseSettings):
         if self.persona.file is not None:
             path = self.persona.file
             if not path.is_absolute():
-                path = ROOT_DIR / path
+                path = USER_ROOT / path if (USER_ROOT / path).exists() else ROOT_DIR / path
             text = path.read_text(encoding="utf-8").strip()
             if not text:
                 raise ValueError(f"Файл личности пуст: {path}")
@@ -463,7 +470,7 @@ class Settings(BaseSettings):
     @property
     def voice_path(self) -> Path:
         d = self.tts.voices_dir
-        base = d if d.is_absolute() else ROOT_DIR / d
+        base = d if d.is_absolute() else USER_ROOT / d
         if self.tts.engine == "silero":
             model = self.tts.silero_model
             return model if model.is_absolute() else base / model
@@ -483,14 +490,14 @@ class Settings(BaseSettings):
     @property
     def wakeword_dir(self) -> Path:
         d = self.wakeword.models_dir
-        return d if d.is_absolute() else ROOT_DIR / d
+        return d if d.is_absolute() else USER_ROOT / d
 
     @property
     def wakeword_path(self) -> Path:
         model = self.wakeword.model
         if model.endswith(".onnx"):
             path = Path(model)
-            return path if path.is_absolute() else ROOT_DIR / path
+            return path if path.is_absolute() else USER_ROOT / path
         return self.wakeword_dir / f"{model}_{WAKEWORD_VERSION}.onnx"
 
     @property

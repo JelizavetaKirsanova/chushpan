@@ -1,6 +1,6 @@
 [project]
 name = "my-jarvis"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Russian voice assistant for macOS with Gemini and local Ollama fallback"
 readme = "README.md"
 license = "MIT"
@@ -34,6 +34,15 @@ dependencies = [
 dev = [
     "pytest>=8.2",
     "ruff>=0.5",
+]
+
+macos-build = [
+    "pyinstaller==6.22.0",
+    "pyobjc-framework-ServiceManagement==12.2.2",
+    "pyobjc-framework-UserNotifications==12.2.2",
+    "pyobjc-framework-AVFoundation==12.2.2",
+    "pyobjc-framework-ApplicationServices==12.2.2",
+    "pyobjc-framework-CoreLocation==12.2.2",
 ]
 
 [tool.uv]

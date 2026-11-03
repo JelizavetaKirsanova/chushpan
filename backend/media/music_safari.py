@@ -89,6 +89,10 @@ class SafariMusicTab:
         }
 
     async def _helper(self) -> Path:
+        from backend.paths import native_helper
+
+        if bundled := native_helper("music_safari"):
+            return bundled
         async with self._build_lock:
             if self._binary is not None:
                 return self._binary

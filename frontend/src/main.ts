@@ -286,3 +286,7 @@ tickClock();
 setInterval(tickClock, 1000);
 core.start();
 link.connect();
+
+(window as unknown as {chushpanNavigate:(view:string)=>void}).chushpanNavigate=(view)=>{workspace.navigate(view==='application'?'settings':view);if(view==='application')settingsCenter.open('application');};
+
+(window as unknown as {chushpanNativeNotice:(message:string)=>void}).chushpanNativeNotice=(message)=>note(message,true);

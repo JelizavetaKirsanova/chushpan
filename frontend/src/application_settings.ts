@@ -1,0 +1,39 @@
+/** Native application settings inside the existing settings center. */
+type NativeResult = {ok:boolean;message:string};
+type AppStatus = {version:string;data_path:string;login:string;smoke:boolean;legacy_autostart?:boolean;preferences:Record<string,boolean>;permissions:Record<string,string>;worker:{state:string;error?:string;memory_mb?:number;cpu_seconds?:number;components:Record<string,string>}};
+type NativeAPI = {desktop_status:()=>Promise<AppStatus>;desktop_preferences:(value:Record<string,boolean>)=>Promise<NativeResult>;desktop_action:(action:string,value?:unknown)=>Promise<NativeResult>};
+const text=(tag:string,value:string)=>{const n=document.createElement(tag);n.textContent=value;return n;};
+const native=()=> (window as unknown as {pywebview?:{api?:NativeAPI}}).pywebview?.api;
+const labels:Record<string,string>={enabled:'Включён',off:'Выключен',approval_required:'Подтверди в macOS → Основные → Объекты входа',unknown:'Не определено',not_found:'Приложение не зарегистрировано',granted:'Разрешено',not_granted:'Нет доступа',not_determined:'Ещё не запрашивалось',denied:'Запрещено',restricted:'Ограничено системой',per_target_in_system_settings:'Отдельно для каждого приложения в macOS',check_system_settings:'Проверь в системных настройках',helper_in_system_settings:'Отдельный помощник «Чушпан — утро»',disabled:'Выключено в macOS',starting:'Запуск',on_demand:'Загрузится при включении голоса',unavailable:'Недоступен',loading:'Загрузка компонентов',ready:'Готов',paused:'Приостановлен',listening:'Слушает',processing:'Обрабатывает команду',answering:'Отвечает',error:'Ошибка'};
+export async function applicationSettings(root:HTMLElement):Promise<void> {
+  const api=native();
+  if(!api?.desktop_status){root.append(text('p','Эти настройки доступны в установленном Чушпан.app.'));return;}
+  const feedback=text('p','Загружаю состояние приложения…');feedback.setAttribute('role','status');root.append(feedback);
+  try {
+    const state=await api.desktop_status();if(!root.isConnected)return;
+    const button=(label:string,action:()=>Promise<NativeResult>)=>{const b=document.createElement('button');b.type='button';b.textContent=label;b.onclick=async()=>{b.disabled=true;try{const r=await action();feedback.textContent=r.message;feedback.dataset.error=String(!r.ok);}catch(e){feedback.textContent=String(e);}finally{b.disabled=false;}};return b;};
+    const section=(label:string)=>{const s=document.createElement('section');s.className='settings-group';s.append(text('h2',label));root.append(s);return s;};
+    feedback.textContent=state.smoke?'Проверочный режим: микрофон, миграция и автозапуск отключены.':'Настройки приложения загружены.';
+    const startup=section('Запуск');
+    if(state.legacy_autostart)startup.append(text('p','Обнаружен старый автозапуск из проекта. Его нужно отключить перед включением нового.'),button('Отключить прежний автозапуск',async()=>{if(!window.confirm('Остановить прежний LaunchAgent и сохранить его отключённую копию?'))return {ok:false,message:'Отменено.'};return api.desktop_action('disable_legacy');}));
+    const login=document.createElement('input');login.type='checkbox';login.checked=state.login==='enabled'||state.login==='approval_required';login.disabled=state.smoke;
+    const loginLabel=text('label','Запускать Чушпана при входе в систему');loginLabel.prepend(login);startup.append(loginLabel,text('p','Автозапуск: '+(labels[state.login]??state.login)));
+    login.onchange=async()=>{const r=await api.desktop_action('login',login.checked);feedback.textContent=r.message;if(!r.ok)login.checked=!login.checked;};
+    const fields:[string,string][]=[['start_hidden','Запускать свёрнутым в строку меню'],['auto_listen','Автоматически включать голосовое прослушивание'],['restore_session','Восстанавливать предыдущую сессию'],['show_window','Показывать главное окно после запуска'],['close_to_menu','При закрытии окна оставаться в строке меню'],['background_voice','Разрешить голосовой ассистент при закрытом окне'],['energy_saving','Экономить память: выгружать модели в ожидании'],['recover_engine','Автоматически восстанавливать движок после сбоя']];
+    const form=document.createElement('form');form.className='settings-form';const inputs=new Map<string,HTMLInputElement>();
+    for(const [key,label]of fields){const input=document.createElement('input');input.type='checkbox';input.checked=state.preferences[key];inputs.set(key,input);const line=text('label',label);line.className='settings-field';line.prepend(input);form.append(line);}
+    const save=button('Сохранить параметры приложения',()=>api.desktop_preferences(Object.fromEntries([...inputs].map(([k,v])=>[k,v.checked]))));form.append(save);startup.append(form,text('p','Автопрослушивание работает только с ранее разрешённым микрофоном. Свёрнутый запуск имеет приоритет над показом окна. Экономия памяти применяется после перезапуска движка.'));
+    const system=section('Система');system.append(text('p',`Версия ${state.version} · ${labels[state.worker.state]??state.worker.state}`),text('p',`Данные: ${state.data_path}`));
+    if(state.worker.memory_mb!=null)system.append(text('p',`Движок: ${state.worker.memory_mb} МБ · CPU за сеанс: ${state.worker.cpu_seconds??0} с`));
+    if(state.worker.error)system.append(text('p',state.worker.error));
+    for(const [key,value]of Object.entries(state.worker.components))system.append(text('p',`${({voice:'Голос',whisper:'Распознавание',wake:'Активация',model:'Языковая модель',ui:'Интерфейс'} as Record<string,string>)[key]??key}: ${labels[value]??value}`));
+    system.append(button('Включить прослушивание',()=>api.desktop_action('listen')),button('Отключить микрофон',()=>api.desktop_action('mute')),button('Перезапустить голосовой движок',()=>api.desktop_action('restart')),button('Открыть папку логов',()=>api.desktop_action('logs')),button('Открыть папку данных',()=>api.desktop_action('data')));
+    const permissions=section('Разрешения macOS');
+    const permissionNames:Record<string,string>={microphone:'Микрофон',accessibility:'Универсальный доступ',automation:'Automation / Apple Events',notifications:'Уведомления',location:'Геолокация',screen_recording:'Запись экрана',bluetooth:'Bluetooth',calendar:'Календарь'};
+    for(const [key,value]of Object.entries(state.permissions)){const row=document.createElement('div');row.append(text('p',`${permissionNames[key]??key}: ${labels[value]??value}`),button('Настроить: '+(permissionNames[key]??key),()=>api.desktop_action('privacy',key)));permissions.append(row);}
+    permissions.append(text('p','Системные настройки → Конфиденциальность и безопасность. Разреши только нужные функции. Проверка статуса не запрашивает доступ. Доступ Automation выдаётся отдельно для Safari, System Events и других интеграций при их использовании.'));
+    const updates=section('Обновления');updates.append(text('p',`Текущая версия: ${state.version}`),button('Проверить наличие обновлений',()=>api.desktop_action('updates')),button('История изменений',()=>api.desktop_action('changelog')));
+    const migration=section('Перенос из проекта');const path=document.createElement('input');path.type='text';path.placeholder='Полный путь к my-jarvis';path.setAttribute('aria-label','Путь к прежнему проекту');migration.append(path,text('p','Исходные файлы сохраняются. Уже существующие файлы приложения не заменяются. Для переноса истории используй скрипт миграции до первого запуска приложения.'),button('Скопировать недостающие данные',async()=>{if(!window.confirm('Скопировать личные настройки, модели и данные из выбранного проекта? Движок перезапустится.'))return {ok:false,message:'Перенос отменён.'};return api.desktop_action('migrate',path.value);}));
+    system.append(button('Обновить состояние',async()=>{root.replaceChildren();await applicationSettings(root);return {ok:true,message:'Состояние обновлено.'};}));
+  } catch(error){feedback.textContent='Не удалось прочитать настройки приложения: '+String(error);}
+}

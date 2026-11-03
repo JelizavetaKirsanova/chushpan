@@ -12,6 +12,23 @@ Whisper, голос Silero и фраза активации работают л�
 
 </div>
 
+## Приложение для Mac
+
+Чушпан можно собрать и установить как самостоятельное **Чушпан.app** для Apple
+Silicon: запуск из Finder/Dock, строка меню, работа после закрытия окна и штатный
+автозапуск macOS. Python и пакеты входят в сборку; терминал для открытия не нужен.
+Микрофон на первом запуске выключен. Данные сохраняются отдельно от приложения
+в `~/Library/Application Support/Chushpan`.
+
+```bash
+uv sync --locked --group macos-build
+.venv/bin/python -m scripts.build_macos
+.venv/bin/python -m scripts.install_macos --migrate-from "$PWD"
+```
+
+[Установка, безопасный перенос, разрешения, ограничения подписи и проверки](docs/MACOS_APP.md).
+Для запуска из исходников прежние команды ниже сохранены.
+
 ## Возможности
 
 Скажите **«эй Чушпан»**, затем задайте вопрос или дайте команду по-русски. Чушпан — умный, язвительный приятель с сухим юмором: обращается к тебе на «ты», умеет спорить и подкалывать, а в серьёзном разговоре становится спокойным и внимательным. Русский выбран по умолчанию для интерфейса, ответов, распознавания речи, дат, таймеров, новостей и сводки.
@@ -145,8 +162,8 @@ uv run python -m backend hud-demo --sample
 Нужны macOS на Apple Silicon и [Homebrew](https://brew.sh). Рекомендуется 16 ГБ памяти. `uv` устанавливает Python 3.12 автоматически. Исходные измерения проекта выполнены на MacBook Air M4 с 16 ГБ памяти и macOS 26.
 
 ```bash
-git clone https://github.com/MichelleBudri/my-jarvis.git
-cd my-jarvis
+git clone https://github.com/JelizavetaKirsanova/chushpan.git
+cd chushpan
 cp .env.example .env
 # Укажите имя и город в .env. Для русского языка оставьте ru-RU.
 ./scripts/setup.sh

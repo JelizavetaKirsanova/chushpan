@@ -56,9 +56,11 @@ def allowed_origins(host: str, port: int) -> set[str]:
     return {f"http://{h}:{p}" for h in hosts for p in (port, DEV_PORT)}
 
 
-def create_app(bus: HudBus, origins: set[str], dist: Path = DIST_DIR) -> FastAPI:
+def create_app(bus: HudBus, origins: set[str], dist: Path = DIST_DIR, native=None) -> FastAPI:
     # FastAPI reads the handlers' annotations, so its names are imported at module level.
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    if native is not None:
+        native.routes(app)
 
     @app.websocket("/ws")
     async def events(ws: WebSocket) -> None:
@@ -118,9 +120,10 @@ class HudServer:
     """uvicorn on an already-bound socket, without its signal handlers: Ctrl+C belongs
     to the voice loop, and a busy port only turns the HUD off."""
 
-    def __init__(self, s: Settings, bus: HudBus) -> None:
+    def __init__(self, s: Settings, bus: HudBus, native=None) -> None:
         self.s = s
         self.bus = bus
+        self.native = native
         self._server = None
         self._task: asyncio.Task | None = None
 
@@ -145,7 +148,10 @@ class HudServer:
             def capture_signals(self):
                 return contextlib.nullcontext()
 
-        app = create_app(self.bus, allowed_origins(host, port))
+        if port == 0:
+            port = sock.getsockname()[1]
+            self.s.server.port = port
+        app = create_app(self.bus, allowed_origins(host, port), native=self.native)
         config = uvicorn.Config(app, log_level="warning", lifespan="off", ws_ping_interval=None)
         self._server = Server(config)
         self._task = asyncio.create_task(self._server.serve(sockets=[sock]))

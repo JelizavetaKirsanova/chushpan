@@ -148,6 +148,10 @@ class AccessibilityApp:
         return ROOT_DIR / "backend/media/ytmusic_ax.swift"
 
     async def _helper(self) -> Path:
+        from backend.paths import native_helper
+
+        if bundled := native_helper(self.source.stem):
+            return bundled
         async with self._build_lock:
             if self._binary is not None:
                 return self._binary

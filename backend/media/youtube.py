@@ -9,9 +9,10 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
-from backend.config import ROOT_DIR, Settings
+from backend.config import Settings
 from backend.media.safari import ORIGIN, SafariMusic, label, player_nodes
 from backend.memory.store import MemoryStore
+from backend.paths import USER_ROOT
 from backend.tools.registry import Tool, ToolError, user_text
 
 
@@ -91,7 +92,7 @@ class MusicAPI:
         if auth_file:
             auth_file = Path(auth_file).expanduser()
             if not auth_file.is_absolute():
-                auth_file = ROOT_DIR / auth_file
+                auth_file = USER_ROOT / auth_file
             if not auth_file.is_file():
                 raise ToolError(
                     "Файл авторизации YouTube Music не найден. Секреты в чат не присылай."

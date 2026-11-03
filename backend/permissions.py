@@ -114,17 +114,21 @@ async def diagnose(automation_targets: tuple[str, ...] = (), *, settings=None) -
         return {"error": "Неизвестная цель Automation."}
     try:
         with tempfile.TemporaryDirectory(prefix="chushpan-permissions-") as directory:
-            binary = Path(directory) / "permissions"
-            await _run(
-                "xcrun",
-                "swiftc",
-                "-module-cache-path",
-                str(Path(directory) / "modules"),
-                str(ROOT_DIR / "backend/permissions.swift"),
-                "-o",
-                str(binary),
-                timeout=90,
-            )
+            from backend.paths import native_helper
+
+            binary = native_helper("permissions")
+            if binary is None:
+                binary = Path(directory) / "permissions"
+                await _run(
+                    "xcrun",
+                    "swiftc",
+                    "-module-cache-path",
+                    str(Path(directory) / "modules"),
+                    str(ROOT_DIR / "backend/permissions.swift"),
+                    "-o",
+                    str(binary),
+                    timeout=90,
+                )
             result = json.loads(await _run(str(binary), *automation_targets, timeout=10))
             result["launch_application"] = await launch_application()
             result["process_chain"] = await process_chain()

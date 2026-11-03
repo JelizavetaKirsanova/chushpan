@@ -1,3 +1,4 @@
+import {applicationSettings} from './application_settings';
 import type {HudEvent} from './types';
 import type {Place, Scenario} from './automation_state';
 import {icon} from './dashboard';
@@ -31,6 +32,7 @@ const categories = [
   ['access','Доступ и безопасность','Разрешения, приложения и границы самостоятельности','shield'],
   ['places','Места и контекст','Дом, общага и подходящие версии сценариев','pin'],
   ['integrations','Интеграции','Устройства и сервисы, которые уже подключены','link'],
+  ['application','Приложение','Запуск, строка меню, разрешения и обновления','settings'],
   ['advanced','Дополнительно','Тихие часы, резервные копии и диагностика','settings'],
 ];
 const el = (tag:string, text='', cls='') => {const n=document.createElement(tag);n.textContent=text;n.className=cls;return n;};
@@ -132,6 +134,7 @@ export class SettingsCenterUI {
     const content=id('settings-content');
     for(const nodes of this.legacy.values())for(const node of nodes)id('settings-old').append(node);
     content.replaceChildren();if(!this.page)return;
+    if(this.page==='application'){void applicationSettings(content);return;}
     if(!this.state){content.append(el('p','Настройки появятся после подключения к Чушпану.','settings-empty'));return;}
     if(this.page==='personality')this.personality(content);
     if(this.page==='voice')this.voice(content);
