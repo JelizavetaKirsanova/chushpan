@@ -12,7 +12,8 @@ export const recipientLabels = {
   task_running: "Выполняется предыдущая задача",
 };
 
-export function sessionCaption(session: {active: boolean; listening: boolean; requires_wake: boolean}): string {
+export function sessionCaption(session: {active: boolean; listening: boolean; requires_wake: boolean; recording?:boolean; paused?:boolean}): string {
+  if (session.active && session.listening && session.recording === false) return "Ожидает продолжение без имени";
   if (session.active) return session.listening ? "Слушаю продолжение без имени" : "Диалоговая сессия активна";
   return session.requires_wake ? "Для обращения нужен wake-word: «Эй, Чушпан»" : "Свободное прослушивание включено";
 }

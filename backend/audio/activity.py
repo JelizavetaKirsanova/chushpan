@@ -17,7 +17,7 @@ class VoiceControls(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     sensitivity: Literal["conservative", "balanced", "sensitive"] = "balanced"
     mode: Literal["name_only", "dialogue"] = "dialogue"
-    continuation_s: int = Field(default=25, ge=10, le=300)
+    continuation_s: int = Field(default=20, ge=10, le=300)
     allow_barge_in: bool = False
     noise_suppression: bool = True
 
@@ -105,3 +105,27 @@ def stop_requested(text):
             text.casefold(),
         )
     )
+
+
+def migrate_interaction_defaults(store, settings=None):
+    """Upgrade previous built-in timings once; retain custom timings and all other values."""
+    if settings is not None:
+        if settings.vad.silence_ms in {650, 700}:
+            settings.vad.silence_ms = 1200
+        if settings.dialogue.duration_s in {25, 45}:
+            settings.dialogue.duration_s = 20
+    if store.preference("voice", "interaction_defaults"):
+        return
+    studio = store.preference("settings", "studio")
+    if studio:
+        updated = dict(studio)
+        if studio.get("silence_ms") in {650, 700}:
+            updated["silence_ms"] = 1200
+        if "input_device" not in studio and settings is not None:
+            updated["input_device"] = settings.audio.input_device
+        if updated != studio:
+            store.set_preference("settings", "studio", updated)
+    saved = store.preference("voice", "controls")
+    if saved and saved.get("continuation_s") in {25, 45}:
+        store.set_preference("voice", "controls", {**saved, "continuation_s": 20})
+    store.set_preference("voice", "interaction_defaults", 1)

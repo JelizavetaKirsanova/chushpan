@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import queue
 import re
 import threading
@@ -23,6 +24,28 @@ OnAudio = Callable[[np.ndarray], None]
 OnSentence = Callable[[str, float], None]  # text, seconds of speech; on the event loop
 
 SAY_S_PER_CHAR = 0.065  # `say` gives no duration: about this long per character
+log = logging.getLogger(__name__)
+
+
+class SynthesisError(RuntimeError):
+    """One or more fragments failed; valid fragments have finished playing."""
+
+
+def speakable(text: str) -> bool:
+    return any(char.isalnum() for char in text)
+
+
+def synthesis_chunks(text: str, limit: int = 450) -> list[str]:
+    """Bound the model input, retaining every word of long unpunctuated answers."""
+    result = []
+    while len(text) > limit:
+        cut = text.rfind(" ", 0, limit + 1)
+        cut = cut if cut > 0 else limit
+        result.append(text[:cut])
+        text = text[cut:].lstrip()
+    if text:
+        result.append(text)
+    return result
 
 
 def apply_pronunciations(text: str, pronunciations: dict[str, str]) -> str:
@@ -317,10 +340,17 @@ class PiperSpeaker:
         with measure("tts_model_ready"):
             await loop.run_in_executor(self._synth_pool, self._load)
         self._speaking = True
+        failures = 0
+        fragment = 0
+        log.info("TTS_START")
         player = loop.run_in_executor(None, self._play, audio_q, notify, report, said)
         try:
             # Synthesize sentence N+1 while sentence N is playing.
             async for sentence in sentences:
+                fragment += 1
+                if not speakable(sentence):
+                    log.info("TTS_FRAGMENT_SKIP index=%d reason=punctuation_only", fragment)
+                    continue
                 # Keep two sentences ahead without synthesizing an entire long
                 # answer while playback is still on sentence one. Never block
                 # the event loop on the thread queue, including on cancellation.
@@ -347,7 +377,24 @@ class PiperSpeaker:
                     audio = self._ready.pop(sentence, None)
                 if audio is None:
                     with measure("tts_generation"):
-                        audio = await self._synth_measured(sentence)
+                        try:
+                            audio = await self._synth_measured(sentence)
+                        except Exception as exc:
+                            failures += 1
+                            log.error(
+                                "TTS_FRAGMENT_ERROR index=%d type=%s", fragment, type(exc).__name__
+                            )
+                            if profile:
+                                profile.fail("tts_fragment_error")
+                                profile.update(
+                                    error_component="tts_generation", fragment_index=fragment
+                                )
+                            if callback := getattr(self, "on_error", None):
+                                callback("Фрагмент не озвучен. Продолжаю остальную озвучку.")
+                            continue
+                if not len(audio):
+                    log.info("TTS_FRAGMENT_SKIP index=%d reason=no_spoken_text", fragment)
+                    continue
                 if stop.is_set():
                     break
                 if self.audio_enqueued_at is None:
@@ -374,6 +421,14 @@ class PiperSpeaker:
                         )
                     )
                 audio_q.put((sentence, audio))
+        except asyncio.CancelledError:
+            log.info("TTS_CANCEL reason=task_cancelled")
+            stop.set()
+            raise
+        except Exception:
+            # Drain valid queued audio before surfacing a producer failure.
+            log.error("TTS_PRODUCER_ERROR")
+            raise
         except BaseException:
             stop.set()
             raise
@@ -396,9 +451,18 @@ class PiperSpeaker:
                     )
                 callbacks_active = False
                 self._speaking = False
+                log.info(
+                    "TTS_END completed=%s interrupted=%s failed_fragments=%d",
+                    player_ok,
+                    stop.is_set(),
+                    failures,
+                )
+        if failures:
+            raise SynthesisError("tts_fragment_error")
         return completed and not stop.is_set()
 
     def interrupt(self) -> None:
+        log.info("TTS_CANCEL reason=explicit_interrupt")
         self._stop.set()
 
 
@@ -445,29 +509,34 @@ class SileroSpeaker(PiperSpeaker):
                 normalize_numbers=self.normalize_numbers,
                 normalize_english=self.normalize_english,
             )
+            if not speakable(spoken):
+                return np.zeros(0, dtype=np.int16)
             # Silero marks stress before the vowel with '+', Piper uses a combining acute.
             spoken = re.sub(r"([аеёиоуыэюя])\u0301", r"+\1", spoken, flags=re.IGNORECASE)
+        chunks = []
         with torch.inference_mode():
-            if self.rate != "medium" or self.pitch != "medium":
-                from html import escape
+            for part in synthesis_chunks(spoken):
+                if self.rate != "medium" or self.pitch != "medium":
+                    from html import escape
 
-                source = {
-                    "ssml_text": (
-                        f'<speak><prosody rate="{self.rate}" pitch="{self.pitch}">'
-                        f"{escape(spoken)}</prosody></speak>"
-                    )
-                }
-            else:
-                source = {"text": spoken}
-            audio = self._voice.apply_tts(
-                **source,
-                speaker=self.speaker,
-                sample_rate=self.sample_rate,
-                put_accent=True,
-                put_yo=True,
-            )
-        samples = audio.detach().cpu().numpy()
-        return (np.clip(samples, -1, 1) * 32767).astype(np.int16)
+                    source = {
+                        "ssml_text": (
+                            f'<speak><prosody rate="{self.rate}" pitch="{self.pitch}">'
+                            f"{escape(part)}</prosody></speak>"
+                        )
+                    }
+                else:
+                    source = {"text": part}
+                audio = self._voice.apply_tts(
+                    **source,
+                    speaker=self.speaker,
+                    sample_rate=self.sample_rate,
+                    put_accent=True,
+                    put_yo=True,
+                )
+                samples = audio.detach().cpu().numpy()
+                chunks.append((np.clip(samples, -1, 1) * 32767).astype(np.int16))
+        return np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.int16)
 
     async def warmup(self) -> None:
         loop = asyncio.get_running_loop()

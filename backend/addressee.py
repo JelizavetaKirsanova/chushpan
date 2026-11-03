@@ -91,6 +91,7 @@ def decide(
     confirmation_pending: bool = False,
     followup_pending: bool = False,
     control_context: bool = False,
+    continuation_window: bool = False,
 ) -> Decision:
     value = normalize(text)
     if not signals.confirmed or signals.echo:
@@ -105,7 +106,9 @@ def decide(
         return Decision("low", "empty_text")
     if not active:
         return Decision("medium" if task_reference(text) else "low", "wake_required")
-    if re.search(r"чушпан|мам[аеуы]?|пап[аеуы]?|приед|приход|забер|встретим|позвонишь", value):
+    if (not continuation_window and re.search(r"чушпан|chushpan", value)) or re.search(
+        r"мам[аеуы]?|пап[аеуы]?|приед|приход|забер|встретим|позвонишь", value
+    ):
         return Decision("low", "other_person_or_third_person")
     if strictness == "addressed":
         return Decision("medium", "strict_wake_required")
@@ -146,4 +149,14 @@ def decide(
         and not re.search(r"\b(?:он|она|они|ты|вы)\b", value)
     ):
         return Decision("high", "active_question", "continuation")
+    if continuation_window and topic and len(value.split()) >= 2:
+        # This grant comes only from the bounded post-answer listening phase,
+        # never merely from an old topic or a recognizer confidence value.
+        ambiguous = {"да", "нет", "ну", "ага", "угу", "ладно", "давай", "ок", "хорошо"}
+        embedded_action = re.search(
+            r"\b(?:открой|включи|выключи|запусти|поставь|установи|удали|выполни)\b", value
+        )
+        background = re.match(r"^(?:они |он |она |телевизор |музыка играет)", value)
+        if not embedded_action and not background and not set(value.split()) <= ambiguous:
+            return Decision("high", "active_dialogue", "continuation")
     return Decision("medium", "recipient_unclear")

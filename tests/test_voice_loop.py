@@ -66,7 +66,7 @@ class Harness:
             stt=self.stt,
             speaker=None,
             vad=self.vad,
-            segmenter=UtteranceSegmenter(VADConfig()),
+            segmenter=UtteranceSegmenter(VADConfig(silence_ms=700)),
             wake=WakeWordDetector(self.wake_model, 0.5) if wake else None,
             chime=self.chimes.append,
             clock=lambda: self.now,

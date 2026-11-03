@@ -77,7 +77,7 @@ audio:
 
 vad:
   threshold: 0.5
-  silence_ms: 650
+  silence_ms: 1200
   start_ms: 64
   min_speech_ms: 160
   preroll_ms: 400
@@ -166,7 +166,7 @@ hud:
 
 dialogue:
   enabled: true
-  duration_s: 25
+  duration_s: 20
   max_session_s: 180
   nameless_interruptions: false
   addressee_strictness: contextual

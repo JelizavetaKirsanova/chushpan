@@ -33,7 +33,7 @@ const labels: Record<string, string> = {reply_queue: 'Ожидание очер�
   wake_detection: 'Распознавание обращения', local_execution: 'Локальная команда',
   playback_gap: 'Пауза между аудиофрагментами', response_total: 'Полный ответ', tts_first_audio: 'TTS: первый звук', playback_queue: 'Очередь вывода'};
 const marksLabels: Record<string, string> = {vad_start: 'VAD: начало речи (до конца реплики)', vad_end: 'VAD: конец речи', first_audio: 'Первый звук', waiting_sentence_ready: 'Фраза ожидания подготовлена', waiting_audio_enqueued: 'Звук ожидания подготовлен', user_speech_end: 'Конец реплики', stt_completed: 'Речь распознана', first_llm_token: 'Первый токен модели', first_llm_text: 'Первый текст модели', first_content_text: 'Начало текстового ответа', first_sentence_ready: 'Первый смысловой фрагмент', tts_audio_enqueued: 'Звук подготовлен', first_content_audio: 'Первый содержательный аудиоблок', waiting_audio: 'Реплика ожидания'};
-const reasons: Record<string, string> = {rate_limit: 'Лимит API', timeout: 'Тайм-аут', api_error: 'Ошибка API', reply_validation: 'Проверка ответа'};
+const reasons: Record<string, string> = {recipient_unclear:"Неясно, к кому обращена речь",other_person_or_third_person:"Речь о другом человеке",uncertain_stt_or_echo:"Неуверенное распознавание или эхо",no_acoustic_speech:"Нет подтверждённой речи",active_dialogue:"Продолжение диалога",rate_limit: 'Лимит API', timeout: 'Тайм-аут', api_error: 'Ошибка API', reply_validation: 'Проверка ответа'};
 const statuses: Record<string, string> = {activated:'Обращение подтверждено', running: 'В работе', completed: 'Завершён', failed: 'Ошибка',
   cancelled: 'Отменён', interrupted: 'Прерван при остановке приложения', unknown: 'Завершение не подтверждено', rejected: 'Не принят', awaiting_confirmation: 'Ожидает подтверждения'};
 const node = (id: string) => document.getElementById(id)!;
@@ -64,6 +64,7 @@ export class PerformancePanel {
   }
   connection(online: boolean): void {
     this.online = online;
+    if(!online)node('performance-last-recognition').textContent='Последний результат STT появится здесь в текущей сессии.';
     node('performance-connection').textContent = online ? 'Подключено к Чушпану' : 'Нет соединения. Текущий этап не подтверждён.';
     (node('performance-refresh') as HTMLButtonElement).disabled = !online;
     if (online) {
@@ -80,6 +81,10 @@ export class PerformancePanel {
     if (this.online) this.detail(id);
   }
   receive(event: HudEvent): void {
+    if(event.type==='voice_recognition') {
+      node('performance-last-recognition').textContent=`STT: ${event.text} · ${{recognized:'распознано',accepted:'принято',rejected:'отклонено'}[event.result]??event.result}${event.reason?' · '+(reasons[event.reason]??event.reason):''}`;
+      return;
+    }
     if (event.type === 'settings_info') { this.refresh(); return; }
     if (event.type === 'performance_live') {
       if (!event.trace || this.awaitingFresh) return;
@@ -165,6 +170,9 @@ export class PerformancePanel {
     const longest = [...spans].sort((a,b) => timeline(b, duration).seconds - timeline(a, duration).seconds)[0];
     const heading = el('div', '', 'perf-detail-heading');
     const model = trace.stages.find(s => s.stage === 'model_total');
+    if(trace.metadata.min_avg_logprob!=null)heading.append(el('p',`Whisper: logprob ${trace.metadata.min_avg_logprob} · no_speech ${trace.metadata.max_no_speech_prob??'—'} · compression ${trace.metadata.max_compression_ratio??'—'}. Это показатели декодера, не вероятность обращения.`));
+    if(trace.metadata.stt_result!=null||trace.metadata.error_component!=null)heading.append(el('p',`Голосовой тракт: STT ${trace.metadata.stt_result??'не завершён'} · символов ${trace.metadata.stt_chars??'—'} · конец записи ${trace.metadata.recording_end??'—'} · аудио ${seconds(trace.metadata.audio_duration_s as number|undefined)} · причина ${reasons[String(trace.metadata.reason)]??trace.metadata.reason??'—'} · ошибка ${trace.metadata.error_component??'нет'}${trace.metadata.error_line!=null?':'+trace.metadata.error_line:''}`));
+
     const ttft = model && trace.marks.first_llm_token != null ? Math.max(0, trace.marks.first_llm_token - model.start_s) : null;
     const waitingEnd = Math.max(-1, ...trace.stages.filter(s => s.stage === 'waiting_playback' && s.end_s != null && trace.first_content_s != null && s.end_s <= trace.first_content_s).map(s => s.end_s!));
     const waitingGap = trace.waiting_to_content_gap_s ?? (waitingEnd >= 0 && trace.first_content_s != null ? trace.first_content_s - waitingEnd : null);

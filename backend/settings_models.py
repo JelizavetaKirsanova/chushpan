@@ -10,6 +10,7 @@ from backend.personality import Strict
 
 class Studio(Strict):
     voice: str = Field(default="eugene", max_length=80)
+    input_device: str | int | None = None
     rate: Literal["x-slow", "slow", "medium", "fast", "x-fast"] = "medium"
     pitch: Literal["x-low", "low", "medium", "high", "x-high"] = "medium"
     volume: int = Field(default=100, ge=0, le=100)
@@ -18,12 +19,19 @@ class Studio(Strict):
     normalize_numbers: bool = True
     normalize_english: bool = True
     wake_phrase: str = Field(default="эй чушпан", min_length=2, max_length=80)
-    silence_ms: int = Field(default=650, ge=350, le=2000)
+    silence_ms: int = Field(default=1200, ge=350, le=2000)
     adaptive_endpoint: bool = True
     text_only: bool = False
 
     @model_validator(mode="after")
     def safe_dictionary(self):
+        if (
+            isinstance(self.input_device, int)
+            and self.input_device < 0
+            or isinstance(self.input_device, str)
+            and len(self.input_device) > 200
+        ):
+            raise ValueError("Некорректный микрофон.")
         if any(
             not k.strip() or not v.strip() or len(k) > 80 or len(v) > 180
             for k, v in self.pronunciations.items()
@@ -178,6 +186,7 @@ def apply_persisted(settings, store):
                 "fast": 0.85,
                 "x-fast": 0.7,
             }[studio.rate]
+        settings.audio.input_device = studio.input_device
         settings.tts.pronunciations = dict(studio.pronunciations)
         settings.wakeword.phrase = studio.wake_phrase
         settings.vad.silence_ms, settings.vad.adaptive_endpoint = (

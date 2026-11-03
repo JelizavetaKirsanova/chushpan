@@ -1,4 +1,4 @@
-import {microphonePresentation, requestMicrophone, type MicrophoneApi} from './voice_activation';
+import {microphonePresentation, requestMicrophone, dialogueCaption, type MicrophoneApi} from './voice_activation';
 import {VoiceSettingsPanel} from './voice_settings';
 import {AutomationsView} from './automations';
 import "./style.css";
@@ -29,6 +29,7 @@ let t = stringsFor(document.documentElement.lang);
 let hello: Hello | null = null;
 let mode: Mode = "offline";
 let microphone = "unknown";
+let dialogue:Extract<HudEvent,{type:"session"}>|null=null;
 let toolTimer = 0;
 const performancePanel = new PerformancePanel(days => link.performance(days), id => link.trace(id));
 const workspace = new Workspace(id => link.history(id), value => link.dialogue(value), () => link.send("sleep"), value => link.music(value), id => id ? performancePanel.open(id) : performancePanel.refresh());
@@ -62,7 +63,7 @@ function setMode(next: Mode): void {
   hud.dataset.activity = next;
   core.setMode(next);
   const mic = microphonePresentation(next, microphone);
-  const label = mic?.label ?? t.states[next];
+  const label = mic?.label ?? dialogueCaption(next,dialogue) ?? t.states[next];
   byId("state-label").textContent = label;
   byId("caption-state").textContent = label;
   const name = hello?.name ?? "Чушпан";
@@ -187,6 +188,7 @@ function onEvent(e: HudEvent): void {
   if (e.type === "hello") requestEvents.reset();
   if (!requestEvents.accept(e)) return;
   if(e.type === "voice_settings") microphone=e.microphone;
+  if(e.type === "session") dialogue=e;
   workspace.receive(e);
   performancePanel.receive(e);
   dashboard.receive(e);
@@ -194,11 +196,12 @@ function onEvent(e: HudEvent): void {
   automations.receive(e);
   settingsCenter.receive(e);
   switch (e.type) {
-    case "voice_settings": return setMode(mode);
+    case "voice_recognition": return;
+    case "voice_settings": case "session": return setMode(mode);
     case "notice":
       hud.dataset.activity = "error";
       return note(e.message, e.error);
-    case "ai_status": case "settings_info": case "history": case "activity": case "session": case "dialogue_settings_result": case "addressee": case "music_settings": return;
+    case "ai_status": case "settings_info": case "history": case "activity": case "dialogue_settings_result": case "addressee": case "music_settings": return;
     case "hello":
       return greet(e);
     case "state":

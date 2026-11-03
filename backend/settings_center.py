@@ -25,8 +25,10 @@ class SettingsCenter:
         self.s, self.store, self.conv, self.bus, self.loop = settings, store, conv, bus, loop
         self.profiles = personalities(store)
         self.jobs, self.capture_target = set(), None
+        self.wake_test_until = None
         self.capture_timer = None
         self.permissions, self.model_status, self.last_preview = None, {}, None
+        self.input_devices = None
         self.pending_import = None
         self.original_client = conv.llm
         self._publish_scheduled = False
@@ -35,6 +37,7 @@ class SettingsCenter:
         self.defaults = {
             "studio": Studio(
                 voice=settings.voice_name,
+                input_device=settings.audio.input_device,
                 pronunciations=dict(settings.tts.pronunciations),
                 wake_phrase=settings.wakeword.phrase or "эй чушпан",
                 silence_ms=settings.vad.silence_ms,
@@ -92,6 +95,7 @@ class SettingsCenter:
                 "expression": False,
             },
             "permissions": self.permissions,
+            "input_devices": self.input_devices,
             "models": self.model_status,
             "location": automations.locations.current() if automations else {},
             "places": [p.model_dump() for p in automations.locations.list()] if automations else [],
@@ -273,6 +277,27 @@ class SettingsCenter:
                 await self.cancel_previews()
                 asyncio.current_task().set_name("settings-preview")
                 await self.preview(value)
+                return
+            elif op == "microphones":
+                from backend.audio.capture import input_devices
+
+                self.input_devices = await asyncio.to_thread(input_devices)
+            elif op == "wake_test":
+                if not self.loop or not self.loop.microphone_running:
+                    raise ValueError("Сначала включи микрофон приложения.")
+                if self.loop.busy:
+                    raise ValueError("Дождись окончания ответа перед тестом активации.")
+                self.capture_target = None
+                self.wake_test_until = time.monotonic() + 20
+                self.loop.command("sleep")
+                if self.capture_timer:
+                    self.capture_timer.cancel()
+                self.capture_timer = asyncio.create_task(self.expire_capture())
+                self.jobs.add(self.capture_timer)
+                self.capture_timer.add_done_callback(self.jobs.discard)
+                self.publish(
+                    message="Произнеси wake-фразу в течение 20 секунд. Команды не выполняются."
+                )
                 return
             elif op == "listen":
                 if not self.loop or not self.loop.microphone_running:
@@ -473,6 +498,12 @@ class SettingsCenter:
         selected = Studio.model_validate(values)
         if selected.voice not in self.snapshot()["voices"]:
             raise ValueError("Голос не установлен для текущего движка.")
+        if selected.input_device != self.s.audio.input_device:
+            import sounddevice as sd
+
+            sd.check_input_settings(
+                device=selected.input_device, channels=1, dtype="int16", samplerate=16000
+            )
         if self.s.tts.engine != "silero" and selected.pitch != "medium":
             raise ValueError("Текущий движок не поддерживает высоту голоса.")
         if self.s.tts.engine not in {"silero", "piper"} and selected.rate != "medium":
@@ -483,6 +514,9 @@ class SettingsCenter:
             return
         selected = Studio.model_validate(values)
         speaker = self.loop.speaker
+        change_input = getattr(self.loop, "change_input_device", None)
+        if change_input:
+            change_input(selected.input_device)
         if hasattr(speaker, "speaker"):
             speaker.speaker = selected.voice
         if hasattr(speaker, "pronunciations"):
@@ -515,8 +549,24 @@ class SettingsCenter:
             self.publish(captured=text, message="Тестовая речь распознана. Команды не выполнялись.")
         return True
 
+    def capture_wake(self, text, *, accepted, reason):
+        if self.wake_test_until is None:
+            return False
+        active = time.monotonic() <= self.wake_test_until
+        self.wake_test_until = None
+        if self.capture_timer:
+            self.capture_timer.cancel()
+        self.publish(
+            captured=text,
+            message="Wake-фраза подтверждена. Действия не выполнялись."
+            if active and accepted
+            else "Wake-фраза отклонена: " + reason,
+        )
+        return True
+
     def stop_capture(self):
-        active, self.capture_target = self.capture_target, None
+        active = self.capture_target or self.wake_test_until
+        self.capture_target = self.wake_test_until = None
         if self.capture_timer:
             self.capture_timer.cancel()
         if active and self.loop:
@@ -524,8 +574,8 @@ class SettingsCenter:
 
     async def expire_capture(self):
         await asyncio.sleep(20)
-        if self.capture_target:
-            self.capture_target = None
+        if self.capture_target or self.wake_test_until:
+            self.capture_target = self.wake_test_until = None
             if self.loop:
                 self.loop.command("sleep")
             self.publish(message="Время теста микрофона истекло.")

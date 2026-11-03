@@ -10,6 +10,7 @@ export interface SettingsState {type:'settings_center'; version:number; values:R
   active:{id:string;reason:string;locked:boolean}; traits:Record<string,{name:string;group:string}>;
   memory:Memory[]; memory_pending:{id:string;content:string}[]; habits_opt_in:boolean;
   engine:string; voices:string[]; voice_support:{rate:boolean;pitch:boolean;expression:boolean};
+  input_devices?:{id:number;name:string}[]|null;
   permissions:{items:{id:string;name:string;status:string;note:string;url:string}[];scope:string} | null;
   models:{installed?:string[];ollama?:string;tts?:string;gemini?:{models?:{model:string;provider:string;status:string;latency_s?:number|null;error?:string|null}[]};streaming?:boolean};
   location:{name?:string|null;place_id?:string|null;mode?:string;message?:string;reason?:string}; places:Place[];
@@ -26,7 +27,7 @@ export type SettingsEvent = SettingsState | ({type:'settings_preview'} & Preview
 
 const categories = [
   ['personality','Характер и личность','Настроение, привычки общения и твой собственный Чушпан','sparkles'],
-  ['voice','Голос и общение','Голос, произношение и разговор без лишних повторов','mic'],
+  ['voice','Голос и прослушивание','Голос, произношение и разговор без лишних повторов','mic'],
   ['memory','Память и обучение','Важное о тебе и то, чему Чушпан научился','heart'],
   ['models','Модели и производительность','Скорость, качество и доступность моделей','cpu'],
   ['access','Доступ и безопасность','Разрешения, приложения и границы самостоятельности','shield'],
@@ -201,12 +202,17 @@ export class SettingsCenterUI {
     const s=this.state!;root.append(el('p',`Текущий движок: ${s.engine}. Голос сохраняется без подмены системным TTS.`,'settings-help'));
     const rate:[string,string][]=[['x-slow','Очень медленно'],['slow','Медленно'],['medium','Обычно'],['fast','Быстро'],['x-fast','Очень быстро']];
     const form=this.form('studio',[['voice','Голос','select',s.voices.map(v=>[v,v])],['rate','Скорость речи','select',rate],['pitch','Высота голоса','select',[['x-low','Очень низко'],['low','Ниже'],['medium','Без изменения'],['high','Выше'],['x-high','Очень высоко']]],['volume','Громкость ответа, %','range'],['pause_ms','Пауза между фразами, мс','number'],['wake_phrase','Фраза активации','text'],['silence_ms','Пауза окончания речи, мс','number'],['adaptive_endpoint','Учитывать длинные паузы в речи','checkbox'],['normalize_numbers','Произносить числа словами','checkbox'],['normalize_english','Подготавливать английские слова для русского голоса','checkbox'],['text_only','Отвечать текстом без озвучки','checkbox']]);
+    const micValue=s.values.studio.input_device;
+    const microphone=this.select([['','Системный микрофон'],...(s.input_devices??[]).map(d=>[String(d.id),d.name] as [string,string]),...(micValue!=null&&!(s.input_devices??[]).some(d=>String(d.id)===String(micValue))?[[String(micValue),'Текущий микрофон: '+String(micValue)] as [string,string]]:[])],String(micValue??''));
+    form.append(this.label('Микрофон',microphone,'Смена устройства перезапускает только аудиовход.'));
+    const originalMic=form.onsubmit;form.onsubmit=e=>{s.values.studio.input_device=microphone.value===''?null:/^\d+$/.test(microphone.value)?Number(microphone.value):microphone.value;originalMic?.call(form,e);};
+    form.append(this.button('Обновить список микрофонов',()=>this.send({op:'microphones'}),true));
     for(const [key,supported]of [['rate',s.voice_support.rate],['pitch',s.voice_support.pitch]] as [string,boolean][]){if(!supported){const field=form.querySelector<HTMLSelectElement>(`[data-field="${key}"]`)!;field.disabled=true;field.dataset.unavailable='true';field.parentElement!.append(el('small','Текущий движок не поддерживает этот параметр.'));}}
     form.append(el('p','Отдельная настройка выразительности текущим движком не предоставляется.','settings-help'));
     const dictionary=s.values.studio.pronunciations as Record<string,string>;const words=this.textarea(Object.entries(dictionary).filter(([,v])=>!/[+\u0301]/.test(v)).map(([k,v])=>`${k} = ${v}`).join('\n'));const stress=this.textarea(Object.entries(dictionary).filter(([,v])=>/[+\u0301]/.test(v)).map(([k,v])=>`${k} = ${v}`).join('\n'));words.rows=4;stress.rows=3;
     form.append(this.label('Произношение слов',words,'Одна строка: слово = как произносить'),this.label('Словарь ударений',stress,'Например: Чушпан = Чушпа́н. Можно использовать знак + перед гласной.'));
     const original=form.onsubmit;form.onsubmit=e=>{const parsed:Record<string,string>={};for(const line of (words.value+'\n'+stress.value).split('\n').filter(s=>s.trim())){const index=line.indexOf('=');if(index<1){e.preventDefault();this.feedback('В словаре нужна запись «слово = произношение».',true);return;}const key=line.slice(0,index).trim(),value=line.slice(index+1).trim();if(parsed[key]&&parsed[key]!==value){e.preventDefault();this.feedback('Одно слово указано с разным произношением.',true);return;}parsed[key]=value;}s.values.studio.pronunciations=parsed;original?.call(form,e);};
-    root.append(form);const test=this.section('Попробовать голос и микрофон');const phrase=this.input('Привет. Это мой текущий голос.');test.append(this.label('Текст для проверки голоса',phrase),this.button('Прослушать',()=>this.send({op:'voice_test',text:phrase.value}),true),this.button('Проверить микрофон',()=>this.send({op:'listen'}),true),this.button('Остановить проверку микрофона',()=>this.send({op:'listen_stop'}),true));const result=el('p',this.capturedText,'settings-help');result.id='settings-mic-result';test.append(result,el('small','Микрофон включается для одного теста после нажатия. Файл не сохраняется, команды из теста не выполняются.'));root.append(test);
+    root.append(form);const test=this.section('Попробовать голос и микрофон');const phrase=this.input('Привет. Это мой текущий голос.');test.append(this.label('Текст для проверки голоса',phrase),this.button('Прослушать',()=>this.send({op:'voice_test',text:phrase.value}),true),this.button('Проверить микрофон',()=>this.send({op:'listen'}),true),this.button('Проверить wake-фразу',()=>this.send({op:'wake_test'}),true),this.button('Остановить проверку микрофона',()=>this.send({op:'listen_stop'}),true));const result=el('p',this.capturedText,'settings-help');result.id='settings-mic-result';test.append(result,el('small','Микрофон включается для одного теста после нажатия. Файл не сохраняется, команды из теста не выполняются.'));root.append(test);
   }
   private memory(root:HTMLElement):void {
     const state=this.state!;const tabs=el('div','','settings-tabs');for(const [key,label]of [['about','Обо мне'],['facts','Что запомнил'],['learned','Чему научился']]){const b=this.button(label,()=>{this.memoryTab=key;this.render();});b.setAttribute('aria-selected',String(key===this.memoryTab));tabs.append(b);}root.append(tabs);

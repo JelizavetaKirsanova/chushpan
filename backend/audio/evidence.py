@@ -20,6 +20,14 @@ class AudioEvidence:
 
 
 def evidence(audio: np.ndarray) -> AudioEvidence:
+    if (
+        not isinstance(audio, np.ndarray)
+        or audio.ndim != 1
+        or not np.issubdtype(audio.dtype, np.number)
+        or np.iscomplexobj(audio)
+        or not np.isfinite(audio).all()
+    ):
+        return AudioEvidence(0, 0, 0)
     samples = audio.astype(np.float32)
     frames = samples[: len(samples) // 512 * 512].reshape(-1, 512)
     rms = float(np.std(samples)) if len(samples) else 0.0

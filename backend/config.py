@@ -211,16 +211,16 @@ class VADConfig(BaseModel):
     threshold: float = 0.5
     start_ms: int = 96
     min_speech_ms: int = 300
-    silence_ms: int = 700  # pause that ends an utterance
+    silence_ms: int = 1200  # pause that ends an utterance
     adaptive_endpoint: bool = True  # preserve the configured floor; allow natural longer pauses
     preroll_ms: int = 300
     tail_ms: int = Field(default=256, ge=0, le=2000)
-    max_utterance_s: float = 30
+    max_utterance_s: float = 60
 
 
 class DialogueConfig(BaseModel):
     enabled: bool = True
-    duration_s: int = Field(default=45, ge=10, le=300)
+    duration_s: int = Field(default=20, ge=10, le=300)
     nameless_interruptions: bool = False
     addressee_strictness: Literal["contextual", "addressed"] = "contextual"
     max_session_s: float = Field(default=180, ge=30, le=900)

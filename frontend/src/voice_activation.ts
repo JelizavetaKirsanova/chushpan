@@ -15,3 +15,8 @@ export async function requestMicrophone(api:MicrophoneApi|undefined, starting:()
     // Only the backend's voice_settings event confirms that input actually started.
   } catch(error){failed('Не удалось включить микрофон: '+String(error));}
 }
+
+export function dialogueCaption(mode:string,session:{active:boolean;recording?:boolean}|null):string|null {
+  if(mode!=='listening'||!session?.active)return null;
+  return session.recording===false?'Ожидает продолжение':'Слушает';
+}

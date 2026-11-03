@@ -13,9 +13,19 @@ from uuid import uuid4
 from backend.brain.privacy import contains_secret
 
 _SAFE = re.compile(r"^[A-Za-z0-9_.:/-]{1,120}$")
-PIPELINE_REVISION = "2026-11-low-latency"
+PIPELINE_REVISION = "2026-11-voice-reliability"
 _META = {
     "pipeline_revision",
+    "error_component",
+    "error_line",
+    "fragment_index",
+    "stt_chars",
+    "stt_result",
+    "session_active",
+    "continuation_window",
+    "audio_duration_s",
+    "recording_end",
+    "speech_ms",
     "route",
     "request_class",
     "context_chars",

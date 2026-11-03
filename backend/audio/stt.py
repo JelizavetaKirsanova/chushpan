@@ -49,6 +49,8 @@ def _assistant_names(name: str) -> set[str]:
     names = {_normalize(name)}
     if "jarvis" in names:
         names.add("джарвис")
+    if names & {"чушпан", "chushpan"}:
+        names.update({"чушпан", "chushpan", "чушпэн"})
     return names
 
 
@@ -163,7 +165,14 @@ def strip_wake_phrase(text: str, phrase: str) -> str | None:
     words = list(re.finditer(r"\w+", clean))
     if not expected or len(words) < len(expected):
         return None
-    if [m.group().casefold().replace("ё", "е") for m in words[: len(expected)]] != expected:
+    actual = [m.group().casefold().replace("ё", "е") for m in words[: len(expected)]]
+    names = _assistant_names("Чушпан")
+    if expected[-1] in names and actual[-1] in names:
+        actual[-1] = expected[-1]
+        if len(expected) == 2 and expected[0] in {"hey", "эй", "хей", "хэй"}:
+            if actual[0] in {"hey", "эй", "хей", "хэй"}:
+                actual[0] = expected[0]
+    if actual != expected:
         return None
     return clean[words[len(expected) - 1].end() :].lstrip(" \t\n,.!?;:—–-«»\"'")
 

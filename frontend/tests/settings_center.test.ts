@@ -72,3 +72,19 @@ test('place binding requires explicit save and keeps manual mode separate',async
     assert.equal(f.requests.some(r=>r.op==='place_save'),false);f.button('Сохранить место и привязки');const request=f.requests.at(-1)!;assert.equal(request.op,'place_save');assert.equal((request.place as {signals:unknown[]}).signals.length,1);assert.equal(f.state.places[0].signals,undefined);
   } finally {await f.window.happyDOM.abort();}
 });
+
+
+test('voice settings retain selected microphone and explicitly request safe wake test',async()=>{
+  const f=fixture();try {
+    f.state.values.studio.input_device=5;
+    f.view.receive({...f.state,input_devices:[{id:5,name:'Test microphone'}]});
+    f.view.open('voice');
+    const labels=[...f.window.document.querySelectorAll('#settings-content label')];
+    const microphone=labels.find(l=>l.textContent.includes('Смена устройства'))!.querySelector('select')!;
+    assert.equal(microphone.value,'5');
+    f.button('Проверить wake-фразу');assert.equal(f.requests.at(-1)!.op,'wake_test');
+    f.button('Обновить список микрофонов');assert.equal(f.requests.at(-1)!.op,'microphones');
+    f.window.document.querySelector('form[data-category="studio"]')!.dispatchEvent(new f.window.Event('submit',{cancelable:true}));
+    assert.equal((f.requests.at(-1)!.value as Record<string,unknown>).input_device,5);
+  } finally {await f.window.happyDOM.abort();}
+});

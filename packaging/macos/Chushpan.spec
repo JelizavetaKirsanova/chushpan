@@ -96,8 +96,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleDisplayName": "Чушпан",
         "CFBundleName": "Чушпан",
-        "CFBundleShortVersionString": "0.2.1",
-        "CFBundleVersion": "3",
+        "CFBundleShortVersionString": "0.2.3",
+        "CFBundleVersion": "5",
         "LSMinimumSystemVersion": "26.2",
         "NSHighResolutionCapable": True,
         "NSMicrophoneUsageDescription": "Чушпан распознаёт ваши голосовые команды локально на этом Mac.",

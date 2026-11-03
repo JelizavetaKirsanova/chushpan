@@ -538,8 +538,13 @@ class VoiceLoop:
         self.barge_task: asyncio.Task | None = None
         self.session_deadline: float | None = None
         self._session_timer: asyncio.TimerHandle | None = None
+        self._session_paused_at: float | None = None
+        self._session_remaining = 0.0
+        self._wake_pending = deque(maxlen=round(STT_TIMEOUT_S / 0.032))
+        self._last_segment = None
         self._session_accepted = -1
         self._session_recording = False
+        self._follow_up_ready = False
         self.echo_ready = False
         self.headset_verified = False
         self.last_interrupted = False
@@ -564,6 +569,20 @@ class VoiceLoop:
         self.bus.handle("voice_settings", self.configure_voice)
         self.bus.handle("voice_status", lambda _: self._publish_voice())
         self._publish_session()
+
+    def _recognition(self, text: str, result: str, reason: str = "") -> None:
+        # Ephemeral local UI only. Transcript text is not added to timing traces/logs.
+        profile = current.get()
+        self.bus.publish(
+            {
+                "type": "voice_recognition",
+                "text": text,
+                "result": result,
+                "reason": reason,
+                "request_id": self.state.request_id,
+                "trace_id": profile.request_id if profile else None,
+            }
+        )
 
     def _observe_task(self, execution_id, name, status, result) -> None:
         owner = request_context.get()
@@ -633,6 +652,7 @@ class VoiceLoop:
                 and self.conv.pending_followup()
             ),
             control_context=control_context,
+            continuation_window=self._follow_up_ready and self.session_active,
         )
         if (
             prompted
@@ -647,6 +667,10 @@ class VoiceLoop:
                 active=self.session_active,
                 topic=topic,
                 signals=SpeechSignals(evidence(audio).usable, True, echo),
+            )
+        if profile := current.get():
+            profile.update(
+                session_active=self.session_active, continuation_window=self._follow_up_ready
             )
         log.info(
             "ADDRESSEE request=%s confidence=%s reason=%s kind=%s",
@@ -679,7 +703,7 @@ class VoiceLoop:
         return bool(
             self.s.dialogue.enabled
             and self.session_deadline is not None
-            and self.clock() < self.session_deadline
+            and (self._session_paused_at is not None or self.clock() < self.session_deadline)
         )
 
     @property
@@ -700,7 +724,14 @@ class VoiceLoop:
                 "active": self.session_active,
                 "listening": self.session_active and self.state.state is State.LISTENING,
                 "requires_wake": self.use_wake and not self.session_active,
-                "remaining_s": max(0, (self.session_deadline or self.clock()) - self.clock()),
+                "remaining_s": self._session_remaining
+                if self._session_paused_at is not None
+                else max(0, (self.session_deadline or self.clock()) - self.clock()),
+                "paused": self._session_paused_at is not None,
+                "recording": self.segmenter.in_speech,
+                "phase": "follow_up_listening"
+                if self.session_active and self.state.state is State.LISTENING
+                else self.state.state.value,
                 "enabled": self.s.dialogue.enabled,
                 "duration_s": self.s.dialogue.duration_s,
                 "nameless_interruptions": self.s.dialogue.nameless_interruptions,
@@ -719,6 +750,7 @@ class VoiceLoop:
             return
         if self._session_started_at is None:
             self._session_started_at = self.clock()
+        self._session_paused_at = None
         self.session_deadline = min(
             self.clock() + self.s.dialogue.duration_s,
             self._session_started_at + self.s.dialogue.max_session_s,
@@ -736,6 +768,32 @@ class VoiceLoop:
         )
         self._publish_session()
 
+    def _pause_session(self, reason: str) -> None:
+        if not self.session_active or self._session_paused_at is not None:
+            return
+        self._session_remaining = max(0, self.session_deadline - self.clock())
+        self._session_paused_at = self.clock()
+        self.listen_deadline = None
+        if self._session_timer:
+            self._session_timer.cancel()
+            self._session_timer = None
+        log.info("SESSION_PAUSED reason=%s remaining_s=%.3f", reason, self._session_remaining)
+        self._publish_session()
+
+    def _resume_session(self) -> None:
+        if self._session_paused_at is None or self.session_deadline is None:
+            return
+        self._session_paused_at = None
+        self.session_deadline = min(
+            self.clock() + self._session_remaining,
+            self._session_started_at + self.s.dialogue.max_session_s,
+        )
+        self.listen_deadline = self.session_deadline
+        self._session_timer = asyncio.get_running_loop().call_later(
+            max(0.01, self.session_deadline - self.clock()), self._session_timeout
+        )
+        self._publish_session()
+
     def _session_timeout(self) -> None:
         if (
             self.session_deadline is None
@@ -749,6 +807,9 @@ class VoiceLoop:
 
     def _close_session(self) -> None:
         self.session_deadline = None
+        self._session_paused_at = None
+        self._session_remaining = 0
+        self._follow_up_ready = False
         self._session_started_at = None
         if self._session_timer:
             self._session_timer.cancel()
@@ -881,7 +942,8 @@ class VoiceLoop:
         self._publish_voice()
         self.bus.publish({"type": "dialogue_settings_result", "ok": True})
 
-    def _publish_state(self, _: State | None, new: State) -> None:
+    def _publish_state(self, old: State | None, new: State) -> None:
+        log.info("VOICE_STATE from=%s to=%s", old.value if old else "startup", new.value)
         self.bus.publish({"type": "state", "state": new.value, "request_id": self.state.request_id})
         self._publish_session()
         self._publish_voice()
@@ -898,13 +960,14 @@ class VoiceLoop:
     def _listen_for(self, seconds: float) -> None:
         self.listen_deadline = self.clock() + seconds if self.use_wake else None
 
-    def _wake_up(self, score: float | None) -> None:
+    def _wake_up(self, score: float | None, *, preserve_input=False) -> None:
         if score is not None and self.clock() - self._last_activation < self.s.wakeword.cooldown_s:
             return
         self._last_activation = self.clock()
         self._session_started_at = self.clock()
         log.info("WAKE_DETECTED")
         self.last_accepted_topic = ""
+        self._follow_up_ready = False
         self._prompted_until = self.clock() + self.s.wakeword.listen_timeout_s
         if self.wake_task and self.wake_task is not asyncio.current_task():
             self.wake_task.cancel()
@@ -912,7 +975,8 @@ class VoiceLoop:
         self.segmenter.reset()
         self.state.to(State.LISTENING)
         self._phase("listening")
-        self.flush_audio()
+        if not preserve_input:
+            self.flush_audio()
         self._listen_for(self.s.wakeword.listen_timeout_s)
         self._open_session()
         if self.chime:
@@ -921,6 +985,10 @@ class VoiceLoop:
         console.print(f"\n[cyan]●[/] [dim]слушаю ({why})[/]")
 
     def _go_to_sleep(self) -> None:
+        log.info(
+            "SESSION_CLOSED reason=%s",
+            "explicit_close" if self._sleep_requested else "idle_or_policy",
+        )
         self._close_session()
         self.state.to(State.SLEEPING)
         self._phase("idle")
@@ -1140,6 +1208,7 @@ class VoiceLoop:
         trace("REQUEST_RECEIVED", source="audio" if kind == "voice" else "text")
         failed = True
         try:
+            self._pause_session("processing")
             self.flush_audio()
             async with asyncio.timeout(TURN_TIMEOUT_S):
                 await operation()
@@ -1150,7 +1219,17 @@ class VoiceLoop:
         except Exception as exc:
             profile.fail(type(exc).__name__)
             self._phase("error")
-            log.error("ERROR voice_turn type=%s", type(exc).__name__)
+            import traceback
+            from pathlib import Path
+
+            site = traceback.extract_tb(exc.__traceback__)[-1]
+            profile.update(error_component=Path(site.filename).name, error_line=site.lineno)
+            log.error(
+                "ERROR voice_turn type=%s location=%s:%d",
+                type(exc).__name__,
+                Path(site.filename).name,
+                site.lineno,
+            )
             self.bus.publish(
                 {
                     "type": "notice",
@@ -1204,17 +1283,21 @@ class VoiceLoop:
         self.mute_until = self.clock() + ECHO_TAIL_S
         if self.s.dialogue.enabled and self.session_deadline is not None:
             if self._session_accepted == self.state.request_id:
+                self._follow_up_ready = True
                 self._open_session()
             else:
+                self._resume_session()
                 self._session_timeout()
         else:
             if self.use_wake:
                 self._go_to_sleep()
             else:
                 self._listen_for(ECHO_TAIL_S + self.s.wakeword.follow_up_s)
-        self.vad.reset()
-        self.segmenter.reset()
-        self.flush_audio()
+        # Speech may have started during the last playback block. Preserve its onset.
+        if not self.segmenter.in_speech:
+            self.vad.reset()
+            self.segmenter.reset()
+            self.flush_audio()
 
     def on_frame(self, frame: np.ndarray) -> None:
         try:
@@ -1234,15 +1317,19 @@ class VoiceLoop:
             self._maybe_announce()
         if self.state.state is State.SLEEPING:
             if self.clock() < self.mute_until:
+                self.segmenter.process(frame, 0.0)
                 return
             if self.wake_phrase:
-                if self.clock() < self.mute_until or (self.wake_task and not self.wake_task.done()):
+                if self.wake_task and not self.wake_task.done():
+                    self._wake_pending.append(frame.copy())
                     return
                 event = self.segmenter.process(frame, self.vad(frame))
                 if event.started:
                     self.vad_started_at = time.perf_counter() - event.speech_ms / 1000
                     log.info("RECORDING wake_check")
                 if event.utterance is not None:
+                    self._last_segment = event
+                    self._wake_pending.clear()
                     self.vad_wait_s = event.silence_s
                     self.wake_task = asyncio.create_task(
                         self._check_wake_phrase(
@@ -1266,7 +1353,8 @@ class VoiceLoop:
             return
         if not working:
             now = self.clock()
-            if now < self.mute_until:
+            if now < self.mute_until and not self.segmenter.in_speech:
+                self.segmenter.process(frame, 0.0)
                 return
             expired = self.listen_deadline is not None and now >= self.listen_deadline
             if expired and not self.segmenter.in_speech:
@@ -1276,12 +1364,14 @@ class VoiceLoop:
         if event.started:
             self.vad_started_at = time.perf_counter() - event.speech_ms / 1000
             self._session_recording = self.session_active
+            self._pause_session("recording")
             log.info(
                 "RECORDING command vad_start_ms=%.0f threshold=%.2f",
                 event.speech_ms,
                 self.segmenter.threshold,
             )
         if event.utterance is not None:
+            self._last_segment = event
             acoustic = evidence(event.utterance)
             log.info(
                 "VAD_END duration_s=%.3f active_ms=%.0f rms=%.2f usable=%s working=%s",
@@ -1299,6 +1389,7 @@ class VoiceLoop:
             )
             if not acoustic.usable:
                 log.info("STT_REJECT reason=no_acoustic_speech")
+                self._resume_session()
                 return
             if working or self.busy:
                 if self.busy and (self.barge_task is None or self.barge_task.done()):
@@ -1452,7 +1543,11 @@ class VoiceLoop:
             with measure("wake_detection", wake_source="whisper"):
                 text = await asyncio.wait_for(self.stt.transcribe(audio), STT_TIMEOUT_S)
             profile.update(
-                wake_source="whisper", **(getattr(self.stt, "last_confidence", None) or {})
+                wake_source="whisper",
+                stt_chars=len(text),
+                stt_result="recognized" if text else "empty",
+                audio_duration_s=len(audio) / 16000,
+                **(getattr(self.stt, "last_confidence", None) or {}),
             )
             reason = "not_addressed"
             request = None
@@ -1478,6 +1573,22 @@ class VoiceLoop:
                         request = strip_wake_phrase(text, prefix)
                         if request is not None:
                             break
+            confidence = getattr(self.stt, "last_confidence", None) or {}
+            log.info(
+                "STT_EVIDENCE stage=wake chars=%d logprob=%s no_speech=%s compression=%s",
+                len(text),
+                confidence.get("min_avg_logprob"),
+                confidence.get("max_no_speech_prob"),
+                confidence.get("max_compression_ratio"),
+            )
+            center = getattr(self, "settings_center", None)
+            if center and center.capture_wake(text, accepted=request is not None, reason=reason):
+                profile.update(
+                    route="wake_test",
+                    reason="wake_test_accepted" if request is not None else reason,
+                )
+                status = "completed"
+                return
             if request is None or self.state.state is not State.SLEEPING:
                 profile.update(reason=reason)
                 log.info("ACTIVATION_REJECT reason=%s", reason)
@@ -1486,7 +1597,12 @@ class VoiceLoop:
             status = "activated"
             elapsed = time.perf_counter() - start
             self.wake_detection_s = elapsed
-            self._wake_up(None)
+            buffered = list(self._wake_pending)
+            self._wake_pending.clear()
+            self._wake_up(None, preserve_input=True)
+            if not request:
+                for frame in buffered:
+                    self.on_frame(frame)
             if request and not is_hallucination(request):
                 self.state.to(State.THINKING)
                 self.task = asyncio.create_task(
@@ -1595,7 +1711,17 @@ class VoiceLoop:
             else:
                 profile.add("stt", stt_s)
             profile.mark("stt_completed" if recognized else "stt_failed")
+        self._recognition(text, "recognized")
         log.info("STT_RESULT command chars=%d night=%s", len(text), night_requested(text))
+        profile.update(
+            stt_chars=len(text),
+            stt_result="recognized" if text else "empty",
+            audio_duration_s=len(audio) / 16000,
+        )
+        if self._last_segment:
+            profile.update(
+                recording_end=self._last_segment.end_reason, speech_ms=self._last_segment.speech_ms
+            )
         profile.update(
             wake_enabled=self.use_wake, **(getattr(self.stt, "last_confidence", None) or {})
         )
@@ -1670,6 +1796,8 @@ class VoiceLoop:
             )
             if not decision.accepted:
                 profile.result_status = "rejected"
+                profile.update(reason=decision.reason, stt_result="rejected")
+                self._recognition(text, "rejected", decision.reason)
                 return
             voice_addressed.set(decision.kind == "direct")
             if decision.kind == "music":
@@ -1725,6 +1853,9 @@ class VoiceLoop:
         self.last_accepted_topic = (
             text if addressed or not self.last_accepted_topic else self.last_accepted_topic
         )
+        self._follow_up_ready = False
+        profile.update(stt_result="accepted")
+        self._recognition(text, "accepted")
         if not from_barge:
             self.last_interrupted = False
         if self.use_wake and self.s.dialogue.enabled:
@@ -1738,6 +1869,7 @@ class VoiceLoop:
         self.bus.publish({"type": "user", "text": text})
         self.bus.publish({"type": "activity", "phase": "processing"})
         self._phase("processing")
+        self._pause_session("response")
         log.info("RESPONSE_START request=%s reason=accepted_stt", request_context.get())
         if s.locale.native_prompt and (signing_off or only_thanks(text, s.assistant_name)):
             await self._say_by_code(text, signing_off)
@@ -1932,9 +2064,11 @@ async def _run_voice(
 
     # The profile decides how long Ollama keeps the model (D-37).
     store = MemoryStore.open_resilient(s.db_path)
+    from backend.audio.activity import migrate_interaction_defaults
     from backend.settings_models import apply_persisted
 
     try:
+        migrate_interaction_defaults(store, s)
         apply_persisted(s, store)
     except (ValueError, TypeError):
         log.warning("SETTINGS invalid_saved_value using_config")
@@ -2003,6 +2137,9 @@ async def _run_voice(
     stt = WhisperSTT(s.stt.model, s.stt_language, s.stt_hint, s.resources.mlx_cache_mb)
     speaker = make_speaker(s)
     speaker.on_sentence = write_as_spoken(bus)
+    speaker.on_error = lambda message: bus.publish(
+        {"type": "notice", "error": True, "message": message}
+    )
     from backend.hud.dashboard import Dashboard
 
     dashboard = Dashboard(bus, s, store, conv, weather)
@@ -2198,6 +2335,7 @@ async def _run_voice(
         background += dashboard.start(loop)
     mic = Microphone(s.audio.input_device)
     loop.flush_audio = mic.flush
+    loop.change_input_device = mic.set_device
     silence = SilenceWatch()
 
     async def desktop_warmup():

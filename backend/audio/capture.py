@@ -23,6 +23,8 @@ class Microphone:
         self._generation = 0
 
     def start(self) -> None:
+        if self._stream is not None:
+            return
         import sounddevice as sd
 
         loop = asyncio.get_running_loop()
@@ -35,7 +37,7 @@ class Microphone:
             generation = self._generation
             loop.call_soon_threadsafe(self._put, indata[:, 0].copy(), generation)
 
-        self._stream = sd.InputStream(
+        stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
             channels=1,
             dtype="int16",
@@ -43,7 +45,27 @@ class Microphone:
             device=self.device,
             callback=callback,
         )
-        self._stream.start()
+        try:
+            stream.start()
+        except Exception:
+            stream.close()
+            raise
+        self._stream = stream
+
+    def set_device(self, device):
+        if device == self.device:
+            return
+        previous, running = self.device, self._stream is not None
+        self.stop()
+        self.flush()
+        self.device = device
+        if running:
+            try:
+                self.start()
+            except Exception:
+                self.device = previous
+                self.start()
+                raise
 
     def _put(self, frame: np.ndarray, generation: int | None = None) -> None:
         if generation is not None and generation != self._generation:
@@ -100,3 +122,14 @@ class SilenceWatch:
             self.done = True
             return True
         return False
+
+
+def input_devices():
+    """Metadata only; never opens a recording stream."""
+    import sounddevice as sd
+
+    return [
+        {"id": i, "name": d["name"]}
+        for i, d in enumerate(sd.query_devices())
+        if d["max_input_channels"] > 0
+    ]
