@@ -302,11 +302,15 @@ class ToolRegistry:
 
     def direct_reply(self, name: str, result: Any) -> str | None:
         tool = self._tools.get(name)
-        if tool is None or tool.reply is None or not isinstance(result, dict):
+        if not isinstance(result, dict):
             return None
-        if "error" in result:
-            return "Не выполнил: " + str(result["error"])
-        return tool.reply(result)
+        if tool is not None and tool.reply is not None:
+            if "error" in result:
+                return "Не выполнил: " + str(result["error"])
+            return tool.reply(result)
+        if result.get("ok") is False:
+            return "Действие не выполнено: инструмент не подтвердил успех."
+        return None
 
     def capabilities(self, lang: str) -> list[str]:
         out: list[str] = []

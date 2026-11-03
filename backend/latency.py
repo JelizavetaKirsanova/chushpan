@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from contextlib import contextmanager
@@ -13,7 +14,7 @@ from uuid import uuid4
 from backend.brain.privacy import contains_secret
 
 _SAFE = re.compile(r"^[A-Za-z0-9_.:/-]{1,120}$")
-PIPELINE_REVISION = "2026-11-voice-reliability"
+PIPELINE_REVISION = "2026-11-03-voice-stream-completion"
 _META = {
     "pipeline_revision",
     "error_component",
@@ -35,10 +36,16 @@ _META = {
     "tokens_per_second",
     "provider",
     "model",
+    "requested_model",
     "tool",
     "attempt",
     "reason",
     "thinking",
+    "thinking_level",
+    "streaming",
+    "route_reason",
+    "queue_depth",
+    "timeout_s",
     "eval_count",
     "prompt_eval_count",
     "eval_duration",
@@ -110,7 +117,22 @@ class Profile:
     def update(self, **values):
         if self.ended is not None:
             return
-        self.info.update(metadata(values))
+        if "route" in values:
+            values.setdefault(
+                "route_reason",
+                {
+                    "llm": "routine_model"
+                    if values.get("request_class") == "routine"
+                    else "full_model",
+                    "local_command": "deterministic_intent",
+                    "confirmation": "confirmation_required",
+                    "scenario": "registered_scenario",
+                }.get(values["route"], values["route"]),
+            )
+        safe = metadata(values)
+        if all(key in self.info and self.info[key] == value for key, value in safe.items()):
+            return
+        self.info.update(safe)
         self.publish()
 
     def mark(self, name, at=None, *, allow_before_origin=False):
@@ -147,7 +169,21 @@ class Profile:
             row["metadata"].update(metadata(values))
             row.update(end_s=self.elapsed(), outcome=outcome)
             row["seconds"] = max(0, row["end_s"] - row["start_s"])
+            row["active_s"] = max(0, row["seconds"] - row.get("consumer_wait_s", 0))
             self.publish()
+
+    def end_first(self, identity, **values):
+        """First provider event for this attempt, including reasoning and partial streams."""
+        row = next((r for r in self.stages if r["id"] == identity), None)
+        if row is not None:
+            safe = metadata(values)
+            changed = any(row["metadata"].get(k) != v for k, v in safe.items())
+            row["metadata"].update(safe)
+            if "first_result_s" not in row:
+                row["first_result_s"] = max(0, self.elapsed() - row["start_s"])
+                changed = True
+            if changed:
+                self.publish()
 
     def interval(self, stage, start, end, outcome="ok"):
         identity = self.begin(stage)
@@ -192,6 +228,7 @@ class Profile:
             if row["end_s"] is None:
                 row.update(end_s=self.elapsed(), outcome=self.status)
                 row["seconds"] = max(0, row["end_s"] - row["start_s"])
+                row["active_s"] = max(0, row["seconds"] - row.get("consumer_wait_s", 0))
         self.publish()
 
     def publish(self):
@@ -214,6 +251,11 @@ class Profile:
             ),
             default=None,
         )
+
+        def between(start, end):
+            a, b = self.marks.get(start), self.marks.get(end)
+            return max(0, b - a) if a is not None and b is not None else None
+
         return {
             "request_id": self.request_id,
             "created_at": at.isoformat(),
@@ -232,6 +274,15 @@ class Profile:
                 default=None,
             ),
             "marks": dict(self.marks),
+            "metrics": {
+                "speech_end_to_stt_s": between("user_speech_end", "stt_completed"),
+                "stt_to_first_token_s": between("stt_completed", "first_llm_token"),
+                "first_token_to_audio_s": between("first_llm_token", "first_content_audio"),
+                "speech_end_to_audio_s": between("user_speech_end", "first_content_audio"),
+                "speech_end_to_completed_s": self.elapsed()
+                if self.ended is not None and "user_speech_end" in self.marks
+                else None,
+            },
             "metadata": dict(self.info),
             "errors": list(self.errors),
             "stages": [{**r, "metadata": dict(r["metadata"])} for r in self.stages],
@@ -258,7 +309,13 @@ class Profile:
             "stt_s": totals.get("stt"),
             "llm_first_token_s": first("model_first_chunk"),
             "llm_first_text_s": first("model_first_text"),
-            "llm_total_s": totals.get("model_total"),
+            "llm_total_s": sum(
+                row.get("active_s", row["seconds"])
+                for row in self.stages
+                if row["stage"] == "model_total"
+            )
+            if "model_total" in totals
+            else None,
             "tool_execution_s": totals.get("tool_execution"),
             "tts_first_audio_s": first("tts_first_audio"),
             "total_response_s": totals.get("response_total"),
@@ -266,6 +323,34 @@ class Profile:
 
 
 current: ContextVar[Profile | None] = ContextVar("latency_profile", default=None)
+
+
+@contextmanager
+def consumer_wait(identity):
+    profile, started = current.get(), time.perf_counter()
+    try:
+        yield
+    finally:
+        if profile and profile.ended is None:
+            row = next((r for r in profile.stages if r["id"] == identity), None)
+            if row is not None:
+                row["consumer_wait_s"] = row.get("consumer_wait_s", 0) + max(
+                    0, time.perf_counter() - started
+                )
+
+
+@contextmanager
+def pause_deadline(deadline, identity=None):
+    """Consumer/TTS backpressure is not a provider network stall."""
+    loop = asyncio.get_running_loop()
+    remaining = max(0, deadline.when() - loop.time()) if deadline.when() is not None else None
+    deadline.reschedule(None)
+    try:
+        with consumer_wait(identity):
+            yield
+    finally:
+        if remaining is not None and not deadline.expired():
+            deadline.reschedule(loop.time() + remaining)
 
 
 def record(stage: str, seconds: float, outcome: str = "ok") -> None:

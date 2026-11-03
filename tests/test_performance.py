@@ -734,13 +734,13 @@ def test_repeated_data_or_action_still_cannot_copy_a_past_success(query):
 @pytest.mark.parametrize(
     "text, fast, tools, selected",
     [
-        ("Что такое радуга?", True, [], "secondary"),
+        ("Что такое радуга?", True, [], "primary"),
         ("Что такое радуга?", False, [], "primary"),
         ("Что такое радуга?", True, ToolRegistry(clock_tools(Settings())).schemas(), "primary"),
         ("Подробно выведи формулы преломления света", True, [], "primary"),
     ],
 )
-def test_plain_cloud_route_uses_only_configured_secondary_and_preserves_complex_chain(
+def test_cloud_route_preserves_selected_primary_even_with_legacy_fast_option(
     text, fast, tools, selected
 ):
     async def run():

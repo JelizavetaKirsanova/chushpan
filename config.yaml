@@ -41,7 +41,7 @@ gemini:
   fallback_model: gemini-3.5-flash # проверен: API перенаправляет на gemini-3.6-flash
   timeout_s: 15              # общий бюджет облачной цепочки
   attempt_timeout_s: 6       # ожидание первого результата; живой поток получает остаток бюджета
-  simple_use_fallback_model: true  # простой текст: настроенная резервная Gemini → Ollama
+  simple_use_fallback_model: false  # устаревшее поле; всегда сначала выбранная основная модель
   free_tier_confirmed: false # включать в .env после проверки Free tier проекта в AI Studio
   context_messages: 24       # текущая сессия: сообщения, вызовы и результаты инструментов
   context_chars: 24000       # бюджет истории; полные результаты остаются в SQLite

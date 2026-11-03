@@ -31,7 +31,7 @@ let mode: Mode = "offline";
 let microphone = "unknown";
 let dialogue:Extract<HudEvent,{type:"session"}>|null=null;
 let toolTimer = 0;
-const performancePanel = new PerformancePanel(days => link.performance(days), id => link.trace(id));
+const performancePanel = new PerformancePanel((days, filters) => link.performance(days, filters), id => link.trace(id));
 const workspace = new Workspace(id => link.history(id), value => link.dialogue(value), () => link.send("sleep"), value => link.music(value), id => id ? performancePanel.open(id) : performancePanel.refresh());
 let latestTrace: string | null = null;
 byId('open-performance').addEventListener('click', () => { if (latestTrace) workspace.openTrace(latestTrace); });

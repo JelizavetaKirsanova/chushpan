@@ -23,7 +23,7 @@ from backend.brain.privacy import redact
 from backend.brain.response_mode import simple_request
 from backend.config import ENV_FILE, GeminiConfig, Settings
 from backend.context import request_context
-from backend.latency import current, record
+from backend.latency import consumer_wait, current, pause_deadline, record
 
 log = logging.getLogger(__name__)
 _wire_progress = ContextVar("gemini_wire_progress", default=None)
@@ -173,24 +173,35 @@ class GeminiClient:
         ]
         config = types.GenerateContentConfig(
             system_instruction=system,
-            temperature=0.6,
             max_output_tokens=self.cfg.max_output_tokens,
-            thinking_config=types.ThinkingConfig(thinking_level="low"),
+            thinking_config=None,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             tools=[types.Tool(function_declarations=declarations)] if declarations else None,
         )
+        user = next((m.get("content", "") for m in reversed(messages) if m["role"] == "user"), "")
+        if context := request_context.get():
+            user = context.text
+        after_tool = bool(messages and messages[-1]["role"] == "tool")
+        level = (
+            self.cfg.simple_thinking_level
+            if tools == [] and simple_request(user) and not after_tool
+            else self.cfg.thinking_level
+        )
+        if level != "auto":
+            config.thinking_config = types.ThinkingConfig(thinking_level=level)
+        if profile := current.get():
+            profile.update(thinking_level=level, streaming=self.cfg.streaming)
         # Stream informational text; action replies and function calls remain buffered
         # until the turn completes. Only our registry executes returned calls.
         try:
             async with asyncio.timeout(self.cfg.timeout_s) as response_deadline:
                 stream_method = getattr(self._sdk().models, "generate_content_stream", None)
                 if callable(stream_method):
-                    from backend.context import request_context
                     from backend.security import action_requested
 
                     context = request_context.get()
-                    stream_text = tools == [] or bool(
-                        context and not action_requested(context.text)
+                    stream_text = self.cfg.streaming and (
+                        tools == [] or bool(context and not action_requested(context.text))
                     )
                     emitted = False
                     last_response = None
@@ -244,29 +255,33 @@ class GeminiClient:
                                     response_deadline.reschedule(
                                         asyncio.get_running_loop().time() + self.cfg.timeout_s
                                     )
-                                    yield ChatChunk(
-                                        content=text,
-                                        stats={"model": response.model_version or self.cfg.model},
-                                    )
-                        if calls and not finished:
+                                    with pause_deadline(response_deadline):
+                                        yield ChatChunk(
+                                            content=text,
+                                            stats={
+                                                "model": response.model_version or self.cfg.model
+                                            },
+                                        )
+                        if not finished:
                             raise LLMError(
-                                "Gemini не завершил вызов инструмента; действия отклонены."
+                                "Gemini не завершил поток; ответ неполный, действия отклонены."
                             )
                         if not emitted and not calls:
                             raise LLMError("Gemini вернул пустой потоковый ответ.")
                         usage = last_response.usage_metadata if last_response else None
                         record("gemini_stream_total", time.perf_counter() - started)
-                        yield ChatChunk(
-                            content="" if stream_text else "".join(buffered_text),
-                            done=True,
-                            tool_calls=calls,
-                            native_parts=native_parts,
-                            stats={
-                                "model": last_response.model_version or self.cfg.model,
-                                "eval_count": getattr(usage, "candidates_token_count", 0),
-                                "prompt_eval_count": getattr(usage, "prompt_token_count", 0),
-                            },
-                        )
+                        with pause_deadline(response_deadline):
+                            yield ChatChunk(
+                                content="" if stream_text else "".join(buffered_text),
+                                done=True,
+                                tool_calls=calls,
+                                native_parts=native_parts,
+                                stats={
+                                    "model": last_response.model_version or self.cfg.model,
+                                    "eval_count": getattr(usage, "candidates_token_count", 0),
+                                    "prompt_eval_count": getattr(usage, "prompt_token_count", 0),
+                                },
+                            )
                     finally:
                         await stream.aclose()
                     return
@@ -452,25 +467,9 @@ class FallbackClient:
             secondary = (
                 self.secondary is not None and self.secondary.cfg.model != self.primary.cfg.model
             )
-            if (
-                secondary
-                and self.primary.cfg.simple_use_fallback_model
-                and context is not None
-                and simple_request(context.text)
-                and tools == []
-                and not after_tool
-            ):
-                # The live plain-query trace waited six seconds on primary before the
-                # configured secondary answered in <2s. Keep the original chain for
-                # complex queries and every pinned tool round; never invent a model.
-                candidates = [self.secondary, self.local]
-                self.switch_reason = "Простой текстовый запрос: настроенная резервная Gemini"
-                if profile := current.get():
-                    profile.update(reason="simple_model_route")
-            else:
-                if secondary:
-                    candidates.append(self.secondary)
-                candidates.append(self.local)
+            if secondary:
+                candidates.append(self.secondary)
+            candidates.append(self.local)
         simple = bool(context and tools == [] and simple_request(context.text) and not after_tool)
         # Bound the entire wait for a first usable result, rather than paying a
         # full timeout for every cloud model. Once text arrives, idle timeout
@@ -522,6 +521,7 @@ class FallbackClient:
                     "llm_attempt",
                     provider=provider,
                     model=model,
+                    requested_model=model,
                     attempt=index + 1,
                     fallback=index > 0,
                 )
@@ -529,14 +529,25 @@ class FallbackClient:
                 else None
             )
             if profile:
-                profile.update(provider=provider, model=model, fallback=index > 0)
+                profile.update(
+                    provider=provider,
+                    model=model,
+                    fallback=bool(profile.info.get("fallback")) or index > 0,
+                )
             self.phase = "switching" if index else "generating"
             self._notify()
 
-            async def attempt(candidate=candidate, cloud=cloud, payload=payload):
+            async def attempt(
+                candidate=candidate,
+                cloud=cloud,
+                payload=payload,
+                profile=profile,
+                interval=interval,
+            ):
                 if not cloud:
                     async for chunk in candidate.chat_stream(payload, tools):
-                        yield chunk
+                        with consumer_wait(interval):
+                            yield chunk
                     return
                 try:
                     first_chunk = True
@@ -551,6 +562,8 @@ class FallbackClient:
                     ) as deadline:
 
                         def progress():
+                            if profile:
+                                profile.end_first(interval)
                             deadline.reschedule(
                                 asyncio.get_running_loop().time()
                                 + max(0.001, cloud_deadline - time.perf_counter())
@@ -568,7 +581,8 @@ class FallbackClient:
                                 elif first_chunk and chunk.tool_calls:
                                     progress()
                                     first_chunk = False
-                                yield chunk
+                                with pause_deadline(deadline, interval):
+                                    yield chunk
                         finally:
                             _wire_progress.reset(progress_token)
                 except TimeoutError:
@@ -581,8 +595,13 @@ class FallbackClient:
                     usable = bool(chunk.content.strip() or chunk.tool_calls)
                     if usable and not emitted:
                         record("provider_first_chunk", time.perf_counter() - attempt_started)
+                        if profile:
+                            profile.end_first(interval)
                         self.last_provider = provider
                         self.last_model = self._model_label(candidate, chunk.stats.get("model"))
+                        if profile:
+                            profile.end_first(interval, model=self.last_model)
+                            profile.update(provider=provider, model=self.last_model)
                         self._using_local |= not cloud
                         self.phase = "generating"
                         self._notify()

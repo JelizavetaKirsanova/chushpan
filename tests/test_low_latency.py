@@ -211,7 +211,7 @@ def test_cloud_outage_has_one_shared_deadline_then_local(repeat):
                     c async for c in chain.chat_stream([{"role": "user", "content": "test"}], [])
                 ]
             assert chunks[-1].content.startswith("Локальный")
-            assert calls == ["gemini-3.5-flash"]
+            assert calls == ["gemini-3.8-flash"]
             assert p.elapsed() < 0.5
             assert chain.last_provider == "ollama" and chain.switch_reason
             assert any(s["metadata"].get("reason") == "timeout" for s in p.stages)
@@ -338,6 +338,10 @@ def test_benchmark_comparison_rejects_mismatched_or_corrupt_runs(tmp_path):
     result = comparison(tmp_path)
     assert result["before"]["summary"]["median_s"] == 1
     assert result["metric"] == "pcm_ready"
+    changed = report(["a", "a"])
+    changed["configuration"] = {"model": "different-model"}
+    (tmp_path / "after-4.json").write_text(json.dumps(changed))
+    assert comparison(tmp_path) is None
 
 
 def test_statistics_separate_revision_kind_outcome_and_playback():

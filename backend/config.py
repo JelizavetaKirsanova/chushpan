@@ -114,6 +114,9 @@ class LLMConfig(BaseModel):
     temperature: float = 0.6
     think: bool = True
     think_for_simple: bool = False  # only a conservative allowlist; complex requests keep think
+    streaming: bool = True
+    first_result_timeout_s: float = Field(default=60, ge=1, le=180)
+    stream_idle_timeout_s: float = Field(default=30, ge=1, le=120)
     num_ctx: int = Field(default=16384, ge=1024)  # persona + tools + conversation + reply
     context_messages: int = 30  # a turn with a tool call takes 4: question, call, result, answer
 
@@ -130,7 +133,11 @@ class GeminiConfig(BaseModel):
     stream_idle_timeout_s: float = Field(default=4, ge=1, le=30)
     first_result_budget_s: float = Field(default=8, ge=1, le=120)
     simple_timeout_s: float = Field(default=3, ge=1, le=30)
-    simple_use_fallback_model: bool = True  # plain requests use configured secondary, then local
+    # Legacy option accepted for old local configs; primary selection always wins.
+    simple_use_fallback_model: bool = False
+    streaming: bool = True
+    thinking_level: Literal["auto", "low", "medium", "high"] = "auto"
+    simple_thinking_level: Literal["low", "medium", "high"] = "low"
     max_output_tokens: int = Field(default=2048, ge=128, le=8192)
     context_messages: int = Field(default=24, ge=0, le=30)
     context_chars: int = Field(default=24000, ge=4000, le=100000)

@@ -53,4 +53,6 @@ def comparison(directory):
         return None
     if before.get("method") != after.get("method"):
         return None
+    if before.get("configuration") != after.get("configuration"):
+        return None
     return {"metric": "pcm_ready", "before": summarize(before), "after": summarize(after)}

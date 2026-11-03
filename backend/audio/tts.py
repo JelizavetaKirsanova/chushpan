@@ -40,7 +40,10 @@ def synthesis_chunks(text: str, limit: int = 450) -> list[str]:
     result = []
     while len(text) > limit:
         cut = text.rfind(" ", 0, limit + 1)
-        cut = cut if cut > 0 else limit
+        if cut <= 0:
+            cut = text.find(" ", limit)
+            if cut < 0:
+                break  # A single long word/name must remain intact.
         result.append(text[:cut])
         text = text[cut:].lstrip()
     if text:

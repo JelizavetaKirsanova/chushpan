@@ -16,7 +16,7 @@ from backend.brain.privacy import redact
 from backend.brain.response_mode import simple_request
 from backend.config import LLMConfig
 from backend.context import request_context
-from backend.latency import current
+from backend.latency import current, pause_deadline
 
 Message = dict[str, Any]
 
@@ -161,19 +161,27 @@ class OllamaClient:
             self._raise_for(info)
             if "vision" not in info.json().get("capabilities", []):
                 raise LLMError("Установленная Ollama-модель не поддерживает изображения.")
-        payload = self._payload(messages, stream=True, tools=tools)
+        payload = self._payload(messages, stream=self.cfg.streaming, tools=tools)
         profile = current.get()
         interval = (
             profile.begin(
-                "llm_transport", provider="ollama", model=self.cfg.model, thinking=payload["think"]
+                "llm_transport",
+                provider="ollama",
+                model=self.cfg.model,
+                thinking=payload["think"],
+                timeout_s=self.cfg.first_result_timeout_s,
             )
             if profile
             else None
         )
         thinking_interval = None
         outcome = "error"
+        completed = False
         try:
-            async with self._client.stream("POST", "/api/chat", json=payload) as resp:
+            async with (
+                asyncio.timeout(self.cfg.first_result_timeout_s) as deadline,
+                self._client.stream("POST", "/api/chat", json=payload) as resp,
+            ):
                 if resp.status_code >= 400:
                     await resp.aread()
                     self._raise_for(resp)
@@ -194,20 +202,38 @@ class OllamaClient:
                     )
                     if profile and (chunk.thinking or chunk.content or chunk.tool_calls):
                         profile.mark("first_llm_token")
+                        profile.end_first(interval)
                         if chunk.thinking and thinking_interval is None:
                             thinking_interval = profile.begin("model_thinking")
                         if chunk.content or chunk.tool_calls:
                             profile.end(thinking_interval)
                             if chunk.content:
                                 profile.mark("first_llm_text")
+                    # Thinking alone cannot extend the first usable-result deadline.
+                    if chunk.content.strip() or chunk.tool_calls or completed:
+                        deadline.reschedule(
+                            asyncio.get_running_loop().time() + self.cfg.stream_idle_timeout_s
+                        )
+                        if profile and (chunk.content.strip() or chunk.tool_calls):
+                            profile.end_first(interval)
                     if chunk.done:
+                        completed = True
                         chunk.stats = {
                             k: v for k, v in data.items() if k.endswith(("count", "duration"))
                         }
                         if chunk.tokens_per_second is not None:
                             chunk.stats["tokens_per_second"] = chunk.tokens_per_second
-                    yield chunk
+                    with pause_deadline(deadline, interval):
+                        yield chunk
+                    if chunk.done:
+                        break
+                if not completed:
+                    raise LLMError("Поток Ollama оборвался: завершение ответа не подтверждено.")
             outcome = "ok"
+        except TimeoutError:
+            raise LLMError(
+                "Ollama не ответила вовремя; запрос отменён без повтора действий."
+            ) from None
         finally:
             if profile:
                 outcome = "cancelled" if asyncio.current_task().cancelling() else outcome

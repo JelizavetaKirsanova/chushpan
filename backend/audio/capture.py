@@ -88,7 +88,17 @@ class Microphone:
                 log.error("ERROR microphone_no_frames restarting_stream")
                 self.stop()
                 self.flush()
-                self.start()
+                # Device removal can outlast one retry. Keep the watchdog alive;
+                # cancellation still interrupts the backoff immediately.
+                for attempt in range(3):
+                    try:
+                        self.start()
+                        break
+                    except Exception:
+                        log.error("ERROR microphone_restart attempt=%d", attempt + 1)
+                        if attempt == 2:
+                            raise
+                        await asyncio.sleep(0.5 * (attempt + 1))
                 log.info("LISTENING_RESUMED microphone_stream")
                 continue
             if generation == self._generation:

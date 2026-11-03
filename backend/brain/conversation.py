@@ -39,7 +39,7 @@ from backend.context import (
     voice_read_followup,
 )
 from backend.dialogue import CONTROLS, normalize
-from backend.latency import Profile, current, measure, record
+from backend.latency import Profile, consumer_wait, current, measure, record
 from backend.local_commands import route as local_route
 from backend.memory.store import MemoryStore
 from backend.music import music_context
@@ -497,7 +497,7 @@ class Conversation:
         Ollama holds a tool call back until it is complete, so a turn that ends up calling
         a tool is silent for seconds; the None lets the caller say "one moment" meanwhile.
         """
-        queue: asyncio.Queue = asyncio.Queue()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=32)
 
         async def pump() -> None:
             started = time.perf_counter()
@@ -514,21 +514,36 @@ class Conversation:
                         profile.update(**chunk.stats)
                     if first_text and chunk.content:
                         record("model_first_text", time.perf_counter() - started)
+                        if profile:
+                            profile.mark("first_llm_text")
                         first_text = False
                     if first and (chunk.content or chunk.tool_calls):
                         record("model_first_chunk", time.perf_counter() - started)
                         first = False
-                    queue.put_nowait(chunk)
+                    if profile:
+                        profile.update(
+                            queue_depth=max(profile.info.get("queue_depth", 0), queue.qsize())
+                        )
+                    if queue.full():
+                        with measure(
+                            "model_output_queue",
+                            queue_depth=queue.qsize(),
+                            reason="tts_backpressure",
+                        ):
+                            with consumer_wait(interval):
+                                await queue.put(chunk)
+                    else:
+                        queue.put_nowait(chunk)
             except Exception as exc:  # noqa: BLE001 - re-raised by the consumer
                 outcome = "error"
-                queue.put_nowait(exc)
+                await queue.put(exc)
                 return
             finally:
                 if profile:
                     profile.end(
                         interval, "cancelled" if asyncio.current_task().cancelling() else outcome
                     )
-            queue.put_nowait(_END)
+            await queue.put(_END)
 
         task = asyncio.create_task(pump())
         deadline = None if quiet_s is None else time.perf_counter() + quiet_s
@@ -1190,6 +1205,7 @@ class Conversation:
         waited = False  # "One moment" already said this turn
         completed = False
         guard_action = action_requested(user_text)
+        failed_tools = False
         try:
             # Not persisted: the model would copy it and greet on every turn.
             if (
@@ -1242,7 +1258,7 @@ class Conversation:
                                 if stats.first_token_s is None:
                                     stats.first_token_s = time.perf_counter() - start
                                 said.append(held)
-                                if not guard_action or round_index > 0:
+                                if not guard_action:
                                     yield held
                                 held = ""
                             calls.extend(chunk.tool_calls)
@@ -1274,7 +1290,7 @@ class Conversation:
                         if stats.first_token_s is None:
                             stats.first_token_s = time.perf_counter() - start
                         said.append(held)
-                        if not guard_action or round_index > 0:
+                        if not guard_action:
                             yield held
                     # Tokens came out but neither text nor a call: Ollama dropped a tool
                     # call it could not parse. Sampling again usually gets it through.
@@ -1315,6 +1331,13 @@ class Conversation:
                         yield said[0]
                         break
                     said = []  # Unverified pre-action narration is never spoken or persisted.
+                elif guard_action:
+                    if calls:
+                        said = []  # Later rounds also cannot announce unexecuted actions.
+                    elif said:
+                        if failed_tools:
+                            said = ["Не вышло: инструмент не подтвердил выполнение действия."]
+                        yield "".join(said)
                 parts.extend(said)
                 if not calls:
                     break
@@ -1355,6 +1378,10 @@ class Conversation:
                 trace.extend(round_)  # only once the results are in: no orphan call
                 said = []  # kept in the call message
                 parsed_results = [json.loads(m["content"]) for m in round_[1:]]
+                failed_tools = any(
+                    isinstance(result, dict) and (result.get("error") or result.get("ok") is False)
+                    for result in parsed_results
+                )
                 pending = next(
                     (
                         result

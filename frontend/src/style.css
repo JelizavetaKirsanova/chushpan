@@ -969,3 +969,9 @@ ul {
     animation: none;
   }
 }
+
+.perf-latency-chart { display:flex; align-items:flex-end; gap:4px; height:150px; overflow-x:auto; padding:12px 0; }
+.perf-latency-bar { display:block; flex:1 0 7px; max-width:28px; min-width:7px; background:var(--accent, #6fb6ac); border-radius:3px 3px 0 0; }
+.perf-latency-bar[data-status="failed"], .perf-latency-bar[data-status="rejected"] { background:#c77d79; }
+.perf-latency-bar[data-status="cancelled"], .perf-latency-bar[data-status="interrupted"] { background:#bda473; }
+.perf-model { padding:12px 0; border-bottom:1px solid var(--border, #ffffff18); }

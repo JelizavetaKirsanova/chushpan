@@ -47,7 +47,9 @@ export class Link {
   historySearch(value: object): void { this.post({type: 'history_search', value}); }
   dashboard(value: object): void { this.post({type: 'dashboard', value}); }
   chat(value: {text: string; speak?: boolean}): void { this.post({type: 'chat_message', value}); }
-  performance(value = 1): void { this.post({type: "performance_stats", value}); }
+  performance(days = 1, filters?: Record<string,string>): void {
+    this.post(filters ? {type: 'performance_query', value: {days, filters}} : {type: 'performance_stats', value: days});
+  }
   trace(value: string): void { this.post({type: "performance_detail", value}); }
   music(value: string): void { this.post({type: "music_settings", value}); }
   dialogue(value: {enabled: boolean; duration_s: number; nameless_interruptions: boolean; addressee_strictness: "contextual" | "addressed"}): void {

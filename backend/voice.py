@@ -266,7 +266,7 @@ async def _reply_aloud(conv, speaker, user_text, min_chars, on_token, on_start) 
 async def _russian_reply_aloud(conv, speaker, user_text, min_chars, on_token, on_start) -> bool:
     from backend.audio.waiting import allow_waiting, trace
 
-    queue = asyncio.Queue()
+    queue = asyncio.Queue(maxsize=32)
     ready = asyncio.Event()
     end = object()
     owner = object()
@@ -285,12 +285,13 @@ async def _russian_reply_aloud(conv, speaker, user_text, min_chars, on_token, on
         try:
             async with contextlib.aclosing(conv.reply(user_text)) as stream:
                 async for piece in stream:
-                    queue.put_nowait(piece)
+                    await queue.put(piece)
                     if piece.strip():
                         ready.set()
         finally:
             ready.set()
-            queue.put_nowait(end)
+            if not asyncio.current_task().cancelling():
+                await queue.put(end)
 
     async def tokens():
         while (piece := await queue.get()) is not end:
@@ -1533,6 +1534,7 @@ class VoiceLoop:
         if store is not None:
             store.performance.attach(profile)
         token = current.set(profile)
+        self._phase("wake_detection")
         status = "rejected"
         start = time.perf_counter()
         try:
@@ -1542,6 +1544,7 @@ class VoiceLoop:
             profile.interval("vad_wait", speech_end, speech_end + self.vad_wait_s)
             with measure("wake_detection", wake_source="whisper"):
                 text = await asyncio.wait_for(self.stt.transcribe(audio), STT_TIMEOUT_S)
+            stt_completed_at = time.perf_counter()
             profile.update(
                 wake_source="whisper",
                 stt_chars=len(text),
@@ -1595,8 +1598,8 @@ class VoiceLoop:
                 return
             profile.update(reason="explicit_address")
             status = "activated"
-            elapsed = time.perf_counter() - start
-            self.wake_detection_s = elapsed
+            elapsed = stt_completed_at - start
+            self.wake_detection_s = time.perf_counter() - start
             buffered = list(self._wake_pending)
             self._wake_pending.clear()
             self._wake_up(None, preserve_input=True)
@@ -1613,6 +1616,7 @@ class VoiceLoop:
                             speech_end,
                             transcript=request,
                             stt_elapsed=elapsed,
+                            stt_completed_at=stt_completed_at,
                             wake_validated=True,
                         )
                     )
@@ -1626,6 +1630,8 @@ class VoiceLoop:
         finally:
             profile.finish("cancelled" if asyncio.current_task().cancelling() else status)
             current.reset(token)
+            if self.state.state is State.SLEEPING:
+                self._phase("idle")
 
     async def _say_by_code(self, user_text: str, signing_off: bool) -> None:
         """Fixed lines for a sign-off or a lone thank-you: the model echoed the sign-off
@@ -1662,6 +1668,7 @@ class VoiceLoop:
         *,
         transcript: str | None = None,
         stt_elapsed: float = 0.0,
+        stt_completed_at: float | None = None,
         session_input: bool = False,
         wake_validated: bool = False,
         from_barge: bool = False,
@@ -1709,8 +1716,9 @@ class VoiceLoop:
                     else "error",
                 )
             else:
-                profile.add("stt", stt_s)
-            profile.mark("stt_completed" if recognized else "stt_failed")
+                end = stt_completed_at or time.perf_counter()
+                profile.interval("stt", end - stt_s, end)
+            profile.mark("stt_completed" if recognized else "stt_failed", at=stt_completed_at)
         self._recognition(text, "recognized")
         log.info("STT_RESULT command chars=%d night=%s", len(text), night_requested(text))
         profile.update(

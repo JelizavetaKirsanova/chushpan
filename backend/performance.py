@@ -38,6 +38,49 @@ def aggregate(rows, metric="first_content_s"):
     }
 
 
+def model_statistics(traces):
+    """Attribute failures and TTFT to each actual attempt, never to the final fallback."""
+    groups = {}
+    for trace in traces:
+        attempts = [s for s in trace["stages"] if s["stage"] == "llm_attempt"]
+        if not attempts:
+            attempts = [s for s in trace["stages"] if s["stage"] == "llm_transport"]
+        for stage in attempts:
+            meta = stage["metadata"]
+            key = (meta.get("provider"), meta.get("model"))
+            if not all(key):
+                continue
+            group = groups.setdefault(key, {"rows": [], "requests": set(), "fallbacks": 0})
+            group["requests"].add(trace["request_id"])
+            group["fallbacks"] += bool(meta.get("fallback"))
+            group["rows"].append(
+                {
+                    "status": "running"
+                    if stage["outcome"] == "running"
+                    else "completed"
+                    if stage["outcome"] == "ok"
+                    else "cancelled"
+                    if stage["outcome"] == "cancelled"
+                    else "failed",
+                    "first_content_s": stage.get("first_result_s"),
+                    "total_s": stage.get("active_s", stage["seconds"]),
+                }
+            )
+    return [
+        {
+            "provider": provider,
+            "model": model,
+            "requests": len(group["requests"]),
+            "attempts": len(group["rows"]),
+            "fallbacks": group["fallbacks"],
+            "first_token": aggregate(group["rows"]),
+            "completion": aggregate(group["rows"], "total_s"),
+            "status": "observed",  # Past successes cannot prove current availability.
+        }
+        for (provider, model), group in groups.items()
+    ]
+
+
 class PerformanceHistory:
     def __init__(self, store):
         self.store, self.bus = store, None
@@ -103,8 +146,8 @@ class PerformanceHistory:
             "status": "unknown" if row["status"] == "running" else row["status"],
         }
 
-    def statistics(self, days, timezone):
-        if days not in {1, 7, 30}:
+    def statistics(self, days, timezone, filters=None):
+        if days not in {0, 1, 7, 30}:
             days = 1
         since = (
             (
@@ -114,6 +157,8 @@ class PerformanceHistory:
             .astimezone(UTC)
             .isoformat()
         )
+        if days == 0:
+            since = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
         rows = [
             dict(r)
             for r in self.store.db.execute(
@@ -123,11 +168,30 @@ class PerformanceHistory:
                 (since,),
             )
         ]
-        recent = []
+        recent, traces = [], []
         for row in rows:
-            row["metadata"] = json.loads(row.pop("data"))["metadata"]
+            trace = json.loads(row.pop("data"))
+            traces.append(trace)
+            row["metadata"] = trace["metadata"]
             if row["status"] == "running" and row["request_id"] not in self.active:
                 row["status"] = "unknown"
+        filters = filters or {}
+
+        def matches(row):
+            return all(
+                not value
+                or (row.get("kind") if key == "kind" else row["metadata"].get(key)) == value
+                for key, value in filters.items()
+                if key in {"kind", "model", "request_class", "input_mode"}
+            )
+
+        options = {
+            key: sorted({str(r["metadata"][key]) for r in rows if r["metadata"].get(key)})
+            for key in ("model", "request_class", "input_mode")
+        }
+        rows = [row for row in rows if matches(row)]
+        selected = {r["request_id"] for r in rows}
+        traces = [t for t in traces if t["request_id"] in selected]
         for row in rows[:100]:
             detail = self.detail(row["request_id"])
             recent.append({**row, "metadata": detail["metadata"] if detail else {}})
@@ -142,6 +206,13 @@ class PerformanceHistory:
         return {
             "type": "performance_stats",
             "days": days,
+            "filters": filters,
+            "filter_options": options,
+            "models": model_statistics(traces),
+            "series": [
+                {k: row[k] for k in ("created_at", "kind", "first_content_s", "total_s", "status")}
+                for row in reversed(rows)
+            ],
             "summary": aggregate(rows),
             "providers": {
                 p: aggregate([r for r in rows if r["provider"] == p])
@@ -202,6 +273,24 @@ class PerformanceHistory:
                 bus.publish({"type": "performance_error", "message": "Трасса недоступна."})
 
         bus.handle("performance_stats", stats)
+
+        def query(value):
+            if not isinstance(value, dict) or type(value.get("days")) is not int:
+                return
+            filters = value.get("filters", {})
+            if not isinstance(filters, dict) or any(
+                k not in {"kind", "model", "request_class", "input_mode"}
+                or not isinstance(v, str)
+                or len(v) > 120
+                for k, v in filters.items()
+            ):
+                return
+            try:
+                bus.publish(self.statistics(value["days"], timezone, filters))
+            except sqlite3.Error:
+                bus.publish({"type": "performance_error", "message": "Диагностика недоступна."})
+
+        bus.handle("performance_query", query)
         bus.handle("performance_detail", detail)
         for profile in self.active.values():
             self.changed(profile)

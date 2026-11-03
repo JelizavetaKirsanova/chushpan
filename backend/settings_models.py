@@ -62,6 +62,14 @@ class Models(Strict):
     fallback: bool = True
     cloud_fallback: Literal["", "gemini-3.5-flash"] = ""
     mode: Literal["fast", "balanced", "quality"] = "balanced"
+    streaming: bool | None = None
+    thinking: Literal["auto", "on", "off"] = "auto"
+    cloud_thinking: Literal["auto", "low", "medium", "high"] = "auto"
+    cloud_timeout_s: float | None = Field(default=None, ge=5, le=120)
+    cloud_first_result_s: float | None = Field(default=None, ge=1, le=120)
+    cloud_idle_s: float | None = Field(default=None, ge=1, le=30)
+    local_first_result_s: float | None = Field(default=None, ge=1, le=180)
+    local_idle_s: float | None = Field(default=None, ge=1, le=120)
 
 
 class Access(Strict):
@@ -152,6 +160,14 @@ def apply_persisted(settings, store):
             "think_for_simple": settings.llm.think_for_simple,
             "simple_timeout_s": settings.gemini.simple_timeout_s,
             "first_result_budget_s": settings.gemini.first_result_budget_s,
+            "local_controls": {
+                name: getattr(settings.llm, name)
+                for name in ("streaming", "first_result_timeout_s", "stream_idle_timeout_s")
+            },
+            "cloud_controls": {
+                name: getattr(settings.gemini, name)
+                for name in ("streaming", "thinking_level", "timeout_s", "stream_idle_timeout_s")
+            },
         }
     if value := store.preference("settings", "models"):
         model = Models.model_validate(value)
@@ -163,6 +179,10 @@ def apply_persisted(settings, store):
         settings.gemini.model = model.cloud_model
         settings.gemini.fallback_model = model.cloud_fallback or None
         base = settings._ui_performance_base
+        for name, value in base["local_controls"].items():
+            setattr(settings.llm, name, value)
+        for name, value in base["cloud_controls"].items():
+            setattr(settings.gemini, name, value)
         settings.llm.think, settings.llm.think_for_simple = base["think"], base["think_for_simple"]
         settings.gemini.simple_timeout_s = base["simple_timeout_s"]
         settings.gemini.first_result_budget_s = base["first_result_budget_s"]
@@ -174,6 +194,24 @@ def apply_persisted(settings, store):
             settings.llm.think = True
             settings.llm.think_for_simple = True
             settings.gemini.first_result_budget_s = settings.gemini.timeout_s
+        if model.streaming is not None:
+            settings.llm.streaming = settings.gemini.streaming = model.streaming
+        if model.thinking != "auto":
+            settings.llm.think = settings.llm.think_for_simple = model.thinking == "on"
+        settings.gemini.thinking_level = model.cloud_thinking
+        for name, selected in (
+            ("timeout_s", model.cloud_timeout_s),
+            ("first_result_budget_s", model.cloud_first_result_s),
+            ("stream_idle_timeout_s", model.cloud_idle_s),
+        ):
+            if selected is not None:
+                setattr(settings.gemini, name, selected)
+        for name, selected in (
+            ("first_result_timeout_s", model.local_first_result_s),
+            ("stream_idle_timeout_s", model.local_idle_s),
+        ):
+            if selected is not None:
+                setattr(settings.llm, name, selected)
     if value := store.preference("settings", "studio"):
         studio = Studio.model_validate(value)
         if settings.tts.engine == "silero":

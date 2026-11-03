@@ -35,6 +35,7 @@ REQUESTS: dict[str, type] = {
     "voice_settings": dict,
     "voice_status": type(None),
     "performance_stats": int,
+    "performance_query": dict,
     "performance_detail": str,
     "automations": dict,
     "settings_center": dict,

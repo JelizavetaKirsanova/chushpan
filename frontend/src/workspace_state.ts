@@ -4,6 +4,8 @@ export const phaseLabels: Record<string, string> = {
   command: "Выполняю команду",
   listening: "Слушаю", waiting: "Короткая реплика ожидания", speaking: "Отвечаю",
   interrupted: "Прерван пользователем",
+  wake_detection: "Проверяю обращение", follow_up_listening: "Слушаю продолжение",
+  error_recovery: "Восстанавливаю прослушивание",
 };
 
 export const recipientLabels = {

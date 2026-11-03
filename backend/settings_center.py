@@ -49,6 +49,13 @@ class SettingsCenter:
                 cloud_model=settings.gemini.model,
                 cloud_fallback=settings.gemini.fallback_model or "",
                 fallback=settings.llm.fallback,
+                streaming=settings.llm.streaming and settings.gemini.streaming,
+                cloud_thinking=settings.gemini.thinking_level,
+                cloud_timeout_s=settings.gemini.timeout_s,
+                cloud_first_result_s=None,  # Empty means the selected processing mode.
+                cloud_idle_s=settings.gemini.stream_idle_timeout_s,
+                local_first_result_s=settings.llm.first_result_timeout_s,
+                local_idle_s=settings.llm.stream_idle_timeout_s,
             ).model_dump(),
             "about": AboutMe(
                 name=settings.user.name or "", address=settings.user.form_of_address or ""
@@ -66,11 +73,12 @@ class SettingsCenter:
         self.publish()
 
     def value(self, category):
-        return (
+        value = (
             self.store.preference("settings", category)
             or self.defaults.get(category)
             or CATEGORIES[category]().model_dump()
         )
+        return {**self.defaults[category], **value} if category == "models" else value
 
     def snapshot(self):
         automations = self.conv.tools.automations

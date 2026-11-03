@@ -233,7 +233,9 @@ def test_responsive_stream_is_not_cut_by_first_chunk_deadline():
             async def chunks():
                 yield response("Начало. ")
                 await asyncio.sleep(0.03)
-                yield response("Продолжение.")
+                final = response("Продолжение.")
+                final.candidates[0].finish_reason = types.FinishReason.STOP
+                yield final
 
             return chunks()
 

@@ -88,3 +88,18 @@ test('voice settings retain selected microphone and explicitly request safe wake
     assert.equal((f.requests.at(-1)!.value as Record<string,unknown>).input_device,5);
   } finally {await f.window.happyDOM.abort();}
 });
+
+test('model form saves streaming, reasoning and optional timeout overrides',async()=>{
+  const f=fixture();try {
+    Object.assign(f.state.values.models,{streaming:true,thinking:'auto',cloud_thinking:'auto',cloud_timeout_s:15,cloud_first_result_s:null,cloud_idle_s:4,local_first_result_s:60,local_idle_s:30});
+    f.view.receive(f.state);f.view.open('models');
+    const form=f.window.document.querySelector('form[data-category="models"]')!;
+    (form.querySelector('[data-field="streaming"]') as unknown as HTMLInputElement).checked=false;
+    (form.querySelector('[data-field="cloud_thinking"]') as unknown as HTMLSelectElement).value='high';
+    (form.querySelector('[data-field="local_first_result_s"]') as unknown as HTMLInputElement).value='90';
+    form.dispatchEvent(new f.window.Event('submit',{cancelable:true}));
+    const values=f.requests.at(-1)!.value as Record<string,unknown>;
+    assert.equal(values.streaming,false);assert.equal(values.cloud_thinking,'high');assert.equal(values.local_first_result_s,90);assert.equal(values.cloud_first_result_s,null);
+    assert.equal(values.cloud_model,f.state.values.models.cloud_model);
+  } finally {await f.window.happyDOM.abort();}
+});
