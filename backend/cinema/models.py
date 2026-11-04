@@ -157,6 +157,14 @@ class Metadata(BaseModel):
     cast: list[str] = Field(default_factory=list, max_length=40)
     vote_count: int = Field(default=0, ge=0)
     enriched: bool = False
+    genre_ids: list[int] = Field(default_factory=list, max_length=30)
+    backdrop_url: str = ""
+    country_names: list[str] = Field(default_factory=list, max_length=100)
+
+    @field_validator("backdrop_url")
+    @classmethod
+    def backdrop(cls, value):
+        return Entry.poster(value)
 
 
 class Preferences(BaseModel):
@@ -176,6 +184,36 @@ class Preferences(BaseModel):
     embedded_playback: bool = True
     allow_browser: bool = True
     personalize: bool = True
+    russian_titles: bool = True
+    hide_animation: bool = True
+    hide_anime: bool = True
+    hide_documentary: bool = False
+    default_sort: Literal["popularity", "rating", "date", "title"] = "popularity"
+    cards_per_row: int = Field(default=0, ge=0, le=8)
+    resume_position: bool = True
+    recommend_ratings: bool = True
+    recommend_favorites: bool = True
+    recommend_history: bool = True
+    catalogue_filters: dict = Field(default_factory=dict)
+
+    @field_validator("catalogue_filters")
+    @classmethod
+    def saved_catalogue_filters(cls, value):
+        keys = {
+            "kind",
+            "genres",
+            "genre_mode",
+            "year",
+            "year_min",
+            "year_max",
+            "rating",
+            "country",
+            "original_language",
+        }
+        if set(value) - keys:
+            raise ValueError("Неизвестная настройка каталога.")
+        clean = CatalogueQuery.model_validate(value)
+        return {key: getattr(clean, key) for key in value}
 
 
 class CatalogueQuery(BaseModel):
@@ -205,10 +243,23 @@ class CatalogueQuery(BaseModel):
     genres: list[str] = Field(default_factory=list, max_length=30)
     genre_mode: Literal["or", "and"] = "or"
     year: int = Field(default=0, ge=0, le=2200)
+    year_min: int = Field(default=0, ge=0, le=2200)
+    year_max: int = Field(default=0, ge=0, le=2200)
+    russian_titles: bool | None = None
+    hide_animation: bool | None = None
+    hide_anime: bool | None = None
+    hide_documentary: bool | None = None
+    relax_restrictions: bool = False
     rating: float = Field(default=0, ge=0, le=10, allow_inf_nan=False)
     country: str = Field(default="", pattern=r"^(?:[A-Z]{2})?$")
     original_language: str = Field(default="", pattern=r"^(?:[a-z]{2})?$")
     sort: Literal["popularity", "rating", "date", "title"] = "popularity"
+
+    @model_validator(mode="after")
+    def years(self):
+        if self.year_min and self.year_max and self.year_min > self.year_max:
+            raise ValueError("Начало диапазона годов не может быть позже конца.")
+        return self
 
     @field_validator("genres")
     @classmethod

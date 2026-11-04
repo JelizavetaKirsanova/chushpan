@@ -14,6 +14,24 @@ def command(text, active=False):
         value = re.sub(r"(?: и (?:включи|покажи))? на телевизоре$", "", value)
     action = None
     if not tv:
+        if value in {"добавь этот фильм в избранное", "добавь этот сериал в избранное"}:
+            return {"action": "favorite"}
+        rating = re.fullmatch(
+            r"поставь (?:этому фильму|этому сериалу) "
+            r"(10|[1-9](?:[.,]5)?|один|два|три|четыре|пять|шесть|семь|восемь|"
+            r"девять|десять)( с половиной)?",
+            value,
+        )
+        if rating:
+            words = {
+                word: i
+                for i, word in enumerate(
+                    "один два три четыре пять шесть семь восемь девять десять".split(), 1
+                )
+            }
+            number = words.get(rating[1]) or float(rating[1].replace(",", "."))
+            number += 0.5 if rating[2] else 0
+            return {"action": "rate", "rating": number} if number <= 10 else None
         find = re.fullmatch(r"найди (?:мне )?где посмотреть (.{1,200})", value)
         if find:
             return {"action": "find_sources", "title": find[1]}

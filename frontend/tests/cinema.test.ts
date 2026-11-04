@@ -11,6 +11,8 @@ function fixture() {
   const code=stripTypeScriptTypes(readFileSync(new URL('../src/cinema.ts',import.meta.url),'utf8'),{mode:'transform'})
     .replace(/^import .*;\n/gm,'').replace(/^export /gm,'')+'\nexports.api={CinemaView,playbackTime,parsePlaybackTime,viewingProgress};';
   const sandbox={exports:{} as Record<string,any>,document:window.document,window,URL:window.URL,icon:()=>'<svg></svg>'};
+  const filters=stripTypeScriptTypes(readFileSync(new URL('../src/cinema_filters.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'');
+  vm.runInNewContext(`{${filters}globalThis.CinemaFilterDrawer=CinemaFilterDrawer;globalThis.activeFilterCount=activeFilterCount;}`,sandbox);
   const catalogue=stripTypeScriptTypes(readFileSync(new URL('../src/cinema_catalogue.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'');
   vm.runInNewContext(`{${catalogue}globalThis.CinemaCatalogueView=CinemaCatalogueView;}`,sandbox);
   for(const [file,cls]of [['cinema_personal','CinemaPersonalView'],['cinema_player','CinemaEmbeddedPlayer']]){
@@ -35,7 +37,7 @@ test('real library data, source setup and offline controls',()=>{
     view.connection(true);
     const event={type:'cinema',items:[],sources:[],history:[],preferences:{watched_threshold:.95,auto_next:false,startup:'continue',poll_seconds:5,devices:{}},devices:[],location:'general',durable:true,session:null,message:''};
     view.receive(event);assert.match(f.window.document.body.textContent??'',/Вечер начинается/);assert.doesNotMatch(f.window.document.body.textContent??'',/Во все тяжкие/);
-    const sourceButton=[...f.window.document.querySelectorAll('button')].find(n=>n.textContent==='Настройки');sourceButton!.click();
+    const sourceButton=[...f.window.document.querySelectorAll('button')].find(n=>n.textContent==='Настройки');sourceButton!.click();button(f,'Источники просмотра').click();
     assert.match(f.window.document.body.textContent??'',/Kinogo/);assert.match(f.window.document.body.textContent??'',/Filmix/);
     view.connection(false);assert.ok([...f.window.document.querySelectorAll('button')].every(n=>n.disabled));
     assert.equal((sent[0] as {op:string}).op,'refresh');
@@ -87,8 +89,8 @@ test('catalogue displays metadata and applies filters in app',()=>{
     view.receive({...snapshot(),matches:[match]});button(f,'Каталог').click();
     assert.match(f.window.document.body.textContent??'',/TMDB Film|триллер|120 мин|8.0/);
     const input=f.window.document.querySelector('.cinema-search input') as HTMLInputElement;input.value='Триллер';input.dispatchEvent(new f.window.Event('input'));
-    const genre=f.window.document.querySelector('input[value=триллер]') as HTMLInputElement;genre.checked=true;genre.dispatchEvent(new f.window.Event('change'));
-    const form=f.window.document.querySelector('.cinema-catalogue-filters')!;form.dispatchEvent(new f.window.Event('submit',{cancelable:true}));
+    f.window.document.querySelector('.cinema-filter-trigger').click();const genre=f.window.document.querySelector('input[value=триллер]') as HTMLInputElement;genre.checked=true;genre.dispatchEvent(new f.window.Event('change'));
+    const form=f.window.document.querySelector('.cinema-filter-drawer form')!;form.dispatchEvent(new f.window.Event('submit',{cancelable:true}));
     assert.equal(sent.at(-1).op,'catalogue_page');assert.equal(sent.at(-1).filters.query,'Триллер');assert.deepEqual(Array.from(sent.at(-1).filters.genres),['триллер']);
     view.receive({...snapshot(),catalogue_page:{request_id:sent.at(-1).request_id,page:1,items:[match],next_page:null,total_pages:1}});button(f,'Хочу посмотреть').click(); // tab; catalogue quick action is found explicitly below
     button(f,'Каталог').click();const quick=[...f.window.document.querySelectorAll('.cinema-card button')].find((n:any)=>n.textContent==='Хочу посмотреть') as HTMLButtonElement;quick.click();assert.equal(sent.at(-1).op,'catalogue_add');
@@ -183,8 +185,8 @@ test('personal shelves explain recommendations and persist dismiss, watched and 
 test('source URL alone auto-detects official API and settings expose playback and personalization choices',()=>{
   const f=fixture();try{
     const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);view.receive(snapshot());button(f,'Настройки').click();
-    assert.match(f.window.document.querySelector('.cinema-content')!.textContent,/Источники просмотра|Сбросить рекомендательный профиль/);
-    button(f,'+ Добавить источник').click();const address=f.window.document.querySelector('dialog [aria-label="Адрес сайта"]');address.value='https://archive.org';
+    assert.match(f.window.document.querySelector('.cinema-content')!.textContent,/Настройки медиатеки|Скрывать аниме/);
+    button(f,'Источники просмотра').click();button(f,'+ Добавить источник').click();const address=f.window.document.querySelector('dialog [aria-label="Адрес сайта"]');address.value='https://archive.org';
     f.window.document.querySelector('dialog form')!.dispatchEvent(new f.window.Event('submit',{cancelable:true}));const source=sent.at(-1).source;assert.equal(source.name,'archive.org');assert.equal(source.search_mode,'archive');assert.equal(source.adapter,'manual');
   }finally{f.window.happyDOM.abort();}
 });
@@ -209,5 +211,47 @@ test('embedded video persists across snapshots and confirms only advancing playb
     video.currentTime=30.3;video.dispatchEvent(new f.window.Event('timeupdate'));assert.equal(sent.at(-1).event,'playing');assert.equal(sent.at(-1).token,'random');
     view.receive(initial);assert.equal(f.window.document.querySelector('video'),video);
     button(f,'Сохранить и закрыть плеер').click();assert.equal(sent.at(-1).event,'close');assert.equal(f.window.document.querySelector('video'),null);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('media settings separate sites from technical TMDB credentials and expose persistent catalogue policy',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);view.receive(snapshot());button(f,'Настройки').click();
+    const russian=f.window.document.querySelector('[aria-label="Только названия на русском"]');assert.equal(russian.checked,true);
+    russian.checked=false;const sort=f.window.document.querySelector('[aria-label="Сортировка по умолчанию"]');sort.value='title';
+    f.window.document.querySelector('.cinema-preference-card form').dispatchEvent(new f.window.Event('submit',{cancelable:true}));assert.equal(sent.at(-1).values.russian_titles,false);assert.equal(sent.at(-1).values.default_sort,'title');
+    button(f,'Источники просмотра').click();assert.equal(f.window.document.querySelector('input[type=password]'),null);assert.doesNotMatch(f.window.document.querySelector('.cinema-settings-pane').textContent,/Интеграция TMDB|API-ключ/);
+    f.window.document.dispatchEvent(new f.window.Event('cinema:integration'));assert.equal(f.window.document.querySelector('input[type=password]').value,'');assert.match(f.window.document.querySelector('.cinema-content').textContent,/Интеграция TMDB/);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('rating modal saves half stars and a note without changing favorite or watch status',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const item={...movie('Фильм','watched'),favorite:1,user_rating:8,user_note:'Прежняя заметка'};view.receive(snapshot([item]));button(f,'Просмотрено').click();button(f,'Фильм').click();
+    f.window.document.querySelector('[aria-label="Оценить фильм"]').click();const note=f.window.document.querySelector('dialog textarea');assert.equal(note.value,'Прежняя заметка');note.value='Сильный финал';
+    const radio=f.window.document.querySelector('[aria-label="9.5 из 10"]');radio.checked=true;radio.dispatchEvent(new f.window.Event('change'));assert.equal(f.window.document.querySelector('dialog output').textContent,'9.5');
+    f.window.document.querySelector('dialog form').dispatchEvent(new f.window.Event('submit',{cancelable:true}));assert.equal(sent.at(-1).values.user_rating,9.5);assert.equal(sent.at(-1).values.user_note,'Сильный финал');assert.equal(sent.at(-1).values.favorite,undefined);assert.equal(sent.at(-1).values.status,undefined);
+    view.receive({...snapshot([{...item,user_rating:9.5,user_note:'Сильный финал'}]),saved:item.id});assert.ok(f.window.document.querySelector('.cinema-rich-dialog'));assert.match(f.window.document.querySelector('dialog .cinema-ratings').textContent,/TMDB: 8.0.*Моя оценка: 9.5/);
+    button(f,'О фильме').click();assert.match(f.window.document.querySelector('.cinema-rich-info').textContent,/Сильный финал/);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('outdated title details cannot override a newer choice or reopen a closed dialog',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);view.receive(snapshot());button(f,'Каталог').click();const request=sent.filter(v=>v.op==='catalogue_page').at(-1);
+    const a={...movie('Первый','planned'),catalogue_key:'tmdb:movie:1'};const b={...movie('Второй','planned'),catalogue_key:'tmdb:movie:2'};
+    view.receive({...snapshot(),catalogue_page:{request_id:request.request_id,page:1,items:[a,b],next_page:null,total_pages:1}});button(f,'Первый').click();button(f,'Второй').click();
+    view.receive({...snapshot(),catalogue_detail:a});assert.equal(f.window.document.querySelector('dialog'),null);view.receive({...snapshot(),catalogue_detail:b});assert.match(f.window.document.querySelector('dialog').textContent,/Второй/);
+    f.window.document.querySelector('[aria-label="Закрыть"]').click();view.receive({...snapshot(),catalogue_detail:b});assert.equal(f.window.document.querySelector('dialog'),null);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('import is reviewed before confirmation and native export acknowledges actual save',async()=>{
+  const f=fixture();try{
+    const sent:any[]=[];let exported:any=null;Object.defineProperty(f.window,'pywebview',{value:{api:{save_cinema_library:async(document:any)=>{exported=document;return {ok:true};}}}});
+    const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);view.receive(snapshot());view.receive({...snapshot(),library_import_preview:{token:'proposal',titles:10,sources:2,events:30,existing:1}});
+    assert.ok(!sent.some(v=>v.op==='library_import'));assert.match(f.window.document.querySelector('dialog').textContent,/10 названий|Существующие оценки/);button(f,'Импортировать').click();assert.equal(sent.at(-1).token,'proposal');
+    view.receive({...snapshot(),library_imported:{added:9,preserved:1}});assert.equal(f.window.document.querySelector('dialog'),null);
+    const document={schema:'chushpan.cinema'};view.receive({...snapshot(),library_export:document});await new Promise(resolve=>setTimeout(resolve,0));assert.equal(exported,document);assert.match(f.window.document.querySelector('.cinema-feedback').textContent,/сохранена/);
   }finally{f.window.happyDOM.abort();}
 });

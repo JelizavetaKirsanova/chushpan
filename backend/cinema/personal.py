@@ -5,6 +5,7 @@ import math
 import re
 from collections import Counter, defaultdict
 
+from backend.cinema.filters import allowed, with_preferences
 from backend.cinema.models import CatalogueQuery
 from backend.tools.registry import ToolError
 
@@ -47,18 +48,23 @@ def features(item):
     return result
 
 
-def signal(item, reset_at=""):
-    rating = item.get("user_rating")
+def signal(item, reset_at="", prefs=None):
+    rating = item.get("user_rating") if prefs is None or prefs.recommend_ratings else None
     updated = item.get("library_updated_at") or item.get("updated_at") or ""
     if reset_at and (item.get("rating_updated_at") or "") <= reset_at:
         rating = None
     value = (rating - 6) / 2 if rating is not None else 0.0
     favorite_at = item.get("favorite_added_at") or updated
-    if item.get("favorite") and (not reset_at or favorite_at > reset_at):
+    if (
+        item.get("favorite")
+        and (prefs is None or prefs.recommend_favorites)
+        and (not reset_at or favorite_at > reset_at)
+    ):
         value += 1.5
     viewed = (item.get("current") or {}).get("last_viewed") or updated
     if (
         rating is None
+        and (prefs is None or prefs.recommend_history)
         and item.get("status") in {"watching", "watched"}
         and (not reset_at or viewed > reset_at)
     ):
@@ -66,11 +72,11 @@ def signal(item, reset_at=""):
     return max(-3.0, min(3.0, value))
 
 
-def taste(items, reset_at=""):
+def taste(items, reset_at="", prefs=None):
     weights, evidence = defaultdict(float), Counter()
     samples = 0
     for item in items:
-        strength = signal(item, reset_at)
+        strength = signal(item, reset_at, prefs)
         if not strength:
             continue
         samples += 1
@@ -185,12 +191,16 @@ class Recommender:
     async def recommendations(self, library, state, prefs, *, mood="any", ready=(), genre=""):
         if mood not in MOODS:
             raise ValueError("Выбери настроение из списка.")
-        weights, samples = taste(library, state["reset_at"]) if prefs.personalize else ({}, 0)
+        weights, samples = (
+            taste(library, state["reset_at"], prefs) if prefs.personalize else ({}, 0)
+        )
         seeds = [
             i["catalogue_key"]
-            for i in sorted(library, key=lambda i: signal(i, state["reset_at"]), reverse=True)
+            for i in sorted(
+                library, key=lambda i: signal(i, state["reset_at"], prefs), reverse=True
+            )
             if prefs.personalize
-            and signal(i, state["reset_at"]) >= 1
+            and signal(i, state["reset_at"], prefs) >= 1
             and i.get("catalogue_key", "").startswith("tmdb:")
         ][:2]
         requests = [
@@ -201,7 +211,8 @@ class Recommender:
         if genre or MOODS[mood]:
             requests.append(CatalogueQuery(genre=genre or MOODS[mood], sort="rating"))
         pages = await asyncio.gather(
-            *(self.catalogue.page(q, seeds=seeds) for q in requests), return_exceptions=True
+            *(self.catalogue.page(with_preferences(q, prefs), seeds=seeds) for q in requests),
+            return_exceptions=True,
         )
         candidates, errors = {}, []
         for page in pages:
@@ -226,6 +237,7 @@ class Recommender:
             i
             for key, i in candidates.items()
             if key not in excluded_keys | dismissed
+            and allowed(i, prefs)
             and not any(
                 (i["kind"], normalized(i["title"]), year) in excluded_names
                 for year in (i["year"], 0)
@@ -261,6 +273,7 @@ class Recommender:
             for i in [*rich, *[i for i in candidates if i["catalogue_key"] not in rich_keys]]
         ]
         ranked.sort(key=lambda i: (-i["recommendation_score"], i["title"]))
+        ranked = [i for i in ranked if allowed(i, prefs)]
         if genre:
             ranked = [
                 i
@@ -298,17 +311,22 @@ class Recommender:
             "now": [i for i in ranked if i["catalogue_key"] in ready],
         }
         shelves = list(SHELVES)
-        if prefs.recommendations_show_watched:
-            pools["rewatch"] = sorted(
-                [
-                    {**i, "library_id": i["id"]}
-                    for i in library
-                    if i["status"] == "watched" and (i.get("user_rating") or 0) >= 7
-                ],
-                key=lambda i: i["user_rating"],
-                reverse=True,
-            )
-            shelves.append(("rewatch", "Для повторного просмотра"))
+        pools["rewatch"] = sorted(
+            [
+                {**i, "library_id": i["id"]}
+                for i in library
+                if i["status"] == "watched"
+                and allowed(i, prefs)
+                and (
+                    i.get("favorite")
+                    or (i.get("user_rating") or 0)
+                    >= (7 if prefs.recommendations_show_watched else 8)
+                )
+            ],
+            key=lambda i: i.get("user_rating") or 0,
+            reverse=True,
+        )
+        shelves.append(("rewatch", "Пересмотреть любимое"))
         return {
             "samples": samples,
             "personalized": bool(samples),

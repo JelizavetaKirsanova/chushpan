@@ -151,7 +151,7 @@ class HTML5Adapter:
                     }
                 await asyncio.sleep(0.5)
         position = target["episode"]["position"]
-        if position:
+        if position or target.get("restart"):
             await self.control("seek", position)
         return await self.control("play")
 

@@ -156,6 +156,7 @@ async def check(module, screenshot, chromium=None, catalogue=False, personal=Fal
                     "release_date": "2025-01-01",
                     "first_air_date": "2025-01-01",
                     "poster_path": f"/fixture{i}.jpg",
+                    "backdrop_path": f"/fixture{i}.jpg",
                     "original_language": "en",
                     "genre_ids": [53, 878, 35],
                     "vote_average": 7 + i / 20,

@@ -365,6 +365,7 @@ def test_paged_hud_keeps_local_statuses_and_recommendations_follow_preferences(t
         )
         await service.db("update_title", watched["id"], {"status": "watched", "user_rating": 9})
         before = await service.db("library")
+        await service.db("configure", {"russian_titles": False})
         await service.handle(
             {"op": "catalogue_page", "request_id": "one", "filters": {"feed": "recommended"}}
         )

@@ -5,6 +5,7 @@ import time
 from collections import OrderedDict
 from datetime import UTC, datetime, timedelta
 
+from backend.cinema.filters import allowed
 from backend.cinema.models import CatalogueQuery
 
 FEEDS = [
@@ -106,17 +107,31 @@ class Catalogue:
                 if raw.get("adult") or raw.get("media_type", kind) != kind:
                     continue
                 row = raw
+                preview = self.tmdb.metadata(row, kind, genres)
+                if not allowed(preview, q):
+                    continue
                 # Search doesn't expose movie countries. Resolve just this bounded page
                 # when that filter is selected; detail calls share the same rate/cache.
                 if (
                     q.country
                     and not endpoint.startswith("discover/")
                     and not raw.get("origin_country")
+                ) or (
+                    q.hide_anime
+                    and not q.hide_animation
+                    and not (q.query and q.relax_restrictions)
+                    and 16 in preview["metadata"].get("genre_ids", [])
+                    and not raw.get("origin_country")
                 ):
-                    row = {**raw, **await self.tmdb.get(f"{kind}/{raw['id']}")}
+                    row = {
+                        **raw,
+                        **await self.tmdb.get(f"{kind}/{raw['id']}", append_to_response="keywords"),
+                    }
                 if not self.matches(row, q, kind, genre, endpoint.startswith("discover/")):
                     continue
-                rows.append(self.tmdb.metadata(row, kind, genres))
+                item = self.tmdb.metadata(row, kind, genres)
+                if allowed(item, q):
+                    rows.append(item)
             pages = min(500, max(0, int(data.get("total_pages", 1))))
             total = int(data.get("total_results", len(rows)))
             self.page_counts[count_key] = (time.monotonic() + 900, pages, total)
@@ -149,7 +164,15 @@ class Catalogue:
             "total_results": sum(g[2] for g in groups),
             "next_page": q.page + 1 if q.page < pages else None,
             "sort_scope": "page" if local_filters or len(targets) > 1 else "global",
-            "filtered_total": not (q.query or personalized or excluded),
+            "filtered_total": not (
+                q.query
+                or personalized
+                or excluded
+                or q.russian_titles
+                or q.hide_animation
+                or q.hide_anime
+                or q.hide_documentary
+            ),
             "message": "На основе твоих оценок, избранного и истории."
             if personalized
             else "Пока мало истории: показываю лучшие по рейтингу. "
@@ -212,6 +235,15 @@ class Catalogue:
                 params["primary_release_year" if kind == "movie" else "first_air_date_year"] = (
                     q.year
                 )
+            date_key = "primary_release_date" if kind == "movie" else "first_air_date"
+            if q.year_min:
+                params[f"{date_key}.gte"] = f"{q.year_min}-01-01"
+            if q.year_max:
+                params[f"{date_key}.lte"] = f"{q.year_max}-12-31"
+            if not (q.query and q.relax_restrictions):
+                blocked = ([16] if q.hide_animation else []) + ([99] if q.hide_documentary else [])
+                if blocked:
+                    params["without_genres"] = ",".join(map(str, blocked))
             if q.country:
                 params["with_origin_country"] = q.country
             if q.original_language:
@@ -219,11 +251,14 @@ class Catalogue:
             if q.feed in {"new", "upcoming"}:
                 date = "primary_release_date" if kind == "movie" else "first_air_date"
                 if q.feed == "new":
-                    params[f"{date}.gte"] = str(self.today() - timedelta(days=90))
-                    params[f"{date}.lte"] = str(self.today())
+                    lower, upper = str(self.today() - timedelta(days=90)), str(self.today())
                 else:
-                    params[f"{date}.gte"] = str(self.today() + timedelta(days=1))
-                    params[f"{date}.lte"] = str(self.today() + timedelta(days=365))
+                    lower, upper = (
+                        str(self.today() + timedelta(days=1)),
+                        str(self.today() + timedelta(days=365)),
+                    )
+                params[f"{date}.gte"] = max(lower, params.get(f"{date}.gte", lower))
+                params[f"{date}.lte"] = min(upper, params.get(f"{date}.lte", upper))
         return params
 
     @staticmethod
@@ -241,6 +276,9 @@ class Catalogue:
             return False
         date = row.get("release_date" if kind == "movie" else "first_air_date") or ""
         if q.year and date[:4] != str(q.year):
+            return False
+        year = int(date[:4]) if date[:4].isdigit() else 0
+        if (q.year_min and year < q.year_min) or (q.year_max and (not year or year > q.year_max)):
             return False
         countries = row.get("origin_country") or [
             c["iso_3166_1"] for c in row.get("production_countries", [])

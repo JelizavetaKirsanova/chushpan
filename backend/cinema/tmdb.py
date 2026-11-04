@@ -249,6 +249,13 @@ class TMDB:
                     dict.fromkeys(c["name"] for c in row.get("credits", {}).get("cast", []))
                 )[:40],
                 "enriched": "credits" in row and "keywords" in row,
+                "genre_ids": row.get("genre_ids") or [g["id"] for g in row.get("genres", [])],
+                "backdrop_url": "https://image.tmdb.org/t/p/w1280" + row["backdrop_path"]
+                if re.fullmatch(r"/[\w.]+", row.get("backdrop_path") or "")
+                else "",
+                "country_names": [
+                    c["name"] for c in row.get("production_countries", []) if c.get("name")
+                ],
             },
         }
 

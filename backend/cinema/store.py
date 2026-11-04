@@ -7,6 +7,7 @@ import json
 import math
 import re
 import sqlite3
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -89,6 +90,10 @@ MIGRATIONS = [
       status TEXT NOT NULL, checked_at TEXT NOT NULL, playable INTEGER NOT NULL DEFAULT 0);
     ALTER TABLE cinema_history ADD COLUMN source_label TEXT NOT NULL DEFAULT '';
     """,
+    """
+    ALTER TABLE cinema_library ADD COLUMN user_note TEXT NOT NULL DEFAULT '';
+    CREATE INDEX cinema_import_history ON cinema_history(episode_id,created_at);
+    """,
 ]
 
 
@@ -100,6 +105,7 @@ class CinemaStore:
     def __init__(self, path):
         self.db = sqlite3.connect(str(path), check_same_thread=False, timeout=3)
         self.db.row_factory = sqlite3.Row
+        self._transaction_depth = 0
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute(
@@ -121,6 +127,39 @@ class CinemaStore:
     def close(self):
         self.db.close()
 
+    @contextmanager
+    def transaction(self):
+        if self._transaction_depth:
+            yield
+            return
+        self._transaction_depth += 1
+        try:
+            with self.db:
+                yield
+        finally:
+            self._transaction_depth -= 1
+
+    def export_library(self):
+        from backend.cinema.transfer import export_library
+
+        return export_library(self)
+
+    def import_library(self, document):
+        from backend.cinema.transfer import import_library
+
+        return import_library(self, document)
+
+    def import_preview(self, document):
+        from backend.cinema.transfer import validate_document
+
+        data = validate_document(document)
+        return {
+            "titles": len(data["items"]),
+            "sources": len(data["sources"]),
+            "events": len(data["history"]),
+            "existing": len(self.library()),
+        }
+
     def preferences(self):
         row = self.db.execute(
             "SELECT value FROM cinema_settings WHERE key='preferences'"
@@ -129,7 +168,7 @@ class CinemaStore:
 
     def configure(self, values):
         prefs = Preferences.model_validate({**self.preferences().model_dump(), **values})
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "INSERT OR REPLACE INTO cinema_settings VALUES ('preferences',?)",
                 (prefs.model_dump_json(),),
@@ -170,7 +209,7 @@ class CinemaStore:
             raise ValueError(
                 "Добавь другой сайт как новый источник, чтобы сохранить старые ссылки."
             )
-        with self.db:
+        with self.transaction():
             if source.preferred:
                 for existing in self.sources():
                     if existing["preferred"] and existing["id"] != source.id:
@@ -194,7 +233,7 @@ class CinemaStore:
             raise ValueError("Нужен полный список источников.")
         if len(identifiers) != len(set(identifiers)):
             raise ValueError("Повторный источник.")
-        with self.db:
+        with self.transaction():
             for priority, identifier in enumerate(identifiers):
                 source = self.source(identifier)
                 source.priority = priority
@@ -205,7 +244,7 @@ class CinemaStore:
 
     def delete_source(self, identifier):
         source = self.source(identifier)
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "UPDATE cinema_history SET source_label=? WHERE link_id IN "
                 "(SELECT id FROM cinema_links WHERE source_id=?)",
@@ -231,7 +270,7 @@ class CinemaStore:
         self.source(identifier)
         if status not in {"available", "unavailable", "restricted", "unknown"}:
             raise ValueError("Неверный статус источника.")
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "INSERT INTO cinema_source_health"
                 "(source_id,status,checked_at,last_success,reason,successes) "
@@ -258,7 +297,7 @@ class CinemaStore:
         link = next((link for link in ep["links"] if link["id"] == link_id), None)
         if link_id and (not link or link["source_id"] != source_id):
             raise ValueError("Источник и ссылка не совпадают.")
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "INSERT INTO cinema_source_memory"
                 "(title_id,last_source_id,page_url,episode_id,updated_at) "
@@ -284,26 +323,26 @@ class CinemaStore:
     def feedback(self, key):
         if not isinstance(key, str) or len(key) > 160:
             raise ValueError("Неверное название рекомендации.")
-        with self.db:
+        with self.transaction():
             self.db.execute("INSERT OR REPLACE INTO cinema_feedback VALUES (?,?)", (key, now()))
 
     def unpin_source(self, title_id):
         self.title(title_id)
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "UPDATE cinema_source_memory SET pinned_source_id=NULL WHERE title_id=?",
                 (title_id,),
             )
 
     def link_check(self, link_id, status, playable=False):
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "INSERT OR REPLACE INTO cinema_link_checks VALUES (?,?,?,?)",
                 (link_id, status, now(), bool(playable)),
             )
 
     def reset_recommendations(self):
-        with self.db:
+        with self.transaction():
             self.db.execute("DELETE FROM cinema_feedback")
             self.db.execute(
                 "INSERT OR REPLACE INTO cinema_settings VALUES ('recommendation_reset_at',?)",
@@ -383,7 +422,7 @@ class CinemaStore:
             elif entry.url.startswith("/") or origin(entry.url) != origin(source.base_url):
                 raise ValueError("Страница должна принадлежать выбранному источнику.")
         identity = f"{entry.kind}:{entry.year}:" + re.sub(r"[\W_]+", "", entry.title.casefold())
-        with self.db:
+        with self.transaction():
             row = self.db.execute(
                 "SELECT id FROM cinema_titles WHERE catalogue_key!='' AND catalogue_key=?",
                 (entry.catalogue_key,),
@@ -468,7 +507,7 @@ class CinemaStore:
     def title(self, identifier):
         row = self.db.execute(
             "SELECT t.*,u.status AS user_status,u.favorite AS user_favorite,"
-            "u.user_rating,u.completed_at,u.added_at,u.favorite_added_at,"
+            "u.user_rating,u.user_note,u.completed_at,u.added_at,u.favorite_added_at,"
             "u.updated_at AS library_updated_at FROM cinema_titles t "
             "JOIN cinema_library u ON u.title_id=t.id WHERE t.id=?",
             (identifier,),
@@ -494,7 +533,7 @@ class CinemaStore:
 
     def delete(self, identifier):
         self.title(identifier)
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "DELETE FROM cinema_history WHERE episode_id IN "
                 "(SELECT id FROM cinema_episodes WHERE title_id=?)",
@@ -504,7 +543,7 @@ class CinemaStore:
 
     def replay(self, identifier):
         self.title(identifier)
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "UPDATE cinema_episodes SET position=0,watched=0 WHERE title_id=?", (identifier,)
             )
@@ -518,7 +557,7 @@ class CinemaStore:
         item = self.title(identifier)
         if item["kind"] != "series":
             raise ValueError("Сезоны доступны только сериалам.")
-        with self.db:
+        with self.transaction():
             for ep in episodes:
                 entry = Entry(title=item["title"], season=ep["season"], episode=ep["episode"])
                 self.db.execute(
@@ -663,12 +702,16 @@ class CinemaStore:
 
     def update_title(self, identifier, values):
         self.title(identifier)
-        if set(values) - {"status", "favorite", "user_rating"} or not values:
+        if set(values) - {"status", "favorite", "user_rating", "user_note"} or not values:
             raise ValueError("Нельзя изменить эти поля.")
         if "status" in values and values["status"] not in {"watching", "planned", "watched"}:
             raise ValueError("Неизвестный статус.")
         if "favorite" in values and type(values["favorite"]) is not bool:
             raise ValueError("Избранное должно быть логическим значением.")
+        if "user_note" in values and (
+            not isinstance(values["user_note"], str) or len(values["user_note"]) > 2000
+        ):
+            raise ValueError("Заметка должна быть текстом до 2000 символов.")
         if (
             "user_rating" in values
             and values["user_rating"] is not None
@@ -680,7 +723,7 @@ class CinemaStore:
             )
         ):
             raise ValueError("Оценка должна быть от 1 до 10 с шагом 0.5.")
-        with self.db:
+        with self.transaction():
             if "user_rating" in values:
                 previous = self.title(identifier).get("user_rating")
                 if previous != values["user_rating"]:
@@ -720,7 +763,7 @@ class CinemaStore:
         ).fetchone()
         if not row:
             raise ValueError("Серия и источник не совпадают.")
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "UPDATE cinema_episodes SET last_link_id=? WHERE id=?", (link_id, episode_id)
             )
@@ -774,7 +817,7 @@ class CinemaStore:
             (watched or completed) if watched is not None else (completed or bool(ep["watched"]))
         )
         stamp = now()
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "UPDATE cinema_episodes SET position=?,duration=?,watched=?,last_viewed=?,"
                 "last_link_id=COALESCE(?,last_link_id) WHERE id=?",

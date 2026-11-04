@@ -165,7 +165,9 @@ def test_service_hud_search_add_and_secret_never_enters_snapshot(tmp_path):
         service = Cinema(registry, Settings(data_dir=tmp_path / "data"), memory, tmdb=api)
         bus = HudBus()
         service.bind(bus, SimpleNamespace(device=DeviceContext.local_mac()))
-        await service.handle({"op": "search", "query": "Film", "kind": "movie"})
+        await service.handle(
+            {"op": "search", "query": "Film", "kind": "movie", "relax_restrictions": True}
+        )
         snapshot = next(v for v in bus.snapshot() if v["type"] == "cinema")
         assert snapshot["matches"][0]["title"] == "Film"
         assert "a" * 32 not in json.dumps(snapshot)

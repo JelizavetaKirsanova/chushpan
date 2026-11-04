@@ -104,12 +104,25 @@ def test_recommendations_exclude_watched_dismissals_and_offer_six_explained_shel
             Preferences(),
             ready={available["catalogue_key"]},
         )
-        assert len(result["shelves"]) == 6
-        keys = {i["catalogue_key"] for shelf in result["shelves"] for i in shelf["items"]}
+        assert len(result["shelves"]) == 7
+        keys = {
+            i["catalogue_key"]
+            for shelf in result["shelves"]
+            if shelf["id"] != "rewatch"
+            for i in shelf["items"]
+        }
         assert watched["catalogue_key"] not in keys
         assert candidate["catalogue_key"] not in keys and dismissed["catalogue_key"] not in keys
-        assert result["shelves"][-1]["items"][0]["title"] == available["title"]
-        assert all(i["reason"] for shelf in result["shelves"] for i in shelf["items"])
+        assert (
+            next(shelf for shelf in result["shelves"] if shelf["id"] == "now")["items"][0]["title"]
+            == available["title"]
+        )
+        assert all(
+            i["reason"]
+            for shelf in result["shelves"]
+            if shelf["id"] != "rewatch"
+            for i in shelf["items"]
+        )
         assert all(
             len({i["catalogue_key"] for i in shelf["items"]}) == len(shelf["items"])
             for shelf in result["shelves"]

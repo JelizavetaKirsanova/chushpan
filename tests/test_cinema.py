@@ -608,6 +608,11 @@ def test_last_series_and_genre_requests_never_reach_llm_and_reuse_last_source(tm
             },
         )
         episode = item["episodes"][0]
+
+        async def genre_page(query, **kwargs):
+            return {"items": await service.tmdb.search(genre=query.genre, kind=query.kind)}
+
+        service.catalogue.page = genre_page
         preferred = episode["links"][-1]
         service.sources.http = HTTP()
         await service.db("progress", episode["id"], 66, 1000, "manual", preferred["id"])

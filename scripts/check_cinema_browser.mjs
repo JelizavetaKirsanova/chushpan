@@ -21,13 +21,13 @@ for await(const line of createInterface({input:process.stdin})) {
       if(request.screenshot)await hud.screenshot({path:request.screenshot,fullPage:true});
       await hud.locator('.cinema-content .cinema-title').first().click();
       await hud.locator('dialog[open]').waitFor();
-      await hud.locator('dialog[open] select').first().selectOption('1');
+      await hud.getByLabel('Сезон',{exact:true}).selectOption('1');
       await hud.getByRole('button',{name:'Закрыть',exact:true}).click();
       await hud.getByRole('button',{name:'Просмотрено',exact:true}).click();
       await hud.locator('summary').filter({hasText:'Журнал просмотра'}).click();
       await hud.locator('.cinema-history article').first().waitFor();
       await hud.locator('#cinema-root').getByRole('button',{name:'Настройки',exact:true}).click();
-      await hud.getByRole('heading',{name:'Локальный HTML5',exact:true}).waitFor();
+      await hud.getByRole('button',{name:'Источники просмотра',exact:true}).click();await hud.getByRole('heading',{name:'Локальный HTML5',exact:true}).waitFor();
       await hud.setViewportSize({width:720,height:900});
       const overflow=await hud.evaluate(()=>document.documentElement.scrollWidth>innerWidth);
       if(overflow)throw Error('Cinema UI overflows the viewport');
@@ -38,9 +38,9 @@ for await(const line of createInterface({input:process.stdin})) {
       const hud=await context.newPage();const errors=[];hud.on('pageerror',error=>errors.push(error.message));
       await hud.route('https://image.tmdb.org/**',route=>{const id=Number(route.request().url().match(/fixture(\d+)/)?.[1]??1);const colors=['#513450','#293d59','#61432b','#364b43'];const color=colors[id%colors.length];return route.fulfill({contentType:'image/svg+xml',body:`<svg xmlns="http://www.w3.org/2000/svg" width="400" height="600"><defs><linearGradient id="g" x2="1" y2="1"><stop stop-color="${color}"/><stop offset="1" stop-color="#15101e"/></linearGradient></defs><rect width="400" height="600" fill="url(#g)"/><circle cx="210" cy="240" r="135" fill="#f0d7b5" opacity=".09"/><path d="M0 500 175 240 400 580V600H0" fill="#080b18" opacity=".6"/><text x="35" y="510" font-family="Arial" font-size="32" fill="#e8deef">STORY ${id}</text></svg>`});});
       await hud.addInitScript(()=>{window.__catalogueRequests=[];const send=WebSocket.prototype.send;WebSocket.prototype.send=function(value){try{const v=JSON.parse(value);if(v.type==='cinema'&&v.value?.op==='catalogue_page')window.__catalogueRequests.push(v.value);}catch{}return send.call(this,value);};});
-      await hud.goto(request.url);await hud.locator('.workspace-nav [data-view=cinema]').click();await hud.getByRole('button',{name:'Каталог',exact:true}).click();
+      await hud.goto(request.url);await hud.locator('.workspace-nav [data-view=cinema]').click();await hud.getByRole('button',{name:'Каталог',exact:true}).click();await hud.getByRole('button',{name:'Подборки',exact:true}).click();
       await hud.locator('.cinema-shelf[data-feed=trending] .cinema-card').first().waitFor();
-      if(await hud.locator('.cinema-shelf').count()!==14)throw Error('Expected fourteen catalogue shelves');
+      if(await hud.locator('.cinema-shelf').count()!==13)throw Error('Animation shelf must follow the default catalogue policy');
       if(request.screenshot)await hud.screenshot({path:request.screenshot.replace('.png','-catalogue.png'),fullPage:true});
       await hud.locator('.cinema-shelf[data-feed=popular_movies]').getByRole('button',{name:'Смотреть всё'}).click();
       await hud.waitForFunction(()=>document.querySelectorAll('.cinema-catalogue-grid .cinema-card').length===20);
@@ -66,6 +66,11 @@ for await(const line of createInterface({input:process.stdin})) {
       await target.scrollIntoViewIfNeeded();
       const before=await target.evaluate(card=>({top:card.getBoundingClientRect().top,scroll:card.closest('.workspace-page').scrollTop}));
       await target.locator('.cinema-title').click();await hud.locator('dialog[open]').waitFor();
+      await hud.getByRole('tab',{name:'О фильме',exact:true}).click();
+      await hud.locator('.cinema-rich-info').waitFor();
+      if(request.screenshot)await hud.screenshot({path:request.screenshot.replace('.png','-details.png'),fullPage:true});
+      await hud.getByRole('tab',{name:'Похожие',exact:true}).click();await hud.locator('.cinema-similar-grid .cinema-card').first().waitFor();
+
       await hud.getByRole('button',{name:'Закрыть',exact:true}).click();
       const after=await target.evaluate(card=>({top:card.getBoundingClientRect().top,scroll:card.closest('.workspace-page').scrollTop}));
       if(Math.abs(before.top-after.top)>2||Math.abs(before.scroll-after.scroll)>2)throw Error('Detail changed catalogue scroll position');
@@ -74,9 +79,13 @@ for await(const line of createInterface({input:process.stdin})) {
       await target.locator('.cinema-favorite[aria-pressed=true]').waitFor();
       await hud.locator('.cinema-tabs').getByRole('button',{name:'Избранное',exact:true}).click();
       await hud.locator('.cinema-content .cinema-title').filter({hasText:beforeLibrary}).click();
-      await hud.getByLabel('Моя оценка',{exact:true}).selectOption('9.5');
+      await hud.getByRole('button',{name:'Оценить фильм',exact:true}).click();
+      const rating=hud.getByLabel('Выбранная оценка',{exact:true});await rating.focus();await rating.press('End');await rating.press('ArrowLeft');
+      await hud.getByLabel('Заметка · необязательно',{exact:true}).fill('Сильный финал');
+      if(request.screenshot)await hud.screenshot({path:request.screenshot.replace('.png','-rating.png'),fullPage:true});
+      await hud.getByRole('button',{name:'Сохранить оценку',exact:true}).click();
       await hud.locator('dialog .cinema-personal-rating').filter({hasText:'9.5'}).waitFor();
-      await hud.getByLabel('Статус',{exact:true}).selectOption('watched');
+      await hud.locator('.cinema-detail-main-actions').getByRole('button',{name:'Просмотрено',exact:true}).click();
       await hud.getByRole('button',{name:'Закрыть',exact:true}).click();
       await hud.locator('.cinema-tabs').getByRole('button',{name:'Просмотрено',exact:true}).click();
       await hud.locator('.cinema-content .cinema-personal-rating').filter({hasText:'9.5'}).waitFor();
@@ -88,11 +97,12 @@ for await(const line of createInterface({input:process.stdin})) {
       await hud.getByRole('heading',{name:'Поиск: Interstellar',exact:true}).waitFor();
       await hud.locator('.cinema-catalogue-grid .cinema-card').first().waitFor();
       await hud.getByRole('button',{name:'Фильмы',exact:true}).click();
-      await hud.locator('.cinema-genre-panel > summary').click();
+      await hud.getByRole('button',{name:/^Фильтры ·/}).click();
       await hud.getByLabel('триллер',{exact:true}).check();
       await hud.getByLabel('фантастика',{exact:true}).check();
       await hud.getByLabel('Режим жанров').selectOption('and');
-      await hud.getByRole('button',{name:'Найти',exact:true}).click();
+      if(request.screenshot)await hud.screenshot({path:request.screenshot.replace('.png','-filters.png'),fullPage:true});
+      await hud.getByRole('button',{name:/^Применить/}).click();
       await hud.locator('.cinema-catalogue-grid .cinema-card').first().waitFor();
       await hud.setViewportSize({width:720,height:900});
       if(await hud.evaluate(()=>document.documentElement.scrollWidth>innerWidth))throw Error('Catalogue overflows mobile viewport');
@@ -115,7 +125,7 @@ for await(const line of createInterface({input:process.stdin})) {
       await hud.locator('.cinema-chart-bar').first().waitFor();
       await hud.locator('.cinema-personal').evaluate(element=>Promise.all(element.getAnimations().map(animation=>animation.finished)));
       if(request.screenshot)await hud.screenshot({path:request.screenshot.replace('.png','-profile.png'),fullPage:true});
-      if(request.catalogue){await hud.getByRole('button',{name:'Для тебя',exact:true}).click();await hud.locator('.cinema-personal-card').first().waitFor();if(await hud.locator('.cinema-personal .cinema-shelf').count()!==6)throw Error('Expected six personal shelves');}
+      if(request.catalogue){await hud.getByRole('button',{name:'Для тебя',exact:true}).click();await hud.locator('.cinema-personal-card').first().waitFor();if(await hud.locator('.cinema-personal .cinema-shelf').count()!==7)throw Error('Expected six personal shelves and a separate rewatch shelf');}
       await hud.getByRole('button',{name:'Смотрю',exact:true}).click();
       await hud.locator('.cinema-content').getByRole('button',{name:'Встроенный тест',exact:true}).click();
       await hud.locator('dialog').getByRole('button',{name:'Найти и смотреть',exact:true}).click();
@@ -132,6 +142,20 @@ for await(const line of createInterface({input:process.stdin})) {
       if(request.screenshot)await hud.screenshot({path:request.screenshot.replace('.png','-embedded.png'),fullPage:true});
       await hud.getByRole('button',{name:'Сохранить и закрыть плеер',exact:true}).click();
       await hud.locator('.cinema-embedded').waitFor({state:'detached'});
+
+      await hud.locator('#cinema-root').getByRole('button',{name:'Настройки',exact:true}).click();
+      await hud.getByRole('button',{name:'Источники просмотра',exact:true}).click();
+      if(await hud.locator('.cinema-settings-pane input[type=password]').count())throw Error('TMDB credentials remain in viewing sources');
+      const ids=await hud.locator('.cinema-source-card').evaluateAll(rows=>rows.map(r=>r.dataset.sourceId));
+      if(ids.length>1){await hud.locator('.cinema-source-card').nth(1).dragTo(hud.locator('.cinema-source-card').nth(0));await hud.waitForFunction(id=>document.querySelector('.cinema-source-card')?.dataset.sourceId===id,ids[1]);}
+      if(request.screenshot)await hud.screenshot({path:request.screenshot.replace('.png','-sources.png'),fullPage:true});
+      await hud.getByRole('button',{name:'Рекомендации',exact:true}).click();await hud.getByLabel('Учитывать мои оценки',{exact:true}).waitFor();
+      await hud.getByRole('button',{name:'Приватность и данные',exact:true}).click();
+      const downloading=hud.waitForEvent('download');await hud.getByRole('button',{name:'Экспортировать медиатеку',exact:true}).click();const downloaded=await downloading;
+      const document=JSON.parse(await readFile(await downloaded.path(),'utf8'));
+      if(document.schema!=='chushpan.cinema'||JSON.stringify(document).includes('fixture-token-for-catalogue'))throw Error('Invalid or secret-bearing cinema backup');
+      await hud.getByLabel('Импортировать JSON-копию',{exact:true}).setInputFiles({name:'cinema.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(document))});
+      await hud.getByRole('button',{name:'Импортировать',exact:true}).click();await hud.getByText('Импортировано названий: 0. Существующие данные сохранены.',{exact:true}).waitFor();
       if(errors.length)throw Error(errors.join('; '));await hud.close();result={profile:true,recommendations:!!request.catalogue,source_search:true,embedded:true,confirmed_playback:true,seek:true,mobile:true};
     }
     if(request.op==='shutdown'){await browser.close();process.stdout.write(JSON.stringify({ok:true})+'\n');process.stdin.destroy();break;}

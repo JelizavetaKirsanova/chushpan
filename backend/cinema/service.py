@@ -7,6 +7,7 @@ import json
 import math
 import secrets
 import sqlite3
+import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
@@ -19,6 +20,7 @@ from backend.cinema.adapters import (
 )
 from backend.cinema.catalogue import Catalogue
 from backend.cinema.commands import command
+from backend.cinema.filters import with_preferences
 from backend.cinema.models import CatalogueQuery, origin
 from backend.cinema.personal import Recommender, score, signal, taste
 from backend.cinema.sources import SourceManager, capabilities
@@ -69,7 +71,9 @@ class Cinema:
         self.catalogue_requests = set()
         self.matches = []
         self.focused = None
+        self.focused_catalogue = None
         self.search_sequence = 0
+        self.import_proposals = {}
         self.register()
 
     async def db(self, method, *args, **kwargs):
@@ -234,6 +238,37 @@ class Cinema:
             source_action = None
             if op == "refresh":
                 pass
+            elif op == "library_export":
+                document = await self.db("export_library")
+                await self.publish(library_export=document)
+                return
+            elif op == "library_import_preview":
+                summary = await self.db("import_preview", value["document"])
+                token = secrets.token_urlsafe(24)
+                self.import_proposals = {token: (time.monotonic() + 600, value["document"])}
+                await self.publish(library_import_preview={"token": token, **summary})
+                return
+            elif op == "library_import":
+                proposal = self.import_proposals.pop(value["token"], None)
+                if not proposal or proposal[0] < time.monotonic():
+                    raise ToolError("Предпросмотр импорта устарел. Выбери файл заново.")
+                async with self.lock:
+                    result = await self.db("import_library", proposal[1])
+                self.sources.invalidate()
+                self.message = (
+                    f"Импортировано названий: {result['added']}. Существующие данные сохранены."
+                )
+                await self.publish(library_imported=result)
+                return
+            elif op == "clear_cinema_cache":
+                if value.get("scope") not in {"tmdb", "sources"}:
+                    raise ValueError("Неизвестный кеш.")
+                if value["scope"] == "tmdb":
+                    self.tmdb.clear_cache()
+                    self.catalogue.page_counts.clear()
+                else:
+                    self.sources.invalidate()
+                self.message = "Кеш очищен. Личная медиатека сохранена."
             elif op == "source":
                 async with self.lock:
                     result = await self.db("save_source", value["source"])
@@ -318,6 +353,15 @@ class Cinema:
             elif op == "focus":
                 await self.db("title", value["id"])
                 self.focused = value["id"]
+                self.focused_catalogue = None
+                return
+            elif op == "catalogue_focus":
+                TMDB.identity(value["key"])
+                self.focused_catalogue = value["key"]
+                self.focused = None
+                return
+            elif op == "clear_focus":
+                self.focused = self.focused_catalogue = None
                 return
             elif op == "tmdb":
                 await asyncio.to_thread(self.tmdb.credentials.save, value["credential"])
@@ -331,6 +375,28 @@ class Cinema:
             elif op == "catalogue_detail":
                 detail = await self.tmdb.detail(value["key"])
                 await self.publish(catalogue_detail=detail)
+                return
+            elif op == "title_details":
+                item = await self.db("title", value["id"])
+                detail = await self.tmdb.detail(item["catalogue_key"])
+                await self.db("add", {**detail, "title_id": item["id"]})
+                await self.publish(detail_updated=item["id"])
+                return
+            elif op == "similar":
+                prefs = await self.db("preferences")
+                context = await self.db("recommendation_context")
+                result = await self.catalogue.page(
+                    with_preferences(CatalogueQuery(feed="recommended"), prefs),
+                    seeds=[value["key"]],
+                    excluded={value["key"], *context["excluded"]},
+                    excluded_titles=context["excluded_titles"],
+                )
+                await self.publish(
+                    similar={
+                        "request_id": str(value.get("request_id", ""))[:100],
+                        "items": result["items"],
+                    }
+                )
                 return
             elif op == "catalogue_add":
                 detail = await self.tmdb.detail(value["key"])
@@ -406,13 +472,21 @@ class Cinema:
                 self.search_sequence += 1
                 sequence = self.search_sequence
                 self.matches = []
-                matches = await self.tmdb.search(
-                    str(value.get("query", "")).strip()[:200],
-                    kind=value.get("kind", "all"),
-                    genre=value.get("genre", ""),
-                    year=value.get("year", 0),
-                    rating=value.get("rating", 0),
+                prefs = await self.db("preferences")
+                page = await self.catalogue.page(
+                    with_preferences(
+                        CatalogueQuery(
+                            query=str(value.get("query", "")).strip()[:200],
+                            kind=value.get("kind", "all"),
+                            genre=value.get("genre", ""),
+                            year=value.get("year", 0),
+                            rating=value.get("rating", 0),
+                            relax_restrictions=value.get("relax_restrictions") is True,
+                        ),
+                        prefs,
+                    )
                 )
+                matches = page["items"]
                 if sequence != self.search_sequence:
                     return
                 self.matches = matches
@@ -682,15 +756,18 @@ class Cinema:
             )
             prefs = await self.db("preferences")
             state = await self.db("recommendation_data") if query.feed == "recommended" else {}
+            query = with_preferences(query, prefs)
             library = await self.db("library") if query.feed == "recommended" else []
             if query.feed == "recommended":
                 context["seeds"] = [
                     item["catalogue_key"]
                     for item in sorted(
-                        library, key=lambda item: signal(item, state["reset_at"]), reverse=True
+                        library,
+                        key=lambda item: signal(item, state["reset_at"], prefs),
+                        reverse=True,
                     )
                     if prefs.personalize
-                    and signal(item, state["reset_at"]) >= 1
+                    and signal(item, state["reset_at"], prefs) >= 1
                     and item["catalogue_key"].startswith("tmdb:")
                 ][:2]
             result = await self.catalogue.page(
@@ -701,7 +778,7 @@ class Cinema:
             )
             if query.feed == "recommended":
                 weights, samples = (
-                    taste(library, state["reset_at"]) if prefs.personalize else ({}, 0)
+                    taste(library, state["reset_at"], prefs) if prefs.personalize else ({}, 0)
                 )
                 result["items"] = [
                     {**item, "reason": score(item, weights)[1]}
@@ -747,6 +824,28 @@ class Cinema:
         if parsed is None:
             raise ToolError("Уточни команду кинотеки.")
         action = parsed["action"]
+        if action in {"favorite", "rate"}:
+            identifier = self.focused
+            if not identifier and self.focused_catalogue:
+                item = await self.db("add", await self.tmdb.detail(self.focused_catalogue))
+                identifier = item["id"]
+                self.focused, self.focused_catalogue = identifier, None
+            identifier = identifier or (
+                self.session["target"]["item"]["id"] if self.session else None
+            )
+            if not identifier:
+                raise ToolError("Сначала открой карточку нужного фильма или сериала.")
+            values = (
+                {"favorite": True} if action == "favorite" else {"user_rating": parsed["rating"]}
+            )
+            item = await self.db("update_title", identifier, values)
+            await self.publish()
+            return {
+                "message": f"«{item['title']}» добавлен в избранное."
+                if action == "favorite"
+                else f"Твоя оценка «{item['title']}»: {parsed['rating']:g} из 10.",
+                "result_status": "success",
+            }
         if action == "profile":
             profile = await self.db("analytics")
             await self.publish(navigate=True, active_tab="profile")
@@ -871,7 +970,13 @@ class Cinema:
                 "result_status": "success",
             }
         if action == "discover":
-            self.matches = await self.tmdb.search(genre=parsed["genre"], kind="movie")
+            page = await self.catalogue.page(
+                with_preferences(
+                    CatalogueQuery(genre=parsed["genre"], kind="movie"),
+                    await self.db("preferences"),
+                )
+            )
+            self.matches = page["items"]
             await self.publish(
                 navigate=True, active_tab="catalogue", catalogue_intent={"genre": parsed["genre"]}
             )
@@ -1178,6 +1283,7 @@ class Cinema:
                 "poll": prefs.poll_seconds,
                 "callback": f"{base}/cinema/progress/{token}" if base else "",
             }
+            starting_position = target["episode"]["position"] if prefs.resume_position else 0
             self.session = {
                 "token": token,
                 "target": target,
@@ -1189,7 +1295,7 @@ class Cinema:
             }
             if embed:
                 self.session["mode"] = "embedded"
-                self.session["last_position"] = target["episode"]["position"]
+                self.session["last_position"] = starting_position
                 await self.db("select", target["episode"]["id"], target["link"]["id"])
                 self.message = (
                     "Видео подготовлено во встроенном плеере. Ожидаю подтверждения запуска."
@@ -1199,7 +1305,7 @@ class Cinema:
                         "token": token,
                         "url": embed,
                         "title": target["item"]["title"],
-                        "position": target["episode"]["position"],
+                        "position": starting_position,
                         "title_id": title_id,
                         "episode_id": target["episode"]["id"],
                     }
@@ -1210,7 +1316,12 @@ class Cinema:
                     "result_status": "partial_success",
                 }
             try:
-                result = await adapter.open(target)
+                opening_target = {
+                    **target,
+                    "episode": {**target["episode"], "position": starting_position},
+                    "restart": not prefs.resume_position,
+                }
+                result = await adapter.open(opening_target)
             except (ToolError, OSError, TimeoutError) as exc:
                 self.session["mode"] = "manual"
                 result = {"playback_confirmed": False, "mode": "manual", "message": str(exc)}

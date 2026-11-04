@@ -100,6 +100,55 @@ class _Api:
         """The HUD's copy buttons: WebKit in a pywebview window may refuse the clipboard."""
         return copy_to_clipboard(text)
 
+    def save_cinema_library(self, document: dict) -> dict:
+        """An explicit export click uses a native Save panel in WebKit windows."""
+        import json
+        import tempfile
+        from pathlib import Path
+
+        import webview
+
+        from backend.cinema.transfer import validate_document
+
+        try:
+            data = validate_document(document)
+            if self.window is None:
+                raise ValueError("Окно приложения недоступно.")
+            chosen = self.window.create_file_dialog(
+                webview.FileDialog.SAVE,
+                save_filename="Чушпан — медиатека.json",
+                file_types=("JSON (*.json)",),
+            )
+            if not chosen:
+                return {"ok": False, "cancelled": True}
+            path = Path(chosen[0] if isinstance(chosen, (tuple, list)) else chosen)
+            if not path.is_absolute():
+                raise ValueError("Выбери папку для сохранения.")
+            if path.suffix.casefold() != ".json":
+                path = path.with_name(path.name + ".json")
+            if any((folder / ".git").exists() for folder in path.parents):
+                raise ValueError("Сохрани личную медиатеку вне папки Git-проекта.")
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", dir=path.parent, delete=False
+                ) as out:
+                    temporary = Path(out.name)
+                    json.dump(data, out, ensure_ascii=False, indent=2)
+                    out.flush()
+                    os.fsync(out.fileno())
+                temporary.replace(path)
+            finally:
+                if temporary:
+                    temporary.unlink(missing_ok=True)
+            return {"ok": True, "filename": path.name}
+        except (ValueError, OSError, TypeError):
+            return {
+                "ok": False,
+                "message": "Не удалось сохранить копию. "
+                "Выбери папку вне Git-проекта и проверь доступ.",
+            }
+
 
 def copy_to_clipboard(text: str) -> bool:
     try:

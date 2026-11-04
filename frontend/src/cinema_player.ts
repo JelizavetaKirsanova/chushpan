@@ -25,6 +25,11 @@ export class CinemaEmbeddedPlayer {
       const video=document.createElement('video');this.video=video;video.controls=true;video.playsInline=true;video.preload='metadata';video.src=state.url;video.setAttribute('aria-label',`Видео: ${state.title}`);
       this.feedback.textContent='Ожидаю запуска видео. Если оно не началось, нажми ▶.';this.feedback.setAttribute('role','status');
       const close=document.createElement('button');close.type='button';close.textContent='Сохранить и закрыть плеер';close.onclick=()=>{this.report('close');this.clear();};
+      const fullscreen=document.createElement('button');fullscreen.type='button';fullscreen.textContent='Полный экран';fullscreen.onclick=()=>{
+        const api=(window as unknown as {pywebview?:{api?:{toggle_fullscreen?:()=>Promise<void>}}}).pywebview?.api;
+        if(api?.toggle_fullscreen){this.root.classList.toggle('cinema-video-fullscreen');void api.toggle_fullscreen();}
+        else if(document.fullscreenElement)void document.exitFullscreen();else void video.requestFullscreen?.();
+      };
       const series=document.createElement('div');series.className='cinema-embedded-episodes';
       const item=event.items.find(i=>i.id===state.title_id);
       if(item?.kind==='series'){
@@ -35,7 +40,7 @@ export class CinemaEmbeddedPlayer {
         const fill=()=>{episode.replaceChildren();for(const e of item.episodes.filter(e=>e.season===Number(season.value))){const o=document.createElement('option');o.value=e.id;o.textContent=`Серия ${e.episode}${e.name?` · ${e.name}`:''}`;episode.append(o);}if(selected?.season===Number(season.value))episode.value=selected.id;};fill();season.onchange=fill;
         const open=document.createElement('button');open.type='button';open.textContent='Открыть серию';open.onclick=()=>{video.pause();this.report('pause');this.send({op:'open',title_id:item.id,episode_id:episode.value});};series.append(season,episode,open);
       }
-      this.root.replaceChildren(title,video,this.feedback,series,close);this.container.append(this.root);
+      this.root.replaceChildren(title,video,this.feedback,series,fullscreen,close);this.container.append(this.root);
       video.onloadedmetadata=()=>{if(state.position&&Number.isFinite(video.duration))video.currentTime=Math.min(state.position,Math.max(0,video.duration-.1));void video.play().catch(()=>{this.feedback.textContent='Нажми ▶ в плеере, чтобы начать просмотр.';});};
       video.ontimeupdate=()=>{const advanced=!video.paused&&!video.seeking&&video.currentTime>this.previous+.05&&video.currentTime-this.previous<5;this.previous=video.currentTime;if(advanced&&!this.confirmed){this.confirmed=true;this.feedback.textContent='Воспроизведение подтверждено.';this.report('playing');}else if(advanced&&Date.now()-this.sentAt>=(event.preferences.poll_seconds??5)*1000)this.report('periodic');};
       video.onpause=()=>this.report('pause');video.onseeked=()=>{this.previous=video.currentTime;this.report('seek');};video.onended=()=>this.report('ended');video.onerror=()=>{this.feedback.textContent='Не удалось воспроизвести видео. Проверь источник или выбери другой.';this.report('error');};
@@ -56,6 +61,7 @@ export class CinemaEmbeddedPlayer {
     if(['playing','pause','seek','error'].includes(event))this.commandId='';
   }
   private clear():void {
+    if(this.root.classList.contains('cinema-video-fullscreen')){this.root.classList.remove('cinema-video-fullscreen');const api=(window as unknown as {pywebview?:{api?:{toggle_fullscreen?:()=>Promise<void>}}}).pywebview?.api;void api?.toggle_fullscreen?.();}
     if(this.video){this.video.onpause=null;this.video.ontimeupdate=null;this.video.onseeked=null;this.video.onended=null;this.video.onerror=null;this.video.onloadedmetadata=null;this.video.pause();this.video.removeAttribute('src');this.video.load();}
     this.video=null;this.current=null;this.root.remove();
   }

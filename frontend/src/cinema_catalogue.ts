@@ -1,8 +1,9 @@
 import type {CatalogueTitle, CinemaEvent, CinemaTitle} from './cinema';
+import {CinemaFilterDrawer,activeFilterCount} from './cinema_filters';
 
 export interface CatalogueFilters {
   feed:string;query:string;kind:string;genre:string;genres:string[];genre_mode:'or'|'and';year:number;rating:number;
-  country:string;original_language:string;sort:string;
+  country:string;original_language:string;sort:string;year_min:number;year_max:number;russian_titles?:boolean;hide_animation?:boolean;hide_anime?:boolean;hide_documentary?:boolean;relax_restrictions:boolean;
 }
 export interface CataloguePage {
   request_id:string;feed?:string;page?:number;items?:CatalogueTitle[];next_page?:number|null;
@@ -21,7 +22,7 @@ export const catalogueFeeds:[string,string][]=[
   ['horror','Ужасы'],['thriller','Триллеры'],['mystery','Детективы'],
   ['drama','Драмы'],['animation','Мультфильмы'],['recommended','Рекомендовано для меня'],
 ];
-const blankFilters=():CatalogueFilters=>({feed:'browse',query:'',kind:'all',genre:'',genres:[],genre_mode:'or',year:0,rating:0,country:'',original_language:'',sort:'popularity'});
+const blankFilters=():CatalogueFilters=>({feed:'browse',query:'',kind:'all',genre:'',genres:[],genre_mode:'or',year:0,rating:0,country:'',original_language:'',sort:'popularity',year_min:0,year_max:0,relax_restrictions:false});
 const node=<K extends keyof HTMLElementTagNameMap>(tag:K,text='',cls=''):HTMLElementTagNameMap[K]=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const statuses:Record<string,string>={planned:'Хочу посмотреть',watching:'Смотрю',watched:'Просмотрено'};
 
@@ -75,7 +76,7 @@ export class CinemaCatalogueView {
   private configRequested=false;
   private configError='';
   private online=false;
-  private mode:'home'|'list'='home';
+  private mode:'home'|'list'='list';
   private previews=new Map<string,Preview>();
   private window=new CatalogueWindow();
   private previewSequence=0;
@@ -88,7 +89,7 @@ export class CinemaCatalogueView {
   private heading=node('div','','cinema-catalogue-heading');
   private sentinel=node('div','','cinema-sentinel');
   private configSlot=node('div');
-  private advanced:HTMLDetailsElement|null=null;
+  private drawer=new CinemaFilterDrawer();
   private librarySignature='';
   private mounted=false;
   constructor(private callbacks:Callbacks) {}
@@ -100,6 +101,17 @@ export class CinemaCatalogueView {
   receive(data:CinemaEvent):void {
     const previous=this.data;
     this.data=data;this.configured=!!data.tmdb?.configured;
+    const prefs=data.preferences;
+    if(!previous&&prefs.catalogue_filters)this.filters={...this.filters,...prefs.catalogue_filters};
+    const needsPolicyReset=['russian_titles','hide_animation','hide_anime','hide_documentary'].some(key=>(this.filters as any)[key]!==((prefs as any)[key]??(key!=='hide_documentary')))||!!previous&&previous.preferences.default_sort!==prefs.default_sort;
+    const policyChanged=previous&&['russian_titles','hide_animation','hide_anime','hide_documentary','default_sort'].some(key=>(previous.preferences as any)[key]!==((prefs as any)[key]));
+    if(!previous||policyChanged){
+      for(const key of ['russian_titles','hide_animation','hide_anime','hide_documentary'] as const)this.filters[key]=prefs[key]??(key!=='hide_documentary');
+      if(!previous||previous.preferences.default_sort!==prefs.default_sort)this.filters.sort=prefs.default_sort??'popularity';
+      if(policyChanged&&needsPolicyReset){this.previews.clear();this.window.reset();if(this.root.isConnected){this.renderFilters();this.renderBody();this.start();}}
+    }
+    this.root.style.setProperty('--cinema-columns',prefs.cards_per_row?String(prefs.cards_per_row):'');this.root.dataset.columns=String(prefs.cards_per_row??0);
+
     if(data.catalogue_config){this.config=data.catalogue_config;this.configError='';this.renderFilters();}
     if(data.catalogue_config_error){this.configError=data.catalogue_config_error;this.configRequested=false;this.renderFilters();}
     const page=data.catalogue_page;
@@ -117,7 +129,7 @@ export class CinemaCatalogueView {
     if(this.root.parentElement!==parent){parent.replaceChildren(this.root);if(!this.mounted){this.render();this.mounted=true;}this.renderPreviews();this.renderList();this.start();this.observe();}
   }
   search(query:string,debounce=true):void {
-    window.clearTimeout(this.debounce);this.debounce=undefined;this.filters.query=query.trim();this.filters.feed='browse';this.mode=query.trim()||this.hasFilters()?'list':'home';this.window.reset();
+    window.clearTimeout(this.debounce);this.debounce=undefined;this.filters.query=query.trim();this.filters.feed='browse';this.mode='list';this.window.reset();
     if(this.root.isConnected)this.render();
     const run=()=>{this.debounce=undefined;if(this.mode==='list')this.loadPage(1);else this.start();};
     if(debounce)this.debounce=window.setTimeout(run,350);else run();
@@ -134,52 +146,42 @@ export class CinemaCatalogueView {
     if(this.mode==='home'){this.loadPreview('trending');this.observe();}
     else if(this.debounce===undefined&&!this.window.pages.size&&!this.window.pending.size&&!this.window.error)this.loadPage(1);
   }
-  intent(value:{query?:string;genre?:string}):void {this.filters={...blankFilters(),...value,genres:value.genre?[value.genre]:[],genre:''};this.callbacks.query?.(this.filters.query);this.mode='list';this.window.reset();if(this.root.isConnected){this.render();this.loadPage(1);}}
-  private hasFilters():boolean {const f=this.filters;return !!(f.genre||f.genres.length||f.year||f.rating||f.country||f.original_language||f.kind!=='all'||f.sort!=='popularity');}
+  intent(value:{query?:string;genre?:string}):void {this.filters={...this.defaults(),...value,genres:value.genre?[value.genre]:[],genre:''};this.callbacks.query?.(this.filters.query);this.mode='list';this.window.reset();if(this.root.isConnected){this.render();this.loadPage(1);}}
   private button(label:string,action:()=>void,cls=''):HTMLButtonElement {const b=node('button',label,cls);b.type='button';b.disabled=!this.online;b.onclick=action;return b;}
   private select(label:string,options:[string,string][],value:string,change:(value:string)=>void):HTMLElement {
     const field=node('label','','cinema-field');field.append(node('span',label));const input=node('select');input.setAttribute('aria-label',label);input.disabled=!this.online;
     for(const [id,name]of options){const option=node('option',name);option.value=id;input.append(option);}input.value=value;input.onchange=()=>change(input.value);field.append(input);return field;
   }
-  private changed():void {window.clearTimeout(this.debounce);this.mode='list';this.window.reset();this.renderBody();this.debounce=window.setTimeout(()=>{this.debounce=undefined;this.loadPage(1);},300);}
+  private saveFilters():void {const f=this.filters;const catalogue_filters={kind:f.kind,genres:f.genres,genre_mode:f.genre_mode,year:f.year,year_min:f.year_min,year_max:f.year_max,rating:f.rating,country:f.country,original_language:f.original_language};if(JSON.stringify(this.data?.preferences.catalogue_filters)!==JSON.stringify(catalogue_filters))this.callbacks.send({op:'preferences',values:{catalogue_filters}});}
+  private changed():void {this.saveFilters();window.clearTimeout(this.debounce);this.mode='list';this.window.reset();this.renderBody();this.debounce=window.setTimeout(()=>{this.debounce=undefined;this.loadPage(1);},300);}
+
+  private defaults():CatalogueFilters {const p=this.data?.preferences;return {...blankFilters(),sort:p?.default_sort??'popularity',russian_titles:p?.russian_titles??true,hide_animation:p?.hide_animation??true,hide_anime:p?.hide_anime??true,hide_documentary:p?.hide_documentary??false};}
+  private applyFilters(filters:CatalogueFilters):void {
+    this.filters=filters;this.saveFilters();
+    const values:Record<string,boolean>={};for(const key of ['russian_titles','hide_animation','hide_anime','hide_documentary'] as const)if(filters[key]!==this.data?.preferences[key])values[key]=filters[key]??(key!=='hide_documentary');
+    if(Object.keys(values).length)this.callbacks.send({op:'preferences',values});
+    window.clearTimeout(this.debounce);this.debounce=undefined;this.mode='list';this.window.reset();this.renderFilters();this.renderBody();this.loadPage(1);const scroll=this.root.closest<HTMLElement>('.workspace-page');if(scroll)scroll.scrollTop=0;
+  }
   private renderFilters():void {
-    const wasOpen=this.advanced?.open??false;
     const form=node('form','','cinema-catalogue-filters');
     const types=node('div','','cinema-type-switch');types.setAttribute('aria-label','Тип контента');
-    for(const [id,label] of [['all','Всё'],['movie','Фильмы'],['series','Сериалы']]){
-      const b=this.button(label,()=>{this.filters.kind=id;this.changed();this.renderFilters();});
-      b.setAttribute('aria-pressed',String(this.filters.kind===id));types.append(b);
-    }
+    for(const [id,label]of [['all','Всё'],['movie','Фильмы'],['series','Сериалы']]){const b=this.button(label,()=>{this.filters.kind=id;this.changed();this.renderFilters();});b.setAttribute('aria-pressed',String(this.filters.kind===id));types.append(b);}
     form.append(types,this.select('Сортировка',[['popularity','По популярности'],['rating','По рейтингу'],['date','По дате выхода'],['title','По названию']],this.filters.sort,v=>{this.filters.sort=v;this.changed();}));
-    const genrePanel=node('details','','cinema-genre-panel');
-    genrePanel.append(node('summary',`Жанры${this.filters.genres.length?` · ${this.filters.genres.length}`:''}`));
-    const genreSearch=node('input');genreSearch.type='search';genreSearch.placeholder='Поиск жанров…';genreSearch.setAttribute('aria-label','Поиск жанров');
-    const genres=node('div','','cinema-genre-options');
-    const available=this.filters.kind==='all'?this.config?.genres:this.config?.genres_by_kind?.[this.filters.kind as 'movie'|'series'];
-    for(const genre of available??this.config?.genres??['триллер','комедия','драма','ужасы','фантастика','детектив','мультфильм']){
-      const label=node('label');const input=node('input');input.type='checkbox';input.value=genre;input.checked=this.filters.genres.includes(genre);
-      input.onchange=()=>{this.filters.genres=input.checked?[...this.filters.genres,genre]:this.filters.genres.filter(g=>g!==genre);this.filters.genre='';this.changed();this.renderGenreChips();};
-      label.append(input,node('span',genre));genres.append(label);
-    }
-    genreSearch.oninput=()=>{for(const label of [...genres.children] as HTMLElement[])label.hidden=!label.textContent?.toLocaleLowerCase('ru').includes(genreSearch.value.toLocaleLowerCase('ru'));};
-    genrePanel.append(genreSearch,genres);form.append(genrePanel,
-      this.select('Режим жанров',[['or','Любой из выбранных (OR)'],['and','Все выбранные (AND)']],this.filters.genre_mode,v=>{this.filters.genre_mode=v as 'or'|'and';this.changed();}));
-    const more=node('details','','cinema-catalogue-advanced');more.open=wasOpen;more.append(node('summary','Фильтры'));this.advanced=more;
-    const inner=node('div','','cinema-catalogue-filter-grid');const year=node('input');year.type='number';year.min='0';year.max='2200';year.placeholder='Любой';year.value=String(this.filters.year||'');year.setAttribute('aria-label','Год');year.oninput=()=>{this.filters.year=Number(year.value)||0;this.changed();};const field=node('label','','cinema-field');field.append(node('span','Год'),year);
-    inner.append(field,this.select('Рейтинг TMDB',[['0','Любой рейтинг'],['6','От 6'],['7','От 7'],['8','От 8'],['9','От 9']],String(this.filters.rating),v=>{this.filters.rating=Number(v);this.changed();}),
-      this.select('Страна',[['','Любая страна'],...(this.config?.countries??[{id:'US',name:'США'},{id:'RU',name:'Россия'},{id:'EE',name:'Эстония'},{id:'GB',name:'Великобритания'},{id:'JP',name:'Япония'},{id:'KR',name:'Южная Корея'}]).map(c=>[c.id,c.name] as [string,string])],this.filters.country,v=>{this.filters.country=v;this.changed();}),
-      this.select('Язык оригинала',[['','Любой язык'],...(this.config?.languages??[{id:'ru',name:'Русский'},{id:'en',name:'Английский'},{id:'ja',name:'Японский'},{id:'ko',name:'Корейский'}]).map(c=>[c.id,c.name] as [string,string])],this.filters.original_language,v=>{this.filters.original_language=v;this.changed();}));
-    const watched=node('input');watched.type='checkbox';watched.checked=!!this.data?.preferences.recommendations_show_watched;watched.onchange=()=>this.callbacks.send({op:'preferences',values:{recommendations_show_watched:watched.checked}});const watchLabel=node('label','','cinema-recommendation-setting');watchLabel.append(watched,node('span','Отдельная подборка для пересмотра'));inner.append(watchLabel);more.append(inner);
-    const submit=this.button('Найти',()=>{},'primary');submit.type='submit';form.append(more,submit,this.button('Сбросить',()=>{this.filters=blankFilters();this.callbacks.query?.('');this.mode='home';this.window.reset();this.render();this.start();}));form.onsubmit=e=>{e.preventDefault();if(!form.reportValidity())return;window.clearTimeout(this.debounce);this.debounce=undefined;this.mode='list';this.window.reset();this.renderBody();this.loadPage(1);};
+    const open=this.button('Фильтры',()=>this.drawer.open(this.root,this.filters,this.config,()=>this.defaults(),filters=>this.applyFilters(filters)),'cinema-filter-trigger');open.append(node('span',String(activeFilterCount(this.filters)),'cinema-filter-count'));open.setAttribute('aria-label',`Фильтры · ${activeFilterCount(this.filters)}`);
+    form.append(open,this.button('Подборки',()=>{this.mode='home';this.render();this.start();}));
+    const submit=this.button('Найти',()=>{},'primary');submit.type='submit';form.append(submit);form.onsubmit=e=>{e.preventDefault();this.applyFilters({...this.filters});};
     this.configSlot.replaceChildren(form,node('div','','cinema-genre-chips'));this.renderGenreChips();
-    if(this.configError){const warning=node('p',this.configError,'cinema-muted');warning.append(this.button('Повторить',()=>{this.configRequested=true;this.callbacks.send({op:'catalogue_config'});}));this.configSlot.append(warning);}
+    if(this.configError)this.configSlot.append(node('p',this.configError,'cinema-muted'),this.button('Повторить справочники',()=>this.callbacks.send({op:'catalogue_config'})));
   }
   private renderGenreChips():void {
-    const chips=this.configSlot.querySelector('.cinema-genre-chips');if(!chips)return;
-    chips.replaceChildren(...this.filters.genres.map(g=>this.button(`${g} ×`,()=>{
-      this.filters.genres=this.filters.genres.filter(v=>v!==g);this.changed();this.renderFilters();
-    },'cinema-genre-chip')));
-    if(this.filters.genres.length)chips.append(this.button('Снять все жанры',()=>{this.filters.genres=[];this.filters.genre='';this.changed();this.renderFilters();}));
+    const chips=this.configSlot.querySelector('.cinema-genre-chips');if(!chips)return;chips.replaceChildren();
+    const remove=(label:string,fn:()=>void)=>chips.append(this.button(label+' ×',()=>{fn();this.applyFilters({...this.filters});},'cinema-genre-chip'));
+    for(const genre of this.filters.genres)remove(genre,()=>this.filters.genres=this.filters.genres.filter(g=>g!==genre));
+    for(const [key,label]of [['russian_titles','Русские названия'],['hide_animation','Без мультфильмов'],['hide_anime','Без аниме'],['hide_documentary','Без документальных']] as const)if(this.filters[key])remove(label,()=>this.filters[key]=false);
+    if(this.filters.year_min||this.filters.year_max)remove(`${this.filters.year_min||'…'}–${this.filters.year_max||'…'}`,()=>{this.filters.year_min=0;this.filters.year_max=0;});
+    if(this.filters.rating)remove(`Рейтинг от ${this.filters.rating}`,()=>this.filters.rating=0);
+    if(this.filters.country)remove(this.filters.country,()=>this.filters.country='');
+    if(this.filters.relax_restrictions)remove('Поиск без ограничений',()=>this.filters.relax_restrictions=false);
   }
   private render():void {
     this.observer?.disconnect();this.rows.clear();this.root.replaceChildren();
@@ -191,7 +193,7 @@ export class CinemaCatalogueView {
     this.root.querySelector('.cinema-catalogue-body')?.remove();const body=node('div','','cinema-catalogue-body');this.root.append(body);this.observer?.disconnect();this.rows.clear();
     if(!this.configured){body.append(node('p','Подключи TMDB для поиска и подборок. Личная медиатека остаётся доступна.','cinema-empty'),this.button('Подключить TMDB',this.callbacks.settings));return;}
     if(this.mode==='home'){
-      for(const [id,title]of catalogueFeeds){const section=node('section','','cinema-shelf');section.dataset.feed=id;const heading=node('header','','cinema-section-heading');const arrows=node('div','','cinema-shelf-controls');const track=node('div','','cinema-carousel');track.setAttribute('aria-label',title);track.tabIndex=0;
+      for(const [id,title]of catalogueFeeds.filter(([id])=>id!=='animation'||this.data?.preferences.hide_animation===false)){const section=node('section','','cinema-shelf');section.dataset.feed=id;const heading=node('header','','cinema-section-heading');const arrows=node('div','','cinema-shelf-controls');const track=node('div','','cinema-carousel');track.setAttribute('aria-label',title);track.tabIndex=0;
         arrows.append(this.button('‹',()=>track.scrollBy({left:-track.clientWidth*.8,behavior:'smooth'})),this.button('›',()=>track.scrollBy({left:track.clientWidth*.8,behavior:'smooth'})),this.button('Смотреть всё',()=>this.openFeed(id)));arrows.children[0]?.setAttribute('aria-label',`Назад: ${title}`);arrows.children[1]?.setAttribute('aria-label',`Дальше: ${title}`);heading.append(node('h2',title),arrows);section.append(heading,node('p','','cinema-shelf-message'),track);body.append(section);this.rows.set(id,section);}
       this.renderPreviews();this.observe();
     }else{body.append(this.heading,this.results,this.footer,this.sentinel);this.renderList();this.observe();}

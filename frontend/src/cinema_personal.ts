@@ -51,7 +51,7 @@ export class CinemaPersonalView {
   receive(event:CinemaEvent):void {
     this.items=event.items;
     if(event.personal_recommendations){this.recommendations=event.personal_recommendations;this.pending='';this.mood=event.personal_recommendations.mood;this.render();}
-    const signature=JSON.stringify([this.items.map(i=>[i.id,i.status,i.favorite,i.user_rating]),event.preferences.personalize,event.preferences.free_only,event.preferences.recommendations_show_watched]);
+    const signature=JSON.stringify([this.items.map(i=>[i.id,i.status,i.favorite,i.user_rating]),event.preferences.personalize,event.preferences.free_only,event.preferences.recommendations_show_watched,event.preferences.recommend_ratings,event.preferences.recommend_favorites,event.preferences.recommend_history,event.preferences.russian_titles,event.preferences.hide_animation,event.preferences.hide_anime,event.preferences.hide_documentary]);
     const changed=signature!==this.librarySignature;this.librarySignature=signature;
     if(event.personal_result?.request_id===this.pending){
       this.pending='';this.error=event.personal_result.error??'';
@@ -94,6 +94,7 @@ export class CinemaPersonalView {
     for(const [value,label]of [[p.watched_movies,'просмотренных фильмов'],[p.watched_series,'просмотренных сериалов'],[p.average??'—','средняя оценка'],[p.favorites,'в избранном']]){const stat=make('article');stat.append(make('strong',String(value)),make('span',String(label)));stats.append(stat);}this.root.append(hero,stats);
     const insight=make('section','','cinema-profile-panel cinema-profile-insight');insight.append(make('h3','Что Чушпан понял о моих вкусах'),...p.insights.map(v=>make('p',v)),make('small',`Метаданные состава: ${p.metadata_coverage} из ${p.positive_count} понравившихся названий. Выводы учитывают только твою медиатеку.`));this.root.append(insight);
     const charts=make('div','','cinema-profile-charts');charts.append(this.bars(`Твои оценки · ${p.rated_count}`,p.distribution.map(v=>({name:v.rating===10?'10':`${v.rating}–${v.rating}.5`,count:v.count}))),this.bars('Любимые жанры',p.genres),this.bars('Любимые режиссёры',p.directors),this.bars('Любимые актёры',p.cast));this.root.append(charts);
+    this.root.append(this.bars('Активность просмотров',p.trend.map(month=>({name:month.month,count:month.count}))));
     const trend=make('section','','cinema-profile-panel');trend.append(make('h3','Как менялись твои предпочтения'),make('p','Уникальные названия по журналу просмотров; жанр чаще встречался в этом месяце. Средняя оценка относится только к оценкам, поставленным в указанный месяц.','cinema-muted'));
     const timeline=make('div','','cinema-profile-timeline');for(const month of p.trend){const row=make('article');row.append(make('time',month.month),make('strong',`${month.count} историй`),make('span',month.genre||'Жанр пока неизвестен'),make('small',month.rating===null?'Нет новых оценок':`Новые оценки: ${month.rating}/10`));timeline.append(row);}if(!p.trend.length)timeline.append(make('p','История появится после первых просмотров.','cinema-muted'));trend.append(timeline);this.root.append(trend);
     if(p.top.length)this.root.append(this.posterShelf('Самые высокие оценки',p.top));
