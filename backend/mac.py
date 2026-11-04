@@ -179,6 +179,10 @@ class MacDesktop:
         async with self._lock:
             displays = [d for d in await service.inventory() if not d.get("builtin")]
             selected = self.s.night.external_uuid
+            from backend.context import device_endpoint
+
+            if (target := device_endpoint.get()) and target[0] == "external_display":
+                selected = target[1]
             if selected:
                 displays = [
                     d for d in displays if d.get("uuid", "").casefold() == selected.casefold()

@@ -1,0 +1,108 @@
+/** Exercises standalone controls. No scenario editor, model, audio or device transport. */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+import {stripTypeScriptTypes} from 'node:module';
+import {Window} from 'happy-dom';
+import {DeviceWriter} from '../src/devices_state.ts';
+import type {DevicesEvent} from '../src/devices.ts';
+
+const html=readFileSync(new URL('../index.html',import.meta.url),'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'').replace(/<link\b[^>]*>/gi,'');
+const code=stripTypeScriptTypes(readFileSync(new URL('../src/devices.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace('export class DevicesView','class DevicesView')+'\nexports.View=DevicesView;';
+function fixture() {
+  const window=new Window({settings:{disableJavaScriptEvaluation:true,disableCSSFileLoading:true,disableJavaScriptFileLoading:true}});window.document.write(html);window.confirm=()=>true;
+  const requests:Record<string,unknown>[]=[];
+  const sandbox={exports:{} as Record<string,unknown>,document:window.document,window,crypto,DeviceWriter,setTimeout,clearTimeout,icon:()=>'<svg></svg>'};vm.runInNewContext(code,sandbox);
+  const View=sandbox.exports.View as new(...args:unknown[])=>{connection:(v:boolean)=>void;receive:(v:unknown)=>void};
+  const view=new View((v:Record<string,unknown>)=>requests.push(structuredClone(v)));
+  const state:DevicesEvent={type:'devices',places:[{id:'general',name:'Общие устройства'},{id:'dorm',name:'Общага'},{id:'home',name:'Дом'}],location:{place_id:'dorm',name:'Общага',mode:'manual',status:'ready'},kinds:[{id:'led_strip',name:'LED-лента',protocol:'ble'},{id:'mac',name:'MacBook',protocol:'local'},{id:'external_display',name:'Внешний дисплей',protocol:'betterdisplay'}],items:[{id:'led-test',revision:1,name:'Свет у стола',kind:'led_strip',protocol:'ble',endpoint:'11111111-1111-4111-8111-111111111111',place_id:'dorm',room:'Спальня',state:{},sent:{},last_contact:null,state_at:null,result_status:null,favorites:[],features:{power_on:true,power_off:true,brightness:true,color:true,colors:['rgb','on','off','brightness'],warm_white:'rgb_approximation',probe:true},connection:'unknown',usable:true,reason:'',busy:false},{id:'mac-local',revision:1,name:'MacBook',kind:'mac',protocol:'local',endpoint:'local-mac',place_id:'general',room:'',state:{brightness:55,volume_percent:30,muted:false,battery:{percent:80,on_power_adapter:true}},sent:{},last_contact:null,state_at:null,result_status:null,favorites:[],features:{volume:true,mute:true,brightness:true,playback:true,battery:true,lock:true},connection:'unknown',usable:true,reason:'',busy:false}]};
+  view.connection(true);view.receive(state);
+  const button=(label:string,scope:ParentNode=window.document)=>{const b=[...scope.querySelectorAll('button')].find(n=>n.textContent===label);assert.ok(b,label);b.click();return b;};
+  const open=(name:string)=>{const b=window.document.querySelector<HTMLButtonElement>(`button[aria-label="Открыть ${name}"]`);assert.ok(b);b.click();};
+  return {window,requests,view,state,button,open,close:async()=>{view.connection(false);await window.happyDOM.close();}};
+}
+
+test('devices render independently with filters and no raw identifiers on cards',async()=>{
+  const f=fixture();try {
+    assert.equal(f.window.document.querySelectorAll('.device-tile').length,2);
+    assert.doesNotMatch(f.window.document.querySelector('.device-tile')!.textContent!,/11111111|UUID/);
+    assert.match(f.window.document.querySelector('.device-tile')!.textContent!,/Подключение не проверено/);
+    assert.equal(f.requests.some(r=>r.op==='discover'||r.op==='inspect'),false);
+    const filter=f.window.document.getElementById('devices-place-filter') as unknown as HTMLSelectElement;filter.value='dorm';filter.dispatchEvent(new f.window.Event('change'));
+    assert.equal(f.window.document.querySelectorAll('.device-tile').length,1);
+    const search=f.window.document.querySelector<HTMLInputElement>('[aria-label="Поиск устройств"]')!;search.value='Нет такого';search.dispatchEvent(new f.window.Event('input'));assert.equal(f.window.document.querySelectorAll('.device-tile').length,0);
+  } finally {await f.close();}
+});
+
+test('LED colour and power are direct typed operations without chat or scenarios',async()=>{
+  const f=fixture();try {
+    f.open('Свет у стола');const panel=f.window.document.querySelector('.device-panel')!;
+    const pink=[...panel.querySelectorAll('button')].find(b=>b.textContent==='Розовый')!;pink.focus();pink.click();const request=f.requests.at(-1)!;
+    assert.equal(request.op,'act');assert.equal(request.id,'led-test');assert.equal(request.action,'led');assert.deepEqual(request.parameters,{color:'#FF0020'});
+    assert.equal(f.requests.some(r=>'text' in r||r.op==='run'||r.op==='save'),false);
+    f.view.receive({...f.state,operation_id:request.request_id as string,result:{result_status:'unverified',message:'Команда отправлена. Физическое состояние неизвестно.'},items:[{...f.state.items[0],sent:{color:'#FF0020'},result_status:'unverified'},f.state.items[1]]});
+    assert.equal(f.window.document.querySelector<HTMLInputElement>('[aria-label="Выбрать цвет ленты"]')!.value,'#ff0020');
+    assert.match(f.window.document.querySelector('.device-panel .device-last-state')!.textContent!,/Розовый.*не подтверждён/);
+    f.button('Выключить',f.window.document.querySelector('.device-panel')!);assert.deepEqual(f.requests.at(-1)!.parameters,{power:false});
+    assert.match(f.window.document.querySelector('.device-panel')!.textContent!,/RGB-имитация/);
+  } finally {await f.close();}
+});
+
+test('sliders coalesce input and send final value when released',async()=>{
+  const f=fixture();try {
+    f.open('Свет у стола');const range=f.window.document.querySelector<HTMLInputElement>('[aria-label="Яркость ленты"]')!;
+    for(let i=0;i<=100;i++){range.value=String(i);range.dispatchEvent(new f.window.Event('input'));}
+    assert.equal(f.requests.filter(r=>r.op==='act').length,0);
+    range.dispatchEvent(new f.window.Event('change'));assert.equal(f.requests.filter(r=>r.op==='act').length,1);assert.deepEqual(f.requests.at(-1)!.parameters,{brightness:100});
+    range.value='37';range.dispatchEvent(new f.window.Event('input'));range.dispatchEvent(new f.window.Event('change'));assert.equal(f.requests.filter(r=>r.op==='act').length,1);
+    const first=f.requests.at(-1)!;f.view.receive({...f.state,operation_id:first.request_id as string,result:{result_status:'unverified',message:'Отправлено'}});
+    assert.equal(f.requests.filter(r=>r.op==='act').length,2);assert.deepEqual(f.requests.at(-1)!.parameters,{brightness:37});
+  } finally {await f.close();}
+});
+
+test('metadata and favorite colors persist with optimistic revision',async()=>{
+  const f=fixture();try {
+    f.open('Свет у стола');f.button('В любимые',f.window.document.querySelector('.device-panel')!);assert.equal(f.requests.at(-1)!.op,'favorites');assert.deepEqual(f.requests.at(-1)!.colors,['#FFFFFF']);
+    const form=f.window.document.querySelector('.device-advanced form')!;const input=form.querySelector('input')!;input.value='Свет в спальне';form.querySelector('select')!.value='home';form.dispatchEvent(new f.window.Event('submit',{cancelable:true}));
+    assert.equal(f.requests.at(-1)!.op,'update');assert.equal(f.requests.at(-1)!.name,'Свет в спальне');assert.equal(f.requests.at(-1)!.place_id,'home');assert.equal(f.requests.at(-1)!.revision,1);
+    f.button('Удалить устройство…');assert.equal(f.requests.at(-1)!.op,'delete');
+  } finally {await f.close();}
+});
+
+test('wizard scans only by explicit click and allows honest manual addition',async()=>{
+  const f=fixture();try {
+    f.button('Добавить устройство');f.button('LED-лента',f.window.document.querySelector('dialog')!);
+    assert.equal(f.requests.some(r=>r.op==='discover'),false);f.button('Найти поблизости');assert.equal(f.requests.at(-1)!.op,'discover');
+    f.view.receive({...f.state,candidates:[{token:'found-token',name:'ELK-BLEDOB'}]});f.button('ELK-BLEDOB');f.button('Проверить подключение');assert.equal(f.requests.at(-1)!.op,'check');assert.equal(f.requests.at(-1)!.token,'found-token');
+    f.view.receive({...f.state,checked:{message:'GATT ответил. Функции не подтверждены.'}});f.button('Далее');
+    const form=f.window.document.querySelector('dialog form')!;form.querySelector('input')!.value='Свет у окна';form.querySelector('select')!.value='dorm';form.dispatchEvent(new f.window.Event('submit',{cancelable:true}));
+    assert.equal(f.requests.at(-1)!.op,'add');assert.equal(f.requests.at(-1)!.name,'Свет у окна');assert.equal(f.requests.at(-1)!.place_id,'dorm');
+  } finally {await f.close();}
+});
+
+test('unknown physical states, unavailable functions and disconnect remain honest',async()=>{
+  const f=fixture();try {
+    f.view.receive({...f.state,items:[{...f.state.items[0],features:{power_on:false,power_off:false,brightness:false,color:false,colors:[],probe:true},usable:false,reason:'Устройство в другом городе'}]});f.open('Свет у стола');
+    assert.equal(f.window.document.querySelector<HTMLInputElement>('[aria-label="Выбрать цвет ленты"]')!.disabled,true);
+    assert.equal(f.window.document.querySelector('[aria-label="Яркость ленты"]'),null);
+    assert.match(f.window.document.querySelector('.device-panel')!.textContent!,/другом городе/);
+    f.view.connection(false);assert.ok([...f.window.document.querySelectorAll('button')].filter(b=>b.closest('#devices-root')).every(b=>b.disabled));
+  } finally {await f.close();}
+});
+
+test('Mac controls include real lock confirmation without sleep or shutdown buttons',async()=>{
+  const f=fixture();try {
+    f.open('MacBook');const panel=f.window.document.querySelector('.device-panel')!;assert.match(panel.textContent!,/Батарея 80%/);assert.doesNotMatch(panel.textContent!,/Выключить Mac|Сон компьютера/);
+    f.button('Заблокировать экран…',panel);const request=f.requests.at(-1)!;assert.equal(request.action,'lock');
+    f.view.receive({...f.state,operation_id:request.request_id as string,result:{status:'confirmation_required',result_status:'requires_confirmation',message:'Подтверждаю 1234'}});
+    const code=f.window.document.querySelector<HTMLInputElement>('.device-panel input[inputmode="numeric"]')!;code.value='1234';f.button('Подтвердить код');assert.equal(f.requests.at(-1)!.op,'confirm');assert.equal(f.requests.at(-1)!.code,'1234');
+  } finally {await f.close();}
+});
+
+test('writer cancels queued changes on errors and disconnect, without automatic replay',async()=>{
+  const requests:Record<string,unknown>[]=[];const writer=new DeviceWriter(v=>requests.push(v as Record<string,unknown>),()=>{},5);
+  writer.offer('led','led',{brightness:20},true);writer.offer('led','led',{brightness:30},true);assert.equal(requests.length,1);
+  writer.complete(requests[0].request_id as string,false);assert.equal(requests.length,1);
+  writer.offer('led','led',{brightness:40});writer.disconnect();await new Promise(resolve=>setTimeout(resolve,15));assert.equal(requests.length,1);
+});

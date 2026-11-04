@@ -197,12 +197,10 @@ test('training belongs to the draft and conflicts are explained without discardi
   }finally{await f.window.happyDOM.close();}
 });
 
-test('device summaries and permission statuses hide technical diagnostics', async()=>{
+test('permission statuses hide technical diagnostics and devices remain independent', async()=>{
   const f=fixture();try {
     f.view.receive({...f.data,devices:[{id:'mac',name:'MacBook',type:'system',status:'not_checked',actions:['mac.brightness'],permissions:[],note:'Описание подключения',details:{uuid:'test-device-uuid'}}],permissions:{scope:'test scope',items:[{id:'automation',name:'Управление приложениями',status:'unknown',note:'OSStatus -1744 test diagnostic',url:'x-apple.systempreferences:test'},{id:'bluetooth',name:'Bluetooth',status:'granted',note:'',url:''},{id:'other',name:'Другое',status:'unsupported',note:'',url:''}]}});
-    const row=f.window.document.querySelector('.device-row')!;
-    assert.equal(row.open,false);assert.match(row.querySelector('summary')!.textContent,/MacBook.*Яркость MacBook.*не проверено/);
-    assert.doesNotMatch(row.querySelector('summary')!.textContent,/uuid|mac\.brightness|OSStatus/);
+    assert.equal(f.window.document.querySelector('#devices-root')!.childElementCount,0);
     const permissions=f.window.document.querySelector('.permission-list')!;
     assert.deepEqual([...permissions.querySelectorAll('small')].map(n=>n.textContent),['Требуется доступ','Разрешено','Недоступно']);
     assert.equal(permissions.querySelector('details')!.open,false);
@@ -251,17 +249,6 @@ test('disabled copies explain voice availability and can be enabled in advanced 
     f.submit();assert.equal((f.requests.at(-1)!.scenario as state.Scenario).enabled,true);
     assert.ok(f.window.document.querySelector('.settings-page #settings-items')!.closest('details')!.querySelector('#autostart'));
     assert.equal(f.window.document.querySelector('.hud > .bottom'),null);
-  }finally{await f.window.happyDOM.close();}
-});
-
-test('choosing a registered device action opens its real parameter form without running it',async()=>{
-  const f=fixture();try {
-    f.view.receive({...f.data,devices:[{id:'mac',name:'MacBook',type:'system',status:'connected',actions:['mac.brightness'],permissions:[],note:''}]});
-    disclosure(f,'.device-row');f.button('Яркость MacBook',f.window.document.querySelector('.device-detail')! as unknown as ParentNode);
-    assert.equal(f.window.document.querySelector('.hud')!.getAttribute('data-view'),'automations');
-    assert.equal(f.field('Название').value,'Яркость MacBook');f.fill('Уровень, % *','42');f.button('Проверить сценарий');
-    assert.equal(f.requests.at(-1)!.op,'preview');const draft=f.requests.at(-1)!.scenario as state.Scenario;assert.equal(draft.actions[0].capability,'mac.brightness');assert.equal(draft.actions[0].parameters.level,42);
-    assert.equal(f.requests.some(r=>r.op==='run'||r.op==='probe'),false);
   }finally{await f.window.happyDOM.close();}
 });
 

@@ -2178,6 +2178,8 @@ async def _run_voice(
     conv.on_tool = lambda name: bus.publish({"type": "tool", "name": name})
     if tools.automations:
         tools.automations.bind(bus, conv)
+    if tools.devices:
+        tools.devices.bind(bus, conv)
     export_button(s, bus, store, conv)
     stt = WhisperSTT(s.stt.model, s.stt_language, s.stt_hint, s.resources.mlx_cache_mb)
     speaker = make_speaker(s)
@@ -2445,6 +2447,8 @@ async def _run_voice(
         await dashboard.close()
         if tools.automations:
             await tools.automations.close()
+        if tools.devices:
+            await tools.devices.close()
         if window:
             await window.close()
         if server:

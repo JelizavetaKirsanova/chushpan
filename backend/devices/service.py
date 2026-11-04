@@ -1,0 +1,905 @@
+"""A device catalogue and HUD endpoint over the existing integration handlers."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+import sqlite3
+import time
+from collections import OrderedDict
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
+
+from backend.context import (
+    RequestContext,
+    device_selection,
+    request_context,
+    request_scope,
+    scenario_operation,
+    voice_addressed,
+)
+from backend.devices.models import Device
+from backend.devices.store import DeviceStore
+from backend.intents import LEDAction, LEDParameters
+from backend.led import LEDStrip
+from backend.security import ActionDenied
+from backend.tools.registry import ToolError
+
+KINDS = {
+    "led_strip": ("LED-лента", "ble"),
+    "mac": ("MacBook", "local"),
+    "external_display": ("Внешний дисплей", "betterdisplay"),
+}
+TOOLS = {
+    "led_control": "led_strip",
+    "get_brightness": "mac",
+    "set_brightness": "mac",
+    "set_volume": "mac",
+    "get_system_status": "mac",
+    "mac_power": "mac",
+    "media_control": "mac",
+    "music_command": "mac",
+    "play_music": "mac",
+    "now_playing": "mac",
+    "media_volume": "mac",
+    "media_seek": "mac",
+    "set_external_brightness": "external_display",
+}
+
+
+def stamp():
+    return datetime.now(UTC).isoformat()
+
+
+class Devices:
+    def __init__(self, tools, settings, memory):
+        self.tools, self.s, self.memory = tools, settings, memory
+        self.store = DeviceStore(memory)
+        from backend.automation.locations import Locations
+
+        self.locations = (
+            tools.automations.locations if tools.automations else Locations(memory, settings)
+        )
+        self.bus = self.conv = None
+        self.jobs = set()
+        self.connections = {}
+        self.inflight = set()
+        self.completed = OrderedDict()
+        self.scans = {}
+        self.probes = {}
+        self.strips = {}
+        self.preferred = None
+        self.primary = getattr(tools._tools.get("led_control"), "_handler", None)
+        self.primary = getattr(self.primary, "__self__", None)
+        self.seed()
+        self.ensure_led_tool()
+        if self.primary:
+            primary = next(
+                (
+                    d
+                    for d in self.store.list()
+                    if d.kind == "led_strip" and d.endpoint == str(self.s.led.address)
+                ),
+                None,
+            )
+            if primary:
+                self.strip(primary)
+
+    def seed(self):
+        if not self.memory.memory_available:
+            return
+        seeded = set(self.memory.preference("devices", "seeded") or [])
+        candidates = []
+        if any(n in self.tools for n, kind in TOOLS.items() if kind == "mac"):
+            candidates.append(
+                Device(
+                    id="mac-local",
+                    name="MacBook",
+                    kind="mac",
+                    protocol="local",
+                    endpoint="local-mac",
+                )
+            )
+        if self.s.led.enabled and "led_control" in self.tools:
+            candidates.append(
+                Device(
+                    id="led-configured",
+                    name="LED-лента",
+                    kind="led_strip",
+                    protocol="ble",
+                    endpoint=str(self.s.led.address),
+                )
+            )
+        if self.s.night.external_uuid and "set_external_brightness" in self.tools:
+            candidates.append(
+                Device(
+                    id="display-configured",
+                    name="Внешний дисплей",
+                    kind="external_display",
+                    protocol="betterdisplay",
+                    endpoint=str(self.s.night.external_uuid),
+                )
+            )
+        for device in candidates:
+            if device.id not in seeded:
+                if not any(
+                    (d.kind, d.endpoint) == (device.kind, device.endpoint)
+                    for d in self.store.list()
+                ):
+                    self.store.save(device)
+                seeded.add(device.id)
+        self.memory.set_preference("devices", "seeded", sorted(seeded))
+
+    def ensure_led_tool(self):
+        if "system" not in self.s.tools.enabled:
+            return
+        devices = [d for d in self.store.list() if d.kind == "led_strip"]
+        if not devices:
+            return
+        tool = self.tools._tools.get("led_control")
+        if tool is None:
+            tool = self.strip(devices[0]).tool()
+            tool.agent = self.tools.mac_agent
+            tool.settings_store = self.memory
+            self.tools.add(tool)
+        tool.handler = self.led_command
+        from backend.mac_agent import LocalMacAgent
+
+        if isinstance(tool.agent, LocalMacAgent):
+            tool.agent.register(tool.name, tool._handler)
+        from backend.automation.capabilities import CapabilityRegistry
+
+        if self.tools.automations:
+            self.tools.automations.capabilities.items = CapabilityRegistry(self.tools, self.s).items
+
+    def strip(self, device):
+        if device.id not in self.strips:
+            if self.primary and device.endpoint == str(self.s.led.address):
+                strip = self.primary
+            else:
+                settings = self.s.model_copy(deep=True)
+                settings.led.enabled, settings.led.address = True, UUID(device.endpoint)
+                strip = LEDStrip(settings)
+                strip.path = self.s.data_path / "devices" / device.id / "led.json"
+            strip.before_write = lambda: self.check_location(self.store.get(device.id))
+            strip.state_listener = lambda state: self.led_state(device.id, state)
+            self.strips[device.id] = strip
+        return self.strips[device.id]
+
+    def check_location(self, device):
+        if device.protocol == "local" or device.place_id == "general":
+            return
+        current = self.locations.current()
+        if current.get("status") != "ready" or current.get("place_id") != device.place_id:
+            raise ToolError(
+                "Устройство назначено другому или неизвестному месту. "
+                "Выбери текущее место вручную; удалённый канал не настроен."
+            )
+
+    def resolve(self, name):
+        kind = TOOLS.get(name)
+        if not kind:
+            return None
+        selected = device_selection.get()
+        if selected:
+            device = self.store.get(selected)
+            if device.kind != kind:
+                raise ActionDenied("Действие не относится к выбранному устройству.")
+            return device
+        candidates = [d for d in self.store.list() if d.kind == kind]
+        context = request_context.get()
+        controls = getattr(self.conv, "controls", None)
+        if (
+            self.preferred
+            and context
+            and scenario_operation.get() is None
+            and context.binding == self.preferred[1]
+            and controls
+            and controls.device
+            and controls.device
+            in (
+                {"led_strip"}
+                if kind == "led_strip"
+                else {"external_display"}
+                if kind == "external_display"
+                else {"mac_display", "mac_sound"}
+            )
+            and controls.clock() < controls.expires
+        ):
+            preferred = next((d for d in candidates if d.id == self.preferred[0]), None)
+            if preferred:
+                return preferred
+        local = [
+            d
+            for d in candidates
+            if d.place_id == "general"
+            or d.protocol == "local"
+            or self.locations.current().get("place_id") == d.place_id
+        ]
+        if len(local) == 1:
+            return local[0]
+        if len(candidates) == 1:
+            return candidates[0]  # The shared location guard will reject a distant device.
+        raise ToolError(
+            "Нет однозначно выбранного добавленного устройства. "
+            "Выбери его в разделе «Устройства» или уточни местоположение."
+        )
+
+    def guard(self, name):
+        device = self.resolve(name)
+        if device:
+            self.check_location(device)
+        return device
+
+    async def led_command(self, command):
+        device = self.guard("led_control")
+        return await self.strip(device).command(command)
+
+    def led_state(self, identifier, state):
+        """The integration's persisted write journal is shared by all entry points."""
+        device = self.store.get(identifier)
+        last = state.last_write
+        if (
+            not last
+            or last.get("status") != "written"
+            or device.sent.get("written_at") == last["time"]
+        ):
+            return
+        requested = last["requested"]
+        values = {}
+        action = requested["action"]
+        if action in {"on", "off"}:
+            values["power"] = action == "on"
+        elif action == "brightness":
+            values["brightness"] = requested["level"]
+        elif action == "color":
+            values["color"] = "#" + "".join(f"{v:02X}" for v in requested["rgb"])
+        device.sent.update(values, written_at=last["time"])
+        for key in values:
+            device.state.pop(key, None)
+        device.last_contact = last["time"]
+        device.result_status = "unverified"
+        self.store.observe(device)
+        self.connections[identifier] = "observed"
+        self.publish()
+
+    def observe(self, name, args, result):
+        if name not in TOOLS:
+            return
+        try:
+            device = self.resolve(name)
+        except (ValueError, ToolError):
+            return
+        outcome = result.get("result_status", "unverified")
+        if outcome == "requires_confirmation":
+            return
+        if outcome == "failed":
+            self.connections[device.id] = "error"
+        elif name != "led_control":
+            self.connections[device.id] = "observed"
+        values = {}
+        if outcome == "success":
+            if (
+                name in {"set_brightness", "get_brightness", "set_external_brightness"}
+                and type(result.get("level")) is int
+            ):
+                values["brightness"] = result["level"]
+            if name == "set_volume":
+                values.update({k: result[k] for k in ("volume_percent", "muted") if k in result})
+            if name == "get_system_status":
+                values.update(result.get("sound", {}))
+                if isinstance(result.get("battery"), dict):
+                    values["battery"] = result["battery"]
+        if name == "now_playing" and not result.get("error"):
+            values["playback"] = {k: result[k] for k in ("state", "track", "artist") if k in result}
+        if values:
+            device.state.update(values)
+            device.state_at = stamp()
+        if name != "led_control":
+            if outcome != "failed":
+                device.last_contact = stamp()
+            device.result_status = outcome
+            self.store.observe(device)
+        elif outcome in {"failed", "partial_success"}:
+            device.result_status = outcome
+            self.store.observe(device)
+        if device_selection.get() and self.conv:
+            controls = self.conv.controls
+            controls.clear()
+            if outcome in {"success", "unverified"}:
+                self.preferred = (
+                    device.id,
+                    (self.conv.device.device_id, self.conv.device.session_id),
+                )
+                controls.device = (
+                    "led_strip"
+                    if device.kind == "led_strip"
+                    else "external_display"
+                    if device.kind == "external_display" and "brightness" in values
+                    else "mac_display"
+                    if "brightness" in values
+                    else "mac_sound"
+                    if name == "set_volume"
+                    else None
+                )
+                if controls.device:
+                    controls.binding = (
+                        (self.conv.device.device_id, self.conv.device.session_id),
+                        self.conv.id,
+                    )
+                    controls.expires = controls.clock() + controls.ttl_s
+                    controls.sent_state[controls.device] = {
+                        k: v
+                        for k, v in self.store.get(device.id).sent.items()
+                        if k in {"power", "color", "brightness"}
+                    }
+                    controls.confirmed_state[controls.device] = {
+                        k: v
+                        for k, v in device.state.items()
+                        if k in {"power", "color", "brightness"}
+                    }
+        self.publish()
+
+    def features(self, device):
+        enabled = self.tools.enabled
+        if device.kind == "led_strip":
+            try:
+                confirmed = self.strip(device)._load().confirmed
+            except ToolError:
+                confirmed = set()
+            return {
+                "power_on": enabled("led_control") and "on" in confirmed,
+                "power_off": enabled("led_control") and "off" in confirmed,
+                "brightness": enabled("led_control") and "brightness" in confirmed,
+                "color": enabled("led_control") and "rgb" in confirmed,
+                "colors": sorted(confirmed),
+                "probe": enabled("led_control"),
+                "warm_white": "rgb_approximation",
+                "physical_feedback": False,
+            }
+        if device.kind == "mac":
+            return {
+                "volume": enabled("set_volume"),
+                "mute": enabled("set_volume"),
+                "brightness": enabled("set_brightness"),
+                "playback": enabled("media_control"),
+                "battery": enabled("get_system_status"),
+                "lock": enabled("mac_power"),
+                "power_on": False,
+                "power_off": False,
+            }
+        return {
+            "brightness": enabled("set_external_brightness"),
+            "volume": False,
+            "inputs": False,
+            "power_on": False,
+            "power_off": False,
+        }
+
+    def snapshot(self, **extra):
+        location = self.locations.current()
+        records = []
+        for d in self.store.list():
+            try:
+                self.check_location(d)
+                usable, reason = True, ""
+            except ToolError as exc:
+                usable, reason = False, str(exc)
+            records.append(
+                {
+                    **d.model_dump(),
+                    "features": self.features(d),
+                    "connection": self.connections.get(d.id, "unknown"),
+                    "usable": usable,
+                    "reason": reason,
+                    "busy": d.id in self.inflight,
+                }
+            )
+        records.sort(
+            key=lambda d: (
+                d["place_id"] != location.get("place_id"),
+                d["place_id"] != "general",
+                d["name"].casefold(),
+            )
+        )
+        return {
+            "type": "devices",
+            "items": records,
+            "location": location,
+            "places": [{"id": "general", "name": "Общие устройства"}]
+            + [{"id": p.id, "name": p.name} for p in self.locations.list()],
+            "kinds": [{"id": k, "name": v[0], "protocol": v[1]} for k, v in KINDS.items()],
+            **extra,
+        }
+
+    def publish(self, **extra):
+        if self.bus:
+            if "request_id" in extra:
+                extra["operation_id"] = extra.pop("request_id")
+            self.bus.publish(self.snapshot(**extra))
+
+    def bind(self, bus, conv):
+        self.bus, self.conv = bus, conv
+        bus.handle("devices", self.request)
+        self.publish()
+
+    def request(self, value):
+        task = asyncio.create_task(self.handle(value))
+        self.jobs.add(task)
+        task.add_done_callback(self.jobs.discard)
+
+    def valid_place(self, identifier):
+        if identifier != "general":
+            self.locations.get(identifier)
+
+    def require_adapter(self):
+        from backend.mac_agent import LocalMacAgent
+
+        if (
+            not isinstance(self.tools.mac_agent, LocalMacAgent)
+            or "mac.system" not in self.conv.device.capabilities
+        ):
+            raise ActionDenied("Для локального оборудования нужен разрешённый Mac Agent.")
+
+    async def discover(self, kind):
+        if kind not in KINDS:
+            raise ValueError("Для этого типа нет подключённого протокола управления.")
+        if kind == "led_strip":
+            strip = LEDStrip(self.s.model_copy(deep=True))
+            strip.cfg = strip.cfg.model_copy(update={"enabled": True})
+            items = (await strip.discover())["candidates"]
+            items = [
+                {"name": v.get("name") or "ELK-BLEDOB", "endpoint": str(UUID(v["address"]))}
+                for v in items
+            ]
+        elif kind == "mac":
+            items = [{"name": "Этот MacBook", "endpoint": "local-mac"}]
+        else:
+            from backend.mac import MacDesktop
+            from backend.night import BetterDisplay
+
+            items = [
+                {"name": d.get("name") or "Внешний дисплей", "endpoint": str(UUID(d["uuid"]))}
+                for d in await BetterDisplay(MacDesktop(self.s)).inventory()
+                if not d.get("builtin")
+            ]
+        candidates = []
+        self.scans = {k: v for k, v in self.scans.items() if v["expires"] > time.monotonic()}
+        for item in items[:30]:
+            token = uuid4().hex
+            self.scans[token] = {**item, "kind": kind, "expires": time.monotonic() + 300}
+            candidates.append({"token": token, "name": item["name"]})
+        return candidates
+
+    def candidate(self, value):
+        if value.get("token"):
+            found = self.scans.get(value["token"])
+            if not found or found["expires"] < time.monotonic():
+                raise ValueError("Результат поиска устарел. Повтори поиск.")
+            return Device(
+                name=found["name"],
+                kind=found["kind"],
+                protocol=KINDS[found["kind"]][1],
+                endpoint=found["endpoint"],
+            )
+        kind = value.get("kind")
+        if kind not in KINDS:
+            raise ValueError("Выбери поддерживаемый тип устройства.")
+        return Device(
+            name=KINDS[kind][0],
+            kind=kind,
+            protocol=KINDS[kind][1],
+            endpoint=value.get("endpoint", "local-mac" if kind == "mac" else ""),
+        )
+
+    def operation(self, device, action, parameters):
+        if not isinstance(parameters, dict):
+            raise ValueError("Параметры должны быть объектом.")
+        if device.kind == "led_strip" and action == "led":
+            params = LEDParameters.model_validate(parameters)
+            name, args = LEDAction(parameters=params).call()
+            return name, args, args["command"]
+        if action == "brightness" and device.kind in {"mac", "external_display"}:
+            if (
+                set(parameters) != {"level"}
+                or type(parameters["level"]) is not int
+                or not 0 <= parameters["level"] <= 100
+            ):
+                raise ValueError("Яркость должна быть целым числом 0–100.")
+            return (
+                ("set_brightness" if device.kind == "mac" else "set_external_brightness"),
+                parameters,
+                "Установи яркость экрана Mac"
+                if device.kind == "mac"
+                else "Установи яркость внешнего дисплея",
+            )
+        if device.kind == "mac":
+            if action == "volume" and set(parameters) in ({"level"}, {"mute"}):
+                return "set_volume", parameters, "Установи системную громкость Mac"
+            if (
+                action == "playback"
+                and set(parameters) == {"action"}
+                and parameters["action"] in {"pause", "resume", "next", "previous", "stop"}
+            ):
+                commands = {
+                    "pause": "Поставь музыку на паузу",
+                    "resume": "Продолжи музыку",
+                    "next": "Включи следующий трек",
+                    "previous": "Включи предыдущий трек",
+                    "stop": "Останови музыку",
+                }
+                return (
+                    "media_control",
+                    {**parameters, "target": "music"},
+                    commands[parameters["action"]],
+                )
+            if action == "lock" and not parameters:
+                return "mac_power", {"action": "lock"}, "Заблокируй экран Mac"
+        raise ValueError("Это действие не поддерживается выбранным устройством.")
+
+    async def call(self, device, name, args, text):
+        if not self.tools.enabled(name):
+            raise ValueError("Функция отключена в настройках доступа или не подключена.")
+        self.check_location(device)
+        token = device_selection.set(device.id)
+        address = voice_addressed.set(True)
+        try:
+            with request_scope(RequestContext(self.conv.device, text)):
+                async with asyncio.timeout(45):
+                    return json.loads(await self.tools.call(name, args))
+        finally:
+            voice_addressed.reset(address)
+            device_selection.reset(token)
+
+    async def refresh(self, device):
+        if device.kind == "led_strip":
+            self.check_location(device)
+            lock = self.tools.device_locks.setdefault("led", asyncio.Lock())
+            if lock.locked():
+                raise ValueError("Лента выполняет другую команду. Дождись завершения.")
+            async with lock:
+                result = await self.strip(device).inspect(listen_s=0)
+            self.connections[device.id] = "observed"
+            device = self.store.get(device.id)
+            device.last_contact = stamp()
+            self.store.observe(device)
+            return {
+                "message": "Bluetooth/GATT ответил. Соединение закрыто; "
+                "физическое состояние не считывается.",
+                "result_status": "unverified",
+                "characteristics": result["characteristics"],
+            }
+        if device.kind == "external_display":
+            from backend.mac import MacDesktop
+            from backend.night import BetterDisplay
+
+            self.check_location(device)
+            service = BetterDisplay(MacDesktop(self.s))
+            found = [
+                d
+                for d in await service.inventory()
+                if str(UUID(d["uuid"])) == device.endpoint and not d.get("builtin")
+            ]
+            if not found:
+                raise ToolError("Внешний дисплей сейчас не подключён.")
+            level = round(await service.read(device.endpoint, self.s.night.external_control) * 100)
+            device.state.update(brightness=level)
+            device.state_at = device.last_contact = stamp()
+            self.store.observe(device)
+            self.connections[device.id] = "observed"
+            return {
+                "message": "Подключение и яркость дисплея прочитаны.",
+                "result_status": "success",
+            }
+        results = []
+        for name, args in [
+            ("get_system_status", {"topic": "battery"}),
+            ("get_system_status", {"topic": "volume"}),
+            ("get_brightness", {}),
+            ("now_playing", {}),
+        ]:
+            if self.tools.enabled(name):
+                results.append(await self.call(device, name, args, "Покажи состояние Mac"))
+        failed = any(r.get("result_status") == "failed" for r in results)
+        return {
+            "message": "Часть данных Mac недоступна."
+            if failed
+            else "Доступные данные Mac обновлены.",
+            "result_status": "partial_success" if failed else "success",
+        }
+
+    async def handle(self, value):
+        request_id = value.get("request_id") if isinstance(value, dict) else None
+        identifier = value.get("id") if isinstance(value, dict) else None
+        busy = False
+        try:
+            if (
+                not isinstance(value, dict)
+                or not self.conv
+                or not self.conv.device.authenticated
+                or self.conv.device.target_agent_id != "local-mac"
+            ):
+                raise ActionDenied(
+                    "Устройства доступны только авторизованному локальному приложению."
+                )
+            op = value.get("op")
+            if op == "refresh":
+                self.publish(request_id=request_id)
+                return
+            if op == "location":
+                self.locations.select("manual", value["place_id"])
+                self.preferred = None
+                self.conv.controls.clear()
+                self.publish(message="Текущее место выбрано вручную.", request_id=request_id)
+                return
+            if op == "discover":
+                self.require_adapter()
+                async with asyncio.timeout(25):
+                    candidates = await self.discover(value.get("kind"))
+                self.publish(candidates=candidates, request_id=request_id)
+                return
+            if op == "check":
+                self.require_adapter()
+                candidate = self.candidate(value)
+                if candidate.kind == "led_strip":
+                    settings = self.s.model_copy(deep=True)
+                    settings.led.enabled, settings.led.address = True, UUID(candidate.endpoint)
+                    strip = LEDStrip(settings)
+                    strip.path = self.s.data_path / "devices" / "connection-check" / "led.json"
+                    lock = self.tools.device_locks.setdefault("led", asyncio.Lock())
+                    if lock.locked():
+                        raise ValueError("Лента выполняет другую команду. Повтори проверку позже.")
+                    async with lock:
+                        await strip.inspect(listen_s=0)
+                    message = (
+                        "Ожидаемый GATT-профиль ответил. Функции прошивки требуют "
+                        "отдельного теста; физическое состояние не считывалось."
+                    )
+                elif candidate.kind == "external_display":
+                    from backend.mac import MacDesktop
+                    from backend.night import BetterDisplay
+
+                    found = await BetterDisplay(MacDesktop(self.s)).inventory()
+                    if not any(
+                        str(UUID(d["uuid"])) == candidate.endpoint and not d.get("builtin")
+                        for d in found
+                    ):
+                        raise ToolError("Выбранный внешний дисплей сейчас не подключён.")
+                    message = (
+                        "Дисплей найден через BetterDisplay. Доступна яркость; "
+                        "питание, громкость и входы не подключены."
+                    )
+                else:
+                    message = (
+                        "Локальные функции Mac зарегистрированы. Батарея, звук и яркость "
+                        "читаются кнопкой обновления после добавления."
+                    )
+                self.publish(checked={"message": message}, request_id=request_id)
+                return
+            if op == "add":
+                device = self.candidate(value)
+                device.name, device.place_id, device.room = (
+                    value["name"],
+                    value.get("place_id", "general"),
+                    value.get("room", ""),
+                )
+                device = Device.model_validate(device.model_dump())
+                self.valid_place(device.place_id)
+                saved = self.store.save(device)
+                self.ensure_led_tool()
+                self.publish(
+                    saved=saved.id,
+                    message="Устройство добавлено. Подключение проверяется отдельной кнопкой.",
+                    request_id=request_id,
+                )
+                return
+            device = self.store.get(identifier)
+            if op in {"update", "delete"}:
+                resource = {"led_strip": "led", "external_display": "tv", "mac": "mac"}[device.kind]
+                if (
+                    self.tools.device_locks.get(resource)
+                    and self.tools.device_locks[resource].locked()
+                ):
+                    raise ValueError(
+                        "Устройство выполняет команду. Настройки можно изменить после завершения."
+                    )
+            if op in {
+                "update",
+                "delete",
+                "favorites",
+                "act",
+                "inspect",
+                "probe_led",
+                "confirm_probe",
+                "confirm",
+            }:
+                if identifier in self.inflight:
+                    raise ValueError("Устройство занято. Дождись завершения текущей команды.")
+                self.inflight.add(identifier)
+                busy = True
+            if op in {"update", "delete", "favorites"}:
+                if type(value.get("revision")) is not int or value["revision"] != device.revision:
+                    raise ValueError("Устройство изменилось в другом окне. Обнови список.")
+                if op == "delete":
+                    self.store.delete(identifier, device.revision)
+                    self.strips.pop(identifier, None)
+                else:
+                    if op == "update":
+                        for key in ("name", "place_id", "room"):
+                            if key in value:
+                                setattr(device, key, value[key])
+                        self.valid_place(device.place_id)
+                    else:
+                        colors = value["colors"]
+                        if (
+                            not isinstance(colors, list)
+                            or len(colors) > 16
+                            or any(
+                                not isinstance(c, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", c)
+                                for c in colors
+                            )
+                        ):
+                            raise ValueError("Сохрани не больше 16 RGB-цветов.")
+                        device.favorites = list(dict.fromkeys(c.upper() for c in colors))
+                    self.store.save(Device.model_validate(device.model_dump()))
+                self.publish(
+                    message="Устройство удалено из списка."
+                    if op == "delete"
+                    else "Настройки устройства сохранены.",
+                    request_id=request_id,
+                )
+                return
+            self.check_location(device)
+            if op == "inspect":
+                self.require_adapter()
+                async with asyncio.timeout(45):
+                    result = await self.refresh(device)
+            elif op == "act":
+                if not isinstance(request_id, str) or not re.fullmatch(
+                    r"[a-zA-Z0-9-]{8,80}", request_id
+                ):
+                    raise ValueError("Для команды нужен уникальный идентификатор события.")
+                key = (self.conv.device.session_id, request_id)
+                identity = json.dumps(
+                    [identifier, value.get("action"), value.get("parameters", {})], sort_keys=True
+                )
+                if key in self.completed:
+                    if self.completed[key][0] != identity:
+                        raise ValueError("Идентификатор уже относится к другой команде.")
+                    self.publish(result=self.completed[key][1], request_id=request_id)
+                    return
+                name, args, text = self.operation(
+                    device, value.get("action"), value.get("parameters", {})
+                )
+                self.completed[key] = (
+                    identity,
+                    {
+                        "result_status": "unverified",
+                        "message": "Команда уже принята; автоматического повтора нет.",
+                    },
+                )
+                self.publish(request_id=request_id, running=True)
+                result = await self.call(device, name, args, text)
+                if result.get("status") == "confirmation_required":
+                    pending = self.tools.confirmations.pending.get(
+                        (self.conv.device.device_id, self.conv.device.session_id)
+                    )
+                    self.probes["lock:" + identifier] = pending.context.request_id
+                self.completed[key] = (identity, result)
+                while len(self.completed) > 128:
+                    self.completed.popitem(last=False)
+            elif op == "confirm":
+                pending = self.tools.confirmations.pending.get(
+                    (self.conv.device.device_id, self.conv.device.session_id)
+                )
+                if (
+                    not pending
+                    or pending.name != "mac_power"
+                    or pending.arguments != {"action": "lock"}
+                    or self.probes.get("lock:" + identifier) != pending.context.request_id
+                ):
+                    raise ValueError("Подтверждение блокировки устарело. Повтори действие.")
+                token = device_selection.set(device.id)
+                try:
+                    context = RequestContext(
+                        self.conv.device, "Подтверждаю " + str(value.get("code", ""))
+                    )
+                    message = await self.tools.confirmations.respond(
+                        context, self.tools.call, self.tools.direct_reply
+                    )
+                    result = {"message": message, "result_status": "unverified"}
+                finally:
+                    device_selection.reset(token)
+            elif op == "probe_led":
+                self.require_adapter()
+                if (
+                    device.kind != "led_strip"
+                    or value.get("consent") is not True
+                    or not self.tools.enabled("led_control")
+                    or "mac.system" not in self.conv.device.capabilities
+                ):
+                    raise ActionDenied(
+                        "Для теста LED нужно явно выбрать и подтвердить одну функцию."
+                    )
+                params = LEDParameters.model_validate(value.get("parameters"))
+                nonnull = params.model_dump(exclude_none=True)
+                if len(nonnull) != 1 or "brightness_delta" in nonnull:
+                    raise ValueError("Проверяй одну абсолютную функцию за раз.")
+                if params.color:
+                    args = {
+                        "action": "color",
+                        "rgb": [int(params.color[i : i + 2], 16) for i in (1, 3, 5)],
+                    }
+                elif params.brightness is not None:
+                    args = {"action": "brightness", "level": params.brightness}
+                else:
+                    args = {"action": "on" if params.power else "off"}
+                lock = self.tools.device_locks.setdefault("led", asyncio.Lock())
+                if lock.locked():
+                    raise ValueError("Лента занята другой командой.")
+                async with lock:
+                    result = await self.strip(device).execute(**args, experiment=True)
+                self.probes[identifier] = result["probe_id"]
+                result["message"] = (
+                    "Тестовая команда отправлена. Проверь ленту и отметь, сработала ли функция. "
+                    "Физический результат пока не подтверждён."
+                )
+            elif op == "confirm_probe":
+                if (
+                    device.kind != "led_strip"
+                    or type(value.get("observed")) is not bool
+                    or not self.probes.get(identifier)
+                    or value.get("probe_id") != self.probes[identifier]
+                ):
+                    raise ValueError("Тест функции устарел. Повтори проверку.")
+                await self.strip(device).confirm_probe(
+                    self.probes.pop(identifier), value["observed"]
+                )
+                result = {
+                    "message": "Наблюдение сохранено. "
+                    "Допуск функции относится только к этому профилю LED.",
+                    "result_status": "success",
+                }
+            else:
+                raise ValueError("Неизвестное действие раздела устройств.")
+            self.publish(result=result, request_id=request_id)
+        except asyncio.CancelledError:
+            self.publish(
+                error="Ожидание прервано. Фактический результат не подтверждён; повтора нет.",
+                request_id=request_id,
+            )
+            raise
+        except (
+            ValueError,
+            KeyError,
+            TypeError,
+            ActionDenied,
+            ToolError,
+            OSError,
+            TimeoutError,
+            sqlite3.Error,
+        ) as exc:
+            if isinstance(identifier, str):
+                self.connections[identifier] = (
+                    "error"
+                    if isinstance(exc, (ToolError, TimeoutError, OSError))
+                    else self.connections.get(identifier, "unknown")
+                )
+            message = (
+                str(exc)
+                if isinstance(exc, (ToolError, ActionDenied)) or type(exc) is ValueError
+                else "Не удалось применить действие. Проверь параметры, доступ и подключение. "
+                "Автоповтора нет."
+            )
+            self.publish(error=message, request_id=request_id)
+        finally:
+            if busy:
+                self.inflight.discard(identifier)
+                self.publish()
+
+    async def close(self):
+        for task in list(self.jobs):
+            task.cancel()
+        if self.jobs:
+            await asyncio.gather(*self.jobs, return_exceptions=True)

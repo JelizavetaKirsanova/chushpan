@@ -8,6 +8,7 @@ const paths: Record<string, string> = {
   heart: 'M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z',
   shield: 'M12 3 3 7v5c0 5 9 10 9 10s9-5 9-10V7ZM8 12l3 3 5-6',
   cpu: 'M5 5h14v14H5ZM9 9h6v6H9ZM9 2v3m6-3v3m-6 14v3m6-3v3M2 9h3m-3 6h3m14-6h3m-3 6h3',
+  monitor: 'M3 4h18v13H3ZM8 21h8m-4-4v4',
   link: 'M10 13a5 5 0 0 0 7 0l4-4a5 5 0 0 0-7-7l-2 2m2 7a5 5 0 0 0-7 0l-4 4a5 5 0 0 0 7 7l2-2',
   chat: 'M21 11a8 8 0 0 1-8 8H5l-3 3v-9a8 8 0 1 1 19-2Z',
   history: 'M3 12a9 9 0 1 0 3-6M3 3v6h6M12 7v5l3 2',
@@ -75,14 +76,10 @@ export class DashboardView {
     node('ambient-settings').addEventListener('submit', event => { event.preventDefault(); this.send({op: 'settings', value: this.readSettings()}); });
     node('manual-location').addEventListener('submit', event => { event.preventDefault(); this.send({op: 'manual_city', city: (node('manual-city') as HTMLInputElement).value}); });
     node('performance-period').addEventListener('change', () => { this.statsDays = Number((node('performance-period') as HTMLSelectElement).value); this.send({op: 'stats', days: this.statsDays}); });
-    node('led-level').addEventListener('input', () => { node('led-level-value').textContent = `${(node('led-level') as HTMLInputElement).value}%`; });
-    node('led-brightness').addEventListener('submit', event => { event.preventDefault(); this.command(`Сделай яркость ленты ${(node('led-level') as HTMLInputElement).value} процентов`); });
     node('edit-cancel').addEventListener('click', () => (node('edit-dialog') as HTMLDialogElement).close());
     node('edit-form').addEventListener('submit', event => { event.preventDefault(); if (!this.available()) { this.feedback('Нет соединения с Чушпаном. Текст сохранён в форме.'); return; } const long = !node('edit-long-label').hidden; const value = (node(long ? 'edit-long' : 'edit-value') as HTMLInputElement).value.trim(); if (!value && (long || !node('edit-value-label').hidden)) return; this.editSave?.(value); (node('edit-dialog') as HTMLDialogElement).close(); });
     node('confirm-action').addEventListener('click', () => { const current = this.data?.confirmation; if (current) this.send({op: 'confirm', fingerprint: current.fingerprint, code: current.code}); });
     document.addEventListener('visibilitychange', () => { if (!document.hidden && this.online) this.refresh(); });
-    const colors: [string, string, string][] = [['Красный', '#e86f83', 'красную'], ['Синий', '#7b8fe9', 'синюю'], ['Фиолетовый', '#b18ae8', 'фиолетовую'], ['Розовый', '#eea0b6', 'розовую'], ['Светло-розовый', '#f4d0e1', 'светло-розовую'], ['Тёплый белый', '#f6debc', 'тёплую белую']];
-    node('led-colors').replaceChildren(...colors.map(([label, color, word]) => { const control = button(label, () => this.command(`Сделай ${word} ленту`), 'color-choice'); control.style.setProperty('--swatch', color); return control; }));
     this.renderMonth();
     window.setInterval(() => void this.pollAmbient(), 5000);
   }
@@ -107,7 +104,6 @@ export class DashboardView {
     document.querySelectorAll<HTMLButtonElement>('[data-op], [data-command], #run-night').forEach(control => control.disabled = !available || this.busy);
     if (this.data) {
       (node('run-night') as HTMLButtonElement).disabled ||= !this.data.integrations.night;
-      document.querySelectorAll<HTMLButtonElement>('.led-card button').forEach(control => control.disabled = !available || this.busy || !this.data!.integrations.led);
     }
   }
   refresh(): void { if (this.online) this.send({op: 'refresh', days: this.statsDays}); }
@@ -179,7 +175,6 @@ export class DashboardView {
     const next = data.calendar.events.find(e => new Date(e.end).getTime() > Date.now());
     node('ambient-event').textContent = next ? `${eventTime(next, data.calendar.timezone ?? data.timezone)} · ${next.title}` : data.calendar.status === 'ready' ? 'На сегодня больше нет событий' : 'Календарь не подключён';
     node('night-availability').textContent = data.integrations.night ? 'Сценарий подключён. Разрешения проверяются при запуске.' : 'Сценарий недоступен в текущей конфигурации.';
-    node('led-availability').textContent = data.integrations.led ? 'Управление настроено · соединение проверяется при команде' : 'Подсветка отключена в настройках';
     node('action-confirmation').hidden = !data.confirmation;
     node('confirmation-summary').textContent = data.confirmation?.summary ?? '';
     node('confirm-action').textContent = data.confirmation ? `Подтверждаю ${data.confirmation.code}` : '';

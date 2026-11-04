@@ -86,6 +86,9 @@ class Locations:
         self.db.execute(
             "CREATE TABLE IF NOT EXISTS scenario_places (id TEXT PRIMARY KEY, data TEXT NOT NULL)"
         )
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS scenario_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
         with memory.memory_transaction():
             if memory.memory_available:
                 for identifier, name in [("dorm", "Общага"), ("home", "Дом")]:

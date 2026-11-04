@@ -82,6 +82,14 @@ class DisplayAction(StrictModel):
         return "set_brightness", {"level": self.parameters.brightness}
 
 
+class ExternalDisplayAction(StrictModel):
+    device: Literal["external_display"] = "external_display"
+    parameters: Brightness
+
+    def call(self):
+        return "set_external_brightness", {"level": self.parameters.brightness}
+
+
 class MusicParameters(StrictModel):
     command: str = Field(min_length=1, max_length=200)
 
@@ -158,7 +166,14 @@ class TVAction(StrictModel):
 
 
 Action = Annotated[
-    LEDAction | DisplayAction | MusicAction | BrowserAction | TVAction | VolumeAction | AppAction,
+    LEDAction
+    | DisplayAction
+    | ExternalDisplayAction
+    | MusicAction
+    | BrowserAction
+    | TVAction
+    | VolumeAction
+    | AppAction,
     Field(discriminator="device"),
 ]
 
@@ -199,6 +214,11 @@ def led_action(args):
 
 
 def _display(text):
+    external = re.search(
+        r"\b(?:внешн(?:его|ий|ем) (?:диспле[йяе]|экран[ае]?)|телевизор[ае]?)\b", text
+    )
+    if external:
+        text = text[: external.start()] + "экрана" + text[external.end() :]
     if not re.search(r"\b(?:mac|macbook|мак|макбука?|экран[ае]?|диспле[йя])\b", text):
         return None
     if not re.match(r"(?:убавь|уменьши|сделай|поставь|установи|яркость)\b", text):
@@ -222,7 +242,8 @@ def _display(text):
     if re.fullmatch(r"\d{1,3}", rest):
         level = int(rest)
     if level is not None and 0 <= level <= 100:
-        return DisplayAction(parameters=Brightness(brightness=level))
+        action = ExternalDisplayAction if external else DisplayAction
+        return action(parameters=Brightness(brightness=level))
     return None
 
 
@@ -275,12 +296,16 @@ def compile_plan(text, *, comfortable_brightness=None, brightness_target=None):
             command,
         )
     ):
-        if brightness_target not in {"led_strip", "mac_display"}:
+        if brightness_target not in {"led_strip", "mac_display", "external_display"}:
             return ControlPlan(
                 clarification="Яркость ленты или экрана Mac?",
                 clarification_kind="brightness_target",
             )
-        command += " ленты" if brightness_target == "led_strip" else " экрана"
+        command += {
+            "led_strip": " ленты",
+            "mac_display": " экрана",
+            "external_display": " внешнего дисплея",
+        }[brightness_target]
         text = command
     if args := led_parse(text, comfortable_brightness=comfortable_brightness):
         action = led_action(args)
@@ -418,7 +443,7 @@ class ControlSession:
                 rf"\b(?:{_TARGET}|mac|macbook|мак|макбука?|экран[ае]?|диспле[йя])\b", value
             )
             profile.update(context_used=bool(target and not explicit_target))
-        if target not in {"led_strip", "mac_display"}:
+        if target not in {"led_strip", "mac_display", "external_display"}:
             target = self.default_brightness_device
         pending_target = self.pending_target
         if (
@@ -468,11 +493,14 @@ class ControlSession:
                     )
                 if self.device == "led_strip":
                     return ControlPlan(actions=[LEDAction(parameters=LEDParameters(**params))])
-                if self.device == "mac_display" and "brightness" in params:
+                if self.device in {"mac_display", "external_display"} and "brightness" in params:
+                    action = (
+                        ExternalDisplayAction
+                        if self.device == "external_display"
+                        else DisplayAction
+                    )
                     return ControlPlan(
-                        actions=[
-                            DisplayAction(parameters=Brightness(brightness=params["brightness"]))
-                        ]
+                        actions=[action(parameters=Brightness(brightness=params["brightness"]))]
                     )
                 return ControlPlan(
                     clarification="Не могу достоверно восстановить предыдущий параметр "
@@ -503,7 +531,13 @@ class ControlSession:
             if self.device == "mac_sound":
                 text = f"Поставь громкость {rest}"
             else:
-                target = "ленты" if self.device == "led_strip" else "Mac"
+                target = (
+                    "ленты"
+                    if self.device == "led_strip"
+                    else "внешнего дисплея"
+                    if self.device == "external_display"
+                    else "Mac"
+                )
                 text = f"Поставь яркость {target} {rest}"
         if (
             self.device == "mac_sound"
@@ -709,7 +743,8 @@ class ControlSession:
         keep_context = (
             len(plan.actions) == 1
             and good
-            and plan.actions[0].device in {"led_strip", "mac_display", "mac_sound"}
+            and plan.actions[0].device
+            in {"led_strip", "mac_display", "mac_sound", "external_display"}
         )
         self.clear(keep_state=keep_context)
         if keep_context:

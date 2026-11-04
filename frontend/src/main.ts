@@ -1,6 +1,8 @@
 import {microphonePresentation, requestMicrophone, dialogueCaption, type MicrophoneApi} from './voice_activation';
 import {VoiceSettingsPanel} from './voice_settings';
 import {AutomationsView} from './automations';
+import {DevicesView} from './devices';
+import './devices.css';
 import "./style.css";
 import "./workspace.css";
 import './dashboard.css';
@@ -54,6 +56,7 @@ const voiceSettings = new VoiceSettingsPanel(value => link.voice(value));
 const core = new Character(byId('character'), tap);
 const dashboard = new DashboardView(value => link.dashboard(value), value => link.chat(value), view => workspace.navigate(view), value => link.historySearch(value), core, value => panels.weather(value));
 const automations = new AutomationsView(value => link.automations(value), view => workspace.navigate(view), () => link.send('wake'), text => link.chat({text}));
+const devices = new DevicesView(value=>link.devices(value));
 const settingsCenter = new SettingsCenterUI(value => link.settings(value), value => link.automations(value), view => workspace.navigate(view));
 
 function setMode(next: Mode): void {
@@ -194,6 +197,7 @@ function onEvent(e: HudEvent): void {
   dashboard.receive(e);
   voiceSettings.receive(e);
   automations.receive(e);
+  devices.receive(e);
   settingsCenter.receive(e);
   switch (e.type) {
     case "voice_recognition": return;
@@ -250,6 +254,7 @@ const link = new Link(onEvent, (online) => {
   dashboard.connection(online);
   voiceSettings.connection(online);
   automations.connection(online);
+  devices.connection(online);
   settingsCenter.connection(online);
   if (online) link.voiceStatus();
   exportButton.disabled = !online;

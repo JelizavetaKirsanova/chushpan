@@ -83,7 +83,8 @@ def result_status(name, arguments, result, risk=None):
     ):
         return (
             "success"
-            if "level" not in arguments or arguments["level"] == result["volume_percent"]
+            if ("level" not in arguments or arguments["level"] == result["volume_percent"])
+            and ("mute" not in arguments or arguments["mute"] == result.get("muted"))
             else "failed"
         )
     if name == "music_command" and result.get("ok") and result.get("state") == "paused":
@@ -199,6 +200,7 @@ class Tool:
             in {
                 "led_control",
                 "set_brightness",
+                "set_external_brightness",
                 "set_volume",
                 "open_app",
                 "music_command",
@@ -288,7 +290,13 @@ class Tool:
             raise ConfirmationRequired(summary, action, args)
         # Legacy service intent checks see the original, trusted request on confirmation.
         token = user_text.set(context.text if context else user_text.get())
+        from backend.context import device_endpoint
+
+        endpoint_token = None
         try:
+            devices = getattr(getattr(self, "registry", None), "devices", None)
+            if devices and (device := devices.guard(self.name)):
+                endpoint_token = device_endpoint.set((device.kind, device.endpoint))
             if self.required_capability:
                 ticket = authorized_operation.set((self.name, args, context.request_id))
                 try:
@@ -297,6 +305,8 @@ class Tool:
                     authorized_operation.reset(ticket)
             return await self._handler(**args)
         finally:
+            if endpoint_token is not None:
+                device_endpoint.reset(endpoint_token)
             user_text.reset(token)
 
     def schema(self) -> dict[str, Any]:
@@ -329,10 +339,12 @@ class ToolRegistry:
         self.on_execution: Callable[[int, str, str, Any], None] | None = None
         self._execution_id = 0
         self.availability = {}
+        self.devices = None
         for tool in tools:
             self.add(tool)
 
     def add(self, tool: Tool) -> None:
+        tool.registry = self
         self._tools[tool.name] = tool
 
     def __contains__(self, name: str) -> bool:
@@ -457,6 +469,12 @@ class ToolRegistry:
                 name, {}, decoded, risk
             )
             self.observe_availability(name, decoded)
+            if self.devices:
+                try:
+                    args = json.loads(arguments) if isinstance(arguments, str) else arguments
+                    self.devices.observe(name, args if isinstance(args, dict) else {}, decoded)
+                except (ValueError, TypeError, sqlite3.Error, OSError) as exc:
+                    log.warning("Device observation unavailable type=%s", type(exc).__name__)
             if profile := current.get():
                 profile.update(result_status=decoded["result_status"])
             result = _dump(decoded)

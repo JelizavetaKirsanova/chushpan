@@ -33,7 +33,6 @@ export class AutomationsView {
   private list = el('div', '', 'scenario-list');
   private editor = el('div', '', 'scenario-editor');
   private feedback = el('p', 'Подключение к Чушпану…', 'scenario-feedback');
-  private deviceRoot = el('div', '', 'integration-grid');
   private permissionRoot = el('div', '', 'integration-grid');
   private commandRoot = el('div');
   private trainingRoot = el('div');
@@ -57,10 +56,8 @@ export class AutomationsView {
   private placesDirty = false;
   private advancedOpen = false;
   private openedBlocks = new WeakSet<Block>();
-  private selectedDevice = '';
   private capturing = false;
   private toggling = new Set<string>();
-  private legacyControls = el('div');
   private placeFilter = '';
   private pendingPhrase = '';
   private executionRoot = el('div', '', 'scenario-execution');
@@ -83,11 +80,6 @@ export class AutomationsView {
     page.querySelector('.page-heading')!.after(toolbar, this.feedback, layout);
     const old = page.querySelector('.integration-grid');
     if (old) {const details = el('details', '', 'legacy-ritual'); details.append(el('summary', 'Встроенные сценарии'), old); page.append(details);}
-    const devicePage = document.querySelector<HTMLElement>('.smart-home-page')!;
-    this.legacyControls.append(...devicePage.querySelectorAll('.led-card'));
-    devicePage.className = 'workspace-page automation-section devices-page'; devicePage.setAttribute('aria-label', 'Устройства');
-    devicePage.replaceChildren(el('div', '', 'page-heading'), this.deviceRoot);
-    devicePage.firstElementChild!.append(el('h1', 'Устройства'), el('p', 'Подключения и доступные действия.'));
     const settings = document.querySelector('.settings-page')!;
     settings.querySelector('#settings-items')!.closest('details')!.append(document.querySelector('.bottom')!);
     for (const card of settings.querySelectorAll<HTMLElement>(':scope > form, :scope > section.settings-card')) {
@@ -175,7 +167,7 @@ export class AutomationsView {
     this.renderLocation(); this.renderPlaces();
     if (event.preview) this.renderPreview(event.preview);
     if (event.revisions) this.renderRevisions(event.revisions);
-    this.renderList(); this.renderDevices(); this.renderPermissions(); this.renderTraining(); this.renderRuns();
+    this.renderList(); this.renderPermissions(); this.renderTraining(); this.renderRuns();
 
   }
   private updateFeedback(): void {
@@ -660,32 +652,6 @@ export class AutomationsView {
     row.append(this.label((parameterNames[key] ?? key) + (required ? ' *' : ''), control)); return row;
   }
 
-  private renderDevices(): void {
-    this.deviceRoot.className = 'device-list'; this.deviceRoot.replaceChildren();
-    const capabilities = this.data?.capabilities ?? [];
-    for (const device of this.data?.devices ?? []) {
-      const card = el('details', '', 'device-row'); card.open = this.selectedDevice === device.id;
-      card.ontoggle = () => {if (card.open) this.selectedDevice = device.id; else if (this.selectedDevice === device.id) this.selectedDevice = '';};
-      const connected = ['connected', 'confirmed', 'observed'].includes(device.status);
-      const label = connected ? 'Подключено' : ['unavailable', 'error', 'failed'].includes(device.status) ? 'Отключено' : 'Подключение не проверено';
-      const heading = el('summary'); const text = el('span'); text.append(el('strong', device.name), el('small', device.actions.map(id => capabilities.find(c => c.id === id)?.name).filter(Boolean).join(' · ') || 'Нет доступных действий'));
-      heading.append(text, el('span', label, connected ? 'device-connected' : 'device-status')); card.append(heading);
-      const detail = el('div', '', 'device-detail');
-      if (device.note) detail.append(el('p', device.note, 'muted'));
-      for (const id of device.actions) {
-        const capability = capabilities.find(c => c.id === id); if (!capability) continue;
-        const create = this.button(capability.name, () => {if (!this.discardAllowed()) return; this.draft = newScenario(); this.draft.name = capability.name; const block = this.actionBlock('action', id); this.draft.actions = [block]; this.openedBlocks.add(block); this.activeVariant = ''; this.dirty = false; this.advancedOpen = false; this.renderEditor(); this.navigate('automations');}); create.dataset.createAction = 'true'; detail.append(create);
-      }
-      if (device.id === 'led') {const controls = el('details'); controls.append(el('summary', 'Управление подсветкой'), this.legacyControls); detail.append(controls);}
-      const extra = el('details'); extra.append(el('summary', 'Дополнительно'));
-      if (device.actions.length) extra.append(this.button('Проверить подключение', () => this.send({op: 'probe', device: device.id})));
-      if (device.last_success) extra.append(el('p', `Последняя успешная операция: ${device.last_operation ?? ''} · ${new Date(device.last_success).toLocaleString()}`));
-      if (device.error) extra.append(el('p', device.error, 'error'));
-      if (device.details) extra.append(el('pre', JSON.stringify(device.details, null, 2)));
-      detail.append(extra); card.append(detail); this.deviceRoot.append(card);
-    }
-    if (!this.data?.devices.length) this.deviceRoot.append(el('p', 'Устройства появятся после подключения Чушпана.', 'muted'));
-  }
   private renderPermissions(): void {
     this.permissionRoot.className = 'permission-list'; this.permissionRoot.replaceChildren();
     if (!this.permissions) {this.permissionRoot.append(el('p', 'Проверь доступ, чтобы увидеть состояние разрешений.', 'muted')); return;}

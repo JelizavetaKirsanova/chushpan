@@ -384,6 +384,8 @@ class LEDStrip:
         self.cfg = settings.led
         self.path = settings.data_path / "led" / "device.json"
         self.lock = asyncio.Lock()
+        self.before_write = None
+        self.state_listener = None
 
     @property
     def identity(self) -> dict[str, str]:
@@ -423,6 +425,11 @@ class LEDStrip:
             temporary.write_text(state.model_dump_json(indent=2), encoding="utf-8")
             temporary.chmod(0o600)
             temporary.replace(self.path)
+            if self.state_listener:
+                try:
+                    self.state_listener(state)
+                except Exception as exc:
+                    log.warning("LED state observer unavailable type=%s", type(exc).__name__)
         except OSError:
             raise ToolError(
                 "Не удалось сохранить настройки LED. Если запись уже началась, "
@@ -465,6 +472,8 @@ class LEDStrip:
             log.warning("LED disconnect failed; next request will use a new connection")
 
     async def _write(self, data: bytes, state: LEDState, args: dict) -> None:
+        if self.before_write:
+            self.before_write()
         # Reconnect only before write. After write starts, delivery is ambiguous: no replay.
         client = None
         write_started = False

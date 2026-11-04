@@ -39,6 +39,7 @@ REQUESTS: dict[str, type] = {
     "performance_detail": str,
     "automations": dict,
     "settings_center": dict,
+    "devices": dict,
 }
 RECONNECT_S = 1.5  # an already open HUD page reconnects within this; then no new tab
 

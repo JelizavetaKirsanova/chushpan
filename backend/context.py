@@ -28,6 +28,8 @@ voice_led_command: ContextVar[str | None] = ContextVar("voice_led_command", defa
 voice_control_command: ContextVar[str | None] = ContextVar("voice_control_command", default=None)
 # Issued by VoiceLoop only after a confident accepted turn in its bounded live session.
 voice_session: ContextVar[tuple[str, str] | None] = ContextVar("voice_session", default=None)
+device_selection: ContextVar[str | None] = ContextVar("device_selection", default=None)
+device_endpoint: ContextVar[tuple[str, str] | None] = ContextVar("device_endpoint", default=None)
 # Issued only by the local validated planner, scoped to one exact child operation.
 planned_operation: ContextVar[tuple[str, str, str] | None] = ContextVar(
     "planned_operation", default=None
