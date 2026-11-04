@@ -36,9 +36,17 @@ class MacCenter(Center):
         self.preview, self.captured_at, self.analysis = None, None, None
         self.apps, self.windows, self.permissions = [], [], {}
         store.db.execute(
-            "CREATE TABLE IF NOT EXISTS mac_action_log (id INTEGER PRIMARY KEY, at TEXT NOT NULL, action TEXT NOT NULL, status TEXT NOT NULL)"
+            "CREATE TABLE IF NOT EXISTS mac_action_log (id INTEGER PRIMARY "
+            "KEY, at TEXT NOT NULL, action TEXT NOT NULL, status TEXT NOT "
+            "NULL)"
         )
         self.bind(bus)
+
+    def request(self, value):
+        if isinstance(value, dict) and value.get("op") == "cancel":
+            self.preview, self.captured_at, self.analysis = None, None, None
+            self.publish(data=self.snapshot())
+        super().request(value)
 
     def snapshot(self):
         pending = self.tools.confirmations.pending.get(
@@ -81,7 +89,8 @@ class MacCenter(Center):
                 (_now(), name, result.get("result_status", "unverified")),
             )
             self.store.db.execute(
-                "DELETE FROM mac_action_log WHERE id NOT IN (SELECT id FROM mac_action_log ORDER BY id DESC LIMIT 1000)"
+                "DELETE FROM mac_action_log WHERE id NOT IN (SELECT id FROM "
+                "mac_action_log ORDER BY id DESC LIMIT 1000)"
             )
         if result.get("error"):
             raise ValueError(result["error"])
@@ -125,7 +134,8 @@ class MacCenter(Center):
                 self.analysis = {
                     "mode": "local_ocr",
                     "text": redact("\n".join(r["text"] for r in data.get("lines", [])))[:12000],
-                    "message": "Локально распознан только текст. Визуальное содержимое моделью не анализировалось.",
+                    "message": "Локально распознан только текст. Визуальное содержимое моделью не"
+                    " анализировалось.",
                 }
         finally:
             if artifact:

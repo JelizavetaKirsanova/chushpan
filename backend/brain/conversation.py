@@ -135,9 +135,11 @@ class Conversation:
             if not self.device.authenticated:
                 facts = None
             elif self.tools.memory and self._request:
-                facts = [
-                    (r["id"], r["content"]) for r in self.tools.memory.relevant(self._request.text)
-                ]
+                with measure("memory_retrieval"):
+                    facts = [
+                        (r["id"], r["content"])
+                        for r in self.tools.memory.relevant(self._request.text)
+                    ]
             else:
                 facts = (
                     self.store.facts()

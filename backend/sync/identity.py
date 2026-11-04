@@ -4,6 +4,7 @@ import base64
 import hashlib
 import ipaddress
 import json
+import secrets
 from datetime import UTC, datetime, timedelta
 
 from cryptography import x509
@@ -60,7 +61,10 @@ def verify(jwk, signature, payload):
 
 class KeychainIdentity:
     def read(self):
-        import Security as s
+        try:
+            import Security as s
+        except ImportError:
+            raise ValueError("Нужна macOS со Связкой ключей для запуска TLS-сервера.") from None
 
         query = {
             s.kSecClass: s.kSecClassGenericPassword,
@@ -78,7 +82,7 @@ class KeychainIdentity:
             [
                 x509.NameAttribute(
                     NameOID.COMMON_NAME,
-                    "Chushpan Local CA " + encode(__import__("secrets").token_bytes(8)),
+                    "Chushpan Local CA " + encode(secrets.token_bytes(8)),
                 )
             ]
         )
@@ -108,11 +112,14 @@ class KeychainIdentity:
             )
             .sign(ca_key, hashes.SHA256())
         )
-        pem = lambda key: key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
-        ).decode()
+
+        def pem(key):
+            return key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            ).decode()
+
         identity = {
             "ca_key": pem(ca_key),
             "server_key": pem(server_key),

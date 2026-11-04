@@ -3,10 +3,10 @@
 import json
 import math
 import sqlite3
-from datetime import UTC, datetime, timedelta
-from zoneinfo import ZoneInfo
+from datetime import UTC
 
 from backend.latency import PIPELINE_REVISION
+from backend.statistics import dashboard, period_range
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS request_traces (
 request_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, conversation_id INTEGER,
@@ -149,25 +149,17 @@ class PerformanceHistory:
         }
 
     def statistics(self, days, timezone, filters=None):
-        if days not in {0, 1, 7, 30}:
-            days = 1
-        since = (
-            (
-                datetime.now(ZoneInfo(timezone)).replace(hour=0, minute=0, second=0, microsecond=0)
-                - timedelta(days=days - 1)
-            )
-            .astimezone(UTC)
-            .isoformat()
-        )
-        if days == 0:
-            since = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+        filters = filters or {}
+        bounds = period_range(days, timezone, filters)
+        start, end, before_start, before_end = bounds
+        since, until = start.astimezone(UTC).isoformat(), end.astimezone(UTC).isoformat()
         rows = [
             dict(r)
             for r in self.store.db.execute(
                 "SELECT request_id,created_at,kind,status,first_content_s,total_s,provider,data "
-                "FROM request_traces WHERE created_at>=? AND kind!='activation' "
+                "FROM request_traces WHERE created_at>=? AND created_at<? AND kind!='activation' "
                 "ORDER BY created_at DESC",
-                (since,),
+                (since, until),
             )
         ]
         recent, traces = [], []
@@ -176,7 +168,7 @@ class PerformanceHistory:
             traces.append(trace)
             row["metadata"] = trace["metadata"]
             if row["status"] == "running" and row["request_id"] not in self.active:
-                row["status"] = "unknown"
+                row["status"] = trace["status"] = "unknown"
         filters = filters or {}
 
         def matches(row):
@@ -194,18 +186,37 @@ class PerformanceHistory:
         rows = [row for row in rows if matches(row)]
         selected = {r["request_id"] for r in rows}
         traces = [t for t in traces if t["request_id"] in selected]
-        for row in rows[:100]:
+        ordered = (
+            sorted(
+                rows,
+                key=lambda row: row["total_s"] if row["total_s"] is not None else -1,
+                reverse=True,
+            )
+            if filters.get("sort") == "slow"
+            else rows
+        )
+        for row in ordered[:100]:
             detail = self.detail(row["request_id"])
             recent.append({**row, "metadata": detail["metadata"] if detail else {}})
         activations = [
             self.detail(row[0])
             for row in self.store.db.execute(
                 "SELECT request_id FROM request_traces WHERE kind='activation' "
-                "AND created_at>=? ORDER BY created_at DESC LIMIT 30",
-                (since,),
+                "AND created_at>=? AND created_at<? ORDER BY created_at DESC LIMIT 30",
+                (since, until),
             )
         ]
+        previous = [
+            json.loads(row[0])
+            for row in self.store.db.execute(
+                "SELECT data FROM request_traces WHERE created_at>=? AND created_at<? "
+                "AND kind!='activation'",
+                (before_start.astimezone(UTC).isoformat(), before_end.astimezone(UTC).isoformat()),
+            )
+        ]
+        previous = [trace for trace in previous if matches(trace)]
         return {
+            "dashboard": dashboard(self.store.db, traces, previous, bounds, timezone),
             "type": "performance_stats",
             "days": days,
             "filters": filters,
@@ -225,8 +236,8 @@ class PerformanceHistory:
                 for kind in ("voice", "text")
             },
             "completion": {
-                kind: aggregate([r for r in rows if r["kind"] == kind], "total_s")
-                for kind in ("voice", "text")
+                kind: aggregate([r for r in rows if kind == "all" or r["kind"] == kind], "total_s")
+                for kind in ("voice", "text", "all")
             },
             "comparison": {
                 kind: {
@@ -234,14 +245,14 @@ class PerformanceHistory:
                         [
                             r
                             for r in rows
-                            if r["kind"] == kind
+                            if (kind == "all" or r["kind"] == kind)
                             and (r["metadata"].get("pipeline_revision") == PIPELINE_REVISION)
                             == is_current
                         ]
                     )
                     for label, is_current in (("before", False), ("after", True))
                 }
-                for kind in ("voice", "text")
+                for kind in ("voice", "text", "all")
             },
             "benchmarks": self.benchmarks(),
             "requests": recent,
@@ -265,8 +276,13 @@ class PerformanceHistory:
         def stats(days):
             try:
                 bus.publish(self.statistics(days, timezone))
-            except sqlite3.Error:
-                bus.publish({"type": "performance_error", "message": "Диагностика недоступна."})
+            except (sqlite3.Error, ValueError):
+                bus.publish(
+                    {
+                        "type": "performance_error",
+                        "message": "Проверь период. Диагностика недоступна.",
+                    }
+                )
 
         def detail(identity):
             try:
@@ -281,7 +297,7 @@ class PerformanceHistory:
                 return
             filters = value.get("filters", {})
             if not isinstance(filters, dict) or any(
-                k not in {"kind", "model", "request_class", "input_mode"}
+                k not in {"kind", "model", "request_class", "input_mode", "start", "end", "sort"}
                 or not isinstance(v, str)
                 or len(v) > 120
                 for k, v in filters.items()
@@ -289,8 +305,13 @@ class PerformanceHistory:
                 return
             try:
                 bus.publish(self.statistics(value["days"], timezone, filters))
-            except sqlite3.Error:
-                bus.publish({"type": "performance_error", "message": "Диагностика недоступна."})
+            except (sqlite3.Error, ValueError):
+                bus.publish(
+                    {
+                        "type": "performance_error",
+                        "message": "Проверь период. Диагностика недоступна.",
+                    }
+                )
 
         bus.handle("performance_query", query)
         bus.handle("performance_detail", detail)

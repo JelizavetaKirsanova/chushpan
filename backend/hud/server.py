@@ -42,6 +42,10 @@ REQUESTS: dict[str, type] = {
     "settings_center": dict,
     "devices": dict,
     "cinema": dict,
+    "memory_library": dict,
+    "mac_center": dict,
+    "device_sync": dict,
+    "analytics": dict,
 }
 RECONNECT_S = 1.5  # an already open HUD page reconnects within this; then no new tab
 

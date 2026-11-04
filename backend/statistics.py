@@ -23,9 +23,11 @@ def period_range(days, timezone, filters=None, now=None):
     else:
         raise ValueError("Неизвестный период.")
     # Compare equal local-calendar windows (including DST), up to the same time of day.
-    shift = timedelta(hours=1) if days == 0 else timedelta(days=(
-        (end.date() - start.date()).days if days == -1 else days
-    ))
+    shift = (
+        timedelta(hours=1)
+        if days == 0
+        else timedelta(days=((end.date() - start.date()).days if days == -1 else days))
+    )
     return start, end, start - shift, end - shift
 
 
@@ -34,8 +36,11 @@ def stage_times(trace):
     stages = trace.get("stages", [])
 
     def duration(names):
-        spans = sorted((s["start_s"], s["end_s"]) for s in stages
-                       if s["stage"] in names and s.get("end_s") is not None)
+        spans = sorted(
+            (s["start_s"], s["end_s"])
+            for s in stages
+            if s["stage"] in names and s.get("end_s") is not None
+        )
         if not spans:
             return None
         total, left, right = 0, *spans[0]
@@ -65,15 +70,20 @@ def operation_category(trace):
     if meta.get("request_class") == "scenario" or "run_scenario" in names:
         return "scenarios"
     if meta.get("intent") == "device_control" or names & {
-        "device_command", "led_control", "set_brightness", "set_external_brightness",
+        "device_command",
+        "led_control",
+        "set_brightness",
+        "set_external_brightness",
         "set_volume",
     }:
         return "devices"
     if any(n.startswith(("search", "web_")) or n in {"weather", "news"} for n in names):
         return "search"
     if meta.get("request_class") in {"routine", "dialogue"} or (
-        not any(names) and not any(s["stage"] in {"tool_execution", "local_execution"}
-                                  for s in trace.get("stages", []))
+        not any(names)
+        and not any(
+            s["stage"] in {"tool_execution", "local_execution"} for s in trace.get("stages", [])
+        )
         and meta.get("request_class") not in {"command", "local_control", "confirmation"}
     ):
         return "conversations"
@@ -87,10 +97,14 @@ def dashboard(db, traces, previous, bounds, timezone):
     def runs(left, right):
         if not db.execute("SELECT 1 FROM sqlite_master WHERE name='scenario_runs'").fetchone():
             return []
-        return [json.loads(r[0]) for r in db.execute(
-            "SELECT data FROM scenario_runs WHERE started_at>=? AND started_at<? "
-            "ORDER BY started_at DESC", (left.astimezone(UTC).isoformat(),
-                                        right.astimezone(UTC).isoformat()))]
+        return [
+            json.loads(r[0])
+            for r in db.execute(
+                "SELECT data FROM scenario_runs WHERE started_at>=? AND started_at<? "
+                "ORDER BY started_at DESC",
+                (left.astimezone(UTC).isoformat(), right.astimezone(UTC).isoformat()),
+            )
+        ]
 
     current_runs, previous_runs = runs(start, end), runs(before_start, before_end)
 
@@ -100,13 +114,21 @@ def dashboard(db, traces, previous, bounds, timezone):
         outcomes += [r["status"] for r in scenarios]
         known = [s for s in outcomes if s in {"success", "completed", "failed", "partial_success"}]
         success = sum(s in {"success", "completed"} for s in known)
-        latency = [r["first_content_s"] for r in rows
-                   if r["status"] == "completed" and r.get("first_content_s") is not None]
-        return {"requests": len(rows), "response_s": sum(latency)/len(latency) if latency else None,
-                "executed": success, "success_pct": 100*success/len(known) if known else None,
-                "known_operations": len(known), "unconfirmed_operations": len(outcomes)-len(known)}
+        latency = [
+            r["first_content_s"]
+            for r in rows
+            if r["status"] == "completed" and r.get("first_content_s") is not None
+        ]
+        return {
+            "requests": len(rows),
+            "response_s": sum(latency) / len(latency) if latency else None,
+            "executed": success,
+            "success_pct": 100 * success / len(known) if known else None,
+            "known_operations": len(known),
+            "unconfirmed_operations": len(outcomes) - len(known),
+        }
 
-    span = (end.date() - start.date()).days + 1
+    span = ((end - timedelta(microseconds=1)).date() - start.date()).days + 1
     unit = "hour" if span <= 1 else "month" if span > 62 else "day"
 
     def key(at):
@@ -116,9 +138,15 @@ def dashboard(db, traces, previous, bounds, timezone):
     cursor = start.replace(minute=0, second=0, microsecond=0)
     while cursor < end:
         bucket_key = key(cursor)
-        buckets.setdefault(bucket_key, {"key": bucket_key, "label": cursor.strftime(
-            {"hour": "%H:00", "day": "%d.%m", "month": "%m.%Y"}[unit]),
-            "requests": 0, "values": {name: [] for name in stage_times({})}})
+        buckets.setdefault(
+            bucket_key,
+            {
+                "key": bucket_key,
+                "label": cursor.strftime({"hour": "%H:00", "day": "%d.%m", "month": "%m.%Y"}[unit]),
+                "requests": 0,
+                "values": {name: [] for name in stage_times({})},
+            },
+        )
         cursor += timedelta(hours=1) if unit == "hour" else timedelta(days=1)
     distribution = dict.fromkeys(["conversations", "devices", "scenarios", "search", "other"], 0)
     diagnostics = []
@@ -133,27 +161,48 @@ def dashboard(db, traces, previous, bounds, timezone):
                 for name, value in times.items():
                     if value is not None:
                         bucket["values"][name].append(value)
-        diagnostics.append({"request_id": trace["request_id"], "created_at": trace["created_at"],
-                            "kind": trace["kind"], "category": category, "status": trace["status"],
-                            "model": trace.get("metadata", {}).get("model"), "times": times,
-                            "errors": trace.get("errors", [])})
+        diagnostics.append(
+            {
+                "request_id": trace["request_id"],
+                "created_at": trace["created_at"],
+                "kind": trace["kind"],
+                "category": category,
+                "status": trace["status"],
+                "model": trace.get("metadata", {}).get("model"),
+                "times": times,
+                "errors": trace.get("errors", []),
+            }
+        )
     for bucket in buckets.values():
-        bucket["latency"] = {k: sum(v)/len(v) if v else None
-                             for k, v in bucket.pop("values").items()}
+        bucket["latency"] = {
+            k: sum(v) / len(v) if v else None for k, v in bucket.pop("values").items()
+        }
     apps = []
     if db.execute("SELECT 1 FROM sqlite_master WHERE name='analytics_events'").fetchone():
         # Respect collection policy: read already collected events, never start sampling.
         totals = {}
         for duration, metadata in db.execute(
             "SELECT duration,metadata FROM analytics_events WHERE event_type='mac.activity' "
-            "AND timestamp>=? AND timestamp<?", (start.timestamp(), end.timestamp())):
+            "AND timestamp>=? AND timestamp<?",
+            (start.timestamp(), end.timestamp()),
+        ):
             meta = json.loads(metadata)
             name = meta.get("app", meta.get("bundle", "Приложение"))
             totals[name] = totals.get(name, 0) + (duration or 0)
-        apps = [{"name": name, "seconds": seconds}
-                for name, seconds in sorted(totals.items(), key=lambda row: -row[1])]
-    return {"start": start.isoformat(), "end": end.isoformat(), "timezone": timezone,
-            "unit": unit, "metrics": metrics(traces, current_runs),
-            "previous": metrics(previous, previous_runs), "buckets": list(buckets.values()),
-            "distribution": distribution, "requests": diagnostics,
-            "scenarios": current_runs, "apps": apps}
+        apps = [
+            {"name": name, "seconds": seconds}
+            for name, seconds in sorted(totals.items(), key=lambda row: -row[1])
+        ]
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "timezone": timezone,
+        "unit": unit,
+        "metrics": metrics(traces, current_runs),
+        "previous": metrics(previous, previous_runs),
+        "buckets": list(buckets.values()),
+        "distribution": distribution,
+        "requests": diagnostics,
+        "scenarios": current_runs,
+        "apps": apps,
+    }

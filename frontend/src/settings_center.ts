@@ -72,6 +72,10 @@ export class SettingsCenterUI {
       const text=el('span');text.append(el('strong',title),el('small',description));b.append(symbol,text,el('span','›','settings-chevron'));id('settings-categories').append(b);
     }
     id('settings-back').onclick=()=>this.open('');
+    document.addEventListener('settings:open',event=>this.open((event as CustomEvent<string>).detail));
+    for(const [title,description,view] of [['Управление Mac','Экран, действия и разрешения','mac-control'],['Синхронизация','Доверенные устройства и категории данных','my-devices'],['Личная аналитика','Сбор данных, исключения и хранение','analytics'],['Приватность','Память, экран, устройства и данные','privacy']]) {
+      const button=this.button('',()=>this.navigate(view));button.className='settings-category';const text=el('span');text.append(el('strong',title),el('small',description));button.append(text,el('span','›','settings-chevron'));id('settings-categories').append(button);
+    }
     const recheck=()=>{if(this.page==='access'&&this.online&&!document.hidden&&Date.now()-this.permissionCheckedAt>1500){this.permissionCheckedAt=Date.now();this.send({op:'permissions'});}};
     window.addEventListener('focus',recheck);document.addEventListener('visibilitychange',recheck);
     const take=(key:string,node:Element|null)=>{if(node){const list=this.legacy.get(key)??[];list.push(node as HTMLElement);this.legacy.set(key,list);}};

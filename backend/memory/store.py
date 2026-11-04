@@ -433,12 +433,15 @@ class MemoryStore:
             self._suppress(old["content"])
             self.db.execute("DELETE FROM facts WHERE id=?", (fact_id,))
             self.invalidate_memory_context()
-            for row in self.db.execute("SELECT id, content FROM facts"):
+            for row in self.db.execute(
+                "SELECT id, content FROM facts WHERE project_id IS ?", (old["project_id"],)
+            ):
                 if row["content"].casefold() == content.casefold():
                     return row["id"], False
             cursor = self.db.execute(
                 "INSERT INTO facts(content, created_at, updated_at, category, source, "
-                "confidence, sensitive, semantic_key, revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "confidence, sensitive, semantic_key, revision, project_id, expires_at, confirmed) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     content,
                     _now(),
@@ -449,6 +452,9 @@ class MemoryStore:
                     old["sensitive"],
                     old["semantic_key"],
                     old["revision"] + 1,
+                    old["project_id"],
+                    old["expires_at"],
+                    old["confirmed"],
                 ),
             )
             return int(cursor.lastrowid), True

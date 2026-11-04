@@ -55,7 +55,7 @@ export class Workspace {
     view = ({'smart-home': 'devices', permissions: 'settings', commands: 'automations', training: 'automations'} as Record<string, string>)[view] ?? view;
     if (!document.dispatchEvent(new CustomEvent("workspace:navigate", {detail: view, cancelable: true}))) return;
     document.querySelector<HTMLElement>(".hud")!.dataset.view = view;
-    const parent = ({history: 'home', calendar: 'home', day: 'home', memory: 'settings', diagnostics: 'performance'} as Record<string, string>)[view] ?? view;
+    const parent = ({history: 'home', calendar: 'home', day: 'home', notes: 'memory', privacy: 'settings', diagnostics: 'performance'} as Record<string, string>)[view] ?? view;
     document.querySelectorAll<HTMLButtonElement>(".workspace-nav button[data-view]").forEach(button => {
       if (button.dataset.view === parent) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");

@@ -5,6 +5,10 @@ import { phaseLabels } from './workspace_state';
 
 const node = (id: string) => document.getElementById(id)!;
 const paths: Record<string, string> = {
+  grid: 'M3 3h7v7H3Zm11 0h7v7h-7ZM3 14h7v7H3Zm11 0h7v7h-7Z',
+  bolt: 'm13 2-9 12h7l-1 8 10-13h-8Z',
+  check: 'M21 11a9 9 0 1 1-5-8M8 11l4 4 9-11',
+  file: 'M14 2H4v20h16V8Zm0 0v6h6M8 12h8m-8 4h6',
   film: 'M3 4h18v16H3ZM7 4v16m10-16v16M3 8h4m-4 8h4m10-8h4m-4 8h4M10 9l5 3-5 3Z',
   play: 'M8 4v16l12-8ZM3 4v16',
   bookmark: 'M6 3h12v19l-6-4-6 4Z',

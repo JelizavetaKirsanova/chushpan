@@ -2,6 +2,7 @@
 
 import json
 import re
+import sqlite3
 import time
 
 from backend.center import rows, text
@@ -47,7 +48,8 @@ class SyncStore:
         with self.memory.memory_transaction():
             self.db.execute(
                 "INSERT INTO sync_peers(id,name,kind,public_key,approved_at) VALUES(?,?,?,?,?) "
-                "ON CONFLICT(id) DO UPDATE SET name=excluded.name,kind=excluded.kind,public_key=excluded.public_key,"
+                "ON CONFLICT(id) DO UPDATE SET "
+                "name=excluded.name,kind=excluded.kind,public_key=excluded.public_key,"
                 "approved_at=excluded.approved_at,revoked_at=NULL,disconnected=0,categories='[]',capabilities='[]'",
                 (
                     pending["id"],
@@ -65,7 +67,7 @@ class SyncStore:
             self.db.execute("DELETE FROM sync_nonces WHERE at<?", (time.time() - 120,))
             try:
                 self.db.execute("INSERT INTO sync_nonces VALUES(?,?,?)", (peer, nonce, time.time()))
-            except __import__("sqlite3").IntegrityError:
+            except sqlite3.IntegrityError:
                 raise ValueError("Повторный запрос отклонён.") from None
 
     def reserve(self, peer, command, operation, expires):
@@ -102,7 +104,9 @@ class SyncStore:
     def peers(self):
         result = rows(
             self.db,
-            "SELECT id,name,kind,approved_at,revoked_at,disconnected,last_seen,last_sync,categories,capabilities FROM sync_peers ORDER BY approved_at DESC LIMIT 100",
+            "SELECT "
+            "id,name,kind,approved_at,revoked_at,disconnected,last_seen,last_sync,categories,capabilities"
+            " FROM sync_peers ORDER BY approved_at DESC LIMIT 100",
         )
         for row in result:
             row["categories"], row["capabilities"] = (

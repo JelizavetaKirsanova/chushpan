@@ -19,6 +19,10 @@
       <button data-view="automations"><span data-icon="sparkles"></span><span>Сценарии</span></button>
       <button data-view="devices"><span data-icon="lamp"></span><span>Устройства</span></button>
       <button data-view="cinema"><span data-icon="film"></span><span>Кино</span></button>
+      <button data-view="memory"><span data-icon="note"></span><span>Память</span></button>
+      <button data-view="mac-control"><span data-icon="monitor"></span><span>Управление Mac</span></button>
+      <button data-view="my-devices"><span data-icon="link"></span><span>Мои устройства</span></button>
+      <button data-view="analytics"><span data-icon="chart"></span><span>Аналитика</span></button>
       <button data-view="performance"><span data-icon="chart"></span><span>Статистика</span></button>
       <button data-view="settings"><span data-icon="settings"></span><span>Настройки</span></button>
       <div class="nav-spacer"></div><div class="nav-foot"><span class="connection-light"></span><span id="nav-state">Подключаюсь…</span><button data-action="ambient" title="Ambient" aria-label="Открыть Ambient"><span data-icon="moon"></span></button></div></nav>
@@ -29,6 +33,7 @@
       <section class="talk"><div class="talk-tools"><span id="talk-note" role="status"></span><button id="export" class="tool-button"></button></div><div class="transcript" id="transcript" aria-live="polite"></div></section>
       <form id="chat-composer" class="chat-composer"><button id="listen-control" type="button" class="mic-button" aria-label="Начать разговор"><span data-icon="mic"></span><span id="listen-control-label" class="sr-only">Начать разговор</span></button><button type="button" id="stop-response" class="tool-button" aria-label="Остановить ответ" disabled>■<span class="sr-only">Остановить ответ</span></button><textarea id="chat-input" rows="1" maxlength="4000" placeholder="Напиши мне что-нибудь…" aria-label="Сообщение Чушпану"></textarea><label class="speak-toggle" title="Озвучить ответ"><input id="chat-speak" type="checkbox"><span data-icon="volume"></span><span class="sr-only">Озвучить ответ</span></label><button type="submit" id="chat-send" class="send-button" aria-label="Отправить сообщение"><span data-icon="send"></span></button></form>
       <aside class="col right" aria-label="Мой день">
+        <div id="module-quick-links" aria-label="Быстрый доступ к новым разделам"></div>
         <section class="dashboard-card location-card"><span class="location-icon" data-icon="pin"></span><div><p id="location-caption">Твой город</p><h2><span id="location-zone">Местоположение неизвестно</span> <i>♡</i></h2><small id="location-source"></small></div><button data-go="settings" aria-label="Настроить местоположение" class="icon-button" data-icon="settings"></button></section>
         <section class="panel dashboard-card weather-card" id="weather">
           <h2><span data-label="weather"></span><span class="sub" id="w-place"></span></h2>
@@ -80,21 +85,26 @@
         <div class="page-toolbar"><label class="search-field"><span data-icon="search"></span><input id="history-search" type="search" placeholder="Поиск по сообщениям"></label><label class="check-label"><input id="history-trash" type="checkbox"> Корзина</label><button data-action="new-chat">Новый разговор</button></div><details class="recent-dialogues"><summary>Недавние разговоры</summary>      <div class="recent-heading"><span>Недавние разговоры</span><button data-action="new-chat" aria-label="Новый разговор">+</button></div><label class="recent-search"><span data-icon="search"></span><input id="recent-search" placeholder="Найти разговор" type="search" aria-label="Поиск разговоров"></label><div id="recent-conversations" class="recent-conversations"><p class="muted">История появится после подключения.</p></div></details><div class="history-layout"><div id="conversation-list" class="conversation-list"></div><div id="history-messages" class="history-messages"><p class="empty-state">Выбери разговор слева.</p></div></div>
       </section>
       <section class="workspace-page performance-page" aria-label="Производительность">
-        <div class="page-heading"><small>РЕАЛЬНОЕ ВРЕМЯ ОЖИДАНИЯ</small><h1>Статистика Чушпана</h1>
-          <p>От конца реплики до содержательного ответа. «Секунду» учитывается отдельно. Полное время включает озвучку.</p></div>
-        <div class="page-toolbar"><button data-go="diagnostics">Дополнительно: диагностика</button></div><div id="dashboard-stat-details" class="dashboard-stat-details"></div><section class="stat-chart-card"><div class="section-heading"><h2>Ритм разговоров</h2><span>Запросы по времени · реальные трассы</span></div><div id="dashboard-stat-chart" class="stat-chart"></div></section><div class="performance-toolbar"><label>Период <select id="performance-period"><option value="0">Последний час</option><option value="1" selected>Сегодня</option><option value="7">7 дней</option><option value="30">30 дней</option></select></label>
-          <button id="performance-refresh">Обновить</button><small id="performance-connection">Нет соединения</small></div>
+        <div id="statistics-root"></div>
+        <div id="statistics-diagnostics" hidden>
+        <div class="statistics-diagnostic-heading"><h2>Производительность</h2><p>Подробные измерения и трассы запросов за выбранный период.</p></div>
+        <details class="statistics-technical"><summary>Системная диагностика</summary><button data-go="diagnostics">Открыть диагностику системы</button></details>
+        <div hidden><div id="dashboard-stat-details"></div><div id="dashboard-stat-chart"></div></div>
+        <div class="performance-toolbar"><label hidden>Период <select id="performance-period"><option value="0">Последний час</option><option value="1" selected>Сегодня</option><option value="7">Неделя</option><option value="30">Месяц</option><option value="365">Год</option><option value="-1">Произвольный период</option></select></label><button id="performance-refresh">Обновить</button><small id="performance-connection">Нет соединения</small></div>
         <div id="performance-live" class="performance-live" role="status">Ожидаю реальные события backend.</div><p id="performance-last-recognition" role="status">Последний результат STT появится здесь в текущей сессии.</p>
-        <label>Ввод <select id="performance-kind"><option value="voice">Голос</option><option value="text">Чат</option></select></label>
+        <label>Ввод <select id="performance-kind"><option value="">Все обращения</option><option value="voice">Голос</option><option value="text">Чат</option></select></label>
         <div class="performance-toolbar"><label>Модель <select id="performance-model"><option value="">Все модели</option></select></label><label>Запрос <select id="performance-class"><option value="">Все типы</option></select></label><label>Источник <select id="performance-source"><option value="">Все источники</option></select></label></div>
+        <details class="statistics-technical"><summary>Метрики, модели и контрольные прогоны</summary>
         <div id="performance-summary" class="performance-summary"></div>
         <p id="performance-samples" class="perf-note"></p><div id="performance-providers" class="performance-providers"></div>
         <section class="stat-chart-card"><h2>Задержка по времени</h2><p class="perf-note">Высота — время до содержательного ответа. Ошибки и отмены отмечены отдельно; неизвестное время не заменяется нулём.</p><div id="performance-latency-chart" class="perf-latency-chart" aria-label="История задержки"></div></section>
         <section class="stat-chart-card"><h2>Фактически использованные модели</h2><p class="perf-note">Первый токен и завершение попытки LLM учитываются отдельно от STT и озвучки. p95 показывается от 20 измерений. Доступность — по последним событиям, без платной проверки.</p><div id="performance-models"></div></section>
         <section class="stat-chart-card"><h2>Сравнение задержки</h2><div id="performance-comparison"></div><div id="performance-benchmarks"></div></section>
         <section class="stat-chart-card"><h2>Проверки обращения</h2><p class="muted">Отклонённые звуки и речь не считаются ответами и не уменьшают среднюю задержку.</p><div id="performance-activations"></div></section>
-        <div class="performance-layout"><section><h2>История запросов</h2><div id="performance-requests"></div></section>
-          <section id="performance-detail" aria-label="Трасса запроса"><p class="empty-state">Выбери запрос для временной шкалы.</p></section></div>
+        </details>
+        <div class="performance-layout"><section><h2>История запросов</h2><label>Сортировка <select id="performance-sort" aria-label="Сортировка запросов производительности"><option value="recent">Сначала новые</option><option value="slow">Самые медленные</option></select></label><div id="performance-requests"></div></section>
+          <details class="statistics-technical" id="performance-trace-disclosure"><summary>Подробная трасса запроса</summary><section id="performance-detail" aria-label="Трасса запроса"><p class="empty-state">Выбери запрос для временной шкалы.</p></section></details></div>
+        </div>
       </section>
       <section class="workspace-page settings-page" aria-label="Настройки"><div id="settings-center"></div><div id="settings-old" class="settings-old">
         <div class="page-heading"><small>ТВОЁ ПРОСТРАНСТВО</small><h1>Настройки</h1><p>Чушпан под твой ритм.</p></div>
@@ -149,6 +159,11 @@
         <div class="page-toolbar"><button data-op="calendar_connect">Подключить календарь</button><button data-op="calendar_refresh">Обновить</button><button data-op="calendar_open">Открыть Calendar</button></div>
         <div class="calendar-layout"><section class="dashboard-card calendar-large"><div class="month-heading"><button data-month="-1" aria-label="Предыдущий месяц">‹</button><h2 class="calendar-month-title"></h2><button data-month="1" aria-label="Следующий месяц">›</button></div><div class="weekday-row"><span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span></div><div class="month-grid" id="calendar-full-grid"></div></section>
         <section class="dashboard-card"><div class="section-heading"><h2 id="calendar-selected-title">Сегодня</h2></div><div id="calendar-events" class="event-list"></div><p class="muted">Создавать и изменять события можно в Calendar. Чушпан самостоятельно их не редактирует.</p></section></div></section>
+      <section id="module-memory" aria-label="Память"></section>
+      <section id="module-mac-control" aria-label="Управление Mac"></section>
+      <section id="module-my-devices" aria-label="Мои устройства"></section>
+      <section id="module-analytics" aria-label="Аналитика"></section>
+      <section id="module-privacy" aria-label="Приватность"></section>
       <section class="workspace-page memory-page" aria-label="Заметки и память"><div class="page-heading"><small>ВАЖНОЕ ОСТАЁТСЯ РЯДОМ</small><h1>Заметки и память</h1><button class="text-button" data-go="settings">‹ Настройки</button><p>Твои записи и факты, которые Чушпан действительно сохранил.</p></div><div class="page-toolbar"><button class="primary" data-action="add-note">Новая заметка</button><label class="search-field"><span data-icon="search"></span><input id="memory-search" type="search" placeholder="Найти заметку или воспоминание"></label></div>
       <h2>Заметки</h2><div id="dashboard-notes" class="notes-grid"></div><h2>Сохранённая память</h2><p class="muted">Правки и удаление проходят существующую проверку подтверждения Чушпана.</p><div id="dashboard-memories" class="notes-grid"></div></section>
       <section class="workspace-page automations-page" aria-label="Мои команды"><div class="page-heading"><small>ПРИВЫЧНЫЕ РИТУАЛЫ</small><h1>Мои команды</h1><p>Существующие сценарии Чушпана. Запуск требует явного действия и предусмотренных подтверждений.</p></div><div class="integration-grid"><section class="dashboard-card ritual-card"><span class="ritual-icon" data-icon="moon"></span><h2>Я спать</h2><p>Существующий ночной сценарий: видео, BetterDisplay, громкость, подсветка и Shortcut <b>Youtube sleep</b>.</p><p id="night-availability" class="muted">Проверяю доступность сценария…</p><button data-command="Чушпан, я спать" id="run-night">Запустить сценарий</button></section></div></section>

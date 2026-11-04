@@ -238,9 +238,15 @@ class ProfileMemory:
             if policy.automatic == "ask":
                 self.propose(value, category, key)
                 continue
+            bound = self.store.db.execute(
+                "SELECT p.project_id FROM memory_project_conversations p JOIN dialogue_sessions s "
+                "ON s.conversation_id=p.conversation_id WHERE s.session_id=?",
+                (c.device.session_id,),
+            ).fetchone()
+            project = bound[0] if bound else None
             previous = self.store.db.execute(
-                "SELECT content FROM facts WHERE semantic_key=? AND project_id IS NULL",
-                (key,),
+                "SELECT content FROM facts WHERE semantic_key=? AND project_id IS ?",
+                (key, project),
             ).fetchone()
             if (
                 previous
@@ -256,6 +262,7 @@ class ProfileMemory:
                 automatic=True,
                 source=self.source("current_user_statement"),
                 confidence=1,
+                project_id=project,
             )
 
     def propose(self, value, category, key):
@@ -554,11 +561,32 @@ class ProfileMemory:
             history = []
             if terms:
                 floor = self.store.preference("memory", "context_floor") or 0
-                q = " OR ".join("lower(content) LIKE ?" for _ in terms)
+                context = request_context.get()
+                bound = (
+                    self.store.db.execute(
+                        "SELECT p.project_id FROM memory_project_conversations p JOIN "
+                        "dialogue_sessions s ON s.conversation_id=p.conversation_id "
+                        "WHERE s.session_id=?",
+                        (context.device.session_id,),
+                    ).fetchone()
+                    if context
+                    else None
+                )
+                project = bound[0] if bound else None
+                q = " OR ".join("casefold(m.content) LIKE ?" for _ in terms)
                 history = self.store.db.execute(
-                    "SELECT content, created_at FROM messages "
-                    "WHERE role='user' AND id>? AND (" + q + ") ORDER BY id DESC LIMIT 3",
-                    (floor, *("%" + w + "%" for w in terms)),
+                    "SELECT m.content,m.created_at FROM messages m JOIN conversations c "
+                    "ON c.id=m.conversation_id LEFT JOIN memory_project_conversations p "
+                    "ON p.conversation_id=c.id WHERE c.deleted_at IS NULL AND p.project_id IS ? "
+                    "AND m.role='user' AND m.id>? AND (" + q + ") "
+                    "AND (?='local-mac' OR m.device_id=?) ORDER BY m.id DESC LIMIT 3",
+                    (
+                        project,
+                        floor,
+                        *("%" + w + "%" for w in terms),
+                        context.device.device_id if context else "local-mac",
+                        context.device.device_id if context else "local-mac",
+                    ),
                 ).fetchall()
             lines = [
                 f"{r['created_at']}: {redact(r['content'])[:300]}"

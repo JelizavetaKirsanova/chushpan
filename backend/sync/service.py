@@ -26,6 +26,7 @@ from backend.context import (
     request_scope,
     scenario_selection,
 )
+from backend.memory.store import _now
 from backend.sync.identity import KeychainIdentity, certificates, public_key, verify
 from backend.sync.store import CAPABILITIES, CATEGORIES, SyncStore
 
@@ -96,7 +97,8 @@ class DeviceSync(Center):
             "capabilities": sorted(CAPABILITIES),
             "history": rows(
                 self.memory.db,
-                "SELECT peer_id,command_id,operation,created_at,expires_at,status FROM sync_commands ORDER BY created_at DESC LIMIT 100",
+                "SELECT peer_id,command_id,operation,created_at,expires_at,status "
+                "FROM sync_commands ORDER BY created_at DESC LIMIT 100",
             ),
             "conflicts": rows(
                 self.memory.db,
@@ -130,7 +132,9 @@ class DeviceSync(Center):
                     "Referrer-Policy": "no-referrer",
                     "X-Content-Type-Options": "nosniff",
                     "X-Frame-Options": "DENY",
-                    "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+                    "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; "
+                    "connect-src 'self'; img-src 'self' data:; base-uri 'none'; "
+                    "form-action 'self'; frame-ancestors 'none'",
                 }
             )
             return response
@@ -232,7 +236,8 @@ class DeviceSync(Center):
             except (ValueError, TypeError, KeyError, UnicodeError):
                 return JSONResponse(
                     {
-                        "error": "Запрос отклонён: проверь доверие устройства, подпись, срок действия и выбранные разрешения."
+                        "error": "Запрос отклонён: проверь доверие устройства, подпись, срок "
+                        "действия и выбранные разрешения."
                     },
                     status_code=403,
                 )
@@ -301,7 +306,8 @@ class DeviceSync(Center):
             "devices": devices,
             "history": rows(
                 self.memory.db,
-                "SELECT command_id,operation,created_at,status FROM sync_commands WHERE peer_id=? ORDER BY created_at DESC LIMIT 30",
+                "SELECT command_id,operation,created_at,status FROM sync_commands "
+                "WHERE peer_id=? ORDER BY created_at DESC LIMIT 30",
                 (peer["id"],),
             ),
         }
@@ -348,11 +354,19 @@ class DeviceSync(Center):
     async def execute(self, identity, value):
         result, status = {}, "failed"
         try:
-            async with asyncio.timeout(90):
+            async with asyncio.timeout(min(90, value["expires"] - time.time())):
                 peer = self.store.peer(identity)
                 if time.time() >= value["expires"]:
                     raise ValueError("Команда устарела.")
                 operation, args = value["operation"], value.get("arguments", {})
+                required = {
+                    "chat": "chat",
+                    "scenario": "scenario",
+                    "device": "devices",
+                    "open_app": "open_app",
+                }.get(operation)
+                if required and required not in peer["capabilities"]:
+                    raise ValueError("Разрешение отозвано до начала выполнения.")
                 caps = set()
                 if "scenario" in peer["capabilities"]:
                     caps.update(MAC_CAPABILITIES)
@@ -438,7 +452,8 @@ class DeviceSync(Center):
                     if target and target is not asyncio.current_task():
                         target.cancel()
                     result = {
-                        "message": "Запрошена остановка своей команды. Уже отправленные действия не отменяются."
+                        "message": "Запрошена остановка своей команды. Уже отправленные действия не "
+                        "отменяются."
                     }
                 status = (
                     "failed"
@@ -457,6 +472,22 @@ class DeviceSync(Center):
                 "failed",
                 {"error": "Команда не подтверждена. Проверь разрешения и журнал на Mac."},
             )
+        # Mobile receipts never include adapter internals, endpoints or credentials.
+        result = {
+            key: redact(value) if isinstance(value, str) else value
+            for key, value in result.items()
+            if key
+            in {
+                "message",
+                "error",
+                "status",
+                "result_status",
+                "delivery_state",
+                "device_state_confirmed",
+                "physical_confirmed",
+            }
+            and (value is None or isinstance(value, (str, bool, int, float)))
+        }
         self.store.finish(identity, value["id"], status, result)
         self.publish(data=self.snapshot())
 
@@ -469,16 +500,25 @@ class DeviceSync(Center):
             result["memory"] = [
                 dict(r)
                 for r in self.memory.db.execute(
-                    "SELECT id,content,category,revision,updated_at FROM facts WHERE project_id IS NULL AND status='active' AND confirmed=1 AND sensitive=0 AND (expires_at IS NULL OR expires_at>datetime('now')) LIMIT 1000"
+                    "SELECT id,content,category,revision,updated_at FROM facts WHERE "
+                    "project_id IS NULL AND status='active' AND confirmed=1 AND sensitive=0 "
+                    "AND (expires_at IS NULL OR expires_at>?) LIMIT 1000",
+                    (_now(),),
                 )
                 if not _SENSITIVE.search(r["content"])
             ]
         if "preferences" in categories:
+            from backend.memory.profile import _SENSITIVE
+
             result["preferences"] = [
                 dict(r)
                 for r in self.memory.db.execute(
-                    "SELECT id,content,revision FROM facts WHERE category='preference' AND sensitive=0 AND project_id IS NULL AND status='active' LIMIT 300"
+                    "SELECT id,content,revision FROM facts WHERE category='preference' "
+                    "AND confirmed=1 AND sensitive=0 AND project_id IS NULL "
+                    "AND status='active' AND (expires_at IS NULL OR expires_at>?) LIMIT 300",
+                    (_now(),),
                 )
+                if not _SENSITIVE.search(r["content"])
             ]
         if "scenarios" in categories and self.tools.automations:
             result["scenarios"] = [
@@ -493,7 +533,8 @@ class DeviceSync(Center):
         if "history" in categories:
             result["history"] = rows(
                 self.memory.db,
-                "SELECT role,content,created_at FROM messages WHERE device_id=? AND role IN ('user','assistant') ORDER BY id DESC LIMIT 100",
+                "SELECT role,content,created_at FROM messages WHERE device_id=? "
+                "AND role IN ('user','assistant') ORDER BY id DESC LIMIT 100",
                 (peer["id"],),
             )
         if (
@@ -504,7 +545,11 @@ class DeviceSync(Center):
         ):
             result["media_progress"] = rows(
                 self.memory.db,
-                "SELECT e.id,t.title,e.season,e.episode,e.position,e.duration,e.watched,e.last_viewed FROM cinema_episodes e JOIN cinema_titles t ON t.id=e.title_id WHERE e.last_viewed IS NOT NULL ORDER BY e.last_viewed DESC LIMIT 200",
+                "SELECT "
+                "e.id,t.title,e.season,e.episode,e.position,e.duration,e.watched,e.last_viewed"
+                " FROM cinema_episodes e JOIN cinema_titles t ON t.id=e.title_id "
+                "WHERE e.last_viewed IS NOT NULL ORDER BY e.last_viewed DESC LIMIT"
+                " 200",
             )
         with self.memory.memory_transaction():
             self.memory.db.execute(
@@ -531,11 +576,13 @@ class DeviceSync(Center):
             raise ValueError("Воспоминание недоступно.")
         with self.memory.memory_transaction():
             self.memory.db.execute(
-                "INSERT INTO sync_conflicts(peer_id,memory_id,revision,content,at) VALUES(?,?,?,?,?)",
+                "INSERT INTO sync_conflicts(peer_id,memory_id,revision,content,at)"
+                " VALUES(?,?,?,?,?)",
                 (peer["id"], row["id"], value.get("revision"), content, time.time()),
             )
             self.memory.db.execute(
-                "DELETE FROM sync_conflicts WHERE id NOT IN (SELECT id FROM sync_conflicts ORDER BY id DESC LIMIT 100)"
+                "DELETE FROM sync_conflicts WHERE id NOT IN (SELECT id FROM "
+                "sync_conflicts ORDER BY id DESC LIMIT 100)"
             )
         return {
             "status": "conflict"
@@ -629,7 +676,8 @@ class DeviceSync(Center):
         message = None
         if op == "start":
             await self.start(value.get("host"), value.get("port", 8766))
-            message = "Локальный TLS-сервер запущен. Доверенные устройства пока не получают разрешений автоматически."
+            message = "Локальный TLS-сервер запущен. Доверенные устройства пока не "
+            "получают разрешений автоматически."
         elif op == "stop":
             await self.stop()
         elif op == "invite":
@@ -678,6 +726,10 @@ class DeviceSync(Center):
                         "UPDATE sync_peers SET categories=?,capabilities=? WHERE id=?",
                         (json.dumps(categories), json.dumps(capabilities), peer["id"]),
                     )
+                    for (identity, _), task in list(self.commands.items()):
+                        if identity == peer["id"]:
+                            task.cancel()
+                    self.tools.confirmations.pending.pop((peer["id"], "sync-" + peer["id"]), None)
                 elif op == "rename":
                     self.memory.db.execute(
                         "UPDATE sync_peers SET name=? WHERE id=?",
@@ -714,9 +766,7 @@ class DeviceSync(Center):
                         "UPDATE facts SET content=?,revision=revision+1,updated_at=? WHERE id=?",
                         (
                             row["content"],
-                            __import__("datetime")
-                            .datetime.now(__import__("datetime").UTC)
-                            .isoformat(),
+                            _now(),
                             row["memory_id"],
                         ),
                     )

@@ -1,6 +1,7 @@
 import type { HudEvent } from './types';
 import { seconds } from './workspace_state';
 import {timeline} from './performance_state';
+import type {StatisticsData} from './statistics';
 
 export type TimingStage = {id: number; stage: string; start_s: number; end_s: number | null;
   active_s?: number; consumer_wait_s?: number;
@@ -17,7 +18,7 @@ export type TraceSummary = {count: number; measured: number; failed: number; can
 export type TraceRow = Pick<RequestTrace, 'request_id' | 'created_at' | 'kind' | 'status' | 'total_s' | 'first_content_s' | 'metadata'>;
 type BenchmarkSummary = {summary: TraceSummary; categories: Record<string, TraceSummary>; configuration: {model: string; num_ctx: number}};
 export type PerformanceEvent = {type: 'performance_live' | 'performance_detail'; trace: RequestTrace | null}
-  | {type: 'performance_stats'; days: number; summary: TraceSummary; providers: Record<string, TraceSummary>; requests: TraceRow[]; active?: RequestTrace | null; activations?: RequestTrace[];
+  | {type: 'performance_stats'; dashboard?: StatisticsData; days: number; summary: TraceSummary; providers: Record<string, TraceSummary>; requests: TraceRow[]; active?: RequestTrace | null; activations?: RequestTrace[];
      filters?: Record<string,string>; filter_options?: Record<string,string[]>;
      series?: Pick<TraceRow,'created_at'|'kind'|'status'|'first_content_s'|'total_s'>[];
      models?: {provider:string;model:string;requests:number;attempts:number;fallbacks:number;first_token:TraceSummary;completion:TraceSummary;status:string}[];
@@ -50,7 +51,7 @@ function el(tag: string, value = '', cls = ''): HTMLElement {
 
 export class PerformancePanel {
   private days = 1;
-  private kind = 'voice';
+  private kind = '';
   private filters: Record<string,string> = {model:'',request_class:'',input_mode:''};
   private availability = new Map<string,string>();
   private online = false;
@@ -60,7 +61,7 @@ export class PerformancePanel {
   private refreshPending = false;
   private awaitingFresh = true;
   private latestId: string | null = null;
-  constructor(private stats: (days: number, filters?: Record<string,string>) => void, private detail: (id: string) => void) {
+  constructor(private stats: (days: number, filters?: Record<string,string>) => void, private detail: (id: string) => void, private dashboard?: {receive:(data:StatisticsData)=>void;showPerformance:()=>void;loading:()=>void;error:(message:string)=>void}) {
     node('performance-period').addEventListener('change', e => {
       this.days = Number((e.target as HTMLSelectElement).value); this.refresh();
     });
@@ -71,6 +72,8 @@ export class PerformancePanel {
     for(const [id,key] of [['performance-model','model'],['performance-class','request_class'],['performance-source','input_mode']]) {
       node(id).addEventListener('change',e=>{this.filters[key]=(e.target as HTMLSelectElement).value;this.refresh();});
     }
+    const sort = document.getElementById('performance-sort');
+    sort?.addEventListener('change',()=>{this.filters.sort=(sort as HTMLSelectElement).value;this.refresh();});
     setInterval(() => this.tick(), 200);
   }
   connection(online: boolean): void {
@@ -85,8 +88,11 @@ export class PerformancePanel {
       if (this.latestId) this.detail(this.latestId);
     }
   }
-  refresh(): void { if (this.online) this.stats(this.days,{...this.filters,kind:this.kind}); }
+  period(days:number,start?:string,end?:string):void {this.days=days;delete this.filters.start;delete this.filters.end;if(start&&end){this.filters.start=start;this.filters.end=end;}this.refresh();}
+  refresh(): void { if (this.online) {this.dashboard?.loading();this.stats(this.days,{...this.filters,kind:this.kind});} }
   open(id: string): void {
+    this.dashboard?.showPerformance();
+    const disclosure=document.getElementById('performance-trace-disclosure') as HTMLDetailsElement|null;if(disclosure)disclosure.open=true;
     this.latestId = id;
     node('performance-detail').replaceChildren(el('p', 'Загружаю трассу…'));
     if (this.online) this.detail(id);
@@ -119,9 +125,10 @@ export class PerformancePanel {
         if (matchMedia('(max-width:1100px)').matches) node('performance-detail').scrollIntoView({block: 'start'});
       }
     } else if (event.type === 'performance_error') {
-      node('performance-connection').textContent = event.message;
+      node('performance-connection').textContent = event.message;this.dashboard?.error(event.message);
     } else if (event.type === 'performance_stats' && event.days === this.days) {
       if(event.filters && Object.entries({...this.filters,kind:this.kind}).some(([key,value])=>(event.filters![key]??'')!==value))return;
+      if(event.dashboard)this.dashboard?.receive(event.dashboard);
       const names:Record<string,string>={routine:'Обычный вопрос',reasoning_or_tools:'Сложный запрос',command:'Команда',scenario:'Сценарий',dialogue:'Диалог',microphone:'Микрофон',text:'Чат',replay:'Контрольная запись'};
       for(const [id,key,label] of [['performance-model','model','Все модели'],['performance-class','request_class','Все типы'],['performance-source','input_mode','Все источники']]) {
         const select=node(id) as HTMLSelectElement;
@@ -142,7 +149,7 @@ export class PerformancePanel {
         ['Запросов', String(s.count)], ['Ошибки / отмены / незавершённые', `${s.failed} / ${s.cancelled} / ${s.incomplete ?? 0}`],
         ...[5, 10, 15].map(t => [`Дольше ${t} с`, s.over[String(t)] == null ? '—' : `${s.over[String(t)]!.toFixed(1)} %`]),
       ].map(([label, value]) => { const n = el('div', '', 'perf-card'); n.append(el('small', label), el('strong', value)); return n; }));
-      node('performance-samples').textContent = `Отклик — до содержательного звука для голоса, до текста для чата. ${s.measured} измеренных завершённых ответов. Без измерения: ${s.unmeasured ?? 0}; отклонено: ${s.rejected ?? 0}; ждут подтверждения: ${s.awaiting_confirmation ?? 0}. Полное завершение ${seconds(event.completion?.[this.kind]?.median_s)} (p50), включая озвучку; отдельно от отклика. Ошибки и отмены не заменяются нулём.`;
+      node('performance-samples').textContent = `Отклик — до содержательного звука для голоса, до текста для чата. ${s.measured} измеренных завершённых ответов. Без измерения: ${s.unmeasured ?? 0}; отклонено: ${s.rejected ?? 0}; ждут подтверждения: ${s.awaiting_confirmation ?? 0}. Полное завершение ${seconds((event.completion?.[this.kind||'all']??event.completion?.voice)?.median_s)} (p50), включая озвучку; отдельно от отклика. Ошибки и отмены не заменяются нулём.`;
       node('performance-providers').replaceChildren(...Object.entries(event.providers).map(([p, v]) =>
         el('p', `${p === 'gemini' ? 'Gemini' : p === 'ollama' ? 'Ollama' : 'Без LLM'} (выбранная выборка): ${v.count} запросов · средний ${seconds(v.mean_s)} · p95 ${seconds(v.p95_s)}`)));
       const availability:Record<string,string>={unknown:'доступность ещё не проверена',ready:'последняя попытка успешна',failed:'последняя попытка с ошибкой',open:'ожидает восстановления',probing:'восстановление',cancelled:'проверка прервана'};
@@ -155,7 +162,7 @@ export class PerformancePanel {
           el('p',`Запросов ${model.requests} · попыток ${model.attempts} · ошибок ${first.failed} · отмен ${first.cancelled} · переходов на резерв ${model.fallbacks} · TTFT измерено ${first.measured}`));return card;
       }));
       if(!event.models?.length)node('performance-models').append(el('p','Попыток моделей с подробной трассировкой пока нет.','perf-note'));
-      const series=(event.series??[]).filter(row=>row.kind===this.kind);
+      const series=(event.series??[]).filter(row=>!this.kind||row.kind===this.kind);
       const max=Math.max(1,...series.map(row=>row.first_content_s??0));
       node('performance-latency-chart').replaceChildren(...series.map(row=>{
         const bar=el('span','','perf-latency-bar');bar.dataset.status=row.status;
@@ -167,7 +174,7 @@ export class PerformancePanel {
       const statsLine = (label: string, value: TraceSummary) => el('p', `${label}: p50 ${seconds(value.median_s)} · p95 ${seconds(value.p95_s)} · среднее ${seconds(value.mean_s)} · максимум ${seconds(value.max_s)} · ${value.measured}/${value.count} измерено; ошибки ${value.failed}, отмены ${value.cancelled}, незавершённые ${value.incomplete ?? 0}, отклонено ${value.rejected ?? 0}`);
       const comparison = node('performance-comparison');
       comparison.replaceChildren(el('h3', 'Запросы в приложении'), el('p', 'Период и вид ввода выбраны выше. До / после обновления тракта; состав запросов может различаться.', 'perf-note'));
-      const cohorts = event.comparison?.[this.kind];
+      const cohorts = event.comparison?.[this.kind||'all']??event.comparison?.voice;
       if (cohorts) comparison.append(statsLine('До', cohorts.before), statsLine('После', cohorts.after));
       const bench = node('performance-benchmarks');
       bench.replaceChildren(el('h3', 'Контрольный локальный прогон'));
@@ -181,13 +188,14 @@ export class PerformancePanel {
         }
         bench.append(el('p', `Модель: ${event.benchmarks.after.configuration.model} · контекст ${event.benchmarks.after.configuration.num_ctx}. Холодная загрузка учитывается в отчёте отдельно.`, 'perf-note'));
       } else bench.append(el('p', 'Пара сопоставимых контрольных прогонов пока не сохранена.', 'perf-note'));
-      node('performance-requests').replaceChildren(...event.requests.filter(row => row.kind === this.kind).map(row => {
+      node('performance-requests').replaceChildren(...event.requests.filter(row => !this.kind || row.kind === this.kind).sort((a,b)=>(document.getElementById('performance-sort') as HTMLSelectElement|null)?.value==='slow'?(b.total_s??-1)-(a.total_s??-1):b.created_at.localeCompare(a.created_at)).map(row => {
         const button = el('button', '', 'perf-request') as HTMLButtonElement;
         const slow = row.first_content_s != null && row.first_content_s > 5;
         button.append(el('span', `${new Date(row.created_at).toLocaleString()} · ${row.kind === 'voice' ? 'Голос' : 'Текст'}${row.metadata.input_mode === 'replay' ? ' · запись' : ''}`),
           el('span', String(row.metadata.model ?? 'Локальная команда')),
           el('span', `Отклик ${seconds(row.first_content_s)} · всего ${seconds(row.total_s)}`),
           el('small', `${statuses[row.status] ?? row.status}${slow ? ' · Медленный ответ' : ''}`));
+        const timing=event.dashboard?.requests.find(r=>r.request_id===row.request_id);if(timing){button.append(el('span',`STT ${seconds(timing.times.stt)} · LLM ${seconds(timing.times.llm)} · Tools ${seconds(timing.times.tools)} · TTS ${seconds(timing.times.tts)}`),el('small',timing.errors.length?`Ошибки: ${timing.errors.join(', ')}`:'Ошибок не зарегистрировано'));}
         button.dataset.slow = String(slow); button.onclick = () => this.open(row.request_id); return button;
       }));
       node('performance-activations').replaceChildren(...(event.activations ?? []).map(trace => { const reason: Record<string,string> = {uncertain_stt:'Низкая уверенность распознавания',not_addressed:'Нет обращения',own_tts_echo:'Эхо озвучки',third_person_discussion:'Разговор о другом человеке',explicit_address:'Прямое обращение',recognition_error:'Ошибка распознавания'}; const control=el('button',`${new Date(trace.created_at).toLocaleTimeString('ru-RU')} · ${reason[String(trace.metadata.reason)] ?? statuses[trace.status] ?? trace.status}`, 'perf-request') as HTMLButtonElement; control.onclick=()=>this.open(trace.request_id); return control; }));

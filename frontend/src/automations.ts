@@ -94,7 +94,8 @@ export class AutomationsView {
     const feedback = el('p', '', 'scenario-feedback'); feedback.setAttribute('role', 'status'); feedback.setAttribute('aria-live', 'polite'); permissions.append(feedback); this.sectionFeedback.push(feedback);
     settings.querySelector('.page-heading')!.after(permissions, places);
     const history = el('section', '', 'scenario-history'); history.append(el('h2', 'История сценариев'), this.runRoot);
-    document.querySelector('.performance-page .page-heading')!.after(history);
+    history.hidden = true; // Full, period-filtered receipts live in the Statistics → Scenarios tab.
+    document.querySelector('#statistics-pane-performance, #statistics-diagnostics, .performance-page')!.append(history);
     document.querySelector('.talk')?.append(this.dialogueStatus);
     window.addEventListener('beforeunload', event => {if (this.dirty) {event.preventDefault(); event.returnValue = '';}});
     document.addEventListener('workspace:navigate', event => {

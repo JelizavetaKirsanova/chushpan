@@ -1,0 +1,36 @@
+import {ModulePage,card,date,el,empty,formFields,grid,row,type ModuleChannel} from './module_ui';
+export interface MacData {apps:{name:string;bundle:string;active:boolean}[];windows:{window_id:string;app:string;title:string;minimized:boolean;focused:boolean}[];permissions:Record<string,string>;preview:string|null;captured_at:string|null;analysis:{mode:string;text:string;message:string}|null;actions:{id:string;description:string;risk:string;capability:string;enabled:boolean}[];history:{id:number;at:string;action:string;status:string}[];confirmation:{summary:string;code:string}|null;}
+const labels:Record<string,string>={granted:'Разрешено',denied:'Нет доступа',not_determined:'Ещё не запрошено',check_needed:'Нужна проверка',success:'Подтверждено',sent:'Отправлено',unverified:'Не подтверждено',failed:'Ошибка',requires_confirmation:'Нужно подтверждение',safe:'Чтение',state_change:'Изменение',dangerous:'Требует подтверждения',by_arguments:'Зависит от действия'};
+
+export class MacCenterView extends ModulePage<MacData> {
+  constructor(post:(channel:ModuleChannel,value:object)=>void,navigate:(view:string)=>void){super('mac_center','mac-control','Управление Mac','Экран, приложения и окна — по твоему запросу, с действующими разрешениями.',post,navigate,[['overview','Экран'],['apps','Приложения'],['windows','Окна'],['actions','Действия'],['permissions','Разрешения'],['history','История']]);}
+  protected refresh():void {this.send({op:'snapshot'});}
+  protected render():void {
+    if(!this.begin())return;const data=this.state!;
+    this.toolbar.replaceChildren(this.button('Обновить приложения и доступ',()=>this.send({op:'refresh'})),this.button('Приватность',()=>this.navigate('privacy')));
+    if(data.confirmation){const pending=card('Подтверди конкретное действие',data.confirmation.summary);const code=data.confirmation.code;pending.append(this.button('Подтверждаю '+code,()=>this.send({op:'confirm',code}),true));this.content.append(pending);}
+    if(this.tab==='overview'){
+      const preview=card('Последний снимок');preview.classList.add('screen-preview');if(data.preview?.startsWith('data:image/jpeg;base64,')){const image=el('img');image.src=data.preview;image.alt='Последний локальный снимок экрана';preview.append(image);}else preview.append(el('div','Экран ещё не захватывался','screen-placeholder'));
+      const active=data.apps.find(a=>a.active);const details=card(active?.name||'Активное приложение не проверено',`Снимок: ${date(data.captured_at)}`);details.append(el('p',`Запись экрана: ${labels[data.permissions.screen_recording]||'Статус не проверен'}`),el('p',`Accessibility: ${labels[data.permissions.accessibility]||'Статус не проверен'}`),row(this.button('Анализировать текст экрана',()=>this.send({op:'capture',analyze:true}),true),this.button('Сделать скриншот',()=>this.send({op:'capture'})),this.button('Активное окно',()=>this.send({op:'capture',mode:'window',analyze:true})),this.button('Выбрать область',()=>this.send({op:'capture',mode:'region',analyze:true})),this.button('Остановить захват',()=>this.send({op:'cancel'})),this.button('Убрать снимок',()=>this.send({op:'clear_capture'}))));
+      this.content.append(grid(preview,details));if(data.analysis){const analysis=card('Текст с экрана · Apple Vision',data.analysis.message);analysis.append(el('pre',data.analysis.text||'Разборчивый текст не найден.','screen-ocr'));this.content.append(analysis);}
+      const quick=card('Быстрые действия');quick.append(row(this.button('Открыть приложение',()=>this.openApp()),this.button('Переключить окно',()=>{this.tab='windows';this.send({op:'windows'});}),this.navigation('Открыть файл через чат','home'),this.navigation('Запустить сценарий','automations')),el('p','Одноразовый захват. Превью находится в памяти приложения; файл удаляется после обработки. В облако этот анализ не отправляется.','muted'));this.content.append(quick);
+    }else if(this.tab==='apps'){
+      this.content.append(row(this.button('+ Открыть приложение',()=>this.openApp(),true)));
+      if(!data.apps.length)this.content.append(empty('Список пока не получен','Нажми «Обновить приложения и доступ». Чушпан прочитает список без захвата экрана.'));
+      this.content.append(grid(...data.apps.map(app=>{const node=card(app.name,app.active?'Активное приложение':app.bundle);node.append(row(this.button('Переключиться',()=>this.send({op:'app',name:app.name,action:'switch'})),this.button('Окна',()=>{this.tab='windows';this.send({op:'windows',name:app.name});})));return node;})));
+    }else if(this.tab==='windows'){
+      this.content.append(row(this.button('Окна активного приложения',()=>this.send({op:'windows'}))));
+      if(!data.windows.length)this.content.append(empty('Выбери приложение','Список окон требует Accessibility. Идентификаторы действуют две минуты и одну операцию.'));
+      for(const window of data.windows){const node=card(window.title||'Окно без заголовка',window.app+(window.focused?' · Выбрано':''));node.append(row(...([['focus','Выбрать'],['minimize','Свернуть'],['restore','Восстановить'],['left','Слева'],['right','Справа'],['maximize','Развернуть'],['close','Закрыть']] as [string,string][]).map(([action,label])=>this.button(label,()=>this.send({op:'window',window_id:window.window_id,action})))));this.content.append(node);}
+    }else if(this.tab==='actions'){
+      for(const action of data.actions){const node=card(action.id,action.description);node.append(el('small',`${labels[action.risk]||action.risk} · ${action.enabled?'Доступно в реестре':'Отключено'} · ${action.capability}`));this.content.append(node);}
+    }else if(this.tab==='permissions'){
+      const node=card('Системные разрешения','Полная проверка и запросы доступа используют существующий центр разрешений с фактическими исполнителями.');node.append(this.button('Открыть разрешения macOS',()=>this.settings('access'),true));this.content.append(node);
+      for(const [key,name]of [['screen_recording','Запись экрана'],['accessibility','Универсальный доступ']])this.content.append(card(name,labels[data.permissions[key]]||'Ещё не проверено'));
+    }else{
+      if(!data.history.length)this.content.append(empty('Пока нет действий','Журнал появится после операций из этого раздела. Полный журнал устройств и трассы ответов доступны отдельно.'));
+      for(const entry of data.history)this.content.append(card(entry.action,`${date(entry.at)} · ${labels[entry.status]||entry.status}`));
+    }
+  }
+  private openApp():void {const {form,read}=formFields([{name:'name',label:'Имя приложения',required:true,max:120}]);const modal=document.createElement('dialog');modal.className='module-dialog';const close=el('button','Отмена');close.type='button';close.onclick=()=>modal.close();form.append(row(this.button('Открыть',()=>{if(form.reportValidity()){this.send({op:'app',name:read().name,action:'open'});modal.close();}},true),close));form.onsubmit=event=>event.preventDefault();modal.append(el('h2','Открыть приложение'),form);modal.onclose=()=>modal.remove();document.body.append(modal);modal.showModal();}
+}

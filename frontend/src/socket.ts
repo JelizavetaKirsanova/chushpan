@@ -45,6 +45,7 @@ export class Link {
   settings(value: object): void { this.post({type:'settings_center',value}); }
   devices(value: object): void { this.post({type:'devices',value}); }
   cinema(value: object): void { this.post({type:'cinema',value}); }
+  module(type:import('./module_ui').ModuleChannel,value:object):void {this.post({type,value});}
   history(value = 0): void { this.post({type: "history", value}); }
   historySearch(value: object): void { this.post({type: 'history_search', value}); }
   dashboard(value: object): void { this.post({type: 'dashboard', value}); }

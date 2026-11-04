@@ -174,7 +174,8 @@ class MemoryLibrary(Center):
             ),
             "access": rows(
                 db,
-                "SELECT a.*,f.content FROM memory_access_log a JOIN facts f ON f.id=a.memory_id ORDER BY a.id DESC LIMIT 100",
+                "SELECT a.*,f.content FROM memory_access_log a JOIN facts f ON "
+                "f.id=a.memory_id ORDER BY a.id DESC LIMIT 100",
             ),
             "pending": self.store.preference("memory", "pending") or [],
             "fts": self.store.memory_fts,
@@ -235,7 +236,8 @@ class MemoryLibrary(Center):
                 elif op == "confirm":
                     with store.memory_transaction():
                         store.db.execute(
-                            "UPDATE facts SET confirmed=1,revision=revision+1,updated_at=? WHERE id=?",
+                            "UPDATE facts SET confirmed=1,revision=revision+1,updated_at=? "
+                            "WHERE id=?",
                             (_now(), item),
                         )
                 else:
@@ -246,7 +248,9 @@ class MemoryLibrary(Center):
                     with store.memory_transaction():
                         store._suppress(row["content"])
                         store.db.execute(
-                            "UPDATE facts SET content=?,category=?,sensitive=?,revision=revision+1,updated_at=? WHERE id=?",
+                            "UPDATE facts SET "
+                            "content=?,category=?,sensitive=?,revision=revision+1,updated_at=?"
+                            " WHERE id=?",
                             (
                                 content,
                                 value.get("category", row["category"]),
@@ -264,7 +268,9 @@ class MemoryLibrary(Center):
                 description = text(description, 1000)
             with store.memory_transaction():
                 store.db.execute(
-                    "INSERT INTO memory_projects(name,description,created_at,updated_at) VALUES(?,?,?,?)",
+                    "INSERT INTO "
+                    "memory_projects(name,description,created_at,updated_at) "
+                    "VALUES(?,?,?,?)",
                     (name, description, _now(), _now()),
                 )
             message = "Создано отдельное пространство памяти."
@@ -307,7 +313,8 @@ class MemoryLibrary(Center):
                 raise ValueError("Импорт: файл до 1 МБ.")
             data = json.loads(raw)
             if (
-                data.get("schema") != 1
+                not isinstance(data, dict)
+                or data.get("schema") != 1
                 or not isinstance(data.get("items"), list)
                 or len(data["items"]) > 1000
             ):
@@ -317,7 +324,9 @@ class MemoryLibrary(Center):
                 for p in data.get("projects", [])[:100]:
                     name = text(p.get("name"), 80)
                     store.db.execute(
-                        "INSERT OR IGNORE INTO memory_projects(name,description,created_at,updated_at) VALUES(?,?,?,?,?)",
+                        "INSERT OR IGNORE INTO "
+                        "memory_projects(name,description,created_at,updated_at) "
+                        "VALUES(?,?,?,?,?)",
                         (name, text(p.get("description") or name, 1000), _now(), _now()),
                     )
                     projects[p["id"]] = store.db.execute(

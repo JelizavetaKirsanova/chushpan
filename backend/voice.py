@@ -2195,6 +2195,9 @@ async def _run_voice(
     from backend.hud.dashboard import Dashboard
 
     dashboard = Dashboard(bus, s, store, conv, weather)
+    from backend.personal_modules import PersonalModules
+
+    personal_modules = PersonalModules(s, store, tools, bus)
     if isinstance(speaker, PiperSpeaker):
         speaker.on_level = lambda v: bus.publish({"type": "level", "out": v})
     aec = None
@@ -2307,6 +2310,7 @@ async def _run_voice(
                 task.cancel()
         console.print(f"\n[red]Не удалось запустить: {exc}[/]")
         console.print("Для диагностики: [bold]uv run python -m backend doctor[/].")
+        await personal_modules.close()
         if window:
             await window.close()
         if server:
@@ -2450,6 +2454,7 @@ async def _run_voice(
         for task in background:
             task.cancel()
         await dashboard.close()
+        await personal_modules.close()
         if tools.automations:
             await tools.automations.close()
         if tools.devices:

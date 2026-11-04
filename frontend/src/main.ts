@@ -11,9 +11,13 @@ import './scenario_editor.css';
 import './settings_center.css';
 import './devices.css';
 import './cinema.css';
+import './personal_modules.css';
+import {PersonalModules} from './personal_modules';
 import {SettingsCenterUI} from './settings_center';
 import { Workspace } from "./workspace";
 import { PerformancePanel } from './performance';
+import {StatisticsDashboard} from './statistics';
+import './statistics.css';
 
 import type { Mode } from "./core";
 import { Character } from './character';
@@ -35,7 +39,8 @@ let mode: Mode = "offline";
 let microphone = "unknown";
 let dialogue:Extract<HudEvent,{type:"session"}>|null=null;
 let toolTimer = 0;
-const performancePanel = new PerformancePanel((days, filters) => link.performance(days, filters), id => link.trace(id));
+const statistics = new StatisticsDashboard((days,start,end)=>performancePanel.period(days,start,end),id=>performancePanel.open(id));
+const performancePanel = new PerformancePanel((days, filters) => link.performance(days, filters), id => link.trace(id),statistics);
 const workspace = new Workspace(id => link.history(id), value => link.dialogue(value), () => link.send("sleep"), value => link.music(value), id => id ? performancePanel.open(id) : performancePanel.refresh());
 let latestTrace: string | null = null;
 byId('open-performance').addEventListener('click', () => { if (latestTrace) workspace.openTrace(latestTrace); });
@@ -61,6 +66,7 @@ const automations = new AutomationsView(value => link.automations(value), view =
 const devices = new DevicesView(value=>link.devices(value),text=>link.chat({text}),()=>tap(),view=>workspace.navigate(view));
 const cinema = new CinemaView(value=>link.cinema(value),text=>link.chat({text}),()=>workspace.navigate('cinema'),()=>byId('listen-control').click());
 const settingsCenter = new SettingsCenterUI(value => link.settings(value), value => link.automations(value), view => workspace.navigate(view));
+const personalModules = new PersonalModules((channel,value)=>link.module(channel,value),view=>workspace.navigate(view));
 
 function setMode(next: Mode): void {
   mode = next;
@@ -203,6 +209,7 @@ function onEvent(e: HudEvent): void {
   devices.receive(e);
   cinema.receive(e);
   settingsCenter.receive(e);
+  personalModules.receive(e);
   switch (e.type) {
     case "voice_recognition": return;
     case "voice_settings": case "session": return setMode(mode);
@@ -254,6 +261,7 @@ function onEvent(e: HudEvent): void {
 
 const link = new Link(onEvent, (online) => {
   workspace.connection(online);
+  statistics.connection(online);
   performancePanel.connection(online);
   dashboard.connection(online);
   voiceSettings.connection(online);
@@ -261,6 +269,7 @@ const link = new Link(onEvent, (online) => {
   devices.connection(online);
   cinema.connection(online);
   settingsCenter.connection(online);
+  personalModules.connection(online);
   if (online) link.voiceStatus();
   exportButton.disabled = !online;
   if (!online) {
