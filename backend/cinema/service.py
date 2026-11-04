@@ -11,6 +11,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
+import httpx
+
 from backend.cinema.adapters import (
     HTML5Adapter,
     LocalFileAdapter,
@@ -67,6 +69,9 @@ class Cinema:
         self.catalogues = {"TMDB": self.tmdb}
         self.catalogue = Catalogue(self.tmdb)
         self.sources = SourceManager(self.db, opener=self.opener)
+        self.watch_confirmations = {}
+        self.open_approvals = {}
+        self.watch_sequence = 0
         self.personal = Recommender(self.tmdb, self.catalogue)
         self.catalogue_requests = set()
         self.matches = []
@@ -302,6 +307,24 @@ class Cinema:
                 self.message = "Рекомендательный профиль сброшен. Оценки и история сохранены."
                 await self.publish(recommendations_reset=True)
                 return
+            elif op == "watch":
+                result = await self.resume(
+                    value["title_id"],
+                    value.get("episode_id"),
+                    value.get("device"),
+                    request_id=str(value.get("request_id", ""))[:100],
+                )
+            elif op == "watch_cancel":
+                self.watch_sequence += 1
+                return
+            elif op == "watch_confirm":
+                self.require_playback()
+                confirmation = self.watch_confirmations.pop(str(value.get("token", "")), None)
+                if not confirmation or confirmation[0] < time.monotonic():
+                    raise ToolError("Подтверждение устарело. Выбери источник ещё раз.")
+                result = await self.source_result(
+                    confirmation[1], open_result=True, manual_choice=confirmation[2], approved=True
+                )
             elif op == "find_sources":
                 choices = await self.sources.search(
                     value["title_id"],
@@ -318,6 +341,7 @@ class Cinema:
                     value["result_id"],
                     open_result=op == "source_result_open",
                     pin=value.get("pin") is True,
+                    manual_choice=op == "source_result_open",
                 )
                 source_action = {
                     "result_id": value["result_id"],
@@ -463,7 +487,23 @@ class Cinema:
                     for k in ("title_id", "episode_id", "link_id", "device")
                     if k in value
                 }
-                result = await self.call("cinema_open", args, f"Открой сериал {item['title']}")
+                if value.get("link_id") and value.get("device") != "airplay":
+                    choices = await self.sources.search(
+                        item["id"], value.get("episode_id"), saved_only=True
+                    )
+                    row = next(
+                        (r for r in choices["results"] if r.get("link_id") == value["link_id"]),
+                        None,
+                    )
+                    if not row:
+                        raise ToolError(
+                            "Сохранённая ссылка недоступна. Повтори автоматический поиск."
+                        )
+                    result = await self.source_result(
+                        row["id"], open_result=True, manual_choice=True
+                    )
+                else:
+                    result = await self.call("cinema_open", args, f"Открой сериал {item['title']}")
             elif op == "control":
                 result = await self.call(
                     "cinema_command", {"command": value["command"]}, value["command"]
@@ -595,7 +635,9 @@ class Cinema:
                 }
             )
 
-    async def source_result(self, identifier, *, open_result=False, pin=False):
+    async def source_result(
+        self, identifier, *, open_result=False, pin=False, manual_choice=False, approved=False
+    ):
         if open_result:
             self.require_playback()
         row = self.sources.result(identifier)
@@ -603,26 +645,63 @@ class Cinema:
         prefs = await self.db("preferences")
         if not source.enabled:
             raise ToolError("Источник отключён.")
-        if open_result and (
-            not row["allowed"]
-            or (prefs.free_only and row["access_type"] != "free" and source.adapter != "local")
+        status = (
+            row.get("access_status", "UNKNOWN")
+            if source.access_status == "MIXED"
+            else source.access_status
+        )
+        if (
+            open_result
+            and prefs.free_only
+            and source.adapter != "local"
+            and status != "FREE"
+            and not (manual_choice and status == "UNKNOWN")
         ):
             raise ToolError(
                 "Включены только бесплатные источники; тип доступа этого варианта не подходит."
             )
-        if row["kind"] in {"home", "search"} or row["match"] < 0.95:
-            if pin or not open_result:
+        if row["kind"] != "page" or row["match"] < 0.95 or row["availability"] != "available":
+            if not open_result:
                 await self.db(
                     "remember_source", row["title_id"], source.id, row["episode_id"], pin=pin
                 )
                 self.sources.cache.clear()
-            if not open_result:
-                return {"message": "Источник запомнен. Точную страницу выбери и привяжи вручную."}
-            if not prefs.allow_browser:
-                raise ToolError("Открытие браузера отключено в настройках медиатеки.")
-            if not self.tools.enabled("cinema_open"):
-                raise ToolError("Открытие кино отключено в настройках доступа.")
-            return await self.sources.adapter(source.model_dump()).open(row)
+                return {
+                    "message": (
+                        "Источник выбран вручную. Совпадение не найдено; "
+                        "для просмотра нужна проверенная конкретная страница."
+                    )
+                }
+            raise ToolError(
+                row.get("reason")
+                or "Точная страница не найдена; открытие главной страницы отменено."
+            )
+        if (
+            open_result
+            and prefs.ask_paid
+            and (status in {"PAID", "MIXED"} or source.access_status in {"PAID", "MIXED"})
+            and not approved
+        ):
+            token = secrets.token_urlsafe(32)
+            self.watch_confirmations = {
+                k: v for k, v in self.watch_confirmations.items() if v[0] > time.monotonic()
+            }
+            if len(self.watch_confirmations) >= 16:
+                self.watch_confirmations.pop(next(iter(self.watch_confirmations)))
+            self.watch_confirmations[token] = (time.monotonic() + 180, identifier, manual_choice)
+            message = (
+                "Сервис содержит платный контент. Открыть найденную "
+                "страницу? Оплата и вход остаются на сайте."
+            )
+            await self.publish(
+                watch_confirmation={
+                    "token": token,
+                    "source_name": source.name,
+                    "url": row["url"],
+                    "message": message,
+                }
+            )
+            return {"message": message, "playback_confirmed": False}
         item = await self.db("detail", row["title_id"])
         ep = next(e for e in item["episodes"] if e["id"] == row["episode_id"])
         if not row.get("link_id"):
@@ -645,6 +724,17 @@ class Cinema:
             for link in ep["links"]
             if link["source_id"] == source.id and link["url"] == row["url"]
         )
+        await self.db(
+            "verify_link",
+            link["id"],
+            {
+                "scope": row.get("scope", "episode"),
+                "access_status": status,
+                "title": item["title"],
+                "year": item["year"],
+                "content_kind": item["kind"],
+            },
+        )
         await self.db("remember_source", item["id"], source.id, ep["id"], link["id"], pin=pin)
         self.sources.cache.clear()
         if row["availability"] == "available":
@@ -652,6 +742,7 @@ class Cinema:
                 "source_health", source.id, "available", "Проверена страница выбранного контента."
             )
         if open_result:
+            self.open_approvals[link["id"]] = (time.monotonic() + 30, source.model_dump())
             return await self.call(
                 "cinema_open",
                 {"title_id": item["id"], "episode_id": ep["id"], "link_id": link["id"]},
@@ -1181,9 +1272,72 @@ class Cinema:
             "message": self.device_options()[1]["reason"],
         }
 
-    async def resume(self, title_id, episode_id=None, device=None):
+    async def resume(self, title_id, episode_id=None, device=None, *, request_id=""):
         from urllib.parse import urlsplit
 
+        self.require_playback()
+        self.watch_sequence += 1
+        sequence = self.watch_sequence
+        prefs = await self.db("preferences")
+        item = await self.db("detail", title_id)
+
+        async def stage(message):
+            await self.publish(
+                watch_progress={"request_id": request_id, "title_id": title_id, "message": message}
+            )
+
+        await stage("Ищем сериал…" if item["kind"] == "series" else "Ищем фильм…")
+        if (
+            item.get("catalogue_key")
+            and not item.get("metadata", {}).get("search_enriched")
+            and self.tmdb.credentials.configured
+        ):
+            try:
+                detail = await self.tmdb.detail(item["catalogue_key"])
+                item = await self.db("add", {**detail, "title_id": title_id})
+            except (ToolError, httpx.HTTPError, OSError, TimeoutError):
+                await stage("TMDB временно недоступен. Используем сохранённые название и год.")
+        # A verified series page can be reused for another episode, without inventing episode URLs.
+        ep = next(
+            (e for e in item["episodes"] if e["id"] == episode_id),
+            item["current"] if episode_id is None else None,
+        )
+        if not ep:
+            raise ToolError("Серия не найдена.")
+        if not ep["links"] and item["kind"] == "series" and prefs.use_last_source:
+            memory = item.get("source_memory", {})
+            for previous in item["episodes"]:
+                link = next(
+                    (
+                        candidate
+                        for candidate in previous["links"]
+                        if candidate["source_id"] == memory.get("last_source_id")
+                        and candidate["url"] == memory.get("page_url")
+                    ),
+                    None,
+                )
+                verification = await self.db("verify_link", link["id"]) if link else {}
+                if verification.get("scope") == "series":
+                    item = await self.db(
+                        "add",
+                        {
+                            "title_id": title_id,
+                            "title": item["title"],
+                            "year": item["year"],
+                            "kind": item["kind"],
+                            "season": ep["season"],
+                            "episode": ep["episode"],
+                            "source_id": link["source_id"],
+                            "url": link["url"],
+                        },
+                    )
+                    new_link = next(e for e in item["episodes"] if e["id"] == ep["id"])["links"][0]
+                    await self.db(
+                        "verify_link",
+                        new_link["id"],
+                        {k: v for k, v in verification.items() if k != "checked_at"},
+                    )
+                    break
         choices = await self.db("options", title_id, episode_id)
         # Existing local-file and loopback fixtures don't need an Internet probe.
         links = [o for o in choices["options"] if o["link"] and o["source"]["enabled"]]
@@ -1193,16 +1347,50 @@ class Cinema:
             for o in links
         )
         if public or not links:
-            result = await self.sources.search(title_id, episode_id, refresh=True)
+            await stage("Проверяем источники…")
+            result = (
+                await self.sources.search(title_id, episode_id, saved_only=True)
+                if prefs.use_last_source
+                else None
+            )
+            if (not result or not result["selected_id"]) and prefs.auto_search:
+                # Official alternative with public metadata. Never classified as free.
+                configured = await self.db("sources")
+                if not any(s["base_url"].rstrip("/") == "https://kion.ru" for s in configured):
+                    await self.db(
+                        "save_source",
+                        {
+                            "name": "KION · официальный",
+                            "base_url": "https://kion.ru",
+                            "search_mode": "sitemap",
+                            "adapter": "html5",
+                            "category": "streaming",
+                            "access_status": "MIXED",
+                            "language": "ru",
+                            "priority": 100,
+                        },
+                    )
+                result = await self.sources.search(title_id, episode_id)
+            if not result:
+                result = await self.sources.search(title_id, episode_id, saved_only=True)
+            if sequence != self.watch_sequence:
+                return {"playback_confirmed": False, "message": "Поиск заменён новым запросом."}
             selected = result["selected_id"]
-            if selected and device != "airplay":
-                return await self.source_result(selected, open_result=True)
-            await self.publish(navigate=True, source_results=result)
+            if selected and prefs.auto_open and device != "airplay":
+                await stage("Найдено совпадение… Открываем воспроизведение…")
+                result = await self.source_result(selected, open_result=True)
+                await stage(result.get("message", "Открытие завершено; запуск ещё не подтверждён."))
+                return result
+            await self.publish(navigate=True, source_results={**result, "request_id": request_id})
             return {
                 "playback_confirmed": False,
                 "result_status": "partial_success",
                 "message": "Проверила источники. Выбери вариант просмотра в кинотеке.",
             }
+        if not prefs.auto_open:
+            result = await self.sources.search(title_id, episode_id, saved_only=True)
+            await self.publish(source_results={**result, "request_id": request_id})
+            return {"playback_confirmed": False, "message": "Выбери сохранённый вариант просмотра."}
         return await self.open(title_id, episode_id, device=device)
 
     async def open(self, title_id, episode_id=None, link_id=None, device=None):
@@ -1259,8 +1447,21 @@ class Cinema:
                 link_id = available[0]["link"]["id"]
             target = await self.db("target", title_id, episode_id, link_id)
             source = target["source"]
-            if prefs.free_only and source["adapter"] != "local" and source["access_type"] != "free":
+            approval = self.open_approvals.pop(target["link"]["id"], None)
+            approved = bool(approval and approval[0] > time.monotonic() and approval[1] == source)
+            status = source.get("access_status", "UNKNOWN")
+            if (
+                prefs.free_only
+                and source["adapter"] != "local"
+                and status != "FREE"
+                and not approved
+            ):
                 raise ToolError("Этот источник не отмечен бесплатным. Проверь настройки медиатеки.")
+            if prefs.ask_paid and status in {"PAID", "MIXED"} and not approved:
+                raise ToolError(
+                    "Выбери источник через «Найти и смотреть», чтобы подтвердить "
+                    "переход на платный сервис."
+                )
             embed = None
             if source["adapter"] == "direct" and prefs.embedded_playback:
                 resolved = await self.sources.adapter(source).resolve(
@@ -1275,7 +1476,11 @@ class Cinema:
             await self.stop_tracking()
             # The final sample may advance the position saved by a previous poll.
             target = await self.db("target", title_id, episode_id, link_id)
-            adapter = self.adapter_factory(target["source"]["adapter"])
+            verification = await self.db("verify_link", target["link"]["id"])
+            series_page = (
+                target["item"]["kind"] == "series" and verification.get("scope") == "series"
+            )
+            adapter = self.adapter_factory("manual" if series_page else target["source"]["adapter"])
             token = secrets.token_urlsafe(32)
             base = getattr(self.bus, "cinema_url", "") if self.bus else ""
             target["tracking"] = {
@@ -1333,6 +1538,13 @@ class Cinema:
             ):
                 await self.db("select", target["episode"]["id"], target["link"]["id"])
             self.message = result.get("message", "Воспроизведение не подтверждено.")
+            if series_page and not result.get("playback_confirmed"):
+                self.message += (
+                    f" На сайте выбери сезон {target['episode']['season']}, "
+                    f"серию {target['episode']['episode']}. "
+                    "Прогресс можно сохранить вручную в карточке."
+                )
+                result["message"] = self.message
             # Opening a page is not a viewing event. Preserve the explicitly chosen link.
             if self.session["mode"] == "html5":
                 if "position" in result:

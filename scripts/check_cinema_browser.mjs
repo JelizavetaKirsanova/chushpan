@@ -129,9 +129,6 @@ for await(const line of createInterface({input:process.stdin})) {
       await hud.getByRole('button',{name:'Смотрю',exact:true}).click();
       await hud.locator('.cinema-content').getByRole('button',{name:'Встроенный тест',exact:true}).click();
       await hud.locator('dialog').getByRole('button',{name:'Найти и смотреть',exact:true}).click();
-      const source=hud.locator('dialog .cinema-source-option').filter({hasText:'Прямое тестовое видео'});
-      await source.getByText('Встроенный плеер · совместимое прямое видео',{exact:true}).waitFor();
-      await source.getByRole('button',{name:'Смотреть',exact:true}).click();
       const video=hud.locator('.cinema-embedded video');await video.waitFor();
       await hud.waitForFunction(()=>{const v=document.querySelector('.cinema-embedded video');return v&&!v.paused&&v.currentTime>3.2;}).catch(async error=>{throw Error('Embedded start failed: '+JSON.stringify(await video.evaluate(v=>({paused:v.paused,time:v.currentTime,ready:v.readyState,error:v.error?.message,feedback:v.parentElement.textContent}))))});
       await hud.getByText('Воспроизведение подтверждено.',{exact:true}).waitFor();
@@ -157,6 +154,29 @@ for await(const line of createInterface({input:process.stdin})) {
       await hud.getByLabel('Импортировать JSON-копию',{exact:true}).setInputFiles({name:'cinema.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(document))});
       await hud.getByRole('button',{name:'Импортировать',exact:true}).click();await hud.getByText('Импортировано названий: 0. Существующие данные сохранены.',{exact:true}).waitFor();
       if(errors.length)throw Error(errors.join('; '));await hud.close();result={profile:true,recommendations:!!request.catalogue,source_search:true,embedded:true,confirmed_playback:true,seek:true,mobile:true};
+    }
+    if(request.op==='compact_ui'){
+      const hud=await context.newPage();const errors=[];hud.on('pageerror',e=>errors.push(e.message));
+      const media=await readFile(request.video);await hud.route('https://cinema-fixture.example/**',route=>{
+        const range=/bytes=(\d+)-(\d*)/.exec(route.request().headers().range??'');
+        if(!range)return route.fulfill({body:media,contentType:'video/mp4',headers:{'Accept-Ranges':'bytes'}});
+        const start=Number(range[1]);const end=Math.min(media.length-1,range[2]?Number(range[2]):media.length-1);
+        return route.fulfill({status:206,body:media.subarray(start,end+1),contentType:'video/mp4',headers:{'Accept-Ranges':'bytes','Content-Range':`bytes ${start}-${end}/${media.length}`}});
+      });
+      await hud.goto(request.url);await hud.locator('.workspace-nav [data-view=cinema]').click();
+      await hud.getByRole('button',{name:'Смотрю',exact:true}).click();
+      await hud.locator('.cinema-content').getByRole('button',{name:'Встроенный тест',exact:true}).click();
+      await hud.locator('dialog').getByRole('button',{name:'Найти и смотреть',exact:true}).click();
+      await hud.getByRole('button',{name:'Выбрать вручную',exact:true}).waitFor();
+      if(await hud.locator('.cinema-embedded video').count())throw Error('Unknown cost was opened automatically under free-only');
+      const dialog=hud.locator('dialog[open]');if((await dialog.boundingBox()).width>620)throw Error('Source search is too wide');
+      if(request.screenshot)await hud.screenshot({path:request.screenshot.replace('.png','-compact.png'),fullPage:true});
+      await hud.setViewportSize({width:390,height:844});if(await hud.evaluate(()=>document.documentElement.scrollWidth>innerWidth))throw Error('Compact search overflows mobile viewport');
+      await hud.getByRole('button',{name:'Выбрать вручную',exact:true}).click();
+      await hud.locator('.cinema-embedded video').waitFor();
+      await hud.getByText('Воспроизведение подтверждено.',{exact:true}).waitFor();
+      await hud.getByRole('button',{name:'Сохранить и закрыть плеер',exact:true}).click();
+      if(errors.length)throw Error(errors.join('; '));await hud.close();result={compact:true,unknown_manual_choice:true,free_filter:true,confirmed_playback:true};
     }
     if(request.op==='shutdown'){await browser.close();process.stdout.write(JSON.stringify({ok:true})+'\n');process.stdin.destroy();break;}
     process.stdout.write(JSON.stringify({ok:true,result})+'\n');

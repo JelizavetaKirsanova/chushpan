@@ -305,3 +305,12 @@
 .cinema-source-row small[data-state=unavailable]:before { background: #f1788b; }
 .cinema-source-more { margin-top: 14px; border-top: 1px solid #ffffff0b; padding-top: 11px; }
 .cinema-source-more summary { font-size: 11px; color: #a68db8; }
+
+.cinema-dialog.cinema-compact-search { width:min(560px,calc(100vw - 32px)); padding:22px; }
+.cinema-source-line { display:flex; gap:14px; align-items:center; padding:12px!important; margin:8px 0!important; }
+.cinema-source-line>div { min-width:0; flex:1; }.cinema-source-line>button { flex-shrink:0; }
+.cinema-source-line p { margin:5px 0; font-size:12px; line-height:1.5; }.cinema-result-group{font-size:12px!important;color:#c8b2df;margin-top:20px;}
+.cinema-result-url { display:block;overflow-wrap:anywhere;color:#ad9abc;font-size:10px; }.cinema-source-line details{margin-top:6px;font-size:11px;}.cinema-source-line details button{font-size:11px;padding:5px;}
+@media(max-width:520px){.cinema-source-line{flex-wrap:wrap}.cinema-source-line>div{flex-basis:100%}}
+.cinema-source-line strong { display:block; margin-bottom:4px; }
+.cinema-source-line>div>small { display:block; }

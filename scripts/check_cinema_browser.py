@@ -332,6 +332,15 @@ async def check(module, screenshot, chromium=None, catalogue=False, personal=Fal
                 saved = await cinema.db("detail", inline["id"])
                 assert saved["current"]["position"] >= 5, result
                 assert saved["source_memory"]["last_source_id"] == direct["id"]
+                await cinema.db(
+                    "save_source", {**direct, "access_type": "unknown", "access_status": "UNKNOWN"}
+                )
+                await cinema.db("configure", {"free_only": True, "auto_search": False})
+                cinema.sources.invalidate()
+                await cinema.publish()
+                await bridge.request(
+                    "compact_ui", url=base, screenshot=screenshot, video=str(media / "sample.mp4")
+                )
                 await cinema.close()
                 memory.close()
                 memory, cinema, conv = setup()

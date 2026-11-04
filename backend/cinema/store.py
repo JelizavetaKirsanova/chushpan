@@ -94,6 +94,11 @@ MIGRATIONS = [
     ALTER TABLE cinema_library ADD COLUMN user_note TEXT NOT NULL DEFAULT '';
     CREATE INDEX cinema_import_history ON cinema_history(episode_id,created_at);
     """,
+    """
+    CREATE TABLE cinema_link_verification (
+      link_id TEXT PRIMARY KEY REFERENCES cinema_links(id) ON DELETE CASCADE,
+      data TEXT NOT NULL, checked_at TEXT NOT NULL);
+    """,
 ]
 
 
@@ -340,6 +345,18 @@ class CinemaStore:
                 "INSERT OR REPLACE INTO cinema_link_checks VALUES (?,?,?,?)",
                 (link_id, status, now(), bool(playable)),
             )
+
+    def verify_link(self, link_id, data=None):
+        if data is not None:
+            with self.transaction():
+                self.db.execute(
+                    "INSERT OR REPLACE INTO cinema_link_verification VALUES (?,?,?)",
+                    (link_id, json.dumps(data, ensure_ascii=False), now()),
+                )
+        row = self.db.execute(
+            "SELECT * FROM cinema_link_verification WHERE link_id=?", (link_id,)
+        ).fetchone()
+        return {**json.loads(row["data"]), "checked_at": row["checked_at"]} if row else {}
 
     def reset_recommendations(self):
         with self.transaction():

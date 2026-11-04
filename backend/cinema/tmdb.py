@@ -286,11 +286,27 @@ class TMDB:
 
     async def detail(self, key):
         kind, identifier = self.identity(key)
-        row = await self.get(f"{kind}/{identifier}", append_to_response="credits,keywords")
+        row = await self.get(
+            f"{kind}/{identifier}",
+            append_to_response="credits,keywords,alternative_titles,external_ids",
+        )
         if not row.get("overview"):
             fallback = await self.get(f"{kind}/{identifier}", language="en-US")
             row = {**row, "overview": fallback.get("overview") or ""}
-        return self.metadata(row, kind)
+        result = self.metadata(row, kind)
+        result["metadata"]["search_enriched"] = True
+        alternatives = row.get("alternative_titles", {})
+        result["metadata"]["alternative_titles"] = list(
+            dict.fromkeys(
+                str(t["title"])[:500]
+                for t in alternatives.get("titles", alternatives.get("results", []))
+                if t.get("title")
+            )
+        )[:100]
+        result["metadata"]["imdb_id"] = str(
+            row.get("imdb_id") or row.get("external_ids", {}).get("imdb_id") or ""
+        )[:40]
+        return result
 
     async def episodes(self, key, season):
         kind, identifier = self.identity(key)

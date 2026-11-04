@@ -61,10 +61,26 @@ class Source(BaseModel):
     enabled: bool = True
     priority: int = Field(default=0, ge=0, le=10000)
     preferred: bool = False
-    search_mode: Literal["manual", "archive"] = "manual"
+    search_mode: Literal["manual", "archive", "sitemap"] = "manual"
     language: str = Field(default="", max_length=40)
     access_type: Literal["unknown", "free", "subscription", "rent", "buy"] = "unknown"
+    access_status: Literal["FREE", "PAID", "MIXED", "UNKNOWN"] = "UNKNOWN"
     embed_allowed: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def legacy_cost(cls, values):
+        if isinstance(values, dict) and "access_status" not in values:
+            legacy = values.get("access_type", "unknown")
+            values = {
+                **values,
+                "access_status": "UNKNOWN"
+                if legacy == "unknown"
+                else "FREE"
+                if legacy == "free"
+                else "PAID",
+            }
+        return values
 
     @model_validator(mode="after")
     def urls(self):
@@ -160,6 +176,9 @@ class Metadata(BaseModel):
     genre_ids: list[int] = Field(default_factory=list, max_length=30)
     backdrop_url: str = ""
     country_names: list[str] = Field(default_factory=list, max_length=100)
+    alternative_titles: list[str] = Field(default_factory=list, max_length=100)
+    imdb_id: str = Field(default="", max_length=40)
+    search_enriched: bool = False
 
     @field_validator("backdrop_url")
     @classmethod
@@ -180,6 +199,9 @@ class Preferences(BaseModel):
     preferred_language: str = Field(default="ru", max_length=40)
     free_only: bool = False
     auto_select_source: bool = True
+    auto_search: bool = True
+    auto_open: bool = True
+    ask_paid: bool = True
     use_last_source: bool = True
     embedded_playback: bool = True
     allow_browser: bool = True

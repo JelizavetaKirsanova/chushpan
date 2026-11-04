@@ -67,17 +67,17 @@ function movie(id:string,status:string) {
 }
 function button(f:any,text:string) {const b=[...f.window.document.querySelectorAll('button')].find((n:any)=>n.textContent===text) as HTMLButtonElement;assert.ok(b,`Missing button ${text}`);return b;}
 
-test('seven tabs keep lists separate and watch requests source choices before opening',()=>{
+test('seven tabs keep lists separate and watch starts automatic discovery',()=>{
   const f=fixture();try{
     const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);
     view.receive(snapshot([movie('Начато','watching'),movie('Отложено','planned'),movie('Завершено','watched')]));
     assert.equal(f.window.document.querySelectorAll('.cinema-tabs button').length,7);
     assert.match(f.window.document.querySelector('.cinema-content').textContent,/Начато/);
     assert.doesNotMatch(f.window.document.querySelector('.cinema-content').textContent,/Отложено|Завершено/);
-    button(f,'▶ Продолжить').click();assert.equal(sent.at(-1).op,'options');
+    button(f,'▶ Продолжить').click();assert.equal(sent.at(-1).op,'watch');f.window.document.querySelector('dialog button[aria-label=Закрыть]').click();
     button(f,'Хочу посмотреть').click(); // the tab precedes the card quick action
     assert.match(f.window.document.querySelector('.cinema-content').textContent,/Отложено/);
-    button(f,'Смотреть').click();assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1))),{op:'options',title_id:'Отложено',episode_id:'ep-Отложено'});
+    button(f,'Смотреть').click();assert.equal(sent.at(-1).op,'watch');assert.equal(sent.at(-1).title_id,'Отложено');assert.equal(sent.at(-1).episode_id,'ep-Отложено');f.window.document.querySelector('dialog button[aria-label=Закрыть]').click();
     button(f,'Просмотрено').click();button(f,'Пересмотреть').click();assert.equal(sent.at(-1).op,'replay');
   }finally{f.window.happyDOM.abort();}
 });
@@ -193,11 +193,11 @@ test('source URL alone auto-detects official API and settings expose playback an
 
 test('source search discards stale results and distinguishes manual pages from verified matching content',()=>{
   const f=fixture();try{
-    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const item=movie('Film','planned');const initial=snapshot([item]);view.receive(initial);button(f,'Хочу посмотреть').click();button(f,'Film').click();button(f,'Найти и смотреть').click();const request=sent.at(-1);assert.equal(request.op,'find_sources');
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const item=movie('Film','planned');const initial=snapshot([item]);view.receive(initial);button(f,'Хочу посмотреть').click();button(f,'Film').click();button(f,'Найти и смотреть').click();const request=sent.at(-1);assert.equal(request.op,'watch');
     const result={id:'result',source_id:'source',source_name:'Ручной сайт',kind:'search',url:'https://site.example',availability:'unknown',reason:'Выбери результат на сайте',embedded:false,language:'',access_type:'unknown',allowed:true,match:0,capabilities:{mode:'Ручной выбор'}};
     view.receive({...initial,source_results:{request_id:'stale',title_id:item.id,episode_id:item.current.id,results:[result],selected_id:null,message:'Старая выдача'}});assert.doesNotMatch(f.window.document.querySelector('dialog')!.textContent,/Старая выдача/);
     view.receive({...initial,source_results:{request_id:request.request_id,title_id:item.id,episode_id:item.current.id,results:[result],selected_id:null,message:'Ручной выбор'}});
-    assert.match(f.window.document.querySelector('dialog')!.textContent,/Язык неизвестен|Условия доступа неизвестны/);button(f,'Открыть поиск ↗').click();assert.equal(sent.at(-1).op,'source_result_open');assert.ok(!sent.some(v=>v.op==='open'));
+    assert.match(f.window.document.querySelector('dialog')!.textContent,/Выбери результат на сайте/);assert.ok(![...f.window.document.querySelectorAll('dialog button')].some((b:any)=>/Открыть сайт|Открыть поиск/.test(b.textContent)));assert.ok(!sent.some(v=>v.op==='open'||v.op==='source_result_open'));
   }finally{f.window.happyDOM.abort();}
 });
 
@@ -253,5 +253,33 @@ test('import is reviewed before confirmation and native export acknowledges actu
     assert.ok(!sent.some(v=>v.op==='library_import'));assert.match(f.window.document.querySelector('dialog').textContent,/10 названий|Существующие оценки/);button(f,'Импортировать').click();assert.equal(sent.at(-1).token,'proposal');
     view.receive({...snapshot(),library_imported:{added:9,preserved:1}});assert.equal(f.window.document.querySelector('dialog'),null);
     const document={schema:'chushpan.cinema'};view.receive({...snapshot(),library_export:document});await new Promise(resolve=>setTimeout(resolve,0));assert.equal(exported,document);assert.match(f.window.document.querySelector('.cinema-feedback').textContent,/сохранена/);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('hero watch uses the episode selected in the detail card',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);
+    const item=movie('Series','watching');item.kind='series';item.episodes[0].season=1;item.episodes[0].episode=1;
+    const second={...item.episodes[0],id:'second',season:2,episode:3};item.episodes.push(second);view.receive(snapshot([item]));button(f,'Series').click();
+    const select=f.window.document.querySelector('select[aria-label=Сезон]');select.value='2';select.dispatchEvent(new f.window.Event('change'));
+    f.window.document.querySelector('.cinema-detail-main-actions button').click();
+    assert.equal(sent.at(-1).op,'watch');assert.equal(sent.at(-1).episode_id,'second');
+    assert.ok(f.window.document.querySelector('dialog.cinema-compact-search'));assert.match(f.window.document.querySelector('dialog').textContent,/Сезон 2 · Серия 3/);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('unknown cost is a visible manual choice under free-only, not paid or automatic',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const item=movie('Film','planned');
+    view.receive({...snapshot([item]),source_results:{title_id:item.id,episode_id:item.current.id,selected_id:null,message:'Только подтверждённые бесплатные',results:[{id:'unknown',source_name:'Unknown',source_id:'source',kind:'page',url:'https://site.example/film',availability:'available',reason:'Совпадение проверено',access_status:'UNKNOWN',access_type:'unknown',match:1,allowed:false,manual_allowed:true,embedded:false,capabilities:{mode:'HTML5'}}]}});
+    assert.match(f.window.document.querySelector('dialog').textContent,/Условия доступа неизвестны/);const choose=button(f,'Выбрать вручную');assert.equal(choose.disabled,false);assert.ok(!sent.some(v=>v.op==='source_result_open'));choose.click();assert.equal(sent.at(-1).op,'source_result_open');assert.equal(sent.at(-1).result_id,'unknown');
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('paid navigation requires an explicit confirmation with the server token',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);
+    view.receive({...snapshot(),watch_confirmation:{token:'bound-token',source_name:'KION',url:'https://kion.ru/serial/example',message:'Сервис содержит платный контент.'}});
+    assert.ok(!sent.some(v=>v.op==='watch_confirm'));button(f,'Открыть страницу сервиса').click();assert.equal(sent.at(-1).op,'watch_confirm');assert.equal(sent.at(-1).token,'bound-token');
   }finally{f.window.happyDOM.abort();}
 });

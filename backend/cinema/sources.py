@@ -20,6 +20,7 @@ import httpx
 
 from backend.cinema.models import Source, web_url
 from backend.cinema.personal import normalized
+from backend.cinema.public_search import PublicCatalogue
 from backend.tools.registry import ToolError
 
 
@@ -33,10 +34,12 @@ class PublicHTTP:
         self.transport, self.resolver = transport, resolver
         self.semaphore = asyncio.Semaphore(3)
 
-    async def request(self, url, *, method="GET", params=None):
-        async with self.semaphore, asyncio.timeout(12):
+    async def request(self, url, *, method="GET", params=None, max_bytes=2_000_000, policy=None):
+        async with self.semaphore, asyncio.timeout(30):
             for _ in range(4):
                 url = web_url(url)
+                if policy:
+                    await policy(url)
                 parsed = urlsplit(url)
                 port = parsed.port or (443 if parsed.scheme == "https" else 80)
                 if port not in {80, 443}:
@@ -70,7 +73,7 @@ class PublicHTTP:
                         body = bytearray()
                         async for chunk in response.aiter_bytes():
                             body.extend(chunk)
-                            if len(body) > 2_000_000:
+                            if len(body) > min(max_bytes, 16_000_000):
                                 raise ToolError("Ответ источника слишком большой.")
                         # aiter_bytes already decoded gzip/br. Preserve semantic headers
                         # without asking the reconstructed response to decode a second time.
@@ -78,7 +81,11 @@ class PublicHTTP:
                         for header in ("content-encoding", "content-length", "transfer-encoding"):
                             headers.pop(header, None)
                         return httpx.Response(
-                            response.status_code, headers=headers, content=bytes(body)
+                            response.status_code,
+                            headers=headers,
+                            content=bytes(body),
+                            request=httpx.Request(method, url, params=params),
+                            extensions={"final_url": url},
                         )
             raise ToolError("Слишком много перенаправлений источника.")
 
@@ -86,13 +93,18 @@ class PublicHTTP:
 def capabilities(source):
     source = Source.model_validate({k: v for k, v in source.items() if k != "health"})
     return {
-        "search": source.search_mode == "archive",
+        "search": source.search_mode in {"archive", "sitemap"}
+        or urlsplit(source.base_url).hostname
+        in {"filmix.gg", "kinogo.is", "hdrezka.sh", "kion.ru"},
         "search_page": bool(source.search_url),
         "resolve": source.search_mode == "archive" or source.adapter in {"local", "direct"},
         "episodes": False,
         "embedded": source.adapter == "direct" and source.embed_allowed,
         "progress": source.adapter in {"html5", "direct"},
-        "mode": "Официальный API Internet Archive"
+        "mode": "Публичная карта сайта · доступ проверяется"
+        if source.search_mode == "sitemap"
+        or urlsplit(source.base_url).hostname in {"filmix.gg", "kinogo.is", "hdrezka.sh", "kion.ru"}
+        else "Официальный API Internet Archive"
         if source.search_mode == "archive"
         else "Разрешённое прямое видео"
         if source.adapter == "direct"
@@ -129,6 +141,15 @@ class WebsiteAdapter:
             }
         try:
             response = await self.http.request(url or self.source["base_url"], method="HEAD")
+            final = getattr(response, "extensions", {}).get("final_url")
+            if url and final and final.rstrip("/") != url.rstrip("/"):
+                return {
+                    "availability": "unknown",
+                    "reason": (
+                        "Сохранённый адрес перенаправляет на другую страницу. "
+                        "Требуется новый поиск; открытие отменено."
+                    ),
+                }
             status = response.status_code
             available = 200 <= status < 300
             return {
@@ -173,6 +194,15 @@ class WebsiteAdapter:
         ]
 
     async def resolve(self, content):
+        if self.source["adapter"] != "local" and urlsplit(content["url"]).path in {"", "/"}:
+            return {
+                **content,
+                "availability": "unknown",
+                "embedded": False,
+                "match": 0.0,
+                "reason": "Сохранена главная страница. Нужна конкретная "
+                "страница фильма или сериала.",
+            }
         check = await self.checkAvailability(content["url"])
         compatible = (
             self.source["adapter"] == "direct"
@@ -206,11 +236,16 @@ class ArchiveAdapter(WebsiteAdapter):
     async def search(self, query):
         if query["kind"] != "movie":
             return await super().search(query)
+        meta = query.get("metadata", {})
         titles = list(
             dict.fromkeys(
-                [query["title"], query.get("metadata", {}).get("original_title") or query["title"]]
+                [
+                    query["title"],
+                    meta.get("original_title") or query["title"],
+                    *meta.get("alternative_titles", []),
+                ]
             )
-        )
+        )[:100]
         title_query = " OR ".join(f'title:"{normalized(t)}"' for t in titles)
         year = query.get("year")
         year_query = (
@@ -275,17 +310,79 @@ class ArchiveAdapter(WebsiteAdapter):
         return result or await super().search(query)
 
 
+class SitemapAdapter(WebsiteAdapter):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.catalogue = PublicCatalogue(self.source, self.http)
+
+    async def resolve(self, content):
+        if urlsplit(content["url"]).path in {"", "/"}:
+            return await super().resolve(content)
+        try:
+            await self.catalogue.ensure_rules()
+            response = await self.catalogue.request(content["url"], method="HEAD")
+            final = getattr(response, "extensions", {}).get("final_url", content["url"])
+            if final.rstrip("/") != content["url"].rstrip("/"):
+                raise ToolError(
+                    "Сохранённая страница перенаправляет на другой адрес. Повтори поиск."
+                )
+            return {
+                **content,
+                "availability": "available",
+                "embedded": False,
+                "reason": "Сохранённая конкретная страница доступна. Запуск видео не подтверждён.",
+            }
+        except ToolError as exc:
+            return {**content, "availability": "unknown", "embedded": False, "reason": str(exc)}
+
+    async def search(self, query):
+        rows = await self.catalogue.search(query)
+        if rows:
+            return rows
+        return [
+            {
+                "kind": "error",
+                "url": "",
+                "match": 0.0,
+                "availability": "unknown",
+                "embedded": False,
+                "reason": self.catalogue.last_reason + " Автоматическое открытие отменено.",
+            }
+        ]
+
+
 class SourceManager:
     def __init__(self, db, *, http=None, opener=None, clock=time.monotonic):
         self.db, self.http, self.opener, self.clock = db, http or PublicHTTP(), opener, clock
-        self.adapters = {"manual": WebsiteAdapter, "archive": ArchiveAdapter}
+        self.adapters = {
+            "manual": WebsiteAdapter,
+            "archive": ArchiveAdapter,
+            "sitemap": SitemapAdapter,
+        }
+        self.adapter_cache = OrderedDict()
         self.cache = OrderedDict()
         self.results = OrderedDict()
         self.pending = {}
         self.generation = 0
 
     def adapter(self, source):
-        return self.adapters[source.get("search_mode", "manual")](source, self.http, self.opener)
+        mode = source.get("search_mode", "manual")
+        if mode == "manual" and urlsplit(source.get("base_url", "")).hostname in {
+            "filmix.gg",
+            "kinogo.is",
+            "hdrezka.sh",
+            "kion.ru",
+        }:
+            mode = "sitemap"
+        key = (
+            str({k: v for k, v in source.items() if k not in {"health", "capabilities"}}),
+            id(self.http),
+        )
+        if key not in self.adapter_cache:
+            self.adapter_cache[key] = self.adapters[mode](source, self.http, self.opener)
+            while len(self.adapter_cache) > 32:
+                self.adapter_cache.popitem(last=False)
+        return self.adapter_cache[key]
 
     def invalidate(self):
         self.generation += 1
@@ -305,7 +402,9 @@ class SourceManager:
             raise ToolError("Результат поиска устарел. Найди источник заново.")
         return result[1]
 
-    async def search(self, title_id, episode_id=None, *, alternative=False, refresh=False):
+    async def search(
+        self, title_id, episode_id=None, *, alternative=False, refresh=False, saved_only=False
+    ):
         item = await self.db("detail", title_id)
         ep = next(
             (e for e in item["episodes"] if e["id"] == episode_id),
@@ -315,14 +414,20 @@ class SourceManager:
             raise ValueError("Серия не найдена.")
         prefs = await self.db("preferences")
         sources = [s for s in await self.db("sources") if s["enabled"]]
+        if saved_only:
+            sources = [
+                s for s in sources if any(link["source_id"] == s["id"] for link in ep["links"])
+            ]
         generation = self.generation
-        key = (generation, title_id, ep["id"], alternative)
+        key = (generation, title_id, ep["id"], alternative, saved_only)
         cached = self.cache.get(key)
         if not refresh and cached and cached[0] > self.clock():
             return cached[1]
         if key in self.pending:
             return await asyncio.shield(self.pending[key])
-        task = asyncio.create_task(self._search(item, ep, sources, prefs, alternative, generation))
+        task = asyncio.create_task(
+            self._search(item, ep, sources, prefs, alternative, generation, saved_only)
+        )
         self.pending[key] = task
         try:
             result = await task
@@ -333,7 +438,7 @@ class SourceManager:
         finally:
             self.pending.pop(key, None)
 
-    async def _search(self, item, ep, sources, prefs, alternative, generation):
+    async def _search(self, item, ep, sources, prefs, alternative, generation, saved_only=False):
         memory = item.get("source_memory", {})
         last_link = next((link for link in ep["links"] if link["id"] == ep["last_link_id"]), None)
         last = memory.get("last_source_id") or (last_link or {}).get("source_id")
@@ -344,7 +449,7 @@ class SourceManager:
                 adapter = self.adapter(source)
                 links = [link for link in ep["links"] if link["source_id"] == source["id"]]
                 try:
-                    async with asyncio.timeout(20):
+                    async with asyncio.timeout(90):
                         rows = [
                             await adapter.resolve(
                                 {
@@ -352,13 +457,24 @@ class SourceManager:
                                     "kind": "page",
                                     "match": 1.0,
                                     "link_id": link["id"],
+                                    "scope": "series"
+                                    if item["kind"] == "series"
+                                    and isinstance(adapter, SitemapAdapter)
+                                    else "episode",
                                     "language": source.get("language", ""),
                                     "access_type": source.get("access_type", "unknown"),
+                                    **await self.db("verify_link", link["id"]),
                                 }
                             )
                             for link in links
                         ]
-                        if not rows or not any(r["availability"] == "available" for r in rows):
+                        if not saved_only and (
+                            not rows
+                            or not any(
+                                r["availability"] == "available" and r["match"] >= 0.95
+                                for r in rows
+                            )
+                        ):
                             rows.extend(
                                 await adapter.search(
                                     {**item, "season": ep["season"], "episode": ep["episode"]}
@@ -372,12 +488,22 @@ class SourceManager:
                     ValueError,
                     TypeError,
                     KeyError,
-                ):
-                    rows = (
-                        await WebsiteAdapter(source, self.http).search(item)
-                        if source["adapter"] != "local"
-                        else []
-                    )
+                ) as exc:
+                    rows = [
+                        {
+                            "kind": "error",
+                            "url": "",
+                            "match": 0.0,
+                            "availability": "restricted"
+                            if isinstance(exc, ToolError)
+                            else "unknown",
+                            "embedded": False,
+                            "reason": str(exc)
+                            if isinstance(exc, ToolError)
+                            else f"Проверка не завершена: {type(exc).__name__}. "
+                            "Источник недоступен или истекло время ожидания.",
+                        }
+                    ]
                 for row in rows:
                     if row.get("link_id"):
                         await self.db(
@@ -392,7 +518,17 @@ class SourceManager:
                         playback_confirmed=False,
                     )
                     row["access_type"] = row.get("access_type") or "unknown"
-                    row["allowed"] = not prefs.free_only or row["access_type"] == "free"
+                    row["access_status"] = (
+                        row.get("access_status", "UNKNOWN")
+                        if source.get("access_status") == "MIXED"
+                        else source.get("access_status", "UNKNOWN")
+                    )
+                    row["allowed"] = not prefs.free_only or row["access_status"] == "FREE"
+                    row["manual_allowed"] = row["access_status"] == "UNKNOWN"
+                    row["requires_confirmation"] = prefs.ask_paid and (
+                        row["access_status"] in {"PAID", "MIXED"}
+                        or source.get("access_status") in {"PAID", "MIXED"}
+                    )
                     if source["adapter"] == "local":
                         row["allowed"] = True
                     row["score"] = (
@@ -427,7 +563,8 @@ class SourceManager:
             "episode_id": ep["id"],
             "results": rows,
             "selected_id": verified[0]["id"] if verified and prefs.auto_select_source else None,
-            "message": "Найден подходящий источник. Нажми «Смотреть», чтобы открыть его."
+            "message": "Найдено совпадение. Выбери вариант просмотра."
             if verified
-            else "Проверенного совпадения пока нет. Доступен ручной выбор на подключённых сайтах.",
+            else "Автоматический выбор не выполнен. Причины проверки указаны "
+            "у источников; неизвестная стоимость доступна для ручного выбора.",
         }
