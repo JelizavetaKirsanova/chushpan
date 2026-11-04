@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Protocol
 
-from backend.cinema.models import web_url
+from backend.cinema.models import local_video, web_url
 from backend.media.music_safari import SafariMusicTab
 from backend.media.safari import process
 from backend.permission_policy import requests_allowed
@@ -61,6 +61,21 @@ class ManualAdapter:
 
     async def detach(self):
         pass
+
+
+class LocalFileAdapter(ManualAdapter):
+    async def open(self, target):
+        path = Path(local_video(target["link"]["url"]))
+        if not path.is_file():
+            raise ToolError("Видеофайл недоступен. Проверь сохранённый путь.")
+        await process("/usr/bin/open", str(path), timeout=10)
+        return {
+            "file_opened": True,
+            "playback_confirmed": False,
+            "mode": "manual",
+            "message": "Файл открыт во внешнем плеере. Автовосстановление позиции недоступно; "
+            "укажи прогресс вручную в карточке.",
+        }
 
 
 class SafariBridge:

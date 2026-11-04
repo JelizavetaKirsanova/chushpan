@@ -12,7 +12,7 @@ from backend.cinema.adapters import HTML5Adapter, ManualAdapter, SafariBridge
 from backend.cinema.commands import command
 from backend.cinema.models import Entry
 from backend.cinema.service import Cinema
-from backend.cinema.store import CinemaStore
+from backend.cinema.store import MIGRATIONS, CinemaStore
 from backend.config import Settings
 from backend.context import DeviceContext, RequestContext, request_scope, voice_addressed
 from backend.hud.bus import HudBus
@@ -71,7 +71,9 @@ def test_persistent_migration_dedup_and_episode_progress(tmp_path):
     assert memory.db.execute("SELECT id FROM conversations").fetchone()[0] == original
     assert len(reopened.library("СЕРИАЛ")) == 1
     assert len(reopened.history()) == 2
-    assert reopened.db.execute("SELECT COUNT(*) FROM cinema_migrations").fetchone()[0] == 1
+    assert reopened.db.execute("SELECT COUNT(*) FROM cinema_migrations").fetchone()[0] == len(
+        MIGRATIONS
+    )
     reopened.close()
     memory.close()
 
@@ -349,6 +351,273 @@ def test_cinema_storage_failure_does_not_break_the_assistant(tmp_path, monkeypat
         assert "cinema_command" in tools
         with pytest.raises(ToolError, match="SQLite"):
             await service.execute("Продолжи мой сериал")
+        await service.close()
+        memory.close()
+
+    asyncio.run(run())
+
+
+def test_v1_upgrade_preserves_library_links_history_and_memory(tmp_path, monkeypatch):
+    import backend.cinema.store as module
+
+    path = tmp_path / "existing.sqlite"
+    monkeypatch.setattr(module, "MIGRATIONS", MIGRATIONS[:1])
+    old = CinemaStore(path)
+    # Seed v1 directly: the v2 store methods intentionally require the new schema.
+    old.db.execute(
+        "INSERT INTO cinema_titles VALUES "
+        "('old','movie:2026:old','Old','movie',2026,'','','','watched',1,'ep','2026-11-01')"
+    )
+    old.db.execute(
+        "INSERT INTO cinema_sources VALUES ('source',?)",
+        (
+            json.dumps(
+                {
+                    "id": "source",
+                    "name": "Official",
+                    "base_url": "https://example.org",
+                }
+            ),
+        ),
+    )
+    old.db.execute(
+        "INSERT INTO cinema_episodes VALUES ('ep','old',0,0,90,100,1,'2026-11-01','link')"
+    )
+    old.db.execute(
+        "INSERT INTO cinema_links VALUES ('link','ep','source','https://example.org/film','')"
+    )
+    old.db.execute("INSERT INTO cinema_history VALUES (1,'ep','link',90,100,'pause','2026-11-01')")
+    old.db.execute("INSERT INTO cinema_settings VALUES ('preferences',?)", ('{"auto_next":false}',))
+    old.db.commit()
+    old.close()
+    memory = MemoryStore(path)
+    conversation = memory.new_conversation()
+    monkeypatch.setattr(module, "MIGRATIONS", MIGRATIONS)
+    store = CinemaStore(path)
+    item = store.detail("old")
+    assert item["status"] == "watched" and item["favorite"] == 1
+    assert item["completed_at"] == "2026-11-01"
+    assert item["current"]["position"] == 90
+    assert item["current"]["links"][0]["id"] == "link"
+    assert len(store.history()) == 1
+    assert memory.db.execute("SELECT id FROM conversations").fetchone()[0] == conversation
+    assert store.preferences().watch_region == "EE"
+    store.close()
+    memory.close()
+
+
+def test_metadata_status_replay_delete_and_source_less_watchlist(tmp_path):
+    store = CinemaStore(tmp_path / "library.sqlite")
+    values = {
+        "title": "Интерстеллар",
+        "kind": "movie",
+        "year": 2014,
+        "catalogue_key": "tmdb:movie:157336",
+        "metadata": {"genres": ["фантастика"], "runtime": 169, "rating": 8.5},
+    }
+    item = store.add(values)
+    assert item["status"] == "planned" and not item["current"]["links"]
+    assert store.options(item["id"])["options"] == []
+    with pytest.raises(ValueError, match="страницу"):
+        store.target(item["id"])
+    store.update_title(item["id"], {"status": "watching", "user_rating": 9})
+    store.progress(item["current"]["id"], 60, 1000)
+    enriched = store.add({**values, "metadata": {**values["metadata"], "rating": 8.6}})
+    assert enriched["id"] == item["id"] and enriched["status"] == "watching"
+    assert enriched["current"]["position"] == 60 and enriched["user_rating"] == 9
+    store.update_title(item["id"], {"status": "watched"})
+    assert store.detail(item["id"])["completed_at"]
+    store.update_title(item["id"], {"status": "planned"})
+    assert store.detail(item["id"])["current"]["position"] == 60
+    store.replay(item["id"])
+    assert store.detail(item["id"])["current"]["position"] == 0
+    assert len(store.history()) == 1
+    for invalid in (True, 0, 11, 3.5):
+        with pytest.raises(ValueError):
+            store.update_title(item["id"], {"user_rating": invalid})
+    store.delete(item["id"])
+    assert store.library() == [] and store.history() == []
+    assert store.db.execute("PRAGMA foreign_key_check").fetchall() == []
+    store.close()
+
+
+def test_local_files_bind_once_check_availability_and_refuse_web_urls(tmp_path):
+    store = CinemaStore(tmp_path / "library.sqlite")
+    source = store.save_source({"name": "Мои файлы", "adapter": "local"})
+    video = tmp_path / "my movie.mp4"
+    video.write_bytes(b"fixture, never played")
+    item = store.add(
+        {"title": "Local", "kind": "movie", "source_id": source["id"], "url": str(video)}
+    )
+    assert store.options(item["id"])["options"][0]["available"]
+    video.unlink()
+    assert not store.options(item["id"])["options"][0]["available"]
+    with pytest.raises(ValueError):
+        store.add({"title": "X", "source_id": source["id"], "url": "https://example.org/a.mp4"})
+    with pytest.raises(ValueError):
+        store.add({"title": "X", "source_id": source["id"], "url": "/tmp/not-a-video.txt"})
+    store.save_source({**source, "enabled": False})
+    with pytest.raises(ValueError, match="отключён"):
+        store.target(item["id"])
+    store.close()
+
+
+@pytest.mark.parametrize(
+    ("text", "action"),
+    [
+        ("Чушпан, добавь Интерстеллар в список хочу посмотреть", "plan"),
+        ("Чушпан, что у меня в списке на просмотр?", "planned"),
+        ("Чушпан, включи последнюю серию, которую я смотрела", "continue"),
+        ("Чушпан, найди мне какой-нибудь триллер", "discover"),
+        ("Чушпан, отметь этот фильм просмотренным", "title_watched"),
+        ("Чушпан, продолжи мой сериал", "continue"),
+    ],
+)
+def test_new_voice_routes_are_deterministic(text, action):
+    assert command(text)["action"] == action
+
+
+def test_voice_watchlist_and_mark_watched_through_conversation_without_llm(tmp_path):
+    from backend.brain.conversation import Conversation
+    from scripts.check_cinema_browser import NoLLM
+
+    async def run():
+        memory = MemoryStore(tmp_path / "assistant.sqlite")
+        registry = ToolRegistry()
+        registry.mac_agent = LocalMacAgent()
+        service = Cinema(registry, Settings(data_dir=tmp_path / "data"), memory)
+        registry.cinema = service
+        conv = Conversation(Settings(language="ru-RU"), NoLLM(), memory, tools=registry)
+        bus = HudBus()
+        service.bind(bus, conv)
+        text = "".join(
+            [
+                part
+                async for part in conv.reply("Чушпан, добавь Интерстеллар в список хочу посмотреть")
+            ]
+        )
+        assert "Добавила" in text
+        item = (await service.db("library"))[0]
+        text = "".join(
+            [part async for part in conv.reply("Чушпан, что у меня в списке на просмотр?")]
+        )
+        assert item["title"] in text
+        service.focused = item["id"]
+        text = "".join(
+            [part async for part in conv.reply("Чушпан, отметь этот фильм просмотренным")]
+        )
+        assert "просмотренным" in text
+        assert (await service.db("title", item["id"]))["status"] == "watched"
+        await service.close()
+        memory.close()
+
+    asyncio.run(run())
+
+
+def test_unavailable_sources_never_start_or_create_progress(tmp_path):
+    async def run():
+        memory = MemoryStore(tmp_path / "assistant.sqlite")
+        registry = ToolRegistry()
+        registry.mac_agent = LocalMacAgent()
+        player = FakePlayer()
+        service = Cinema(
+            registry, Settings(data_dir=tmp_path / "data"), memory, adapter_factory=lambda _: player
+        )
+        item = await service.db("add", {"title": "No video", "kind": "movie"})
+        result = await service.open(item["id"])
+        assert not result["playback_confirmed"] and not player.opened
+        assert not (await service.db("detail", item["id"]))["current"]["last_viewed"]
+        assert await service.db("history") == []
+        await service.close()
+        memory.close()
+
+    asyncio.run(run())
+
+
+def test_failed_player_and_progress_opt_out_are_truthful(tmp_path):
+    class BrokenPlayer(FakePlayer):
+        async def open(self, target):
+            raise ToolError("Плеер не подтвердил действие.")
+
+    async def run():
+        memory = MemoryStore(tmp_path / "assistant.sqlite")
+        registry = ToolRegistry()
+        registry.mac_agent = LocalMacAgent()
+        service = Cinema(
+            registry,
+            Settings(data_dir=tmp_path / "data"),
+            memory,
+            adapter_factory=lambda _: BrokenPlayer(),
+        )
+        item = await asyncio.get_running_loop().run_in_executor(service.worker, seed, service.store)
+        result = await service.open(item["id"])
+        assert not result["playback_confirmed"]
+        assert await service.db("history") == []
+        assert (await service.db("detail", item["id"]))["current"]["last_link_id"] is None
+        await service.db("configure", {"save_progress": False})
+        await service.save({"position": 25, "duration": 100}, "periodic")
+        assert await service.db("history") == []
+        await service.close()
+        memory.close()
+
+    asyncio.run(run())
+
+
+def test_last_series_and_genre_requests_never_reach_llm_and_reuse_last_source(tmp_path):
+    from backend.brain.conversation import Conversation
+    from scripts.check_cinema_browser import NoLLM
+
+    class Catalogue:
+        credentials = SimpleNamespace(configured=True)
+
+        async def search(self, query="", **filters):
+            assert filters.get("genre") == "триллер"
+            return [{"title": "Триллер из каталога"}]
+
+    async def run():
+        memory = MemoryStore(tmp_path / "assistant.sqlite")
+        registry = ToolRegistry()
+        registry.mac_agent = LocalMacAgent()
+        player = FakePlayer()
+        service = Cinema(
+            registry,
+            Settings(data_dir=tmp_path / "data"),
+            memory,
+            adapter_factory=lambda _: player,
+            tmdb=Catalogue(),
+        )
+        registry.cinema = service
+        conv = Conversation(Settings(language="ru-RU"), NoLLM(), memory, tools=registry)
+        service.bind(HudBus(), conv)
+        item = await asyncio.get_running_loop().run_in_executor(service.worker, seed, service.store)
+        second = await service.db(
+            "save_source", {"name": "Другой", "base_url": "https://example.org", "adapter": "html5"}
+        )
+        item = await service.db(
+            "add",
+            {
+                "title_id": item["id"],
+                "title": item["title"],
+                "kind": "series",
+                "source_id": second["id"],
+                "url": "https://example.org/watch",
+            },
+        )
+        episode = item["episodes"][0]
+        preferred = episode["links"][-1]
+        await service.db("progress", episode["id"], 66, 1000, "manual", preferred["id"])
+        for text in (
+            "Чушпан, включи последнюю серию, которую я смотрела",
+            "Чушпан, продолжи мой сериал",
+        ):
+            answer = "".join([part async for part in conv.reply(text)])
+            assert "Подтверждено" in answer
+            assert player.opened[-1]["link"]["id"] == preferred["id"]
+            assert player.opened[-1]["episode"]["position"] == 66
+        answer = "".join(
+            [part async for part in conv.reply("Чушпан, найди мне какой-нибудь триллер")]
+        )
+        assert "Триллер из каталога" in answer
         await service.close()
         memory.close()
 

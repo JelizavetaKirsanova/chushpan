@@ -10,7 +10,7 @@ import sqlite3
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from backend.cinema.models import Entry, Preferences, Source, origin
+from backend.cinema.models import Entry, Metadata, Preferences, Source, origin
 
 MIGRATIONS = [
     """
@@ -40,6 +40,18 @@ MIGRATIONS = [
     CREATE INDEX cinema_recent ON cinema_episodes(last_viewed DESC);
     CREATE INDEX cinema_events ON cinema_history(created_at DESC);
     CREATE TABLE cinema_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    """,
+    """
+    CREATE TABLE cinema_library (
+      title_id TEXT PRIMARY KEY REFERENCES cinema_titles(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'planned', favorite INTEGER NOT NULL DEFAULT 0,
+      user_rating INTEGER, completed_at TEXT);
+    INSERT INTO cinema_library(title_id,status,favorite,completed_at)
+      SELECT id,status,favorite,CASE WHEN status='watched' THEN updated_at END FROM cinema_titles;
+    CREATE TABLE cinema_metadata (
+      title_id TEXT PRIMARY KEY REFERENCES cinema_titles(id) ON DELETE CASCADE,
+      data TEXT NOT NULL);
+    ALTER TABLE cinema_episodes ADD COLUMN name TEXT NOT NULL DEFAULT '';
     """,
 ]
 
@@ -106,7 +118,11 @@ class CinemaStore:
         source = Source.model_validate(values)
         source.id = source.id or uuid4().hex
         known = self.db.execute("SELECT 1 FROM cinema_sources WHERE id=?", (source.id,)).fetchone()
-        if known and origin(self.source(source.id).base_url) != origin(source.base_url):
+        previous = self.source(source.id) if known else None
+        if previous and (
+            (previous.adapter == "local") != (source.adapter == "local")
+            or (source.adapter != "local" and origin(previous.base_url) != origin(source.base_url))
+        ):
             raise ValueError(
                 "Добавь другой сайт как новый источник, чтобы сохранить старые ссылки."
             )
@@ -118,10 +134,17 @@ class CinemaStore:
         return source.model_dump()
 
     def add(self, values):
+        values = dict(values)
+        metadata = Metadata.model_validate(values.pop("metadata", {}))
+        title_id = values.pop("title_id", None)
         entry = Entry.model_validate(values)
-        source = self.source(entry.source_id)
-        if origin(entry.url) != origin(source.base_url):
-            raise ValueError("Страница должна принадлежать выбранному источнику.")
+        if entry.source_id:
+            source = self.source(entry.source_id)
+            if source.adapter == "local":
+                if not entry.url.startswith("/"):
+                    raise ValueError("Нужен путь к локальному видео.")
+            elif entry.url.startswith("/") or origin(entry.url) != origin(source.base_url):
+                raise ValueError("Страница должна принадлежать выбранному источнику.")
         identity = f"{entry.kind}:{entry.year}:" + re.sub(r"[\W_]+", "", entry.title.casefold())
         with self.db:
             row = self.db.execute(
@@ -129,6 +152,11 @@ class CinemaStore:
                 "OR (catalogue_key!='' AND catalogue_key=?)",
                 (identity, entry.catalogue_key),
             ).fetchone()
+            if title_id:
+                existing = self.title(title_id)
+                if existing["kind"] != entry.kind:
+                    raise ValueError("Тип привязки должен совпадать с фильмом или сериалом.")
+                row = (title_id,)
             title_id = row[0] if row else uuid4().hex
             if not row:
                 self.db.execute(
@@ -146,6 +174,18 @@ class CinemaStore:
                         now(),
                     ),
                 )
+                self.db.execute("INSERT INTO cinema_library(title_id) VALUES (?)", (title_id,))
+            if metadata.model_fields_set:
+                # Metadata enrichment never changes status, history or playback position.
+                self.db.execute(
+                    "INSERT OR REPLACE INTO cinema_metadata VALUES (?,?)",
+                    (title_id, metadata.model_dump_json()),
+                )
+                self.db.execute(
+                    "UPDATE cinema_titles SET poster_url=?,description=?,catalogue_key=? "
+                    "WHERE id=?",
+                    (entry.poster_url, entry.description, entry.catalogue_key, title_id),
+                )
             self.db.execute(
                 "INSERT OR IGNORE INTO cinema_episodes(id,title_id,season,episode) "
                 "VALUES (?,?,?,?)",
@@ -155,6 +195,8 @@ class CinemaStore:
                 "SELECT id FROM cinema_episodes WHERE title_id=? AND season=? AND episode=?",
                 (title_id, entry.season, entry.episode),
             ).fetchone()[0]
+            if not entry.source_id:
+                return self.detail(title_id)
             link = self.db.execute(
                 "SELECT id FROM cinema_links WHERE episode_id=? AND source_id=? AND voice=?",
                 (episode_id, entry.source_id, entry.voice),
@@ -168,10 +210,94 @@ class CinemaStore:
         return self.detail(title_id)
 
     def title(self, identifier):
-        row = self.db.execute("SELECT * FROM cinema_titles WHERE id=?", (identifier,)).fetchone()
+        row = self.db.execute(
+            "SELECT t.*,u.status AS user_status,u.favorite AS user_favorite,"
+            "u.user_rating,u.completed_at FROM cinema_titles t "
+            "JOIN cinema_library u ON u.title_id=t.id WHERE t.id=?",
+            (identifier,),
+        ).fetchone()
         if not row:
             raise ValueError("Фильм или сериал не найден.")
-        return dict(row)
+        item = dict(row)
+        item["status"] = item.pop("user_status")
+        item["favorite"] = item.pop("user_favorite")
+        meta = self.db.execute(
+            "SELECT data FROM cinema_metadata WHERE title_id=?", (identifier,)
+        ).fetchone()
+        item["metadata"] = json.loads(meta[0]) if meta else Metadata().model_dump()
+        return item
+
+    def delete(self, identifier):
+        self.title(identifier)
+        with self.db:
+            self.db.execute(
+                "DELETE FROM cinema_history WHERE episode_id IN "
+                "(SELECT id FROM cinema_episodes WHERE title_id=?)",
+                (identifier,),
+            )
+            self.db.execute("DELETE FROM cinema_titles WHERE id=?", (identifier,))
+
+    def replay(self, identifier):
+        self.title(identifier)
+        with self.db:
+            self.db.execute(
+                "UPDATE cinema_episodes SET position=0,watched=0 WHERE title_id=?", (identifier,)
+            )
+            self.db.execute(
+                "UPDATE cinema_titles SET last_episode_id=NULL WHERE id=?", (identifier,)
+            )
+            self.update_title(identifier, {"status": "watching"})
+        return self.detail(identifier)
+
+    def season(self, identifier, episodes):
+        item = self.title(identifier)
+        if item["kind"] != "series":
+            raise ValueError("Сезоны доступны только сериалам.")
+        with self.db:
+            for ep in episodes:
+                entry = Entry(title=item["title"], season=ep["season"], episode=ep["episode"])
+                self.db.execute(
+                    "INSERT INTO cinema_episodes(id,title_id,season,episode,name) "
+                    "VALUES (?,?,?,?,?) "
+                    "ON CONFLICT(title_id,season,episode) DO UPDATE SET name=excluded.name",
+                    (
+                        uuid4().hex,
+                        identifier,
+                        entry.season,
+                        entry.episode,
+                        str(ep.get("name", ""))[:200],
+                    ),
+                )
+        return self.detail(identifier)
+
+    def options(self, title_id, episode_id=None):
+        from pathlib import Path
+
+        item = self.detail(title_id)
+        ep = next(
+            (ep for ep in item["episodes"] if ep["id"] == episode_id),
+            item["current"] if episode_id is None else None,
+        )
+        if not ep:
+            raise ValueError("Серия не найдена.")
+        options = []
+        for source in self.sources():
+            links = [link for link in ep["links"] if link["source_id"] == source["id"]]
+            for link in links or [None]:
+                available = bool(source["enabled"] and link)
+                reason = (
+                    ""
+                    if available
+                    else "Источник отключён."
+                    if not source["enabled"]
+                    else "Привяжи страницу фильма или файл один раз."
+                )
+                if available and source["adapter"] == "local" and not Path(link["url"]).is_file():
+                    available, reason = False, "Видеофайл недоступен. Проверь путь."
+                options.append(
+                    {"source": source, "link": link, "available": available, "reason": reason}
+                )
+        return {"title_id": title_id, "episode_id": ep["id"], "options": options}
 
     def detail(self, identifier):
         item = self.title(identifier)
@@ -202,10 +328,13 @@ class CinemaStore:
             if query.casefold() in (item := self.detail(row[0]))["title"].casefold()
         ]
 
-    def latest(self):
+    def latest(self, kind=None, unfinished=False):
         row = self.db.execute(
-            "SELECT title_id FROM cinema_episodes WHERE last_viewed IS NOT NULL "
-            "ORDER BY last_viewed DESC LIMIT 1"
+            "SELECT e.title_id FROM cinema_episodes e JOIN cinema_titles t ON t.id=e.title_id "
+            "JOIN cinema_library u ON u.title_id=t.id WHERE e.last_viewed IS NOT NULL "
+            "AND (?=0 OR u.status='watching') AND (? IS NULL OR t.kind=?) "
+            "ORDER BY e.last_viewed DESC LIMIT 1",
+            (unfinished, kind, kind),
         ).fetchone()
         if not row:
             raise ValueError("Ещё нет истории. Добавь фильм или сериал в разделе «Кино».")
@@ -241,17 +370,29 @@ class CinemaStore:
 
     def update_title(self, identifier, values):
         self.title(identifier)
-        if set(values) - {"status", "favorite"} or not values:
+        if set(values) - {"status", "favorite", "user_rating"} or not values:
             raise ValueError("Нельзя изменить эти поля.")
         if "status" in values and values["status"] not in {"watching", "planned", "watched"}:
             raise ValueError("Неизвестный статус.")
         if "favorite" in values and type(values["favorite"]) is not bool:
             raise ValueError("Избранное должно быть логическим значением.")
+        if (
+            "user_rating" in values
+            and values["user_rating"] is not None
+            and (type(values["user_rating"]) is not int or not 1 <= values["user_rating"] <= 10)
+        ):
+            raise ValueError("Оценка должна быть от 1 до 10.")
         with self.db:
             for key, value in values.items():
                 self.db.execute(
-                    f"UPDATE cinema_titles SET {key}=?,updated_at=? WHERE id=?",
-                    (value, now(), identifier),
+                    f"UPDATE cinema_library SET {key}=? WHERE title_id=?",
+                    (value, identifier),
+                )
+            self.db.execute("UPDATE cinema_titles SET updated_at=? WHERE id=?", (now(), identifier))
+            if values.get("status") == "watched":
+                self.db.execute(
+                    "UPDATE cinema_library SET completed_at=? WHERE title_id=?",
+                    (now(), identifier),
                 )
         return self.detail(identifier)
 
@@ -326,8 +467,13 @@ class CinemaStore:
             title = self.title(ep["title_id"])
             status = "watched" if title["kind"] == "movie" and complete else "watching"
             self.db.execute(
-                "UPDATE cinema_titles SET last_episode_id=?,updated_at=?,status=? WHERE id=?",
-                (episode_id, stamp, status, ep["title_id"]),
+                "UPDATE cinema_titles SET last_episode_id=?,updated_at=? WHERE id=?",
+                (episode_id, stamp, ep["title_id"]),
+            )
+            self.db.execute(
+                "UPDATE cinema_library SET status=?,completed_at=COALESCE(?,completed_at) "
+                "WHERE title_id=?",
+                (status, stamp if status == "watched" else None, ep["title_id"]),
             )
             self.db.execute(
                 "INSERT INTO cinema_history(episode_id,link_id,position,duration,event,created_at) "

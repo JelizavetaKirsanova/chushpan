@@ -10,10 +10,17 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 
-from backend.cinema.adapters import HTML5Adapter, ManualAdapter, SafariBridge, open_page
+from backend.cinema.adapters import (
+    HTML5Adapter,
+    LocalFileAdapter,
+    ManualAdapter,
+    SafariBridge,
+    open_page,
+)
 from backend.cinema.commands import command
 from backend.cinema.models import origin
 from backend.cinema.store import CinemaStore
+from backend.cinema.tmdb import TMDB, TMDBCredentials
 from backend.context import RequestContext, request_scope, voice_addressed
 from backend.mac_agent import LocalMacAgent
 from backend.security import ActionDenied, Risk, command_text
@@ -21,7 +28,9 @@ from backend.tools.registry import Tool, ToolError
 
 
 class Cinema:
-    def __init__(self, tools, settings, memory, *, adapter_factory=None, opener=open_page):
+    def __init__(
+        self, tools, settings, memory, *, adapter_factory=None, opener=open_page, tmdb=None
+    ):
         self.tools, self.s, self.memory = tools, settings, memory
         path = memory.db.execute("PRAGMA database_list").fetchone()[2] or ":memory:"
         self.available = memory.memory_available
@@ -34,7 +43,11 @@ class Cinema:
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cinema-sqlite")
         self.adapter_factory = adapter_factory or (
             lambda name: (
-                HTML5Adapter(SafariBridge(settings)) if name == "html5" else ManualAdapter()
+                HTML5Adapter(SafariBridge(settings))
+                if name == "html5"
+                else LocalFileAdapter()
+                if name == "local"
+                else ManualAdapter(opener)
             )
         )
         self.opener = opener
@@ -45,7 +58,11 @@ class Cinema:
         self.lock = asyncio.Lock()
         self.closed = False
         self.message = ""
-        self.catalogues = {}  # Official CatalogueAdapter instances may be registered here.
+        self.tmdb = tmdb or TMDB(TMDBCredentials(settings.data_path / "integrations"))
+        self.catalogues = {"TMDB": self.tmdb}
+        self.matches = []
+        self.focused = None
+        self.search_sequence = 0
         self.register()
 
     async def db(self, method, *args, **kwargs):
@@ -175,6 +192,8 @@ class Cinema:
                 if self.session
                 else None,
                 "message": self.message,
+                "matches": self.matches,
+                "tmdb": {"configured": self.tmdb.credentials.configured},
                 **extra,
             }
         )
@@ -207,7 +226,46 @@ class Cinema:
             elif op == "add":
                 result = await self.db("add", value["entry"])
             elif op == "update":
-                result = await self.db("update_title", value["id"], value["values"])
+                async with self.lock:
+                    if (
+                        self.session
+                        and self.session["target"]["item"]["id"] == value["id"]
+                        and "status" in value["values"]
+                    ):
+                        await self.stop_tracking()
+                    result = await self.db("update_title", value["id"], value["values"])
+            elif op in {"delete", "replay"}:
+                async with self.lock:
+                    if self.session and self.session["target"]["item"]["id"] == value["id"]:
+                        await self.stop_tracking()
+                    result = await self.db(op, value["id"])
+                    if op == "delete" and self.focused == value["id"]:
+                        self.focused = None
+                if op == "delete":
+                    self.message = "Удалено из медиатеки."
+            elif op == "focus":
+                await self.db("title", value["id"])
+                self.focused = value["id"]
+                return
+            elif op == "tmdb":
+                await asyncio.to_thread(self.tmdb.credentials.save, value["credential"])
+                self.matches = []
+                self.message = "Настройки TMDB сохранены."
+                await self.publish(saved="tmdb")
+                return
+            elif op == "catalogue_detail":
+                detail = await self.tmdb.detail(value["key"])
+                await self.publish(catalogue_detail=detail)
+                return
+            elif op == "catalogue_add":
+                detail = await self.tmdb.detail(value["key"])
+                result = await self.db("add", detail)
+            elif op == "season":
+                item = await self.db("title", value["id"])
+                episodes = await self.tmdb.episodes(item["catalogue_key"], value["season"])
+                result = await self.db("season", value["id"], episodes)
+                await self.publish(season_loaded=value["id"], loaded_season=value["season"])
+                return
             elif op == "progress":
                 async with self.lock:
                     # Do not let a poll overwrite an explicit manual correction.
@@ -252,14 +310,35 @@ class Cinema:
                     "cinema_command", {"command": value["command"]}, value["command"]
                 )
             elif op == "search":
-                query = str(value.get("query", "")).strip()[:200]
-                matches = []
-                for name, catalogue in self.catalogues.items():
-                    async with asyncio.timeout(8):
-                        matches.extend(
-                            {**item, "catalogue": name} for item in await catalogue.search(query)
-                        )
-                await self.publish(matches=matches)
+                self.search_sequence += 1
+                sequence = self.search_sequence
+                self.matches = []
+                matches = await self.tmdb.search(
+                    str(value.get("query", "")).strip()[:200],
+                    kind=value.get("kind", "all"),
+                    genre=value.get("genre", ""),
+                    year=value.get("year", 0),
+                    rating=value.get("rating", 0),
+                )
+                if sequence != self.search_sequence:
+                    return
+                self.matches = matches
+                await self.publish()
+                return
+            elif op == "options":
+                choices = await self.source_options(value["title_id"], value.get("episode_id"))
+                await self.publish(source_options=choices)
+                return
+            elif op == "provider_page":
+                item = await self.db("title", value["title_id"])
+                prefs = await self.db("preferences")
+                providers = await self.tmdb.providers(item["catalogue_key"], prefs.watch_region)
+                url = providers.get("url", "")
+                if not url.startswith("https://www.themoviedb.org/"):
+                    raise ToolError("Страница официальных предложений недоступна.")
+                await self.opener(url)
+                self.message = "Открыты предложения сервисов. Запуск видео не подтверждён."
+                await self.publish()
                 return
             elif op == "source_search":
                 source = await self.db("source", value["source_id"])
@@ -313,16 +392,102 @@ class Cinema:
         if parsed is None:
             raise ToolError("Уточни команду кинотеки.")
         action = parsed["action"]
+        if action == "planned":
+            items = [item for item in await self.db("library") if item["status"] == "planned"]
+            await self.publish(navigate=True, active_tab="planned")
+            return {
+                "message": "Хочешь посмотреть: "
+                + ", ".join(item["title"] for item in items[:20])
+                + "."
+                if items
+                else "Список «Хочу посмотреть» пока пуст.",
+                "result_status": "success",
+            }
+        if action == "discover":
+            self.matches = await self.tmdb.search(genre=parsed["genre"], kind="movie")
+            await self.publish(navigate=True, active_tab="catalogue")
+            return {
+                "message": "Нашла в TMDB: "
+                + ", ".join(item["title"] for item in self.matches[:3])
+                + ". Источник просмотра выбирается отдельно."
+                if self.matches
+                else "В TMDB ничего не найдено.",
+                "result_status": "success",
+            }
+        if action == "plan":
+            existing = [
+                item
+                for item in await self.db("library")
+                if item["title"].casefold() == parsed["title"].casefold()
+            ]
+            if len(existing) == 1:
+                item = existing[0]
+                if item["status"] == "planned":
+                    return {
+                        "message": f"«{item['title']}» уже в списке «Хочу посмотреть».",
+                        "result_status": "success",
+                    }
+                return {
+                    "message": f"«{item['title']}» уже в медиатеке. "
+                    "Переместить его можно в карточке.",
+                    "result_status": "success",
+                }
+            entry = {"title": parsed["title"], "kind": "movie"}
+            if self.tmdb.credentials.configured:
+                matches = await self.tmdb.search(parsed["title"])
+                exact = [
+                    item
+                    for item in matches
+                    if item["title"].casefold() == parsed["title"].casefold()
+                ]
+                if len(exact) != 1:
+                    self.matches = matches
+                    await self.publish(navigate=True, active_tab="catalogue")
+                    return {
+                        "message": "Выбери нужный фильм в каталоге: название неоднозначно "
+                        "или не найдено. Добавление пока не выполнено.",
+                        "result_status": "partial_success",
+                    }
+                entry = await self.tmdb.detail(exact[0]["catalogue_key"])
+            item = await self.db("add", entry)
+            await self.publish(navigate=True, active_tab="planned")
+            return {
+                "message": f"Добавила «{item['title']}» в «Хочу посмотреть».",
+                "result_status": "success",
+            }
+        if action == "title_watched":
+            identifier = self.session["target"]["item"]["id"] if self.session else self.focused
+            if not identifier:
+                raise ToolError("Сначала открой карточку фильма или начни просмотр.")
+            async with self.lock:
+                await self.stop_tracking()
+                item = await self.db("update_title", identifier, {"status": "watched"})
+            await self.publish()
+            return {
+                "message": f"«{item['title']}» отмечен просмотренным.",
+                "result_status": "success",
+            }
         if action == "library":
             await self.publish(navigate=True)
             return {"message": "Открыла твою библиотеку.", "result_status": "success"}
         if action == "continue":
-            target = await self.db("target")
-            if target["episode"]["watched"] and target["item"]["kind"] == "series":
-                target = await self.db("next_target", target["item"]["id"], target["episode"]["id"])
-            return await self.open(
-                target["item"]["id"], target["episode"]["id"], device=parsed.get("device")
+            kind = (
+                "series"
+                if "сериал" in command.casefold() or "последнюю серию" in command.casefold()
+                else None
             )
+            latest = await self.db("latest", kind, "последнюю серию" not in command.casefold())
+            episode = latest["current"]
+            if (
+                episode["watched"]
+                and latest["kind"] == "series"
+                and "последнюю серию" not in command.casefold()
+            ):
+                index = latest["episodes"].index(episode)
+                if index + 1 >= len(latest["episodes"]):
+                    raise ToolError("Следующая серия ещё не добавлена. Открой сезон в карточке.")
+                episode = latest["episodes"][index + 1]
+            return await self.open(latest["id"], episode["id"], device=parsed.get("device"))
         if not self.session:
             if action in {"info", "next", "watched"}:
                 target = await self.db("target")
@@ -398,11 +563,35 @@ class Cinema:
             device = device or prefs.devices.get(self.location(), "mac")
             if device == "airplay":
                 return self.airplay_result()
+            choices = await self.db("options", title_id, episode_id)
+            available = [choice for choice in choices["options"] if choice["available"]]
+            if not link_id:
+                item = await self.db("detail", title_id)
+                ep = next(ep for ep in item["episodes"] if ep["id"] == choices["episode_id"])
+                link_id = next(
+                    (
+                        choice["link"]["id"]
+                        for choice in available
+                        if choice["link"]["id"] == ep["last_link_id"]
+                    ),
+                    None,
+                )
+            if not link_id and len(available) != 1:
+                await self.publish(source_options=await self.source_options(title_id, episode_id))
+                return {
+                    "playback_confirmed": False,
+                    "result_status": "partial_success",
+                    "message": "Выбери источник просмотра."
+                    if available
+                    else "Доступный источник не привязан. "
+                    "Добавь страницу или локальный файл в карточке.",
+                }
+            if not link_id:
+                link_id = available[0]["link"]["id"]
             target = await self.db("target", title_id, episode_id, link_id)
             await self.stop_tracking()
             # The final sample may advance the position saved by a previous poll.
             target = await self.db("target", title_id, episode_id, link_id)
-            await self.db("select", target["episode"]["id"], target["link"]["id"])
             adapter = self.adapter_factory(target["source"]["adapter"])
             token = secrets.token_urlsafe(32)
             base = getattr(self.bus, "cinema_url", "") if self.bus else ""
@@ -426,6 +615,12 @@ class Cinema:
                 self.session["mode"] = "manual"
                 result = {"playback_confirmed": False, "mode": "manual", "message": str(exc)}
             self.session["mode"] = result.get("mode", self.session["mode"])
+            if (
+                result.get("page_opened")
+                or result.get("file_opened")
+                or result.get("playback_confirmed")
+            ):
+                await self.db("select", target["episode"]["id"], target["link"]["id"])
             self.message = result.get("message", "Воспроизведение не подтверждено.")
             # Opening a page is not a viewing event. Preserve the explicitly chosen link.
             if self.session["mode"] == "html5":
@@ -437,6 +632,8 @@ class Cinema:
 
     async def save(self, state, event):
         if not self.session:
+            return
+        if not (await self.db("preferences")).save_progress:
             return
         observed = state.get("observed_at", 0)
         if type(observed) not in (int, float) or not math.isfinite(observed):
@@ -522,6 +719,7 @@ class Cinema:
             if (
                 not session
                 or not secrets.compare_digest(token, session["token"])
+                or session["mode"] != "html5"
                 or request_origin != origin(session["target"]["link"]["url"])
             ):
                 return False
@@ -557,6 +755,19 @@ class Cinema:
         if event == "ended":
             await self.finished(target, prefs.auto_next)
         return True
+
+    async def source_options(self, title_id, episode_id=None):
+        choices = await self.db("options", title_id, episode_id)
+        item = await self.db("title", title_id)
+        if item["catalogue_key"].startswith("tmdb:") and self.tmdb.credentials.configured:
+            try:
+                prefs = await self.db("preferences")
+                choices["official"] = await self.tmdb.providers(
+                    item["catalogue_key"], prefs.watch_region
+                )
+            except ToolError as exc:
+                choices["provider_error"] = str(exc)
+        return choices
 
     async def stop_tracking(self, flush=True):
         if self.poller and self.poller is not asyncio.current_task():

@@ -13,9 +13,30 @@ def command(text, active=False):
     if tv:
         value = re.sub(r"(?: и (?:включи|покажи))? на телевизоре$", "", value)
     action = None
+    add = re.fullmatch(r"добавь (.{1,200}?) в (?:список )?(?:хочу посмотреть|на просмотр)", value)
+    if add and not tv:
+        return {"action": "plan", "title": add[1]}
+    discover = re.fullmatch(
+        r"найди (?:мне )?(?:какой[ -]нибудь )?"
+        r"(триллер|комедию|драму|ужасы|фантастику)",
+        value,
+    )
+    if discover and not tv:
+        return {
+            "action": "discover",
+            "genre": {"комедию": "комедия", "драму": "драма", "фантастику": "фантастика"}.get(
+                discover[1], discover[1]
+            ),
+        }
+    if (
+        value in {"что у меня в списке на просмотр", "что у меня в списке хочу посмотреть"}
+        and not tv
+    ):
+        return {"action": "planned"}
     if re.fullmatch(
         r"(?:продолжи|включи) (?:мой |мою |мне )?(?:сериал|фильм|кино|просмотр)|"
-        r"продолжи (?:то,? что я смотрела|последний сериал)",
+        r"продолжи (?:то,? что я смотрела|последний сериал)|"
+        r"включи последнюю серию,? которую я смотрела",
         value,
     ):
         action = "continue"
@@ -31,6 +52,8 @@ def command(text, active=False):
         action = "info"
     elif re.fullmatch(r"отметь (?:эту )?серию просмотренной", value):
         action = "watched"
+    elif re.fullmatch(r"отметь (?:этот )?фильм просмотренным", value):
+        action = "title_watched"
     elif active and value in {"продолжай", "продолжи", "пауза", "поставь на паузу"}:
         action = (
             "play"
