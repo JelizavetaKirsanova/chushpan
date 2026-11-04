@@ -511,3 +511,25 @@ def test_morning_direct_route_requests_consent_once_and_keeps_order(decision):
             assert "play" not in events
 
     asyncio.run(run())
+
+
+def test_morning_keeps_calendar_when_location_helper_times_out(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    import backend.paths as paths
+    import backend.personal as module
+
+    monkeypatch.setattr(paths, "DESKTOP", True)
+    personal = module.PersonalContext(Settings())
+    personal.helper = AsyncMock(return_value=tmp_path / "Helper.app")
+
+    async def execute(*args, **kwargs):
+        if args[0] == "open":
+            raise TimeoutError()
+        Path(args[-1]).write_text('{"calendar":{"events":[]}}')
+        return ""
+
+    monkeypatch.setattr(module, "process", AsyncMock(side_effect=execute))
+    result = asyncio.run(personal._read(request_access=False))
+    assert result["calendar"] == {"events": []}
+    assert result["location"] == {"error": "location_unavailable"}

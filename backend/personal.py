@@ -137,12 +137,26 @@ class PersonalContext:
             day = date.fromisoformat(day).isoformat()
         if DESKTOP and "calendar" in parts and len(parts) > 1:
             combined = {}
+            deadline = asyncio.get_running_loop().time() + 55
             for part in parts:
-                combined.update(
-                    await self._read(
-                        request_access=request_access, parts=(part,), day=day, city_only=city_only
-                    )
-                )
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    combined[part] = {"error": part + "_unavailable"}
+                    continue
+                try:
+                    async with asyncio.timeout(remaining):
+                        combined.update(
+                            await self._read(
+                                request_access=request_access,
+                                parts=(part,),
+                                day=day,
+                                city_only=city_only,
+                            )
+                        )
+                except (TimeoutError, ToolError):
+                    # Keep completed sources within the existing morning deadline.
+                    # A slow location/consent dialog must not discard the calendar.
+                    combined[part] = {"error": part + "_unavailable"}
             return combined
         async with self._lock:
             app = await self.helper()
