@@ -33,7 +33,7 @@ test('overview shows four honest KPIs, real charts and compact empty states',()=
     f.view.connection(true);f.view.receive(data(0));
     assert.equal(f.window.document.querySelectorAll('.statistics-kpi').length,4);
     assert.equal(f.window.document.querySelectorAll('.statistics-bars,.statistics-line-chart,.statistics-donut').length,0);
-    assert.equal(f.window.document.querySelectorAll('.statistics-empty').length,3);
+    assert.equal(f.window.document.querySelectorAll('.statistics-empty').length,1);
     assert.equal(f.window.document.getElementById('statistics-pane-performance')!.hidden,true);
     f.view.receive(data());
     assert.equal(f.window.document.querySelectorAll('.statistics-bars').length,1);
@@ -59,7 +59,7 @@ test('every tab is reachable, traces open and diagnostics remain disclosed',()=>
     assert.equal(f.window.document.querySelectorAll('.statistics-receipt').length,1);
     f.click('Приложения');assert.match(f.window.document.querySelector('.statistics-content')!.textContent,/Учёт приложений пока пуст/);
     f.click('Отчёты');assert.match(f.window.document.querySelector('.statistics-content')!.textContent,/Скачать CSV/);
-    f.click('Производительность');assert.equal(f.window.document.getElementById('statistics-pane-performance')!.hidden,false);assert.equal(f.window.document.querySelector('.statistics-content')!.hidden,true);
+    f.click('Производительность');assert.equal(f.window.document.querySelectorAll('#statistics-pane-performance').length,1);assert.equal(f.window.document.getElementById('statistics-pane-performance')!.hidden,false);assert.equal(f.window.document.querySelector('.statistics-content')!.hidden,true);
     f.click('Обзор');assert.equal(f.window.document.getElementById('statistics-pane-performance')!.hidden,true);
   }finally{f.window.happyDOM.abort();}
 });

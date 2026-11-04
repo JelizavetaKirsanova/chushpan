@@ -370,7 +370,6 @@
 .cinema-catalogue-heading { margin: 12px 0 18px; gap: 9px; }
 .cinema-page .cinema-catalogue-heading h2 { font-size: 16px; }
 .cinema-catalogue-heading > small { max-width: 700px; }
-.cinema-catalogue-card, .cinema-card { content-visibility: auto; contain-intrinsic-size: auto 400px; }
 @media(max-width:760px) { .cinema-search { width: 100%; margin: 0; }.cinema-heading { flex-wrap: wrap; }.cinema-ai-panel { gap: 7px; padding: 8px; }.cinema-tabs button { padding: 9px 11px; } }
 @media(max-width:560px) {
   .cinema-content .cinema-grid:not(.cinema-list) { gap: 12px; }

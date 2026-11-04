@@ -18,6 +18,8 @@ try {
   for(const label of ['Производительность','Разговоры','Команды','Сценарии','Приложения','Отчёты','Обзор']) {
     await page.locator('.statistics-tabs').getByRole('tab',{name:label,exact:true}).click();
     assert.equal(await page.locator('.statistics-tabs [aria-selected=true]').textContent(),label);
+    assert.equal(await page.locator('#statistics-pane-performance').count(),1);
+    assert.equal(await page.locator('#statistics-pane-performance').isVisible(),label==='Производительность');
   }
   await page.locator('.statistics-tabs').getByRole('tab',{name:'Производительность',exact:true}).click();
   await page.locator('#performance-sort').selectOption('slow');
@@ -75,6 +77,7 @@ try {
   assert.equal(await page.locator('.cinema-tabs').evaluate(n=>getComputedStyle(n).position),'static');
   await page.screenshot({path:process.argv[5].replace('.png','-cinema-bottom.png')});
   await scroller.evaluate(n=>{n.scrollTop=0;});
+  await page.locator('.cinema-catalogue-grid .cinema-card').first().waitFor({state:'visible'});
   await page.screenshot({path:process.argv[5].replace('.png','-cinema.png')});
   for(const width of [900,600,390]) {
     await page.setViewportSize({width,height:900});

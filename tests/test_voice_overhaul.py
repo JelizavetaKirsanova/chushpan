@@ -320,11 +320,21 @@ def test_stage_relations_are_separate_from_model_latency(monkeypatch):
     }
 
 
-def test_history_attributes_failed_primary_and_fallback_separately_and_filters_all_rows():
+def test_history_attributes_failed_primary_and_fallback_separately_and_filters_all_rows(
+    monkeypatch,
+):
+    from backend.statistics import period_range
+
+    anchor = datetime(2026, 11, 5, 10, tzinfo=UTC)
+    monkeypatch.setattr(
+        "backend.performance.period_range",
+        lambda days, timezone, filters: period_range(days, timezone, filters, now=anchor),
+    )
     store = MemoryStore(":memory:")
     try:
         for _ in range(105):
             profile = Profile(kind="voice")
+            profile._wall_time = anchor - timedelta(minutes=5)
             profile.update(
                 model="qwen3:8b",
                 provider="ollama",
@@ -342,7 +352,7 @@ def test_history_attributes_failed_primary_and_fallback_separately_and_filters_a
             profile.mark("first_content_audio")
             profile.finish()
         old = Profile(kind="text")
-        old._wall_time = datetime.now(UTC) - timedelta(hours=2)
+        old._wall_time = anchor - timedelta(hours=2)
         store.performance.attach(old)
         old.finish()
         result = store.performance.statistics(0, "Europe/Tallinn", {"model": "qwen3:8b"})
