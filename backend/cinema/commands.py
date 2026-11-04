@@ -13,6 +13,74 @@ def command(text, active=False):
     if tv:
         value = re.sub(r"(?: и (?:включи|покажи))? на телевизоре$", "", value)
     action = None
+    if not tv:
+        find = re.fullmatch(r"найди (?:мне )?где посмотреть (.{1,200})", value)
+        if find:
+            return {"action": "find_sources", "title": find[1]}
+        if value in {"покажи мой кинопрофиль", "открой мой кинопрофиль", "покажи кинопрофиль"}:
+            return {"action": "profile"}
+        if value in {
+            "найди другой сайт для этого сериала",
+            "найди другой источник",
+            "смени источник просмотра",
+        }:
+            return {"action": "alternative"}
+        if value in {
+            "что мне сегодня посмотреть",
+            "что сегодня посмотреть",
+            "найди что-нибудь похожее на мои любимые фильмы",
+            "найди что нибудь похожее на мои любимые фильмы",
+        }:
+            return {"action": "recommend", "mood": "any"}
+        recommend = re.fullmatch(
+            r"посоветуй (?:мне )?(?:хороший |хорошую |интересный )?"
+            r"(триллер|комедию|драму|ужасы|фантастику)",
+            value,
+        )
+        if recommend:
+            return {
+                "action": "recommend",
+                "mood": "tense"
+                if recommend[1] in {"триллер", "ужасы"}
+                else "calm"
+                if recommend[1] == "комедию"
+                else "any",
+                "genre": {"комедию": "комедия", "драму": "драма", "фантастику": "фантастика"}.get(
+                    recommend[1], recommend[1]
+                ),
+            }
+        episode = re.fullmatch(
+            r"(?:включи|открой) (\d{1,4}|первую|вторую|третью|четвертую|четвёртую|"
+            r"пятую|шестую|седьмую|восьмую|девятую|десятую) "
+            r"серию (\d{1,3}|первого|второго|третьего|четвертого|четвёртого|"
+            r"пятого|шестого|седьмого|восьмого|девятого|десятого) сезона",
+            value,
+        )
+        if episode:
+            ordinal = {
+                word: number
+                for number, words in enumerate(
+                    [
+                        ("первую", "первого"),
+                        ("вторую", "второго"),
+                        ("третью", "третьего"),
+                        ("четвертую", "четвёртую", "четвертого", "четвёртого"),
+                        ("пятую", "пятого"),
+                        ("шестую", "шестого"),
+                        ("седьмую", "седьмого"),
+                        ("восьмую", "восьмого"),
+                        ("девятую", "девятого"),
+                        ("десятую", "десятого"),
+                    ],
+                    1,
+                )
+                for word in words
+            }
+            return {
+                "action": "episode",
+                "episode": int(episode[1]) if episode[1].isdigit() else ordinal[episode[1]],
+                "season": int(episode[2]) if episode[2].isdigit() else ordinal[episode[2]],
+            }
     add = re.fullmatch(r"добавь (.{1,200}?) в (?:список )?(?:хочу посмотреть|на просмотр)", value)
     if add and not tv:
         return {"action": "plan", "title": add[1]}

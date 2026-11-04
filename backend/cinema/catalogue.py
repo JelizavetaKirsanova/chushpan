@@ -195,6 +195,10 @@ class Catalogue:
             params["vote_average.gte"] = q.rating
             if q.sort == "rating" or q.feed == "top":
                 params["vote_count.gte"] = 100
+            if q.feed == "hidden":
+                params["vote_average.gte"] = max(7, q.rating)
+                params["vote_count.gte"] = 20
+                params["vote_count.lte"] = 1500
             genre_ids = set(genre)
             if genre_ids:
                 separator = "," if q.genre_mode == "and" else "|"

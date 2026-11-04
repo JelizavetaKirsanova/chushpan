@@ -169,7 +169,7 @@ export class CinemaCatalogueView {
     inner.append(field,this.select('Рейтинг TMDB',[['0','Любой рейтинг'],['6','От 6'],['7','От 7'],['8','От 8'],['9','От 9']],String(this.filters.rating),v=>{this.filters.rating=Number(v);this.changed();}),
       this.select('Страна',[['','Любая страна'],...(this.config?.countries??[{id:'US',name:'США'},{id:'RU',name:'Россия'},{id:'EE',name:'Эстония'},{id:'GB',name:'Великобритания'},{id:'JP',name:'Япония'},{id:'KR',name:'Южная Корея'}]).map(c=>[c.id,c.name] as [string,string])],this.filters.country,v=>{this.filters.country=v;this.changed();}),
       this.select('Язык оригинала',[['','Любой язык'],...(this.config?.languages??[{id:'ru',name:'Русский'},{id:'en',name:'Английский'},{id:'ja',name:'Японский'},{id:'ko',name:'Корейский'}]).map(c=>[c.id,c.name] as [string,string])],this.filters.original_language,v=>{this.filters.original_language=v;this.changed();}));
-    const watched=node('input');watched.type='checkbox';watched.checked=!!this.data?.preferences.recommendations_show_watched;watched.onchange=()=>this.callbacks.send({op:'preferences',values:{recommendations_show_watched:watched.checked}});const watchLabel=node('label','','cinema-recommendation-setting');watchLabel.append(watched,node('span','Показывать просмотренное в рекомендациях'));inner.append(watchLabel);more.append(inner);
+    const watched=node('input');watched.type='checkbox';watched.checked=!!this.data?.preferences.recommendations_show_watched;watched.onchange=()=>this.callbacks.send({op:'preferences',values:{recommendations_show_watched:watched.checked}});const watchLabel=node('label','','cinema-recommendation-setting');watchLabel.append(watched,node('span','Отдельная подборка для пересмотра'));inner.append(watchLabel);more.append(inner);
     const submit=this.button('Найти',()=>{},'primary');submit.type='submit';form.append(more,submit,this.button('Сбросить',()=>{this.filters=blankFilters();this.callbacks.query?.('');this.mode='home';this.window.reset();this.render();this.start();}));form.onsubmit=e=>{e.preventDefault();if(!form.reportValidity())return;window.clearTimeout(this.debounce);this.debounce=undefined;this.mode='list';this.window.reset();this.renderBody();this.loadPage(1);};
     this.configSlot.replaceChildren(form,node('div','','cinema-genre-chips'));this.renderGenreChips();
     if(this.configError){const warning=node('p',this.configError,'cinema-muted');warning.append(this.button('Повторить',()=>{this.configRequested=true;this.callbacks.send({op:'catalogue_config'});}));this.configSlot.append(warning);}
@@ -235,7 +235,7 @@ export class CinemaCatalogueView {
     this.observe();
   }
   private recommendationFilter(items:CatalogueTitle[],feed=this.filters.feed):CatalogueTitle[] {
-    if(feed!=='recommended'||this.data?.preferences.recommendations_show_watched)return items;
+    if(feed!=='recommended')return items;
     const watched=this.data?.items.filter(i=>i.status==='watched')??[];
     const normalized=(value:string)=>value.toLocaleLowerCase('ru').trim().replace(/\s+/g,' ');
     return items.filter(item=>!watched.some(seen=>seen.catalogue_key===item.catalogue_key||

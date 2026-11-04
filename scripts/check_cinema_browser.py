@@ -61,7 +61,7 @@ class NoLLM:
         yield  # pragma: no cover
 
 
-async def check(module, screenshot, chromium=None, catalogue=False):
+async def check(module, screenshot, chromium=None, catalogue=False, personal=False):
     with tempfile.TemporaryDirectory(prefix="chushpan-cinema-") as folder:
         path = Path(folder)
         media = path / "fixture"
@@ -112,6 +112,13 @@ async def check(module, screenshot, chromium=None, catalogue=False):
         settings = Settings(language="ru-RU")
 
         failures = set()
+
+        class FixtureHTTP:
+            async def request(self, url, **kwargs):
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "video/mp4" if url.endswith(".mp4") else "text/html"},
+                )
 
         def catalogue_fixture(request):
             if "/genre/" in request.url.path:
@@ -190,6 +197,8 @@ async def check(module, screenshot, chromium=None, catalogue=False):
                 adapter_factory=lambda _: HTML5Adapter(bridge, bridge.open),
                 tmdb=tmdb,
             )
+            if personal:
+                cinema.sources.http = FixtureHTTP()
             tools.cinema = cinema
             conv = Conversation(settings, NoLLM(), memory, tools=tools)
             cinema.bind(bus, conv)
@@ -271,6 +280,62 @@ async def check(module, screenshot, chromium=None, catalogue=False):
             await bridge.request("ui", url=base, screenshot=screenshot)
             if catalogue:
                 await bridge.request("catalogue_ui", url=base, screenshot=screenshot)
+            if personal:
+                direct = await cinema.db(
+                    "save_source",
+                    {
+                        "name": "Прямое тестовое видео",
+                        "base_url": "https://cinema-fixture.example",
+                        "adapter": "direct",
+                        "embed_allowed": True,
+                        "access_type": "free",
+                    },
+                )
+                inline = await cinema.db(
+                    "add",
+                    {
+                        "title": "Встроенный тест",
+                        "kind": "movie",
+                        "source_id": direct["id"],
+                        "url": "https://cinema-fixture.example/sample.mp4",
+                        "metadata": {
+                            "genres": ["триллер"],
+                            "directors": ["Тестовый режиссёр"],
+                            "cast": ["Тестовая актриса"],
+                            "enriched": True,
+                        },
+                    },
+                )
+                await cinema.db(
+                    "update_title", inline["id"], {"favorite": True, "user_rating": 9.5}
+                )
+                await cinema.db(
+                    "progress",
+                    inline["current"]["id"],
+                    3,
+                    12,
+                    "manual",
+                    inline["current"]["links"][0]["id"],
+                )
+                await cinema.db(
+                    "configure", {"allow_browser": False, "poll_seconds": 2, "auto_next": False}
+                )
+                await cinema.publish()
+                result = await bridge.request(
+                    "personal_ui",
+                    url=base,
+                    screenshot=screenshot,
+                    video=str(media / "sample.mp4"),
+                    catalogue=catalogue,
+                )
+                saved = await cinema.db("detail", inline["id"])
+                assert saved["current"]["position"] >= 5, result
+                assert saved["source_memory"]["last_source_id"] == direct["id"]
+                await cinema.close()
+                memory.close()
+                memory, cinema, conv = setup()
+                assert (await cinema.db("detail", inline["id"]))["current"]["position"] >= 5
+                assert cinema.session is None, "Restart must not autoplay"
             print(
                 json.dumps(
                     {
@@ -288,6 +353,7 @@ async def check(module, screenshot, chromium=None, catalogue=False):
                             "hud_desktop_mobile",
                         ],
                         "catalogue_tested": catalogue,
+                        "personal_tested": personal,
                         "safari_tested": False,
                         "external_sources_tested": False,
                     }
@@ -314,5 +380,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--catalogue", action="store_true", help="Also test paged catalogue with MockTransport"
     )
+    parser.add_argument(
+        "--personal", action="store_true", help="Test profile, recommendations and embedded video"
+    )
     args = parser.parse_args()
-    asyncio.run(check(args.playwright, args.screenshot, args.chromium, args.catalogue))
+    asyncio.run(
+        check(args.playwright, args.screenshot, args.chromium, args.catalogue, args.personal)
+    )

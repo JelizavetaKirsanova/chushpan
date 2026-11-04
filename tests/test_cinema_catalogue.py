@@ -376,7 +376,7 @@ def test_paged_hud_keeps_local_statuses_and_recommendations_follow_preferences(t
             {"op": "catalogue_page", "request_id": "two", "filters": {"feed": "recommended"}}
         )
         event = next(v for v in bus.snapshot() if v["type"] == "cinema")
-        assert len(event["catalogue_page"]["items"]) == 2
+        assert len(event["catalogue_page"]["items"]) == 1
         await service.handle(
             {
                 "op": "catalogue_add",

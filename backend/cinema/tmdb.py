@@ -229,6 +229,26 @@ class TMDB:
                 or [c["iso_3166_1"] for c in row.get("production_countries", [])],
                 "release_date": date,
                 "popularity": row.get("popularity") or 0,
+                "vote_count": row.get("vote_count") or 0,
+                "keywords": [
+                    k["name"]
+                    for k in (
+                        row.get("keywords", {}).get("keywords")
+                        or row.get("keywords", {}).get("results")
+                        or []
+                    )
+                ][:100],
+                "directors": list(
+                    dict.fromkeys(
+                        c["name"]
+                        for c in row.get("credits", {}).get("crew", [])
+                        if c.get("job") == "Director"
+                    )
+                )[:40],
+                "cast": list(
+                    dict.fromkeys(c["name"] for c in row.get("credits", {}).get("cast", []))
+                )[:40],
+                "enriched": "credits" in row and "keywords" in row,
             },
         }
 
@@ -259,7 +279,7 @@ class TMDB:
 
     async def detail(self, key):
         kind, identifier = self.identity(key)
-        row = await self.get(f"{kind}/{identifier}")
+        row = await self.get(f"{kind}/{identifier}", append_to_response="credits,keywords")
         if not row.get("overview"):
             fallback = await self.get(f"{kind}/{identifier}", language="en-US")
             row = {**row, "overview": fallback.get("overview") or ""}

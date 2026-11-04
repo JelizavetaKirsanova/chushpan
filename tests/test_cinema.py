@@ -567,6 +567,10 @@ def test_last_series_and_genre_requests_never_reach_llm_and_reuse_last_source(tm
     from backend.brain.conversation import Conversation
     from scripts.check_cinema_browser import NoLLM
 
+    class HTTP:
+        async def request(self, url, **kwargs):
+            return SimpleNamespace(status_code=200, headers={"content-type": "text/html"})
+
     class Catalogue:
         credentials = SimpleNamespace(configured=True)
 
@@ -605,6 +609,7 @@ def test_last_series_and_genre_requests_never_reach_llm_and_reuse_last_source(tm
         )
         episode = item["episodes"][0]
         preferred = episode["links"][-1]
+        service.sources.http = HTTP()
         await service.db("progress", episode["id"], 66, 1000, "manual", preferred["id"])
         for text in (
             "Чушпан, включи последнюю серию, которую я смотрела",

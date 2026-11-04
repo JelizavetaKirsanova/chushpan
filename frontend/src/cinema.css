@@ -133,3 +133,44 @@
 @media (prefers-reduced-motion: reduce) { .cinema-poster img, .cinema-card .cinema-card-actions { transition: none; } }
 .cinema-tabs { position: sticky; top: -1px; z-index: 5; background: #0b0b13ed; backdrop-filter: blur(16px); padding: 10px 0; }
 .cinema-page .cinema-search input, .cinema-page .cinema-composer input { background: transparent; border: 0; }
+
+.cinema-personal { min-width: 0; animation: cinema-personal-enter .22s ease-out; }
+.cinema-profile-hero { padding: 32px; border: 1px solid #ad7af522; border-radius: 20px; background: radial-gradient(ellipse at 90% 0, #7850b84a, transparent 65%), #161321; }
+.cinema-profile-eyebrow { font-size: 10px; letter-spacing: 2px; color: #bd9be8; }
+.cinema-profile-hero h3 { font-size: clamp(25px, 3vw, 38px); font-weight: 600; margin: 18px 0 12px; }
+.cinema-profile-hero p { max-width: 620px; color: #ada1be; line-height: 1.7; font-size: 13px; }
+.cinema-profile-stats { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 14px; margin: 20px 0; }
+.cinema-profile-stats article, .cinema-profile-panel { padding: 24px; border: 1px solid #ffffff0c; border-radius: 16px; background: #171520; }
+.cinema-profile-stats strong { display: block; color: #cfacf9; font-size: 35px; font-weight: 600; }
+.cinema-profile-stats span { display: block; color: #b7aac4; font-size: 12px; margin-top: 6px; }
+.cinema-profile-panel { margin: 18px 0; min-width: 0; }
+.cinema-profile-panel h3 { margin: 0 0 20px; font-size: 17px; font-weight: 600; }
+.cinema-profile-insight { background: linear-gradient(120deg,#35244288,#1a1725); }
+.cinema-profile-insight p, .cinema-profile-insight small { color: #cabdd8; line-height: 1.8; font-size: 13px; }
+.cinema-profile-insight small { color: #a391b5; font-size: 11px; }
+.cinema-profile-charts { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 18px; }
+.cinema-profile-charts .cinema-profile-panel { margin: 0; }
+.cinema-chart-row { display: grid; grid-template-columns: minmax(65px,1fr) minmax(40px,1.2fr) 25px; gap: 14px; align-items: center; margin-top: 13px; font-size: 12px; }
+.cinema-chart-row > span { overflow-wrap: anywhere; color: #c7bbd4; }
+.cinema-chart-row > strong { text-align: right; font-weight: 500; color: #bfa1df; }
+.cinema-chart-bar { height: 8px; border-radius: 8px; background: #32283e; overflow: hidden; }
+.cinema-chart-bar:after { content: ''; display: block; height: 100%; width: var(--value,0%); background: linear-gradient(90deg,#774ab6,#c093f5); border-radius: inherit; }
+.cinema-profile-timeline { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 12px; }
+.cinema-profile-timeline article { flex: 0 0 160px; padding: 16px; border-left: 2px solid #aa77e3; background: #252030; display: grid; gap: 10px; font-size: 12px; }
+.cinema-profile-timeline time, .cinema-profile-timeline small { color: #a99ab9; }
+.cinema-personal-card .cinema-poster { aspect-ratio: 2/3; }
+.cinema-personal-card .cinema-card-body > strong { font-size: 13px; }
+.cinema-personal-card .cinema-recommendation-reason { font-size: 11px; min-height: 4.5em; line-height: 1.6; color: #beaccf; }
+.cinema-personal-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+.cinema-source-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.cinema-source-address { overflow-wrap: anywhere; }
+.cinema-source-card[draggable=true] { cursor: grab; }
+.cinema-source-option[data-selected=true] { border: 1px solid #a677e3; background: #8550bc18; }
+.cinema-source-option button { margin: 5px 6px 0 0; }
+.cinema-embedded { margin: 24px 0; border: 1px solid #9f70db33; padding: 20px; border-radius: 18px; background: #16111f; }
+.cinema-embedded video { display: block; width: 100%; max-height: 70vh; background: #000; border-radius: 10px; }
+.cinema-embedded > p { color: #b4a1c5; font-size: 12px; }
+.cinema-embedded-episodes { display: flex; gap: 10px; margin: 14px 0; flex-wrap: wrap; }
+@keyframes cinema-personal-enter { from { opacity: .3; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+@media(max-width:760px) { .cinema-profile-stats { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; } .cinema-profile-charts { grid-template-columns: 1fr; } .cinema-profile-stats article, .cinema-profile-panel { padding: 18px; } .cinema-profile-hero { padding: 23px; } .cinema-personal .cinema-section-heading { flex-wrap: wrap; } }
+@media(prefers-reduced-motion:reduce) { .cinema-personal { animation: none; } }

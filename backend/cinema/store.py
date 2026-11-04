@@ -69,6 +69,26 @@ MIGRATIONS = [
     DROP TABLE cinema_library_v2;
     CREATE INDEX cinema_tmdb_identity ON cinema_titles(catalogue_key) WHERE catalogue_key!='';
     """,
+    """
+    CREATE TABLE cinema_source_health (
+      source_id TEXT PRIMARY KEY REFERENCES cinema_sources(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'unknown', checked_at TEXT, last_success TEXT,
+      reason TEXT NOT NULL DEFAULT '', successes INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE cinema_source_memory (
+      title_id TEXT PRIMARY KEY REFERENCES cinema_titles(id) ON DELETE CASCADE,
+      pinned_source_id TEXT REFERENCES cinema_sources(id) ON DELETE SET NULL,
+      last_source_id TEXT REFERENCES cinema_sources(id) ON DELETE SET NULL,
+      page_url TEXT NOT NULL DEFAULT '', episode_id TEXT, updated_at TEXT NOT NULL);
+    CREATE TABLE cinema_feedback (catalogue_key TEXT PRIMARY KEY, created_at TEXT NOT NULL);
+    CREATE TABLE cinema_rating_events (
+      id INTEGER PRIMARY KEY, title_id TEXT NOT NULL REFERENCES cinema_titles(id) ON DELETE CASCADE,
+      rating REAL, created_at TEXT NOT NULL);
+    CREATE INDEX cinema_rating_dates ON cinema_rating_events(created_at);
+    CREATE TABLE cinema_link_checks (
+      link_id TEXT PRIMARY KEY REFERENCES cinema_links(id) ON DELETE CASCADE,
+      status TEXT NOT NULL, checked_at TEXT NOT NULL, playable INTEGER NOT NULL DEFAULT 0);
+    ALTER TABLE cinema_history ADD COLUMN source_label TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 
@@ -117,10 +137,15 @@ class CinemaStore:
         return prefs.model_dump()
 
     def sources(self):
-        return [
-            Source.model_validate_json(row[0]).model_dump()
-            for row in self.db.execute("SELECT data FROM cinema_sources ORDER BY rowid")
-        ]
+        sources = []
+        for row in self.db.execute("SELECT data FROM cinema_sources ORDER BY rowid"):
+            source = Source.model_validate_json(row[0]).model_dump()
+            health = self.db.execute(
+                "SELECT * FROM cinema_source_health WHERE source_id=?", (source["id"],)
+            ).fetchone()
+            source["health"] = dict(health) if health else {"status": "unknown"}
+            sources.append(source)
+        return sorted(sources, key=lambda s: s["priority"])
 
     def source(self, identifier):
         row = self.db.execute(
@@ -131,6 +156,9 @@ class CinemaStore:
         return Source.model_validate_json(row[0])
 
     def save_source(self, values):
+        values = dict(values)
+        values.pop("health", None)
+        values.pop("capabilities", None)
         source = Source.model_validate(values)
         source.id = source.id or uuid4().hex
         known = self.db.execute("SELECT 1 FROM cinema_sources WHERE id=?", (source.id,)).fetchone()
@@ -143,11 +171,204 @@ class CinemaStore:
                 "Добавь другой сайт как новый источник, чтобы сохранить старые ссылки."
             )
         with self.db:
+            if source.preferred:
+                for existing in self.sources():
+                    if existing["preferred"] and existing["id"] != source.id:
+                        old = self.source(existing["id"])
+                        old.preferred = False
+                        self.db.execute(
+                            "UPDATE cinema_sources SET data=? WHERE id=?",
+                            (old.model_dump_json(), old.id),
+                        )
             self.db.execute(
-                "INSERT OR REPLACE INTO cinema_sources VALUES (?,?)",
+                "INSERT INTO cinema_sources VALUES (?,?) "
+                "ON CONFLICT(id) DO UPDATE SET data=excluded.data",
                 (source.id, source.model_dump_json()),
             )
         return source.model_dump()
+
+    def reorder_sources(self, identifiers):
+        if not isinstance(identifiers, list) or set(identifiers) != {
+            s["id"] for s in self.sources()
+        }:
+            raise ValueError("Нужен полный список источников.")
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("Повторный источник.")
+        with self.db:
+            for priority, identifier in enumerate(identifiers):
+                source = self.source(identifier)
+                source.priority = priority
+                self.db.execute(
+                    "UPDATE cinema_sources SET data=? WHERE id=?",
+                    (source.model_dump_json(), identifier),
+                )
+
+    def delete_source(self, identifier):
+        source = self.source(identifier)
+        with self.db:
+            self.db.execute(
+                "UPDATE cinema_history SET source_label=? WHERE link_id IN "
+                "(SELECT id FROM cinema_links WHERE source_id=?)",
+                (source.name, identifier),
+            )
+            self.db.execute(
+                "UPDATE cinema_source_memory SET page_url='' WHERE last_source_id=?", (identifier,)
+            )
+            self.db.execute(
+                "UPDATE cinema_history SET link_id=NULL WHERE link_id IN "
+                "(SELECT id FROM cinema_links WHERE source_id=?)",
+                (identifier,),
+            )
+            self.db.execute(
+                "UPDATE cinema_episodes SET last_link_id=NULL WHERE last_link_id IN "
+                "(SELECT id FROM cinema_links WHERE source_id=?)",
+                (identifier,),
+            )
+            self.db.execute("DELETE FROM cinema_links WHERE source_id=?", (identifier,))
+            self.db.execute("DELETE FROM cinema_sources WHERE id=?", (identifier,))
+
+    def source_health(self, identifier, status, reason="", *, playback=False):
+        self.source(identifier)
+        if status not in {"available", "unavailable", "restricted", "unknown"}:
+            raise ValueError("Неверный статус источника.")
+        with self.db:
+            self.db.execute(
+                "INSERT INTO cinema_source_health"
+                "(source_id,status,checked_at,last_success,reason,successes) "
+                "VALUES (?,?,?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
+                "status=excluded.status,checked_at=excluded.checked_at,reason=excluded.reason,"
+                "last_success=COALESCE(excluded.last_success,cinema_source_health.last_success),"
+                "successes=cinema_source_health.successes+excluded.successes",
+                (
+                    identifier,
+                    status,
+                    now(),
+                    now() if status == "available" else None,
+                    reason,
+                    int(playback),
+                ),
+            )
+
+    def remember_source(self, title_id, source_id, episode_id=None, link_id=None, *, pin=False):
+        item = self.detail(title_id)
+        source = self.source(source_id) if source_id else None
+        ep = next((e for e in item["episodes"] if e["id"] == episode_id), item["current"])
+        if episode_id and ep["id"] != episode_id:
+            raise ValueError("Серия не найдена.")
+        link = next((link for link in ep["links"] if link["id"] == link_id), None)
+        if link_id and (not link or link["source_id"] != source_id):
+            raise ValueError("Источник и ссылка не совпадают.")
+        with self.db:
+            self.db.execute(
+                "INSERT INTO cinema_source_memory"
+                "(title_id,last_source_id,page_url,episode_id,updated_at) "
+                "VALUES (?,?,?,?,?) ON CONFLICT(title_id) DO UPDATE SET "
+                "last_source_id=excluded.last_source_id,page_url=excluded.page_url,"
+                "episode_id=excluded.episode_id,updated_at=excluded.updated_at",
+                (
+                    title_id,
+                    source.id if source else None,
+                    link["url"] if link else "",
+                    ep["id"],
+                    now(),
+                ),
+            )
+            if pin:
+                self.db.execute(
+                    "UPDATE cinema_source_memory SET pinned_source_id=? WHERE title_id=?",
+                    (source_id or None, title_id),
+                )
+            if link:
+                self.select(ep["id"], link["id"])
+
+    def feedback(self, key):
+        if not isinstance(key, str) or len(key) > 160:
+            raise ValueError("Неверное название рекомендации.")
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO cinema_feedback VALUES (?,?)", (key, now()))
+
+    def unpin_source(self, title_id):
+        self.title(title_id)
+        with self.db:
+            self.db.execute(
+                "UPDATE cinema_source_memory SET pinned_source_id=NULL WHERE title_id=?",
+                (title_id,),
+            )
+
+    def link_check(self, link_id, status, playable=False):
+        with self.db:
+            self.db.execute(
+                "INSERT OR REPLACE INTO cinema_link_checks VALUES (?,?,?,?)",
+                (link_id, status, now(), bool(playable)),
+            )
+
+    def reset_recommendations(self):
+        with self.db:
+            self.db.execute("DELETE FROM cinema_feedback")
+            self.db.execute(
+                "INSERT OR REPLACE INTO cinema_settings VALUES ('recommendation_reset_at',?)",
+                (now(),),
+            )
+
+    def recommendation_data(self):
+        reset = self.db.execute(
+            "SELECT value FROM cinema_settings WHERE key='recommendation_reset_at'"
+        ).fetchone()
+        return {
+            "dismissed": [
+                r[0] for r in self.db.execute("SELECT catalogue_key FROM cinema_feedback")
+            ],
+            "reset_at": reset[0] if reset else "",
+        }
+
+    def ready_keys(self):
+        from pathlib import Path
+
+        sources = {s["id"]: s for s in self.sources() if s["enabled"]}
+        keys = []
+        prefs = self.preferences()
+        for item in self.library():
+            for ep in item["episodes"]:
+                for link in ep["links"]:
+                    source = sources.get(link["source_id"])
+                    if not source:
+                        continue
+                    if (
+                        prefs.free_only
+                        and source["adapter"] != "local"
+                        and source["access_type"] != "free"
+                    ):
+                        continue
+                    checked = self.db.execute(
+                        "SELECT * FROM cinema_link_checks WHERE link_id=?", (link["id"],)
+                    ).fetchone()
+                    recent = (
+                        checked
+                        and (
+                            datetime.now(UTC) - datetime.fromisoformat(checked["checked_at"])
+                        ).total_seconds()
+                        < 300
+                    )
+                    if (source["adapter"] == "local" and Path(link["url"]).is_file()) or (
+                        recent and checked["status"] == "available" and checked["playable"]
+                    ):
+                        keys.append(item["catalogue_key"] or f"local:{item['id']}")
+        return keys
+
+    def analytics(self):
+        from backend.cinema.personal import profile
+
+        events = [
+            dict(r)
+            for r in self.db.execute(
+                "SELECT h.created_at,e.title_id FROM cinema_history h "
+                "JOIN cinema_episodes e ON e.id=h.episode_id ORDER BY h.id"
+            )
+        ]
+        ratings = [
+            dict(r) for r in self.db.execute("SELECT * FROM cinema_rating_events ORDER BY id")
+        ]
+        return profile(self.library(), events, ratings)
 
     def add(self, values):
         values = dict(values)
@@ -261,6 +482,14 @@ class CinemaStore:
             "SELECT data FROM cinema_metadata WHERE title_id=?", (identifier,)
         ).fetchone()
         item["metadata"] = json.loads(meta[0]) if meta else Metadata().model_dump()
+        rated = self.db.execute(
+            "SELECT MAX(created_at) FROM cinema_rating_events WHERE title_id=?", (identifier,)
+        ).fetchone()
+        item["rating_updated_at"] = rated[0]
+        memory = self.db.execute(
+            "SELECT * FROM cinema_source_memory WHERE title_id=?", (identifier,)
+        ).fetchone()
+        item["source_memory"] = dict(memory) if memory else {}
         return item
 
     def delete(self, identifier):
@@ -452,6 +681,14 @@ class CinemaStore:
         ):
             raise ValueError("Оценка должна быть от 1 до 10 с шагом 0.5.")
         with self.db:
+            if "user_rating" in values:
+                previous = self.title(identifier).get("user_rating")
+                if previous != values["user_rating"]:
+                    self.db.execute(
+                        "INSERT INTO cinema_rating_events(title_id,rating,created_at) "
+                        "VALUES (?,?,?)",
+                        (identifier, values["user_rating"], now()),
+                    )
             if "favorite" in values:
                 self.db.execute(
                     "UPDATE cinema_library SET favorite_added_at=CASE WHEN ? "
@@ -476,7 +713,8 @@ class CinemaStore:
 
     def select(self, episode_id, link_id):
         row = self.db.execute(
-            "SELECT e.title_id FROM cinema_episodes e JOIN cinema_links l ON l.episode_id=e.id "
+            "SELECT e.title_id,l.source_id,l.url FROM cinema_episodes e "
+            "JOIN cinema_links l ON l.episode_id=e.id "
             "WHERE e.id=? AND l.id=?",
             (episode_id, link_id),
         ).fetchone()
@@ -488,6 +726,14 @@ class CinemaStore:
             )
             self.db.execute(
                 "UPDATE cinema_titles SET last_episode_id=? WHERE id=?", (episode_id, row[0])
+            )
+            self.db.execute(
+                "INSERT INTO cinema_source_memory"
+                "(title_id,last_source_id,page_url,episode_id,updated_at) "
+                "VALUES (?,?,?,?,?) ON CONFLICT(title_id) DO UPDATE SET "
+                "last_source_id=excluded.last_source_id,page_url=excluded.page_url,"
+                "episode_id=excluded.episode_id,updated_at=excluded.updated_at",
+                (row[0], row["source_id"], row["url"], episode_id, now()),
             )
 
     def progress(self, episode_id, position, duration, event="manual", link_id=None, watched=None):
@@ -581,7 +827,8 @@ class CinemaStore:
     def snapshot(self):
         history = self.history()
         for row in history:
-            row["source_name"] = json.loads(row.pop("source_data") or "{}").get("name", "")
+            label = row.pop("source_label", "")
+            row["source_name"] = json.loads(row.pop("source_data") or "{}").get("name", "") or label
         return {
             "items": self.library(),
             "sources": self.sources(),

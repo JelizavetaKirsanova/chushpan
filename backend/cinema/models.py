@@ -196,6 +196,7 @@ class CatalogueQuery(BaseModel):
         "drama",
         "animation",
         "recommended",
+        "hidden",
     ] = "browse"
     query: str = Field(default="", max_length=200)
     page: int = Field(default=1, ge=1, le=500)

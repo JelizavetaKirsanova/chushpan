@@ -99,6 +99,41 @@ for await(const line of createInterface({input:process.stdin})) {
       if(request.screenshot)await hud.screenshot({path:request.screenshot.replace('.png','-catalogue-mobile.png'),fullPage:true});
       if(errors.length)throw Error(errors.join('; '));await hud.close();result={catalogue:true,pages:8,stable_order:true,scroll_restored:true,favorites:true,half_rating:true,multiple_genres:true,infinite_scroll:true,retry:true,mobile:true};
     }
+    if(request.op==='personal_ui') {
+      const hud=await context.newPage();const errors=[];hud.on('pageerror',error=>errors.push(error.message));
+      const media=await readFile(request.video);
+      await hud.route('https://cinema-fixture.example/**',route=>{
+        const range=/bytes=(\d+)-(\d*)/.exec(route.request().headers().range??'');
+        if(!range)return route.fulfill({body:media,contentType:'video/mp4',headers:{'Accept-Ranges':'bytes'}});
+        const start=Number(range[1]);const end=Math.min(media.length-1,range[2]?Number(range[2]):media.length-1);
+        return route.fulfill({status:206,body:media.subarray(start,end+1),contentType:'video/mp4',headers:{'Accept-Ranges':'bytes','Content-Range':`bytes ${start}-${end}/${media.length}`}});
+      });
+      await hud.route('https://image.tmdb.org/**',route=>route.fulfill({status:404}));
+      await hud.goto(request.url);await hud.locator('.workspace-nav [data-view=cinema]').click();
+      await hud.getByRole('button',{name:'Мой кинопрофиль',exact:true}).click();
+      await hud.locator('.cinema-profile-stats').waitFor();await hud.getByText('Тестовый режиссёр',{exact:true}).waitFor();
+      await hud.locator('.cinema-chart-bar').first().waitFor();
+      await hud.locator('.cinema-personal').evaluate(element=>Promise.all(element.getAnimations().map(animation=>animation.finished)));
+      if(request.screenshot)await hud.screenshot({path:request.screenshot.replace('.png','-profile.png'),fullPage:true});
+      if(request.catalogue){await hud.getByRole('button',{name:'Для тебя',exact:true}).click();await hud.locator('.cinema-personal-card').first().waitFor();if(await hud.locator('.cinema-personal .cinema-shelf').count()!==6)throw Error('Expected six personal shelves');}
+      await hud.getByRole('button',{name:'Смотрю',exact:true}).click();
+      await hud.locator('.cinema-content').getByRole('button',{name:'Встроенный тест',exact:true}).click();
+      await hud.locator('dialog').getByRole('button',{name:'Найти и смотреть',exact:true}).click();
+      const source=hud.locator('dialog .cinema-source-option').filter({hasText:'Прямое тестовое видео'});
+      await source.getByText('Встроенный плеер · совместимое прямое видео',{exact:true}).waitFor();
+      await source.getByRole('button',{name:'Смотреть',exact:true}).click();
+      const video=hud.locator('.cinema-embedded video');await video.waitFor();
+      await hud.waitForFunction(()=>{const v=document.querySelector('.cinema-embedded video');return v&&!v.paused&&v.currentTime>3.2;}).catch(async error=>{throw Error('Embedded start failed: '+JSON.stringify(await video.evaluate(v=>({paused:v.paused,time:v.currentTime,ready:v.readyState,error:v.error?.message,feedback:v.parentElement.textContent}))))});
+      await hud.getByText('Воспроизведение подтверждено.',{exact:true}).waitFor();
+      await video.evaluate(v=>{window.__embeddedVideo=v;v.pause();v.currentTime=5;});
+      await hud.waitForFunction(()=>document.querySelector('.cinema-embedded video')===window.__embeddedVideo&&Math.abs(window.__embeddedVideo.currentTime-5)<.2).catch(async error=>{throw Error('Embedded seek failed: '+JSON.stringify(await video.evaluate(v=>({paused:v.paused,time:v.currentTime,ready:v.readyState,error:v.error?.message}))))});
+      await hud.setViewportSize({width:390,height:844});
+      if(await hud.evaluate(()=>document.documentElement.scrollWidth>innerWidth))throw Error('Personal cinema UI overflows mobile viewport');
+      if(request.screenshot)await hud.screenshot({path:request.screenshot.replace('.png','-embedded.png'),fullPage:true});
+      await hud.getByRole('button',{name:'Сохранить и закрыть плеер',exact:true}).click();
+      await hud.locator('.cinema-embedded').waitFor({state:'detached'});
+      if(errors.length)throw Error(errors.join('; '));await hud.close();result={profile:true,recommendations:!!request.catalogue,source_search:true,embedded:true,confirmed_playback:true,seek:true,mobile:true};
+    }
     if(request.op==='shutdown'){await browser.close();process.stdout.write(JSON.stringify({ok:true})+'\n');process.stdin.destroy();break;}
     process.stdout.write(JSON.stringify({ok:true,result})+'\n');
   }catch(error){process.stdout.write(JSON.stringify({ok:false,error:String(error)})+'\n');}

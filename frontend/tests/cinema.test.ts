@@ -10,9 +10,13 @@ function fixture() {
   window.document.body.innerHTML='<div id="cinema-root"></div>';
   const code=stripTypeScriptTypes(readFileSync(new URL('../src/cinema.ts',import.meta.url),'utf8'),{mode:'transform'})
     .replace(/^import .*;\n/gm,'').replace(/^export /gm,'')+'\nexports.api={CinemaView,playbackTime,parsePlaybackTime,viewingProgress};';
-  const sandbox={exports:{} as Record<string,any>,document:window.document,window,icon:()=>'<svg></svg>'};
+  const sandbox={exports:{} as Record<string,any>,document:window.document,window,URL:window.URL,icon:()=>'<svg></svg>'};
   const catalogue=stripTypeScriptTypes(readFileSync(new URL('../src/cinema_catalogue.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'');
   vm.runInNewContext(`{${catalogue}globalThis.CinemaCatalogueView=CinemaCatalogueView;}`,sandbox);
+  for(const [file,cls]of [['cinema_personal','CinemaPersonalView'],['cinema_player','CinemaEmbeddedPlayer']]){
+    const source=stripTypeScriptTypes(readFileSync(new URL(`../src/${file}.ts`,import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'');
+    vm.runInNewContext(`{${source}globalThis.${cls}=${cls};}`,sandbox);
+  }
   vm.runInNewContext(code,sandbox);
   return {window,...sandbox.exports.api};
 }
@@ -61,11 +65,11 @@ function movie(id:string,status:string) {
 }
 function button(f:any,text:string) {const b=[...f.window.document.querySelectorAll('button')].find((n:any)=>n.textContent===text) as HTMLButtonElement;assert.ok(b,`Missing button ${text}`);return b;}
 
-test('five tabs keep lists separate and watch requests source choices before opening',()=>{
+test('seven tabs keep lists separate and watch requests source choices before opening',()=>{
   const f=fixture();try{
     const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);
     view.receive(snapshot([movie('Начато','watching'),movie('Отложено','planned'),movie('Завершено','watched')]));
-    assert.equal(f.window.document.querySelectorAll('.cinema-tabs button').length,5);
+    assert.equal(f.window.document.querySelectorAll('.cinema-tabs button').length,7);
     assert.match(f.window.document.querySelector('.cinema-content').textContent,/Начато/);
     assert.doesNotMatch(f.window.document.querySelector('.cinema-content').textContent,/Отложено|Завершено/);
     button(f,'▶ Продолжить').click();assert.equal(sent.at(-1).op,'options');
@@ -149,5 +153,61 @@ test('half rating can be edited, deleted and synchronizes open detail without lo
     f.window.document.querySelector('[aria-label="Закрыть"]').click();
     const min=f.window.document.querySelector('[aria-label="Моя оценка от"]');min.value='9.5';min.dispatchEvent(new f.window.Event('change'));assert.equal(f.window.document.querySelectorAll('.cinema-content .cinema-card').length,1);
     view.receive(snapshot([{...item,user_rating:7.5}]));assert.equal(f.window.document.querySelectorAll('.cinema-content .cinema-card').length,0);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('profile loads real analytics lazily and keeps its charts mounted across progress snapshots',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const initial=snapshot([movie('Любимое','watched')]);view.receive(initial);
+    assert.ok(!sent.some(v=>v.op==='profile'));button(f,'Мой кинопрофиль').click();const request=sent.at(-1);assert.equal(request.op,'profile');
+    const profile={watched_movies:1,watched_series:0,favorites:1,rated_count:1,average:9.5,distribution:Array.from({length:10},(_,i)=>({rating:i+1,count:i===8?1:0})),genres:[{name:'триллер',count:1}],directors:[],cast:[],top:[],least:[],insights:['Пока одна оценка — выводы предварительные.'],trend:[],metadata_coverage:0,positive_count:1};
+    view.receive({...initial,personal_result:{request_id:request.request_id,profile}});
+    assert.match(f.window.document.querySelector('.cinema-personal')!.textContent,/9.5|одна оценка|триллер/);
+    const chart=f.window.document.querySelector('.cinema-chart-bar');view.receive(initial);assert.equal(f.window.document.querySelector('.cinema-chart-bar'),chart);
+    button(f,'Обновить метаданные').click();assert.equal(sent.at(-1).op,'personal_enrich');
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('personal shelves explain recommendations and persist dismiss, watched and planned actions',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const initial=snapshot();view.receive(initial);button(f,'Для тебя').click();const request=sent.at(-1);
+    const item={...movie('Рекомендация','planned'),catalogue_key:'tmdb:movie:777',reason:'Тебе нравится жанр триллер.'};
+    view.receive({...initial,personal_result:{request_id:request.request_id,recommendations:{samples:1,mood:'any',message:'Мало оценок',errors:[],shelves:[{id:'liked',name:'Тебе понравится',items:[item]}]}}});
+    assert.match(f.window.document.querySelector('.cinema-personal')!.textContent,/Тебе нравится жанр триллер/);
+    const planned=[...f.window.document.querySelectorAll('.cinema-personal button')].find((b:any)=>b.textContent==='Хочу посмотреть');planned.click();assert.equal(sent.at(-1).op,'catalogue_add');assert.equal(sent.at(-1).values.status,'planned');
+    button(f,'Уже смотрела').click();assert.equal(sent.at(-1).values.status,'watched');
+    button(f,'Не интересно').click();assert.equal(sent.at(-1).op,'recommendation_dismiss');view.receive({...initial,recommendation_dismissed:item.catalogue_key});assert.equal(f.window.document.querySelectorAll('.cinema-personal-card').length,0);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('source URL alone auto-detects official API and settings expose playback and personalization choices',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);view.receive(snapshot());button(f,'Настройки').click();
+    assert.match(f.window.document.querySelector('.cinema-content')!.textContent,/Источники просмотра|Сбросить рекомендательный профиль/);
+    button(f,'+ Добавить источник').click();const address=f.window.document.querySelector('dialog [aria-label="Адрес сайта"]');address.value='https://archive.org';
+    f.window.document.querySelector('dialog form')!.dispatchEvent(new f.window.Event('submit',{cancelable:true}));const source=sent.at(-1).source;assert.equal(source.name,'archive.org');assert.equal(source.search_mode,'archive');assert.equal(source.adapter,'manual');
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('source search discards stale results and distinguishes manual pages from verified matching content',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const item=movie('Film','planned');const initial=snapshot([item]);view.receive(initial);button(f,'Хочу посмотреть').click();button(f,'Film').click();button(f,'Найти и смотреть').click();const request=sent.at(-1);assert.equal(request.op,'find_sources');
+    const result={id:'result',source_id:'source',source_name:'Ручной сайт',kind:'search',url:'https://site.example',availability:'unknown',reason:'Выбери результат на сайте',embedded:false,language:'',access_type:'unknown',allowed:true,match:0,capabilities:{mode:'Ручной выбор'}};
+    view.receive({...initial,source_results:{request_id:'stale',title_id:item.id,episode_id:item.current.id,results:[result],selected_id:null,message:'Старая выдача'}});assert.doesNotMatch(f.window.document.querySelector('dialog')!.textContent,/Старая выдача/);
+    view.receive({...initial,source_results:{request_id:request.request_id,title_id:item.id,episode_id:item.current.id,results:[result],selected_id:null,message:'Ручной выбор'}});
+    assert.match(f.window.document.querySelector('dialog')!.textContent,/Язык неизвестен|Условия доступа неизвестны/);button(f,'Открыть поиск ↗').click();assert.equal(sent.at(-1).op,'source_result_open');assert.ok(!sent.some(v=>v.op==='open'));
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('embedded video persists across snapshots and confirms only advancing playback',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const item=movie('Film','watching');
+    const initial={...snapshot([item]),session:{title_id:item.id,episode_id:item.current.id,mode:'embedded'}};
+    view.receive({...initial,embedded_player:{token:'random',url:'https://site.example/film.mp4',title:'Film',position:30,title_id:item.id,episode_id:item.current.id}});
+    const video=f.window.document.querySelector('video');assert.ok(video);for(const [key,value]of Object.entries({duration:100,currentTime:30,paused:false,seeking:false}))Object.defineProperty(video,key,{value,writable:true,configurable:true});
+    video.dispatchEvent(new f.window.Event('timeupdate'));assert.ok(!sent.some(v=>v.event==='playing'));
+    video.currentTime=30.3;video.dispatchEvent(new f.window.Event('timeupdate'));assert.equal(sent.at(-1).event,'playing');assert.equal(sent.at(-1).token,'random');
+    view.receive(initial);assert.equal(f.window.document.querySelector('video'),video);
+    button(f,'Сохранить и закрыть плеер').click();assert.equal(sent.at(-1).event,'close');assert.equal(f.window.document.querySelector('video'),null);
   }finally{f.window.happyDOM.abort();}
 });
