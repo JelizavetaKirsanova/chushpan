@@ -326,6 +326,7 @@ class DeviceCenter:
         device.result_status = result.get("result_status", "success")
         self.store.observe(device)
         self.connections[device.id] = "observed" if device.state else "unknown"
+        self.update_catalogue()
 
     def voice_plan(self, text):
         """Exact names/aliases plus conservative light-group matching; never guesses a target."""

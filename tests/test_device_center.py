@@ -408,3 +408,19 @@ def test_disabled_device_controls_never_switch_audio(devices):
         r.service.native.run.assert_not_awaited()
 
     asyncio.run(run())
+
+
+def test_network_inspection_updates_scenario_capabilities_without_restart(devices):
+    r = devices
+    device = r.service.store.save(
+        Device(name="WLED", kind="wled", protocol="http", endpoint="192.168.1.50")
+    )
+    r.service.update_catalogue()
+    catalogue = r.tools.automations.capabilities
+    assert f"device.{device.id}.color" not in catalogue.items
+    r.service.accept_network_state(device, {"state": {"power": True, "brightness": 50}})
+    assert catalogue.get(f"device.{device.id}.color").arguments({"color": "#FF0000"}) == {
+        "target": device.id,
+        "action": "led",
+        "color": "#FF0000",
+    }
