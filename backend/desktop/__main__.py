@@ -17,9 +17,19 @@ def main():
     parser.add_argument("--parent", type=int, default=0)
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--self-test", type=Path)
+    parser.add_argument("--permission-status", type=Path)
     args = parser.parse_args()
     os.environ["CHUSHPAN_DESKTOP"] = "1"
     os.umask(0o077)
+    if args.permission_status:
+        # Installed bundle identity + read-only native preflights. No UI, audio,
+        # models, event scripts, location fixes, network probes or permission requests.
+        from backend.config import get_settings
+        from backend.permission_center import PermissionCenter
+
+        report = asyncio.run(PermissionCenter(get_settings()).report())
+        args.permission_status.write_text(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
     if args.self_test:
         # Import shipped dynamic packages without recording, playback, BLE or models.
         import importlib

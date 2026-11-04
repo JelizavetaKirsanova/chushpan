@@ -256,6 +256,7 @@ class Application(_Api):
                         "Сначала отключи прежний автозапуск в разделе Приложение → Запуск."
                     )
                 if not macos.request_microphone():
+                    macos.open_privacy("microphone")
                     raise ValueError(
                         "Разреши микрофон: Системные настройки → "
                         "Конфиденциальность и безопасность → Микрофон."
@@ -296,23 +297,8 @@ class Application(_Api):
             elif action == "data":
                 macos.open_path(self.root)
             elif action == "privacy":
-                panes = {
-                    "microphone": "Privacy_Microphone",
-                    "accessibility": "Privacy_Accessibility",
-                    "automation": "Privacy_Automation",
-                    "screen_recording": "Privacy_ScreenCapture",
-                    "location": "Privacy_LocationServices",
-                    "bluetooth": "Privacy_Bluetooth",
-                    "notifications": "Notifications",
-                    "calendar": "Privacy_Calendars",
-                }
-                if value not in panes:
-                    raise ValueError("Неизвестное разрешение.")
-                import webbrowser
-
-                webbrowser.open(
-                    "x-apple.systempreferences:com.apple.preference.security?" + panes[value]
-                )
+                result = macos.open_privacy(value)
+                return {"ok": result["opened"], **result}
             elif action == "updates":
                 from backend.desktop.updates import check
 

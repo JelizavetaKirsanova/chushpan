@@ -35,6 +35,10 @@ def native_observation(result):
         "status": "error",
         "source": "macos",
         "error_code": result.get("error", "location_unavailable"),
+        "authorization": result.get("authorization"),
+        "native_code": result.get("native_code"),
+        "native_domain": result.get("native_domain"),
+        "helper_id": result.get("bundle_id"),
     }
     try:
         if type(result.get("accuracy_m")) not in (int, float):
@@ -200,6 +204,41 @@ class Locations:
         }
         signals = self.signal_observation
         if signals.get("source") == "macos" and 0 <= observation_age(signals) <= 60:
+            from backend.context_signals import signal
+
+            wifi = signals.get("wifi", {})
+            wifi_matches = []
+            for place in self.list():
+                for binding in place.wifi_networks:
+                    if (
+                        wifi.get("status") == "ready"
+                        and wifi.get("ssid_key") == signal("ssid", binding.ssid, "")["key"]
+                        and (
+                            not binding.bssid
+                            or wifi.get("bssid_key") == signal("bssid", binding.bssid, "")["key"]
+                        )
+                    ):
+                        wifi_matches.append(place)
+                        break
+            if len(wifi_matches) > 1:
+                return {
+                    **unknown,
+                    "reason": "wifi_conflict",
+                    "message": (
+                        "Одинаковый SSID привязан к разным местам. Укажи BSSID или выбери место"
+                        " вручную — сейчас Общий."
+                    ),
+                }
+            if len(wifi_matches) == 1:
+                return {
+                    "place_id": wifi_matches[0].id,
+                    "name": wifi_matches[0].name,
+                    "city": None,
+                    "mode": "auto",
+                    "status": "ready",
+                    "reason": "confirmed_wifi",
+                    "message": "Совпала заданная пользователем подключённая Wi-Fi-сеть.",
+                }
             seen = {(v["kind"], v["key"]) for v in signals.get("signals", [])}
             matches = [
                 p for p in self.list() if any((v["kind"], v["key"]) in seen for v in p.signals)
@@ -236,7 +275,39 @@ class Locations:
         if not isinstance(city, str) or not city.strip():
             return unknown
         key = normalize_phrase(city)
-        identifier = (
+        zone_matches = []
+        for place in self.list():
+            for zone in place.zones:
+                a, b = math.radians(zone.latitude), math.radians(checked["latitude"])
+                delta = math.radians(zone.longitude - checked["longitude"])
+                hav = (
+                    math.sin((b - a) / 2) ** 2
+                    + math.cos(a) * math.cos(b) * math.sin(delta / 2) ** 2
+                )
+                distance = 6371 * 2 * math.asin(min(1, math.sqrt(hav)))
+                # Coarse 0.1 degree observations have up to ~8 km rounding error.
+                if distance + 8 + checked["accuracy_m"] / 1000 <= zone.radius_km:
+                    zone_matches.append(place)
+                    break
+        if len(zone_matches) > 1:
+            return {
+                **unknown,
+                "reason": "zone_conflict",
+                "message": "Геозоны пересекаются — используется Общий.",
+            }
+        if len(zone_matches) == 1:
+            return {
+                **unknown,
+                "place_id": zone_matches[0].id,
+                "name": zone_matches[0].name,
+                "city": city,
+                "status": "ready",
+                "reason": "user_zone",
+            }
+        configured = next(
+            (p.id for p in self.list() if key in {normalize_phrase(c) for c in p.cities}), None
+        )
+        identifier = configured or (
             CITY_PLACES.get(key) if observed.get("country_code", "EE") in ("", "EE") else None
         )
         # Two different fresh measurements confirm a changed nearby city. Re-publishing
@@ -298,7 +369,7 @@ class Locations:
     async def refresh(self, *, request_access=False, force=False):
         if (self.memory.preference("automation", "location") or {}).get("mode") == "manual":
             return self.current()
-        if any(p.signals for p in self.list()):
+        if any(p.signals or p.wifi_networks for p in self.list()):
             await self.refresh_signals(force=force)
         if (
             not request_access

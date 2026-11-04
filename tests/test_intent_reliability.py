@@ -369,7 +369,7 @@ def test_calendar_history_phrases_are_local(text):
         "naive_date",
     ],
 )
-def test_calendar_uses_existing_read_without_location_or_permission_prompt(failure):
+def test_calendar_first_use_allows_consent_without_reading_location(failure):
     async def run():
         s, store, _, _, conv, center = fixture()
         now = datetime.now(s.location.tz)
@@ -423,7 +423,7 @@ def test_calendar_uses_existing_read_without_location_or_permission_prompt(failu
                 )
             if failure != "disabled":
                 personal.read.assert_awaited_once_with(
-                    request_access=False, parts=("calendar",), day=tomorrow.date().isoformat()
+                    request_access=True, parts=("calendar",), day=tomorrow.date().isoformat()
                 )
             else:
                 personal.read.assert_not_awaited()

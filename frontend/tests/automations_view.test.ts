@@ -18,6 +18,8 @@ function fixture() {
   window.HTMLElement.prototype.scrollIntoView=()=>{};
   const requests: Record<string,unknown>[]=[];
   const sandbox={...state,...workspaceState,exports:{} as Record<string,unknown>,document:window.document,window,CustomEvent:window.CustomEvent,HTMLButtonElement:window.HTMLButtonElement,structuredClone,crypto,icon:()=>'<svg aria-hidden="true"></svg>'};
+  const permissionCode=stripTypeScriptTypes(readFileSync(new URL('../src/permission_center.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace('export function permissionCenter','function permissionCenter');
+  Object.assign(sandbox,{permissionCenter:vm.runInNewContext('(function(){'+permissionCode+';return permissionCenter;})()',sandbox)});
   vm.runInNewContext(workspaceCode+code,sandbox);
   const Workspace=sandbox.exports.Workspace as new (...args:unknown[])=>{navigate:(view:string)=>void};
   const workspace=new Workspace(()=>{},()=>{},()=>{},()=>{},()=>{});
@@ -202,9 +204,10 @@ test('permission statuses hide technical diagnostics and devices remain independ
     f.view.receive({...f.data,devices:[{id:'mac',name:'MacBook',type:'system',status:'not_checked',actions:['mac.brightness'],permissions:[],note:'Описание подключения',details:{uuid:'test-device-uuid'}}],permissions:{scope:'test scope',items:[{id:'automation',name:'Управление приложениями',status:'unknown',note:'OSStatus -1744 test diagnostic',url:'x-apple.systempreferences:test'},{id:'bluetooth',name:'Bluetooth',status:'granted',note:'',url:''},{id:'other',name:'Другое',status:'unsupported',note:'',url:''}]}});
     assert.equal(f.window.document.querySelector('#devices-root')!.childElementCount,0);
     const permissions=f.window.document.querySelector('.permission-list')!;
-    assert.deepEqual([...permissions.querySelectorAll('small')].map(n=>n.textContent),['Требуется доступ','Разрешено','Недоступно']);
+    assert.deepEqual([...permissions.querySelectorAll('.permission-status')].map(n=>n.textContent),['Требуется проверка','Разрешено','Недоступно']);
     assert.equal(permissions.querySelector('details')!.open,false);
-    assert.equal(permissions.querySelectorAll('a').length,1);
+    assert.equal(permissions.querySelectorAll('a').length,0);
+    const settings=[...permissions.querySelectorAll('button')].find(n=>n.textContent==='Открыть настройки')!;settings.click();assert.equal(f.requests.at(-1)!.op,'permission_action');
     assert.ok(f.window.document.querySelector('.performance-page .scenario-history'));
     assert.equal(f.window.document.querySelector('.automations-page .scenario-history'),null);
   }finally{await f.window.happyDOM.close();}

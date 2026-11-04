@@ -233,7 +233,12 @@ class MacDesktop:
 
     async def screenshot(self) -> dict:
         if not (await self.bridge.request("desktop_capture_status"))["granted"]:
-            raise ToolError(instruction("screen_recording"))
+            from backend.permission_policy import requests_allowed
+
+            if requests_allowed.get():
+                await self.bridge.request("permission_request", permission="screen_recording")
+            if not (await self.bridge.request("desktop_capture_status"))["granted"]:
+                raise ToolError(instruction("screen_recording"))
         directory = self.s.data_path / "screenshots"
         if directory.is_symlink():
             raise ToolError("Каталог снимков не должен быть симлинком.")

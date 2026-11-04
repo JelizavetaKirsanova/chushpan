@@ -57,6 +57,21 @@ def main():
                 "-Xlinker",
                 str(ROOT / "backend/media/music_safari.plist"),
             ]
+        elif name in {"ytmusic_ax", "youtube_safari"}:
+            from backend.native_identity import helper_info
+
+            info = native / (name + ".plist")
+            info.write_bytes(helper_info(name))
+            args += [
+                "-Xlinker",
+                "-sectcreate",
+                "-Xlinker",
+                "__TEXT",
+                "-Xlinker",
+                "__info_plist",
+                "-Xlinker",
+                str(info),
+            ]
         run(*args)
     helper = native / "Чушпан — утро.app/Contents"
     (helper / "MacOS").mkdir(parents=True, exist_ok=True)
@@ -107,6 +122,23 @@ def main():
     helpers = app / "Contents/Helpers"
     helpers.mkdir(exist_ok=True)
     shutil.copytree(helper.parent, helpers / helper.parent.name, dirs_exist_ok=True)
+    for name in ("music_safari", "youtube_safari", "ytmusic_ax"):
+        binary = (app / "Contents/Resources/native" / name).resolve()
+        options = (
+            ["--entitlements", str(ROOT / "packaging/macos/automation.entitlements.plist")]
+            if name != "ytmusic_ax"
+            else []
+        )
+        run(
+            "codesign",
+            "--force",
+            "--sign",
+            "-",
+            "--identifier",
+            "local.chushpan." + name.replace("_", "-"),
+            *options,
+            str(binary),
+        )
     run("codesign", "--force", "--sign", "-", "--identifier", "ee.chushpan.desktop", str(app))
     run("codesign", "--verify", "--deep", "--strict", str(app))
     forbidden = {".env", "config.local.yaml", "jarvis.db", "application.json"}

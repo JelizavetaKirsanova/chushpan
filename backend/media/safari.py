@@ -156,11 +156,16 @@ class AccessibilityApp:
             if self._binary is not None:
                 return self._binary
             source = self.source
-            digest = hashlib.sha256(source.read_bytes()).hexdigest()[:16]
+            from backend.native_identity import helper_info
+
+            info = helper_info(source.stem)
+            digest = hashlib.sha256(source.read_bytes() + info).hexdigest()[:16]
             cache = self.s.data_path / "native"
             cache.mkdir(exist_ok=True)
             target = cache / f"ytmusic-ax-{digest}"
             if not target.exists():
+                plist = cache / (source.stem + ".plist")
+                plist.write_bytes(info)
                 temporary = target.with_suffix(".building")
                 try:
                     await process(
@@ -169,11 +174,28 @@ class AccessibilityApp:
                         "-module-cache-path",
                         str(cache / "swift-cache"),
                         str(source),
+                        "-Xlinker",
+                        "-sectcreate",
+                        "-Xlinker",
+                        "__TEXT",
+                        "-Xlinker",
+                        "__info_plist",
+                        "-Xlinker",
+                        str(plist),
                         "-o",
                         str(temporary),
                         timeout=90,
                     )
                     temporary.replace(target)
+                    await process(
+                        "codesign",
+                        "--force",
+                        "--sign",
+                        "-",
+                        "--identifier",
+                        "local.chushpan." + source.stem.replace("_", "-"),
+                        str(target),
+                    )
                 except TimeoutError as exc:
                     raise ToolError(
                         "Сборка адаптера YouTube Music заняла слишком много времени."
@@ -189,13 +211,33 @@ class AccessibilityApp:
                 await process(
                     str(binary),
                     data={"bundle": bundle, "op": op, **kwargs},
-                    timeout=self.timeout_s,
+                    timeout=max(self.timeout_s, 60)
+                    if op == "permission_request"
+                    else self.timeout_s,
                 )
             )
         except TimeoutError as exc:
             raise ToolError(f"{self.app_name} не ответил вовремя.") from exc
         error = result.get("error")
         if error == "accessibility_permission":
+            from backend.permission_policy import requests_allowed
+
+            if requests_allowed.get() and not kwargs.get("_permission_retry"):
+                await self.request("permission_request")
+                from backend.desktop.platform import open_privacy
+
+                await asyncio.to_thread(open_privacy, "accessibility")
+                # The blocked operation has not started. Bound the wait and retry once.
+                for _ in range(60):
+                    status_op = (
+                        "youtube_permissions"
+                        if self.source.stem == "youtube_safari"
+                        else "permission_status"
+                    )
+                    status = await self.request(status_op)
+                    if status.get("accessibility") == "granted":
+                        return await self.request(op, **kwargs, _permission_retry=True)
+                    await asyncio.sleep(1)
             raise ToolError(PERMISSION)
         messages = {
             "youtube_multiple_tabs": (

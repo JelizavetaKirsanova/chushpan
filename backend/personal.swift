@@ -13,15 +13,17 @@ final class LocationReader: NSObject, CLLocationManagerDelegate {
     var started = false
     var cityOnly = false
     var resolving = false
+    var authorizationOnly = false
     let geocoder = CLGeocoder()
 
-    func read(requestAccess: Bool, cityOnly: Bool = false, completion: @escaping ([String: Any]) -> Void) {
+    func read(requestAccess: Bool, cityOnly: Bool = false, authorizationOnly: Bool = false, completion: @escaping ([String: Any]) -> Void) {
         self.completion = completion
         self.cityOnly = cityOnly
+        self.authorizationOnly = authorizationOnly
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyKilometer
-        timer = Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { [weak self] _ in
-            self?.finish(["error": "location_unavailable"])
+        timer = Timer.scheduledTimer(withTimeInterval: requestAccess ? 50 : 20, repeats: false) { [weak self] _ in
+            self?.finish(["error": "location_timeout"])
         }
         if !CLLocationManager.locationServicesEnabled() {
             finish(["error": "location_disabled"])
@@ -37,6 +39,7 @@ final class LocationReader: NSObject, CLLocationManagerDelegate {
     func checkAuthorization() {
         switch manager.authorizationStatus {
         case .authorized, .authorizedAlways:
+            if authorizationOnly { finish(["status": "granted"]); return }
             if !started {
                 started = true
                 manager.startUpdatingLocation()
@@ -85,9 +88,9 @@ final class LocationReader: NSObject, CLLocationManagerDelegate {
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        if (error as? CLError)?.code == .denied {
-            finish(["error": "location_permission"])
-        }
+        let code = (error as? CLError)?.code.rawValue ?? (error as NSError).code
+        finish(["error": code == CLError.denied.rawValue ? "location_permission" : "location_native_error",
+                "native_code": code, "native_domain": (error as NSError).domain])
     }
 
     func finish(_ result: [String: Any]) {
@@ -95,7 +98,28 @@ final class LocationReader: NSObject, CLLocationManagerDelegate {
         completion = nil
         manager.stopUpdatingLocation()
         timer?.invalidate()
-        done(result)
+        done(result.merging(["authorization": locationAuthorization(),
+                            "services_enabled": CLLocationManager.locationServicesEnabled(),
+                            "bundle_id": Bundle.main.bundleIdentifier ?? "local.chushpan.personal"]) { a, _ in a })
+    }
+}
+
+func locationAuthorization() -> String {
+    switch CLLocationManager().authorizationStatus {
+    case .authorized, .authorizedAlways: return "granted"
+    case .notDetermined: return "not_determined"
+    case .denied: return "denied"
+    case .restricted: return "restricted"
+    @unknown default: return "unknown"
+    }
+}
+func calendarAuthorization() -> String {
+    switch EKEventStore.authorizationStatus(for: .event) {
+    case .fullAccess: return "granted"
+    case .notDetermined: return "not_determined"
+    case .denied: return "denied"
+    case .restricted: return "restricted"
+    default: return "check_needed"
     }
 }
 
@@ -149,7 +173,7 @@ guard args.count == 3,
       let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { exit(1) }
 let requestAccess = request["request_access"] as? Bool ?? false
 let parts = Set(request["parts"] as? [String] ?? ["calendar", "location"])
-guard !parts.isEmpty, parts.isSubset(of: ["calendar", "location", "signals"]) else { exit(1) }
+guard !parts.isEmpty, parts.isSubset(of: ["calendar", "location", "signals", "permissions"]) else { exit(1) }
 let location = LocationReader()
 var output: [String: Any] = [:]
 var finished = 0
@@ -166,6 +190,23 @@ func save(_ key: String, _ value: [String: Any]) {
 DispatchQueue.main.async {
     // Request sequentially, so two privacy dialogs never compete for attention.
     Task { @MainActor in
+        if parts.contains("permissions") {
+            let requested = requestAccess ? request["permission"] as? String : nil
+            if requested == "calendar" && calendarAuthorization() == "not_determined" {
+                _ = try? await EKEventStore().requestFullAccessToEvents()
+            }
+            func permissionResult() -> [String: Any] {
+                return ["calendar": calendarAuthorization(), "location": locationAuthorization(),
+                        "location_services": CLLocationManager.locationServicesEnabled(),
+                        "identity": ["bundle_id": Bundle.main.bundleIdentifier ?? "local.chushpan.personal",
+                                     "executable": CommandLine.arguments[0], "pid": getpid(), "ppid": getppid()]]
+            }
+            if requested == "location" && locationAuthorization() == "not_determined" {
+                location.read(requestAccess: true, authorizationOnly: true) { value in
+                    save("permissions", permissionResult().merging(["location_result": value]) { a, _ in a })
+                }
+            } else { save("permissions", permissionResult()) }
+        }
         if parts.contains("signals") {
             let interface = CWWiFiClient.shared().interface()
             save("signals", ["ssid": interface?.ssid() ?? "", "bssid": interface?.bssid() ?? ""])

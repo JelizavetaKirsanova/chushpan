@@ -46,9 +46,13 @@ let data = FileHandle.standardInput.readDataToEndOfFile()
 guard let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
       request["bundle"] as? String == "com.apple.Safari",
       let op = request["op"] as? String,
-      ["youtube_permissions", "youtube_open", "youtube_state", "youtube_play", "youtube_pause", "youtube_playlist"].contains(op)
+      ["youtube_permissions", "permission_request", "youtube_open", "youtube_state", "youtube_play", "youtube_pause", "youtube_playlist"].contains(op)
 else { fail("invalid_request") }
-if op == "youtube_permissions" {
+if op == "youtube_permissions" || op == "permission_request" {
+    let requestedPermission = request["permission"] as? String ?? "accessibility"
+    if op == "permission_request" && requestedPermission == "accessibility" {
+        _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
+    }
     var state = "target_not_running"
     var code: OSStatus = 0
     if !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").isEmpty {
@@ -59,6 +63,10 @@ if op == "youtube_permissions" {
         }
         if created == noErr {
             code = AEDeterminePermissionToAutomateTarget(&address, AEEventClass(typeWildCard), AEEventID(typeWildCard), false)
+            if code == -1744 && op == "permission_request" && requestedPermission == "automation" {
+                _ = AEDeterminePermissionToAutomateTarget(&address, AEEventClass(typeWildCard), AEEventID(typeWildCard), true)
+                code = AEDeterminePermissionToAutomateTarget(&address, AEEventClass(typeWildCard), AEEventID(typeWildCard), false)
+            }
             AEDisposeDesc(&address)
             state = code == noErr ? "granted" : code == -1743 ? "denied" : code == -1744 ? "not_determined" : "unknown"
         } else { state = "unknown"; code = OSStatus(created) }

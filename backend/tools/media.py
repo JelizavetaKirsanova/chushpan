@@ -164,27 +164,52 @@ def parse_track(text: str) -> Track:
 
 
 class Spotify:
+    def __init__(self, settings=None):
+        self.settings = settings
+        self.executor = None
+
+    async def osa(self, *lines):
+        if self.settings is None:
+            return await osa(*lines)
+        from backend.media.music_safari import SafariMusicTab
+
+        self.executor = self.executor or SafariMusicTab(self.settings)
+        source = "\n".join(lines)
+        target = (
+            "com.apple.systemevents"
+            if 'tell application "System Events"' in source
+            else "com.spotify.client"
+        )
+        return await self.executor.execute_target(source, target)
+
     async def running(self) -> bool:
         # `is running` asks without launching it, unlike a `tell`.
+        if self.settings is not None:
+            from backend.media.music_safari import SafariMusicTab
+
+            self.executor = self.executor or SafariMusicTab(self.settings)
+            return (await self.executor.permission(target="com.spotify.client")).get(
+                "automation"
+            ) != "target_not_running"
         return await osa(f'application "{APP}" is running') == "true"
 
     async def now_playing(self) -> Track:
         if not await self.running():
             return Track(state="closed")
-        return parse_track(await osa(*NOW_PLAYING))
+        return parse_track(await self.osa(*NOW_PLAYING))
 
     async def volume(self) -> int:
-        return int(await osa(*tell("sound volume")))
+        return int(await self.osa(*tell("sound volume")))
 
     async def set_volume(self, level: int) -> None:
         level = max(0, min(100, int(level)))
-        await osa(*tell(f"set sound volume to {level}"))
+        await self.osa(*tell(f"set sound volume to {level}"))
         # Spotify often keeps one less than asked (50 → 49): ask once more, one higher.
         if 0 < level < 100 and await self.volume() < level:
-            await osa(*tell(f"set sound volume to {level + 1}"))
+            await self.osa(*tell(f"set sound volume to {level + 1}"))
 
     async def command(self, *lines: str) -> None:
-        await osa(*tell(*lines))
+        await self.osa(*tell(*lines))
 
     async def launch(self) -> None:
         """Open Spotify if needed and wait until it answers AppleScript."""
@@ -196,15 +221,15 @@ class Spotify:
         deadline = time.monotonic() + LAUNCH_WAIT_S
         while time.monotonic() < deadline:
             with contextlib.suppress(ToolError):
-                await osa(*tell("player state"))
+                await self.osa(*tell("player state"))
                 return
             await asyncio.sleep(0.5)
         raise ToolError(f"{APP} did not open in {LAUNCH_WAIT_S} s")
 
     async def window(self) -> tuple[int, int, int, int]:
         """Bring the window to the front; its (x, y, width, height) in points."""
-        await osa(*tell("reopen", "activate"))  # reopen: a window even if it was closed
-        out = await osa(
+        await self.osa(*tell("reopen", "activate"))  # reopen: a window even if it was closed
+        out = await self.osa(
             f'tell application "System Events" to tell process "{APP}" to '
             "get {position, size} of front window"
         )
@@ -212,6 +237,11 @@ class Spotify:
         return x, y, w, h
 
     async def screenshot(self, x: int, y: int, w: int, h: int) -> np.ndarray:
+        if self.settings is not None:
+            from backend.media.music_safari import SafariMusicTab
+
+            self.executor = self.executor or SafariMusicTab(self.settings)
+            await self.executor.ensure_capture_permission("screen_recording")
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "window.bmp"
             code, out = await run(
@@ -232,9 +262,9 @@ class Spotify:
             await self.command("pause")
             before.state = "paused"
         # The empty search page has no green buttons: the old results never get clicked.
-        await osa(*tell("activate"), 'open location "spotify:search:"')
+        await self.osa(*tell("activate"), 'open location "spotify:search:"')
         await asyncio.sleep(POLL_S)
-        await osa(f'open location "spotify:search:{quote(query)}"')
+        await self.osa(f'open location "spotify:search:{quote(query)}"')
         x, y, w, h = await self.window()
 
         # The same spot on two screenshots in a row: the page has stopped moving.
@@ -391,7 +421,7 @@ class MediaService:
                 from backend.media.youtube import YouTubeMusic
 
                 self.youtube = YouTubeMusic(s, store)
-        self.spotify = spotify or Spotify()
+        self.spotify = spotify or Spotify(s)
         self.video = video or SafariYouTube(s)
         self._last_control_target: str | None = None
         self.ducker = Ducker(self.spotify, s.media.duck_to, wake)

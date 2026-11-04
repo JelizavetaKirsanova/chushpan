@@ -31,9 +31,13 @@ def calendar_tool(settings, store=None, personal=None):
         except ValueError:
             return {"error": "Назови существующую дату календаря.", "error_code": "invalid_date"}
         try:
+            from backend.permission_policy import requests_allowed
+
             result = (
                 await personal.read(
-                    request_access=False, parts=("calendar",), day=selected.isoformat()
+                    request_access=requests_allowed.get(),
+                    parts=("calendar",),
+                    day=selected.isoformat(),
                 )
             ).get("calendar", {})
         except (OSError, RuntimeError, TimeoutError):

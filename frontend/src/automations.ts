@@ -1,3 +1,4 @@
+import {permissionCenter, type PermissionFilters} from './permission_center';
 import type {HudEvent} from './types';
 import './automations.css';
 import {addVariant, clone, newBlock, newId, newScenario, searchCommands, moveBlock, reorderBlock, countBlocks, normalizePhrase} from './automation_state';
@@ -41,6 +42,7 @@ export class AutomationsView {
   private phraseInput: HTMLInputElement | null = null;
   private recognition = el('div', '', 'scenario-recognition');
   private permissions: AutomationsEvent['permissions'];
+  private permissionFilters:PermissionFilters={search:'',group:'',problems:false};
   private dragSource: {blocks: Block[]; index: number} | null = null;
   private sectionFeedback: HTMLElement[] = [];
   private activeVariant = '';
@@ -656,15 +658,9 @@ export class AutomationsView {
     this.permissionRoot.className = 'permission-list'; this.permissionRoot.replaceChildren();
     if (!this.permissions) {this.permissionRoot.append(el('p', 'Проверь доступ, чтобы увидеть состояние разрешений.', 'muted')); return;}
     if (this.permissions.error) {const details = el('details'); details.append(el('summary', 'Не удалось проверить доступ. Подробнее'), el('p', this.permissions.error)); this.permissionRoot.append(details);}
-    for (const permission of this.permissions.items) {
-      const row = el('article', '', 'permission-row'); const text = el('div');
-      const label = permission.status === 'granted' ? 'Разрешено' : ['unsupported', 'unavailable'].includes(permission.status) ? 'Недоступно' : 'Требуется доступ';
-      text.append(el('strong', permission.name), el('small', label)); row.append(text);
-      if (permission.status !== 'granted' && permission.url) {const link = el('a', 'Настроить'); link.href = permission.url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.setAttribute('aria-label', `Настроить: ${permission.name}`); row.append(link);}
-      if (permission.note) {const details = el('details'); details.append(el('summary', 'Подробнее'), el('p', permission.note)); row.append(details);}
-      this.permissionRoot.append(row);
-    }
+    permissionCenter(this.permissionRoot,this.permissions,this.send,this.permissionFilters);
   }
+
   private renderCommands(): void {
     this.commandRoot.replaceChildren();
     const section = el('div', '', 'command-training');

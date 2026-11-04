@@ -124,6 +124,16 @@ class SafariMusicTab:
                         timeout=90,
                     )
                     temporary.replace(target)
+                    await self.runner(
+                        "codesign",
+                        "--force",
+                        "--sign",
+                        "-",
+                        "--identifier",
+                        "local.chushpan.music-safari",
+                        str(target),
+                        timeout=20,
+                    )
                 except (ToolError, TimeoutError, OSError):
                     temporary.unlink(missing_ok=True)
                     raise MusicBrowserError("service_unavailable") from None
@@ -156,20 +166,75 @@ class SafariMusicTab:
         result = await self._native({"op": "script", "source": script, "request_access": False})
         return result.get("result", "")
 
-    async def request_access(self):
-        # Explicit user action only: a read-only event may show the macOS consent dialog.
-        await self._native(
+    async def permission(self, *, request=False, target="com.apple.Safari", launch=False):
+        return await self._native(
             {
-                "op": "script",
-                "source": 'tell application "Safari" to count windows',
-                "request_access": True,
+                "op": "request" if request else "probe",
+                "target": target,
+                "request_access": request,
+                "launch_target": launch,
             }
         )
-        self._permission = None
+
+    async def request_access(self):
+        self._permission = await self.permission(request=True, launch=True)
+        return self._permission
+
+    async def execute_target(self, script, target):
+        """The same signed executor preflights, requests and sends the Apple Event."""
+        from backend.permission_policy import requests_allowed, wait_for_grant
+
+        if target == "com.apple.systemevents" and "tell process" in script:
+            await self.ensure_capture_permission("accessibility")
+
+        async def probe():
+            return await self.permission(target=target)
+
+        permission = await probe()
+        if permission.get("automation") != "granted" and requests_allowed.get():
+            permission = await self.permission(request=True, target=target, launch=True)
+            if permission.get("automation") == "denied":
+                from backend.desktop.platform import open_privacy
+
+                await asyncio.to_thread(open_privacy, "automation")
+                permission = await wait_for_grant(probe)
+        if permission.get("automation") != "granted":
+            raise ToolError(
+                f"Apple Events → {target}: доступ не подтверждён. "
+                "Открой центр разрешений Чушпана → Автоматизация."
+            )
+        return (await self._native({"op": "script", "source": script, "target": target})).get(
+            "result", ""
+        )
+
+    async def ensure_capture_permission(self, key):
+        from backend.permission_policy import requests_allowed
+
+        if (await self.permission()).get(key) == "granted":
+            return
+        if requests_allowed.get():
+            await self._native({"op": "permission_request", "permission": key})
+            from backend.desktop.platform import open_privacy
+
+            await asyncio.to_thread(open_privacy, key)
+            for _ in range(60):
+                if (await self.permission()).get(key) == "granted":
+                    return
+                await asyncio.sleep(1)
+        raise ToolError("Доступ адаптера музыки не подтверждён: " + key)
 
     async def _ready(self):
-        if self._permission is None or self._permission.get("automation") != "granted":
-            self._permission = await self._native({"op": "probe"})
+        from backend.permission_policy import requests_allowed, wait_for_grant
+
+        # Grants may be revoked while the app is running. Never cache authority.
+        self._permission = await self._native({"op": "probe"})
+        if self._permission.get("automation") != "granted" and requests_allowed.get():
+            self._permission = await self.request_access()
+            if self._permission.get("automation") == "denied":
+                from backend.desktop.platform import open_privacy
+
+                await asyncio.to_thread(open_privacy, "automation")
+                self._permission = await wait_for_grant(self.permission)
         state = self._permission["automation"]
         if state != "granted":
             raise MusicBrowserError(
@@ -181,6 +246,15 @@ class SafariMusicTab:
             )
 
     async def diagnose(self) -> dict:
+        from backend.permission_policy import requests_allowed
+
+        token = requests_allowed.set(False)
+        try:
+            return await self._diagnose()
+        finally:
+            requests_allowed.reset(token)
+
+    async def _diagnose(self) -> dict:
         try:
             permission = await self._native({"op": "probe"})
         except MusicBrowserError as exc:

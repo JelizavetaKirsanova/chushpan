@@ -21,7 +21,7 @@ def app_with_runner(automation="granted", tabs="10:1\n", state=None):
 
     async def runner(*args, data=None, timeout=None):
         calls.append((args, data))
-        if data["op"] == "probe":
+        if data["op"] in {"probe", "request"}:
             return json.dumps({"automation": automation, "pid": 123, "ppid": 122})
         script = data["source"]
         if " is running" in script:
@@ -73,9 +73,10 @@ def test_explicit_access_request_is_readonly():
     app, calls = app_with_runner("not_determined")
     asyncio.run(app.request_access())
     assert calls[0][1] == {
-        "op": "script",
+        "op": "request",
         "request_access": True,
-        "source": 'tell application "Safari" to count windows',
+        "target": "com.apple.Safari",
+        "launch_target": True,
     }
 
 

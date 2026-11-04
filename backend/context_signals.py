@@ -37,6 +37,7 @@ def bluetooth_signals(value):
 
 async def read_signals(settings):
     result, errors = [], []
+    wifi_observation = {"status": "unavailable"}
     try:
         wifi = (await PersonalContext(settings).read(request_access=False, parts=("signals",))).get(
             "signals", {}
@@ -45,6 +46,16 @@ async def read_signals(settings):
             result.append(
                 signal("wifi", wifi["ssid"] + ":" + wifi["bssid"].casefold(), wifi["ssid"])
             )
+        if wifi.get("ssid"):
+            # Only hashes of observations leave the native boundary. User-entered
+            # profile SSIDs are stored separately, never passwords or scan history.
+            wifi_observation = {
+                "status": "ready",
+                "ssid_key": signal("ssid", wifi["ssid"], "")["key"],
+                "bssid_key": signal("bssid", wifi.get("bssid", "").casefold(), "")["key"]
+                if wifi.get("bssid")
+                else None,
+            }
         else:
             errors.append("Wi-Fi скрыт macOS или соединение отсутствует.")
     except (OSError, ValueError, TimeoutError, RuntimeError, ToolError):
@@ -57,4 +68,4 @@ async def read_signals(settings):
             errors.append("Список Bluetooth-устройств не прочитан.")
     else:
         errors.append("Список подключённых Bluetooth-устройств недоступен.")
-    return {"signals": result, "error": " ".join(errors) or None}
+    return {"signals": result, "wifi": wifi_observation, "error": " ".join(errors) or None}

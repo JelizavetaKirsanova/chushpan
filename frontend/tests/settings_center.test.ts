@@ -13,6 +13,8 @@ function fixture() {
   window.document.write(html);window.confirm=()=>true;
   const requests:Record<string,unknown>[]=[];
   const sandbox={exports:{} as Record<string,unknown>,document:window.document,window,structuredClone,crypto,Blob,URL,setTimeout:()=>0,icon:()=>'<svg aria-hidden="true"></svg>'};
+  const permissionCode=stripTypeScriptTypes(readFileSync(new URL('../src/permission_center.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace('export function permissionCenter','function permissionCenter');
+  Object.assign(sandbox,{permissionCenter:vm.runInNewContext('(function(){'+permissionCode+';return permissionCenter;})()',sandbox)});
   vm.runInNewContext(code,sandbox);
   const View=sandbox.exports.View as new (...args:unknown[])=>{connection:(v:boolean)=>void;receive:(v:unknown)=>void;open:(v:string)=>void};
   const view=new View((v:Record<string,unknown>)=>requests.push(structuredClone(v)),(v:Record<string,unknown>)=>requests.push(structuredClone(v)),()=>{});
@@ -129,4 +131,22 @@ test('model form saves streaming, reasoning and optional timeout overrides',asyn
     assert.equal(values.streaming,false);assert.equal(values.cloud_thinking,'high');assert.equal(values.local_first_result_s,90);assert.equal(values.cloud_first_result_s,null);
     assert.equal(values.cloud_model,f.state.values.models.cloud_model);
   } finally {await f.window.happyDOM.abort();}
+});
+
+test('permission center uses native actions, honest statuses, filters and rechecks on return',async()=>{
+  const f=fixture();try {
+    f.state.permissions={scope:'Исполнитель проверки',items:[
+      {id:'microphone',name:'Микрофон',status:'not_determined',note:'',url:'x-apple.systempreferences:test',group:'voice',group_name:'Голос',purpose:'Голосовые команды',can_request:true,supported:true},
+      {id:'speech',name:'Apple Speech',status:'unavailable',note:'Локальный Whisper',url:'',group:'voice',group_name:'Голос',supported:false},
+      {id:'calendar',name:'Календарь',status:'granted',note:'',url:'',group:'personal',group_name:'Личные данные'}
+    ]};f.view.receive(f.state);f.view.open('access');
+    assert.ok(f.requests.some(r=>r.op==='permissions'));
+    const cards=f.window.document.querySelectorAll('.permission-card');assert.equal(cards.length,3);
+    f.button('Запросить доступ');assert.equal(f.requests.at(-1)!.op,'permission_action');assert.equal(f.requests.at(-1)!.action,'request');assert.equal(f.requests.at(-1)!.id,'microphone');
+    f.button('Открыть настройки');assert.equal(f.requests.at(-1)!.action,'open');assert.equal(f.window.document.querySelectorAll('.permission-center a').length,0);
+    const search=f.window.document.querySelector('.permission-toolbar input[type=search]')! as unknown as HTMLInputElement;search.value='Календарь';search.dispatchEvent(new f.window.Event('input'));assert.equal(f.window.document.querySelectorAll('.permission-card').length,1);
+    search.value='';search.dispatchEvent(new f.window.Event('input'));const checkbox=f.window.document.querySelector('.permission-toolbar input[type=checkbox]')! as unknown as HTMLInputElement;checkbox.checked=true;checkbox.dispatchEvent(new f.window.Event('change'));assert.equal(f.window.document.querySelectorAll('.permission-card').length,1);
+    Object.assign(f.view,{permissionCheckedAt:0});const count=f.requests.length;f.window.dispatchEvent(new f.window.Event('focus'));assert.equal(f.requests.length,count+1);assert.equal(f.requests.at(-1)!.op,'permissions');
+    assert.equal(f.requests.some(r=>r.op==='listen_start'),false);
+  }finally{await f.window.happyDOM.abort();}
 });

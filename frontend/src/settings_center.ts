@@ -2,6 +2,7 @@ import {applicationSettings} from './application_settings';
 import type {HudEvent} from './types';
 import type {Place, Scenario} from './automation_state';
 import {icon} from './dashboard';
+import {permissionCenter, type PermissionReport, type PermissionFilters} from './permission_center';
 
 type Values = Record<string, unknown>;
 export interface PersonalityProfile {id:string; revision:number; name:string; description:string; builtin:boolean; traits:Record<string,number>; communication:Values; instructions:string; technical_detail:number}
@@ -11,7 +12,7 @@ export interface SettingsState {type:'settings_center'; version:number; values:R
   memory:Memory[]; memory_pending:{id:string;content:string}[]; habits_opt_in:boolean;
   engine:string; voices:string[]; voice_support:{rate:boolean;pitch:boolean;expression:boolean};
   input_devices?:{id:number;name:string}[]|null;
-  permissions:{items:{id:string;name:string;status:string;note:string;url:string}[];scope:string} | null;
+  permissions:PermissionReport | null;
   models:{installed?:string[];ollama?:string;tts?:string;gemini?:{models?:{model:string;provider:string;status:string;latency_s?:number|null;error?:string|null}[]};streaming?:boolean};
   location:{name?:string|null;place_id?:string|null;mode?:string;message?:string;reason?:string}; places:Place[];
   signals:{signals?:Signal[];error?:string}; rules:Scenario[];
@@ -48,6 +49,8 @@ export class SettingsCenterUI {
   private state:SettingsState|null=null;
   private online=false;
   private page='';
+  private permissionFilters:PermissionFilters={search:'',group:'',problems:false};
+  private permissionCheckedAt=0;
   private selected='';
   private draft:PersonalityProfile|null=null;
   private dirty=false;
@@ -69,6 +72,8 @@ export class SettingsCenterUI {
       const text=el('span');text.append(el('strong',title),el('small',description));b.append(symbol,text,el('span','›','settings-chevron'));id('settings-categories').append(b);
     }
     id('settings-back').onclick=()=>this.open('');
+    const recheck=()=>{if(this.page==='access'&&this.online&&!document.hidden&&Date.now()-this.permissionCheckedAt>1500){this.permissionCheckedAt=Date.now();this.send({op:'permissions'});}};
+    window.addEventListener('focus',recheck);document.addEventListener('visibilitychange',recheck);
     const take=(key:string,node:Element|null)=>{if(node){const list=this.legacy.get(key)??[];list.push(node as HTMLElement);this.legacy.set(key,list);}};
     take('voice',id('voice-settings'));take('voice',id('dialogue-settings').closest('details'));
     take('models',id('settings-items').closest('details'));
@@ -99,6 +104,7 @@ export class SettingsCenterUI {
     const data=categories.find(v=>v[0]===page);
     id('settings-title').textContent=data?.[1]??'';id('settings-description').textContent=data?.[2]??'';
     this.render();if(this.online)this.send({op:'refresh'});
+    if(page==='access'&&this.online){this.permissionCheckedAt=Date.now();this.send({op:'permissions'});}
   }
   receive(event:HudEvent):void {
     if(event.type==='stats'){this.lastLatency=`Последний отклик: ${sec(event.response_s??event.voice_s)} · первый фрагмент модели: ${sec(event.first_token_s)}`;const row=document.getElementById('settings-last-latency');if(row)row.textContent=this.lastLatency;return;}
@@ -258,7 +264,7 @@ export class SettingsCenterUI {
     root.append(this.button('Подробная статистика и сравнение до / после',()=>this.navigate('performance')));const errors=this.section('Последние ошибки');for(const error of state.last_errors)errors.append(el('p',`${new Date(error.created_at).toLocaleString()} · ${error.model??'Локально'} · ${error.errors.join(', ')||'Завершение не подтверждено'}`));if(!state.last_errors.length)errors.append(el('p','Сохранённых ошибок нет.','settings-help'));root.append(errors);
   }
   private access(root:HTMLElement):void {
-    const state=this.state!;root.append(this.button('Проверить разрешения macOS',()=>this.send({op:'permissions'}),true));if(state.permissions){root.append(el('p',state.permissions.scope,'settings-help'));for(const permission of state.permissions.items){const row=el('div','','settings-permission');const link=el('a','Открыть системные настройки') as HTMLAnchorElement;link.href=permission.url;row.append(el('strong',permission.name),el('span',timeLabels[permission.status]??permission.status),el('small',permission.note),link);root.append(row);}}
+    const state=this.state!;const center=el('section','','permission-center');permissionCenter(center,state.permissions,this.send,this.permissionFilters,this.online);root.append(center);
     const actions=this.section('Разрешённые действия','Опасные операции требуют отдельного подтверждения. Ни один профиль характера не может отменить это правило.');
     const disabled=new Set(state.values.access.disabled_tools as string[]);
     for(const [risk,title] of [['safe','Чтение и безопасные проверки'],['state_change','Изменение состояния'],['dangerous','Опасные операции — с подтверждением']]){
@@ -274,10 +280,10 @@ export class SettingsCenterUI {
     const history=this.section('История действий');for(const run of state.recent_actions)history.append(el('p',`${run.scenario_name??run.name??'Сценарий'} · ${run.status??'Результат не определён'}`));if(!state.recent_actions.length)history.append(el('p','Запусков сценариев пока нет.','settings-help'));root.append(history);
   }
   private places(root:HTMLElement):void {
-    const state=this.state!;const selection=this.select([['auto','Автоматически'],['general','Общий'],...state.places.map(p=>[p.id,p.name] as [string,string])],state.location.mode==='manual'?state.location.place_id??'general':'auto');selection.onchange=()=>this.automation({op:'location',mode:selection.value==='auto'?'auto':'manual',place_id:selection.value==='auto'?'':selection.value});root.append(this.label('Текущее место',selection),el('p',`${state.location.name??'Общий'} · ${state.location.message??state.location.reason??'Актуальная геолокация или ручной выбор'}`,'settings-help'),this.button('Обновить геолокацию',()=>this.automation({op:'location_connect',consent:true}),true),this.button('Прочитать текущий Wi-Fi и подключённые устройства',()=>this.send({op:'signals'}),true),el('p','Сигналы влияют на выбор места только после явной привязки ниже. Ручной выбор имеет приоритет. Точные координаты не нужны и здесь не сохраняются.','settings-help'));
+    const state=this.state!;const selection=this.select([['auto','Автоматически'],['general','Общий'],...state.places.map(p=>[p.id,p.name] as [string,string])],state.location.mode==='manual'?state.location.place_id??'general':'auto');selection.onchange=()=>this.automation({op:'location',mode:selection.value==='auto'?'auto':'manual',place_id:selection.value==='auto'?'':selection.value});root.append(this.label('Текущее место',selection),el('p',`${state.location.name??'Общий'} · ${state.location.message??state.location.reason??'Актуальная геолокация или ручной выбор'}`,'settings-help'),this.button('Обновить геолокацию',()=>this.automation({op:'location_connect',consent:true}),true),this.button('Прочитать текущий Wi-Fi и подключённые устройства',()=>this.send({op:'signals'}),true),el('p','Сигналы влияют на выбор места только после явной привязки ниже. Приоритет: ручной выбор → заданная Wi-Fi-сеть → геозона или город → Общий. Пароли Wi-Fi не запрашиваются.','settings-help'));
     if(state.signals.error)root.append(el('p',state.signals.error,'settings-help'));
     const general=this.section('Общий','Всегда существует. Используется, когда место неизвестно или локальная версия сценария отсутствует.');root.append(general);
-    for(const place of state.places){const form=document.createElement('form');form.className='settings-group';form.append(el('h2',place.name));const name=this.input(place.name);const cities=this.textarea(place.cities.join('\n'));form.append(this.label('Название места',name),this.label('Города и их варианты написания',cities));const selected=clone((place as Place & {signals?:Signal[]}).signals??[]);const seen=state.signals.signals??[];for(const signal of [...selected,...seen.filter(s=>!selected.some(p=>p.key===s.key&&p.kind===s.kind))]){const check=this.input(selected.some(s=>s.key===signal.key),'checkbox');check.onchange=()=>{const index=selected.findIndex(s=>s.key===signal.key);if(check.checked&&index<0)selected.push(signal);if(!check.checked&&index>=0)selected.splice(index,1);};form.append(this.label(`${signal.kind==='wifi'?'Wi-Fi':'Устройство'}: ${signal.name}`,check));}const save=this.button('Сохранить место и привязки',()=>{},true);save.type='submit';form.append(save);form.onsubmit=e=>{e.preventDefault();this.automation({op:'place_save',place:{...place,name:name.value,cities:cities.value.split('\n').map(s=>s.trim()).filter(Boolean),signals:selected}});};root.append(form);}
+    for(const place of state.places){const form=document.createElement('form');form.className='settings-group';form.append(el('h2',place.name));const name=this.input(place.name);const cities=this.textarea(place.cities.join('\n'));form.append(this.label('Название места',name),this.label('Города и их варианты написания',cities));const wifi=this.textarea((place.wifi_networks??[]).map(w=>w.ssid+(w.bssid?' | '+w.bssid:'')).join('\n'));const zones=this.textarea((place.zones??[]).map(z=>`${z.latitude}, ${z.longitude}, ${z.radius_km}`).join('\n'));form.append(this.label('Заданные Wi-Fi-сети: SSID | BSSID (по одной в строке)',wifi,'Введи название сети самостоятельно. BSSID необязателен, но помогает различать одинаковые SSID. SSID сам по себе не подтверждает безопасность сети.'),this.label('Геозоны: широта, долгота, радиус в км',zones,'По одной зоне в строке. Минимум 10 км: геолокация округляется до 0,1°, неопределённая граница не выбирает профиль.'));const selected=clone((place as Place & {signals?:Signal[]}).signals??[]);const seen=state.signals.signals??[];for(const signal of [...selected,...seen.filter(s=>!selected.some(p=>p.key===s.key&&p.kind===s.kind))]){const check=this.input(selected.some(s=>s.key===signal.key),'checkbox');check.onchange=()=>{const index=selected.findIndex(s=>s.key===signal.key);if(check.checked&&index<0)selected.push(signal);if(!check.checked&&index>=0)selected.splice(index,1);};form.append(this.label(`${signal.kind==='wifi'?'Wi-Fi':'Устройство'}: ${signal.name}`,check));}const save=this.button('Сохранить место и привязки',()=>{},true);save.type='submit';form.append(save);form.onsubmit=e=>{e.preventDefault();this.automation({op:'place_save',place:{...place,name:name.value,cities:cities.value.split('\n').map(s=>s.trim()).filter(Boolean),signals:selected,wifi_networks:wifi.value.split('\n').filter(s=>s.trim()).map(line=>{const [ssid,bssid='']=line.split('|');return {ssid:ssid.trim(),bssid:bssid.trim()};}),zones:zones.value.split('\n').filter(s=>s.trim()).map(line=>{const [latitude,longitude,radius_km]=line.split(',').map(Number);return {latitude,longitude,radius_km};})}});};root.append(form);}
     root.append(this.button('Версии сценариев и другие места',()=>this.navigate('automations')));
   }
   private integrations(root:HTMLElement):void {

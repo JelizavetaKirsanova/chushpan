@@ -538,22 +538,17 @@ def test_voice_capture_diverts_next_utterance_and_never_runs_it(rig):
     asyncio.run(run())
 
 
-def test_permissions_never_infer_unobserved_grants(rig, monkeypatch):
+def test_permission_report_preserves_executor_states(rig):
     from backend.automation import permissions
 
-    probe = AsyncMock(
-        return_value={
-            "microphone": "denied",
-            "accessibility": "granted",
-            "automation": {"Safari": "unknown"},
-        }
-    )
-    monkeypatch.setattr(permissions, "diagnose", probe)
-    result = asyncio.run(permissions.report(rig.s))
-    states = {r["id"]: r["status"] for r in result["items"]}
-    assert states["microphone"] == "denied" and states["accessibility"] == "granted"
-    assert states["automation"] == "unknown" and states["bluetooth"] == "manual"
-    assert states["speech"] == "unsupported"
+    expected = {
+        "items": [{"id": "automation_safari", "status": "not_determined"}],
+        "scope": "same_executor_for_probe_and_applescript",
+    }
+    center = SimpleNamespace(report=AsyncMock(return_value=expected))
+    result = asyncio.run(permissions.report(rig.s, center))
+    assert result is expected
+    center.report.assert_awaited_once_with()
 
 
 def test_permission_or_agent_revocation_blocks_saved_scenario(rig):

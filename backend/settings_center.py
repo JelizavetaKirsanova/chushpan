@@ -29,6 +29,10 @@ class SettingsCenter:
         self.wake_test_until = None
         self.capture_timer = None
         self.permissions, self.model_status, self.last_preview = None, {}, None
+        from backend.permission_center import PermissionCenter
+
+        if getattr(conv.tools, "permission_center", None) is None:
+            conv.tools.permission_center = PermissionCenter(settings, store)
         self.input_devices = None
         self.pending_import = None
         self.original_client = conv.llm
@@ -263,6 +267,19 @@ class SettingsCenter:
             if op == "refresh":
                 self.publish()
                 return
+            if op in {"permissions", "permission_action"}:
+                self.permissions = await self.conv.tools.permission_center.report(
+                    action=value.get("action", "check") if op == "permission_action" else "check",
+                    identifier=value.get("id"),
+                )
+                self.publish(
+                    message=self.permissions.get("message")
+                    or (
+                        "Проверка разрешений завершена. Запись и управление устройствами не "
+                        "выполнялись."
+                    )
+                )
+                return
             self.require_idle()
             if op == "save":
                 await self.save(value["category"], value["value"])
@@ -349,10 +366,6 @@ class SettingsCenter:
                     )
                 )
                 return
-            elif op == "permissions":
-                from backend.automation.permissions import report
-
-                self.permissions = await report(self.s)
             elif op == "models_status":
                 await self.inspect_models()
             elif op == "voice_test":

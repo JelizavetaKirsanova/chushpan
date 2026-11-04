@@ -439,10 +439,21 @@ class Automations:
             elif op == "probe":
                 await self.probe(value["device"])
                 self.publish()
+            elif op == "permission_action":
+                from backend.permission_center import PermissionCenter
+
+                center = getattr(self.tools, "permission_center", None)
+                if center is None:
+                    center = self.tools.permission_center = PermissionCenter(self.s)
+                self.publish(
+                    permissions=await center.report(value.get("action", "check"), value.get("id"))
+                )
             elif op == "permissions":
                 from backend.automation.permissions import report
 
-                self.publish(permissions=await report(self.s))
+                self.publish(
+                    permissions=await report(self.s, getattr(self.tools, "permission_center", None))
+                )
             elif op == "refresh":
                 self.publish()
             else:

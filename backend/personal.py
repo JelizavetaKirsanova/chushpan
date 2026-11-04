@@ -70,15 +70,67 @@ class PersonalContext:
     async def read(
         self,
         *,
+        request_access=True,
+        parts=("calendar", "location"),
+        day=None,
+        city_only=False,
+        permission=None,
+    ):
+        result = await self._read(
+            request_access=request_access,
+            parts=parts,
+            day=day,
+            city_only=city_only,
+            permission=permission,
+        )
+        if not request_access or "permissions" in parts:
+            return result
+        blocked = [
+            key
+            for key in parts
+            if key in {"calendar", "location"}
+            and result.get(key, {}).get("error") == key + "_permission"
+        ]
+        if not blocked:
+            return result
+        status = await self.permissions()
+        for key in blocked:
+            if status.get(key) != "denied":
+                continue
+            from backend.desktop.platform import open_privacy
+
+            opened = await asyncio.to_thread(open_privacy, key)
+            if not opened["opened"]:
+                continue
+            # The protected read did not start; resume just this part after a
+            # confirmed manual grant. Never restart the morning scenario.
+            for _ in range(60):
+                fresh = await self.permissions()
+                if fresh.get(key) == "granted":
+                    result.update(
+                        await self._read(
+                            request_access=False, parts=(key,), day=day, city_only=city_only
+                        )
+                    )
+                    break
+                await asyncio.sleep(1)
+        return result
+
+    async def _read(
+        self,
+        *,
         request_access: bool = True,
         parts: tuple[str, ...] = ("calendar", "location"),
         day: str | None = None,
         city_only: bool = False,
+        permission: str | None = None,
     ) -> dict:
         from datetime import date
 
-        if not parts or set(parts) - {"calendar", "location", "signals"}:
+        if not parts or set(parts) - {"calendar", "location", "signals", "permissions"}:
             raise ValueError("Неизвестный источник личных данных.")
+        if permission not in {None, "calendar", "location"}:
+            raise ValueError("Неизвестное разрешение личных данных.")
         if day is not None:
             day = date.fromisoformat(day).isoformat()
         async with self._lock:
@@ -94,17 +146,15 @@ class PersonalContext:
                             "parts": parts,
                             "date": day,
                             "city_only": city_only,
+                            "permission": permission,
                         }
                     )
                 )
                 try:
-                    from backend.paths import DESKTOP
-
-                    command = (
-                        [str(app / "Contents/MacOS/chushpan-personal")]
-                        if DESKTOP
-                        else ["open", "-W", "-n", "-g", str(app), "--args"]
-                    )
+                    # LaunchServices establishes the helper's own stable application
+                    # identity for Core Location; executing its Mach-O directly can
+                    # attribute access to the parent instead. Calendar uses this same app.
+                    command = ["open", "-W", "-n", "-g", str(app), "--args"]
                     await process(
                         *command,
                         str(request),
@@ -116,3 +166,11 @@ class PersonalContext:
                 if not result.exists():
                     raise ToolError("Не удалось прочитать календарь и геопозицию Mac.")
                 return json.loads(result.read_text())
+
+    async def permissions(self, request: str | None = None) -> dict:
+        # No events, coordinates, SSIDs, or geocoder calls in this path.
+        return (
+            await self.read(
+                parts=("permissions",), request_access=request is not None, permission=request
+            )
+        ).get("permissions", {})

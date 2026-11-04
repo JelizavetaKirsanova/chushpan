@@ -333,6 +333,7 @@ class ToolRegistry:
         self.memory = None
         self.youtube_video = None
         self.automations = None
+        self.permission_center = None
         self.device_locks: dict[str, asyncio.Lock] = {}
         self.confirmations = Confirmations()
         self._tools: dict[str, Tool] = {}
@@ -524,7 +525,13 @@ class ToolRegistry:
         outcome = "ok"
         try:
             args = validate_arguments(arguments, tool.parameters, tool.required)
-            result = await tool.handler(**args)
+            from backend.permission_policy import requests_allowed
+
+            consent = requests_allowed.set(True)
+            try:
+                result = await tool.handler(**args)
+            finally:
+                requests_allowed.reset(consent)
             if isinstance(result, dict):
                 risk = (
                     tool.risk_resolver(args)

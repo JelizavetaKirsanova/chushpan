@@ -261,6 +261,18 @@ let data = FileHandle.standardInput.readDataToEndOfFile()
 guard let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
       let bundle = request["bundle"] as? String,
       let op = request["op"] as? String else { fail("invalid_request") }
+if ["permission_status", "permission_request"].contains(op) {
+    let key = request["permission"] as? String ?? "accessibility"
+    if op == "permission_request" {
+        if key == "accessibility" {
+            _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
+        } else if key == "screen_recording" { _ = CGRequestScreenCaptureAccess() }
+        else { fail("invalid_request") }
+    }
+    output(["accessibility": AXIsProcessTrusted() ? "granted" : "check_needed",
+            "screen_recording": CGPreflightScreenCaptureAccess() ? "granted" : "check_needed",
+            "identity": ["executable": CommandLine.arguments[0], "pid": getpid(), "ppid": getppid()]])
+}
 if op.hasPrefix("desktop_") { desktop(request, op) }
 let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundle)
 if op == "status" {

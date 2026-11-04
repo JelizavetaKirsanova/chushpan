@@ -89,12 +89,32 @@ class Variant(Model):
     conditions: list[Condition] = Field(default_factory=list)
 
 
+class WiFiBinding(Model):
+    ssid: str = Field(min_length=1, max_length=32)
+    bssid: str = Field(default="", pattern=r"^(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$|^$")
+
+    @model_validator(mode="after")
+    def valid(self):
+        if len(self.ssid.encode("utf-8")) > 32 or any(ord(c) < 32 for c in self.ssid):
+            raise ValueError("SSID должен содержать до 32 байт без управляющих символов.")
+        self.bssid = self.bssid.casefold()
+        return self
+
+
+class GeoZone(Model):
+    latitude: float = Field(ge=-90, le=90, allow_inf_nan=False)
+    longitude: float = Field(ge=-180, le=180, allow_inf_nan=False)
+    radius_km: float = Field(ge=10, le=500, allow_inf_nan=False)
+
+
 class Place(Model):
     id: str = Field(default_factory=lambda: uuid4().hex, pattern=r"^[a-z0-9_-]{1,40}$")
     revision: int = Field(default=0, ge=0)
     name: str = Field(min_length=1, max_length=120)
     cities: list[str] = Field(default_factory=list)
     signals: list[dict[str, str]] = Field(default_factory=list, max_length=20)
+    wifi_networks: list[WiFiBinding] = Field(default_factory=list, max_length=8)
+    zones: list[GeoZone] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
     def valid(self):
