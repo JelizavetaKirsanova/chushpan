@@ -11,6 +11,8 @@ from collections import OrderedDict
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+import httpx
+
 from backend.context import (
     RequestContext,
     device_selection,
@@ -19,9 +21,11 @@ from backend.context import (
     scenario_operation,
     voice_addressed,
 )
+from backend.devices.center import DeviceCenter
 from backend.devices.models import Device
 from backend.devices.store import DeviceStore
 from backend.intents import LEDAction, LEDParameters
+from backend.latency import measure
 from backend.led import LEDStrip
 from backend.security import ActionDenied
 from backend.tools.registry import ToolError
@@ -29,6 +33,9 @@ from backend.tools.registry import ToolError
 KINDS = {
     "led_strip": ("LED-лента", "ble"),
     "mac": ("MacBook", "local"),
+    "airplay": ("Apple AirPlay", "bonjour"),
+    "audio_output": ("Вывод звука macOS", "coreaudio"),
+    "wled": ("Wi-Fi / HTTP · WLED", "http"),
     "external_display": ("Внешний дисплей", "betterdisplay"),
 }
 TOOLS = {
@@ -52,7 +59,7 @@ def stamp():
     return datetime.now(UTC).isoformat()
 
 
-class Devices:
+class Devices(DeviceCenter):
     def __init__(self, tools, settings, memory):
         self.tools, self.s, self.memory = tools, settings, memory
         self.store = DeviceStore(memory)
@@ -63,6 +70,7 @@ class Devices:
         )
         self.bus = self.conv = None
         self.jobs = set()
+        self.operations = {}
         self.connections = {}
         self.inflight = set()
         self.completed = OrderedDict()
@@ -74,6 +82,7 @@ class Devices:
         self.primary = getattr(self.primary, "__self__", None)
         self.seed()
         self.ensure_led_tool()
+        self.init_center()
         if self.primary:
             primary = next(
                 (
@@ -369,6 +378,25 @@ class Devices:
                 "power_on": False,
                 "power_off": False,
             }
+        if device.kind == "airplay":
+            return {
+                "airplay_audio": enabled("device_command"),
+                "airplay_video": enabled("device_command") and "_airplay._tcp" in device.endpoint,
+                "playback": False,
+                "volume": False,
+                "physical_feedback": False,
+            }
+        if device.kind == "audio_output":
+            return {"audio_output": enabled("device_command")}
+        if device.kind == "wled":
+            confirmed = bool(device.last_contact) and enabled("device_command")
+            return {
+                "power_on": confirmed,
+                "power_off": confirmed,
+                "brightness": confirmed,
+                "color": confirmed,
+                "physical_feedback": True,
+            }
         return {
             "brightness": enabled("set_external_brightness"),
             "volume": False,
@@ -393,7 +421,8 @@ class Devices:
                     "connection": self.connections.get(d.id, "unknown"),
                     "usable": usable,
                     "reason": reason,
-                    "busy": d.id in self.inflight,
+                    "busy": d.id in self.inflight
+                    or bool(self.command_locks.get(d.id) and self.command_locks[d.id].locked()),
                 }
             )
         records.sort(
@@ -410,6 +439,7 @@ class Devices:
             "places": [{"id": "general", "name": "Общие устройства"}]
             + [{"id": p.id, "name": p.name} for p in self.locations.list()],
             "kinds": [{"id": k, "name": v[0], "protocol": v[1]} for k, v in KINDS.items()],
+            **self.center_snapshot(),
             **extra,
         }
 
@@ -427,6 +457,9 @@ class Devices:
     def request(self, value):
         task = asyncio.create_task(self.handle(value))
         self.jobs.add(task)
+        if isinstance(value, dict) and isinstance(value.get("request_id"), str):
+            self.operations[value["request_id"]] = task
+            task.add_done_callback(lambda done: self.operations.pop(value["request_id"], None))
         task.add_done_callback(self.jobs.discard)
 
     def valid_place(self, identifier):
@@ -443,6 +476,13 @@ class Devices:
             raise ActionDenied("Для локального оборудования нужен разрешённый Mac Agent.")
 
     async def discover(self, kind):
+        if kind == "auto":
+            # Each protocol is bounded; unavailable adapters do not fabricate results.
+            results = await asyncio.gather(
+                *(self.discover(k) for k in ("led_strip", "airplay", "audio_output")),
+                return_exceptions=True,
+            )
+            return [item for result in results if isinstance(result, list) for item in result]
         if kind not in KINDS:
             raise ValueError("Для этого типа нет подключённого протокола управления.")
         if kind == "led_strip":
@@ -453,6 +493,20 @@ class Devices:
                 {"name": v.get("name") or "ELK-BLEDOB", "endpoint": str(UUID(v["address"]))}
                 for v in items
             ]
+        elif kind == "airplay":
+            result = await self.native.run("browse")
+            items = [
+                v for v in result["services"] if v["service"] in {"_airplay._tcp", "_raop._tcp"}
+            ]
+            if result.get("warning"):
+                self.publish(message=result["warning"])
+        elif kind == "audio_output":
+            self.outputs = (await self.native.run("outputs"))["outputs"]
+            items = [{"name": v["name"], "endpoint": v["uid"]} for v in self.outputs]
+        elif kind == "wled":
+            raise ValueError(
+                "Введи локальный IP WLED. Bonjour-объявление не подтверждает HTTP API."
+            )
         elif kind == "mac":
             items = [{"name": "Этот MacBook", "endpoint": "local-mac"}]
         else:
@@ -469,7 +523,15 @@ class Devices:
         for item in items[:30]:
             token = uuid4().hex
             self.scans[token] = {**item, "kind": kind, "expires": time.monotonic() + 300}
-            candidates.append({"token": token, "name": item["name"]})
+            candidates.append(
+                {
+                    "token": token,
+                    "name": item["name"],
+                    "kind": kind,
+                    "protocol": KINDS[kind][1],
+                    "status": "discovered",
+                }
+            )
         return candidates
 
     def candidate(self, value):
@@ -496,6 +558,12 @@ class Devices:
     def operation(self, device, action, parameters):
         if not isinstance(parameters, dict):
             raise ValueError("Параметры должны быть объектом.")
+        if device.kind in {"wled", "airplay", "audio_output"}:
+            return (
+                "device_command",
+                {"target": device.id, "action": action, **parameters},
+                "Управляй выбранным устройством",
+            )
         if device.kind == "led_strip" and action == "led":
             params = LEDParameters.model_validate(parameters)
             name, args = LEDAction(parameters=params).call()
@@ -553,6 +621,37 @@ class Devices:
             device_selection.reset(token)
 
     async def refresh(self, device):
+        if device.kind == "wled":
+            result = await self.network.inspect(device)
+            self.accept_network_state(device, result)
+            return {**result, "result_status": "success"}
+        if device.kind in {"airplay", "audio_output"}:
+            self.check_location(device)
+            if device.kind == "audio_output":
+                self.outputs = (await self.native.run("outputs"))["outputs"]
+                found = next((o for o in self.outputs if o["uid"] == device.endpoint), None)
+                if not found:
+                    raise ToolError("Выход больше не доступен macOS.")
+                device.state = {"active_output": found["active"]}
+            else:
+                found = next(
+                    (
+                        v
+                        for v in (await self.native.run("browse"))["services"]
+                        if v["endpoint"] == device.endpoint
+                    ),
+                    None,
+                )
+                if not found:
+                    raise ToolError("Bonjour сейчас не видит этот приёмник.")
+                device.state = {}  # Discovery is not a streaming/playback observation.
+            device.last_contact = device.state_at = stamp()
+            self.store.observe(device)
+            self.connections[device.id] = "observed"
+            return {
+                "result_status": "success",
+                "message": "Доступность подтверждена; воспроизведение не проверялось.",
+            }
         if device.kind == "led_strip":
             self.check_location(device)
             lock = self.tools.device_locks.setdefault("led", asyncio.Lock())
@@ -624,6 +723,8 @@ class Devices:
                     "Устройства доступны только авторизованному локальному приложению."
                 )
             op = value.get("op")
+            if await self.center_handle(value):
+                return
             if op == "refresh":
                 self.publish(request_id=request_id)
                 return
@@ -635,8 +736,9 @@ class Devices:
                 return
             if op == "discover":
                 self.require_adapter()
-                async with asyncio.timeout(25):
-                    candidates = await self.discover(value.get("kind"))
+                with measure("device_discovery"):
+                    async with asyncio.timeout(25):
+                        candidates = await self.discover(value.get("kind"))
                 self.publish(candidates=candidates, request_id=request_id)
                 return
             if op == "check":
@@ -670,6 +772,24 @@ class Devices:
                         "Дисплей найден через BetterDisplay. Доступна яркость; "
                         "питание, громкость и входы не подключены."
                     )
+                elif candidate.kind == "wled":
+                    await self.network.inspect(candidate)
+                    message = (
+                        "WLED JSON API ответил. Доступны питание, RGB и яркость главного сегмента."
+                    )
+                elif candidate.kind == "airplay":
+                    services = (await self.native.run("browse"))["services"]
+                    if not any(v["endpoint"] == candidate.endpoint for v in services):
+                        raise ToolError("AirPlay-приёмник больше не обнаруживается.")
+                    message = (
+                        "Bonjour видит приёмник. Выбор аудио и зеркалирование "
+                        "выполняются отдельно через macOS; пульт приёмника не подключён."
+                    )
+                elif candidate.kind == "audio_output":
+                    self.outputs = (await self.native.run("outputs"))["outputs"]
+                    if not any(v["uid"] == candidate.endpoint for v in self.outputs):
+                        raise ToolError("Аудиовыход больше не доступен macOS.")
+                    message = "Выход найден в CoreAudio. Выбор будет подтверждён системой отдельно."
                 else:
                     message = (
                         "Локальные функции Mac зарегистрированы. Батарея, звук и яркость "
@@ -688,6 +808,7 @@ class Devices:
                 self.valid_place(device.place_id)
                 saved = self.store.save(device)
                 self.ensure_led_tool()
+                self.update_catalogue()
                 self.publish(
                     saved=saved.id,
                     message="Устройство добавлено. Подключение проверяется отдельной кнопкой.",
@@ -695,8 +816,14 @@ class Devices:
                 )
                 return
             device = self.store.get(identifier)
+            if op in {"update", "delete", "favorites"} and (
+                self.command_locks.get(identifier) and self.command_locks[identifier].locked()
+            ):
+                raise ValueError("Устройство выполняет команду. Дождись завершения.")
             if op in {"update", "delete"}:
-                resource = {"led_strip": "led", "external_display": "tv", "mac": "mac"}[device.kind]
+                resource = {"led_strip": "led", "external_display": "tv", "mac": "mac"}.get(
+                    device.kind, device.id
+                )
                 if (
                     self.tools.device_locks.get(resource)
                     and self.tools.device_locks[resource].locked()
@@ -726,7 +853,14 @@ class Devices:
                     self.strips.pop(identifier, None)
                 else:
                     if op == "update":
-                        for key in ("name", "place_id", "room"):
+                        for key in (
+                            "name",
+                            "place_id",
+                            "room",
+                            "aliases",
+                            "favorite",
+                            "auto_connect",
+                        ):
                             if key in value:
                                 setattr(device, key, value[key])
                         self.valid_place(device.place_id)
@@ -743,6 +877,7 @@ class Devices:
                             raise ValueError("Сохрани не больше 16 RGB-цветов.")
                         device.favorites = list(dict.fromkeys(c.upper() for c in colors))
                     self.store.save(Device.model_validate(device.model_dump()))
+                self.update_catalogue()
                 self.publish(
                     message="Устройство удалено из списка."
                     if op == "delete"
@@ -753,8 +888,9 @@ class Devices:
             self.check_location(device)
             if op == "inspect":
                 self.require_adapter()
-                async with asyncio.timeout(45):
-                    result = await self.refresh(device)
+                with measure("device_connect"):
+                    async with asyncio.timeout(45):
+                        result = await self.refresh(device)
             elif op == "act":
                 if not isinstance(request_id, str) or not re.fullmatch(
                     r"[a-zA-Z0-9-]{8,80}", request_id
@@ -780,7 +916,19 @@ class Devices:
                     },
                 )
                 self.publish(request_id=request_id, running=True)
-                result = await self.call(device, name, args, text)
+                started = time.monotonic()
+                with measure("device_command"):
+                    result = await self.call(device, name, args, text)
+                if name != "device_command":
+                    elapsed = round((time.monotonic() - started) * 1000)
+                    self.store.log(
+                        device.id, value.get("action"), value.get("parameters", {}), result, elapsed
+                    )
+                    self.metrics = {
+                        "device_id": device.id,
+                        "action": value.get("action"),
+                        "total_ms": elapsed,
+                    }
                 if result.get("status") == "confirmation_required":
                     pending = self.tools.confirmations.pending.get(
                         (self.conv.device.device_id, self.conv.device.session_id)
@@ -856,6 +1004,7 @@ class Devices:
                 await self.strip(device).confirm_probe(
                     self.probes.pop(identifier), value["observed"]
                 )
+                self.update_catalogue()
                 result = {
                     "message": "Наблюдение сохранено. "
                     "Допуск функции относится только к этому профилю LED.",
@@ -879,6 +1028,7 @@ class Devices:
             OSError,
             TimeoutError,
             sqlite3.Error,
+            httpx.HTTPError,
         ) as exc:
             if isinstance(identifier, str):
                 self.connections[identifier] = (
@@ -903,3 +1053,5 @@ class Devices:
             task.cancel()
         if self.jobs:
             await asyncio.gather(*self.jobs, return_exceptions=True)
+        self.jobs.clear()
+        self.operations.clear()

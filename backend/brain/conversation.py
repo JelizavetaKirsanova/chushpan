@@ -692,6 +692,24 @@ class Conversation:
                     r"(?:другую|новую) тему|сменим тему|поговорим о другом", command_text(user_text)
                 ):
                     self.store.clear_preference("dialogue_pending", str(self.id))
+                devices = getattr(self.tools, "devices", None)
+                device_plan = (
+                    devices.voice_plan(user_text)
+                    if devices and self.s.locale.lang == "ru"
+                    else None
+                )
+                if device_plan is not None:
+                    started = time.perf_counter()
+                    answer = await devices.voice_execute(device_plan)
+                    elapsed = time.perf_counter() - started
+                    self.last_stats = TurnStats(
+                        tools=["device_command"], tools_s=elapsed, total_s=elapsed
+                    )
+                    if profile:
+                        profile.update(route="device_registry", request_class="local_control")
+                    self.add_exchange(user_text, answer)
+                    yield answer
+                    return
                 route_interval = profile.begin("local_routing") if profile else None
                 routed = (
                     local_route(

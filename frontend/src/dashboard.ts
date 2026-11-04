@@ -5,6 +5,9 @@ import { phaseLabels } from './workspace_state';
 
 const node = (id: string) => document.getElementById(id)!;
 const paths: Record<string, string> = {
+  led: 'M5 5h13a3 3 0 0 1 0 6H6a3 3 0 0 0 0 6h13M6 5h1m4 0h1m4 0h1M6 17h1m4 0h1m4 0h1',
+  airplay: 'M4 16H3V3h18v13h-1M12 13l7 8H5ZM7 13a6 6 0 1 1 10 0M9 10a3 3 0 1 1 6 0',
+  room: 'M3 20v-8h18v8M3 16h18M5 12V6h14v6M8 9h3m2 0h3',
   film: 'M3 4h18v16H3ZM7 4v16m10-16v16M3 8h4m-4 8h4m10-8h4m-4 8h4M10 9l5 3-5 3Z',
   play: 'M8 4v16l12-8ZM3 4v16',
   bookmark: 'M6 3h12v19l-6-4-6 4Z',

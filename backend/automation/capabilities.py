@@ -25,6 +25,7 @@ class Capability:
     required: list[str]
     permissions: list[str] = field(default_factory=list)
     description: str = ""
+    fixed: dict = field(default_factory=dict)
 
     def arguments(self, parameters):
         if set(parameters) - self.parameters.keys():
@@ -32,7 +33,7 @@ class Capability:
         args = validate_arguments(parameters, self.parameters, self.required)
         if self.id == "led.set":
             return LEDAction(parameters=LEDParameters(**args)).call()[1]
-        return args
+        return {**args, **self.fixed}
 
 
 class CapabilityRegistry:
@@ -103,6 +104,73 @@ class CapabilityRegistry:
                 ["bluetooth"],
                 "Проверенные функции ELK-BLEDOB; физическая обратная связь отсутствует.",
             )
+
+        devices = getattr(tools, "devices", None)
+        if devices and "device_command" in tools:
+            from backend.devices.center import COMMAND_FIELDS
+
+            for target in [*devices.store.list(), *devices.store.collections("group")]:
+                members = (
+                    [devices.store.get(i) for i in target.device_ids]
+                    if hasattr(target, "device_ids")
+                    else [target]
+                )
+                features = [devices.features(d) for d in members]
+                actions = {"inspect": ("Проверить доступность", {})}
+                if any(f.get("power_on") for f in features):
+                    actions["on"] = ("Включить", {"power": True})
+                if any(f.get("power_off") for f in features):
+                    actions["off"] = ("Выключить", {"power": False})
+                if any(f.get("color") for f in features):
+                    actions["color"] = ("Установить RGB", {})
+                lights = bool(members) and all(d.kind in {"led_strip", "wled"} for d in members)
+                if any(f.get("brightness") for f in features):
+                    actions["brightness"] = ("Изменить яркость", {})
+                if any(f.get("volume") for f in features):
+                    actions["volume"] = ("Изменить громкость", {})
+                if any(f.get("playback") for f in features):
+                    actions["playback"] = ("Пауза / продолжение плеера Mac", {})
+                for key in ("audio_output", "airplay_audio", "airplay_video"):
+                    if any(f.get(key) for f in features):
+                        actions[key] = (
+                            {
+                                "audio_output": "Выбрать аудиовыход",
+                                "airplay_audio": "Открыть AirPlay-аудио в macOS",
+                                "airplay_video": "Открыть зеркалирование в macOS",
+                            }[key],
+                            {},
+                        )
+                for action, (title, fixed) in actions.items():
+                    field_name = (
+                        "level"
+                        if action == "volume" or action == "brightness" and not lights
+                        else "playback"
+                        if action == "playback"
+                        else action
+                    )
+                    parameters = (
+                        {field_name: COMMAND_FIELDS[field_name]}
+                        if action in {"color", "brightness", "volume", "playback"}
+                        else {}
+                    )
+                    identifier = f"device.{target.id}.{action}"
+                    self.items[identifier] = Capability(
+                        identifier,
+                        f"{target.name} · {title}",
+                        f"device:{target.id}",
+                        "device_command",
+                        parameters,
+                        list(parameters),
+                        [],
+                        "Из единого реестра устройств; местоположение проверяется перед действием.",
+                        {
+                            "target": target.id,
+                            "action": "led"
+                            if action in {"on", "off", "color"} or action == "brightness" and lights
+                            else action,
+                            **fixed,
+                        },
+                    )
 
     def get(self, identifier):
         if identifier not in self.items or self.items[identifier].tool not in self.tools:

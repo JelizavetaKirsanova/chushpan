@@ -32,6 +32,7 @@ def main():
     native.mkdir(parents=True, exist_ok=True)
     for name, source in [
         ("permissions", "backend/permissions.swift"),
+        ("devices", "backend/devices/native.swift"),
         ("ytmusic_ax", "backend/media/ytmusic_ax.swift"),
         ("youtube_safari", "backend/media/youtube_safari.swift"),
         ("music_safari", "backend/media/music_safari.swift"),
@@ -46,7 +47,7 @@ def main():
             "-o",
             str(native / name),
         ]
-        if name == "music_safari":
+        if name in {"music_safari", "devices"}:
             args += [
                 "-Xlinker",
                 "-sectcreate",
@@ -55,7 +56,14 @@ def main():
                 "-Xlinker",
                 "__info_plist",
                 "-Xlinker",
-                str(ROOT / "backend/media/music_safari.plist"),
+                str(
+                    ROOT
+                    / (
+                        "backend/devices/native.plist"
+                        if name == "devices"
+                        else "backend/media/music_safari.plist"
+                    )
+                ),
             ]
         elif name in {"ytmusic_ax", "youtube_safari"}:
             from backend.native_identity import helper_info

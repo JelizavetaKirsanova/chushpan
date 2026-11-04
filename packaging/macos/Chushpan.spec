@@ -17,7 +17,7 @@ datas = [
 datas += collect_data_files("backend", include_py_files=True)
 binaries = [
     (str(native / name), "native")
-    for name in ("permissions", "music_safari", "ytmusic_ax", "youtube_safari")
+    for name in ("permissions", "devices", "music_safari", "ytmusic_ax", "youtube_safari")
 ]
 hiddenimports = collect_submodules("backend") + [
     "webview.platforms.cocoa",

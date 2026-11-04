@@ -20,7 +20,7 @@ function fixture() {
   view.connection(true);view.receive(state);
   const button=(label:string,scope:ParentNode=window.document)=>{const b=[...scope.querySelectorAll('button')].find(n=>n.textContent===label);assert.ok(b,label);b.click();return b;};
   const open=(name:string)=>{const b=window.document.querySelector<HTMLButtonElement>(`button[aria-label="Открыть ${name}"]`);assert.ok(b);b.click();};
-  return {window,requests,view,state,button,open,close:async()=>{view.connection(false);await window.happyDOM.close();}};
+  return {window,requests,view,state,button,open,close:async()=>{window.document.querySelectorAll('dialog[open]').forEach(d=>(d as unknown as HTMLDialogElement).close());view.connection(false);await window.happyDOM.close();}};
 }
 
 test('devices render independently with filters and no raw identifiers on cards',async()=>{
@@ -105,4 +105,61 @@ test('writer cancels queued changes on errors and disconnect, without automatic 
   writer.offer('led','led',{brightness:20},true);writer.offer('led','led',{brightness:30},true);assert.equal(requests.length,1);
   writer.complete(requests[0].request_id as string,false);assert.equal(requests.length,1);
   writer.offer('led','led',{brightness:40});writer.disconnect();await new Promise(resolve=>setTimeout(resolve,15));assert.equal(requests.length,1);
+});
+
+test('favorites and room groups derive solely from registered records',async()=>{
+  const f=fixture();try {
+    f.view.receive({...f.state,items:[{...f.state.items[0],favorite:true},f.state.items[1]]});
+    assert.equal(f.window.document.querySelectorAll('.device-favorite-tile').length,1);
+    assert.equal(f.window.document.querySelectorAll('.device-tile').length,2);
+    assert.match(f.window.document.querySelector('.device-group summary')!.textContent!,/Спальня.*Общага/);
+    const star=f.window.document.querySelector<HTMLButtonElement>('[aria-label="Убрать из избранного: Свет у стола"]')!;star.click();
+    assert.equal(f.requests.at(-1)!.op,'update');assert.equal(f.requests.at(-1)!.favorite,false);
+  }finally{await f.close();}
+});
+
+test('AirPlay detail replaces LED controls and never implies confirmed playback',async()=>{
+  const f=fixture();try{
+    const receiver={...f.state.items[0],id:'airplay-test',kind:'airplay' as const,name:'Приёмник',protocol:'bonjour',features:{airplay_audio:true,airplay_video:true,playback:false,volume:false},favorite:false};
+    f.view.receive({...f.state,items:[f.state.items[0],receiver]});f.open('Свет у стола');f.open('Приёмник');
+    const panel=f.window.document.querySelector('.device-panel')!;assert.equal(panel.querySelector('input[type=color]'),null);assert.equal(panel.querySelector('input[type=range]'),null);
+    f.button('Выбрать AirPlay-аудио в macOS',panel);assert.equal(f.requests.at(-1)!.action,'airplay_audio');
+    assert.match(panel.textContent!,/подключение не подтверждено/);assert.doesNotMatch(panel.textContent!,/Трансляция запущена/);
+  }finally{await f.close();}
+});
+
+test('audio menu waits for system state before marking a selection',async()=>{
+  const f=fixture();try{
+    f.view.receive({...f.state,outputs:[{uid:'mac',name:'Динамики Mac',active:true,transport:'builtin'},{uid:'headphones',name:'Наушники',active:false,transport:'bluetooth'}]});
+    f.window.document.getElementById('devices-audio-output')!.click();assert.equal(f.requests.at(-1)!.op,'audio_refresh');
+    const choices=f.window.document.querySelectorAll<HTMLButtonElement>('.device-audio-choice');choices[1].click();assert.equal(f.requests.at(-1)!.uid,'headphones');
+    assert.equal(choices[0].getAttribute('aria-pressed'),'true');assert.equal(choices[1].getAttribute('aria-pressed'),'false');
+    f.view.receive({...f.state,outputs:[{uid:'mac',name:'Динамики Mac',active:false,transport:'builtin'},{uid:'headphones',name:'Наушники',active:true,transport:'bluetooth'}]});
+    assert.equal(f.window.document.querySelectorAll('.device-audio-choice')[1].getAttribute('aria-pressed'),'true');
+  }finally{await f.close();}
+});
+
+test('groups issue one registry operation and unknown power stays unknown',async()=>{
+  const f=fixture();try{
+    f.view.receive({...f.state,groups:[{id:'lights',revision:1,name:'Весь свет',place_id:'dorm',device_ids:['led-test']}]});
+    assert.equal(f.window.document.querySelector('.device-tile [role=switch]'),null);
+    f.button('Группы');f.button('Выключить');assert.equal(f.requests.at(-1)!.op,'act_group');assert.equal(f.requests.at(-1)!.id,'lights');assert.deepEqual(f.requests.at(-1)!.parameters,{power:false});
+  }finally{await f.close();}
+});
+
+test('device history is requested on demand and displays factual outcomes',async()=>{
+  const f=fixture();try{
+    f.open('Свет у стола');f.button('История',f.window.document.querySelector('.device-panel')!);assert.equal(f.requests.at(-1)!.op,'history');
+    f.view.receive({...f.state,history:{id:'led-test',items:[{at:'2026-11-04 12:00:00',action:'led',result_status:'unverified',elapsed_ms:250}]}});
+    assert.match(f.window.document.querySelector('.device-history')!.textContent!,/Физический результат не подтверждён/);
+  }finally{await f.close();}
+});
+
+test('opening location settings and search performs no discovery',async()=>{
+  const f=fixture();try{
+    f.window.document.querySelector<HTMLButtonElement>('.device-location-settings')!.click();assert.match(f.window.document.querySelector('dialog[open]')!.textContent!,/Ручной выбор имеет приоритет/);
+    f.button('×',f.window.document.querySelector('dialog[open]')!);
+    f.window.document.querySelector<HTMLButtonElement>('[aria-label="Открыть поиск устройств"]')!.click();assert.match(f.window.document.querySelector('.device-search-results')!.textContent!,/Свет у стола/);
+    assert.equal(f.requests.some(r=>r.op==='discover'||r.op==='inspect'||r.op==='system_audio'),false);
+  }finally{await f.close();}
 });
