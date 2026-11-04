@@ -357,7 +357,8 @@ class Analytics(Center):
         insights = []
         if result["count"] and before["count"]:
             insights.append(
-                f"Обращения: {result['count']} за выбранный период, {before['count']} за предыдущий."
+                f"Обращения: {result['count']} за выбранный период, "
+                f"{before['count']} за предыдущий."
             )
         if result["mean_s"] is not None and before["mean_s"] is not None:
             insights.append(

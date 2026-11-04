@@ -505,6 +505,8 @@ class MemoryStore:
             "episode",
             "correction",
             "personality",
+            "goal",
+            "instruction",
         }:
             raise ValueError("Неизвестная категория памяти.")
         content = " ".join(content.split())

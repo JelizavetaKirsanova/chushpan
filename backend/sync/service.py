@@ -62,10 +62,11 @@ def lan_address(value):
 class DeviceSync(Center):
     channel = "device_sync"
 
-    def __init__(self, settings, memory, registry, bus, *, identity=None):
+    def __init__(self, settings, memory, registry, bus, *, identity=None, model_factory=None):
         self.s, self.memory, self.tools = settings, memory, registry
         self.store = SyncStore(memory)
         self.identity = identity or KeychainIdentity()
+        self.model_factory = model_factory
         self.server, self.server_task, self.bonjour, self.listener = None, None, None, None
         self.url, self.fingerprint, self.ca = "", "", None
         self.invite, self.pending = None, {}
@@ -132,7 +133,8 @@ class DeviceSync(Center):
                     "Referrer-Policy": "no-referrer",
                     "X-Content-Type-Options": "nosniff",
                     "X-Frame-Options": "DENY",
-                    "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; "
+                    "Content-Security-Policy": "default-src 'none'; script-src 'self'; "
+                    "style-src 'self'; "
                     "connect-src 'self'; img-src 'self' data:; base-uri 'none'; "
                     "form-action 'self'; frame-ancestors 'none'",
                 }
@@ -387,7 +389,7 @@ class DeviceSync(Center):
                     tools = ToolRegistry()  # Chat cannot turn model output into Mac actions.
                     if "memory" in peer["categories"]:
                         tools.memory = ProfileMemory(self.memory)
-                    model = create_llm(self.s)
+                    model = (self.model_factory or create_llm)(self.s)
                     try:
                         conversation = Conversation(
                             self.s, model, self.memory, tools=tools, device=device
@@ -452,7 +454,8 @@ class DeviceSync(Center):
                     if target and target is not asyncio.current_task():
                         target.cancel()
                     result = {
-                        "message": "Запрошена остановка своей команды. Уже отправленные действия не "
+                        "message": "Запрошена остановка своей команды. "
+                        "Уже отправленные действия не "
                         "отменяются."
                     }
                 status = (
@@ -590,7 +593,7 @@ class DeviceSync(Center):
             else "awaiting_mac_confirmation"
         }
 
-    async def start(self, host, port):
+    async def start(self, host, port, *, advertise=True):
         if self.server_task and not self.server_task.done():
             raise ValueError("Сначала останови текущий сервер.")
         host = lan_address(host)
@@ -637,17 +640,18 @@ class DeviceSync(Center):
                 await asyncio.sleep(0.02)
             if not self.server.started:
                 raise ValueError("TLS-сервер не подтвердил запуск.")
-            self.bonjour = await asyncio.create_subprocess_exec(
-                "/usr/bin/dns-sd",
-                "-R",
-                "Chushpan",
-                "_chushpan._tcp",
-                "local.",
-                str(port),
-                "tls=1",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
+            if advertise:
+                self.bonjour = await asyncio.create_subprocess_exec(
+                    "/usr/bin/dns-sd",
+                    "-R",
+                    "Chushpan",
+                    "_chushpan._tcp",
+                    "local.",
+                    str(port),
+                    "tls=1",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
         except BaseException:
             await self.stop()
             raise

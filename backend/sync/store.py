@@ -9,13 +9,17 @@ from backend.center import rows, text
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sync_peers (id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
-public_key TEXT NOT NULL, approved_at REAL NOT NULL, revoked_at REAL, disconnected INTEGER NOT NULL DEFAULT 0,
-last_seen REAL, last_sync REAL, categories TEXT NOT NULL DEFAULT '[]', capabilities TEXT NOT NULL DEFAULT '[]');
-CREATE TABLE IF NOT EXISTS sync_nonces (peer_id TEXT NOT NULL, nonce TEXT NOT NULL, at REAL NOT NULL, PRIMARY KEY(peer_id,nonce));
-CREATE TABLE IF NOT EXISTS sync_commands (peer_id TEXT NOT NULL, command_id TEXT NOT NULL, operation TEXT NOT NULL,
-created_at REAL NOT NULL, expires_at REAL NOT NULL, status TEXT NOT NULL, result TEXT, PRIMARY KEY(peer_id,command_id));
-CREATE TABLE IF NOT EXISTS sync_conflicts (id INTEGER PRIMARY KEY, peer_id TEXT NOT NULL, memory_id INTEGER NOT NULL,
-revision INTEGER NOT NULL, content TEXT NOT NULL, at REAL NOT NULL, status TEXT NOT NULL DEFAULT 'pending');
+public_key TEXT NOT NULL, approved_at REAL NOT NULL, revoked_at REAL,
+disconnected INTEGER NOT NULL DEFAULT 0, last_seen REAL, last_sync REAL,
+categories TEXT NOT NULL DEFAULT '[]', capabilities TEXT NOT NULL DEFAULT '[]');
+CREATE TABLE IF NOT EXISTS sync_nonces (peer_id TEXT NOT NULL, nonce TEXT NOT NULL,
+at REAL NOT NULL, PRIMARY KEY(peer_id,nonce));
+CREATE TABLE IF NOT EXISTS sync_commands (peer_id TEXT NOT NULL, command_id TEXT NOT NULL,
+operation TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL,
+status TEXT NOT NULL, result TEXT, PRIMARY KEY(peer_id,command_id));
+CREATE TABLE IF NOT EXISTS sync_conflicts (id INTEGER PRIMARY KEY, peer_id TEXT NOT NULL,
+memory_id INTEGER NOT NULL, revision INTEGER NOT NULL, content TEXT NOT NULL,
+at REAL NOT NULL, status TEXT NOT NULL DEFAULT 'pending');
 """
 CATEGORIES = {
     "memory": "Подтверждённая общая память",

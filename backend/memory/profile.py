@@ -31,6 +31,8 @@ CATEGORY_LABELS = {
     "episode": "Событие",
     "correction": "Исправление",
     "personality": "Характер",
+    "goal": "Цель",
+    "instruction": "Инструкция",
 }
 _SENSITIVE = re.compile(
     r"диагноз|болезн|здоровь|беремен|религи|политическ|паспорт|"
@@ -77,6 +79,13 @@ def extract(text: str) -> list[tuple[str, str, str]]:
         return []
     if not safe_memory(t):
         return []
+    if re.fullmatch(
+        r"я (?:обычно |вечером )?(?:предпочитаю|включаю|люблю) .{0,50}(?:свет|освещени[ея]).{0,40}",
+        t,
+    ):
+        return [("preference", "lighting:evening" if "вечер" in t else "lighting", t)]
+    if re.fullmatch(r"моя (?:долгосрочная )?цель .{3,180}", t):
+        return [("goal", "goal:" + t[:80], t)]
     if re.fullmatch(r"я (?:теперь |больше )?(?:не )?учусь (?:в|на) .+", t):
         return [("profile", "education", t)]
     if re.fullmatch(r"я (?:больше )?не хочу .*мобильн.*", t):

@@ -43,7 +43,16 @@ class Studio(Strict):
 class MemoryPolicy(Strict):
     automatic: Literal["auto", "ask", "off"] = "auto"
     excluded: list[
-        Literal["profile", "preference", "habit", "project", "episode", "correction"]
+        Literal[
+            "profile",
+            "preference",
+            "habit",
+            "project",
+            "episode",
+            "correction",
+            "goal",
+            "instruction",
+        ]
     ] = Field(default_factory=list)
     temporary_days: int = Field(default=30, ge=1, le=3650)
 

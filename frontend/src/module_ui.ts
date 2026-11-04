@@ -41,6 +41,7 @@ export abstract class ModulePage<T> {
     for(const [key,label]of tabs){const button=el('button',label);button.type='button';button.dataset.tab=key;button.setAttribute('role','tab');button.setAttribute('aria-controls',this.content.id);button.id=`${view}-tab-${key}`;button.onclick=()=>{this.tab=key;this.render();};this.tabs.append(button);}
     this.tabs.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const buttons=[...this.tabs.querySelectorAll('button')];const current=buttons.indexOf(document.activeElement as HTMLButtonElement);const next=event.key==='Home'?0:event.key==='End'?buttons.length-1:(current+(event.key==='ArrowRight'?1:-1)+buttons.length)%buttons.length;buttons[next]?.focus();buttons[next]?.click();});
     root.append(heading,this.toolbar,this.tabs,this.feedback,this.content);
+    this.begin();
     document.addEventListener('workspace:navigate',event=>{if((event as CustomEvent<string>).detail===view&&this.online)this.refresh();});
   }
   connection(online:boolean):void {this.online=online;clearTimeout(this.timer);this.busy=false;this.feedback.textContent=online?'Загружаю локальные данные…':'Нет соединения. Последние данные могут быть устаревшими.';if(online)this.refresh();this.controls();}

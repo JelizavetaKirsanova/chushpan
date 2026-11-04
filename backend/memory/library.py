@@ -317,6 +317,8 @@ class MemoryLibrary(Center):
                 or data.get("schema") != 1
                 or not isinstance(data.get("items"), list)
                 or len(data["items"]) > 1000
+                or not isinstance(data.get("projects", []), list)
+                or len(data.get("projects", [])) > 100
             ):
                 raise ValueError("Нужен экспорт памяти версии 1, до 1000 записей.")
             with store.memory_transaction():
@@ -326,7 +328,7 @@ class MemoryLibrary(Center):
                     store.db.execute(
                         "INSERT OR IGNORE INTO "
                         "memory_projects(name,description,created_at,updated_at) "
-                        "VALUES(?,?,?,?,?)",
+                        "VALUES(?,?,?,?)",
                         (name, text(p.get("description") or name, 1000), _now(), _now()),
                     )
                     projects[p["id"]] = store.db.execute(
@@ -341,12 +343,29 @@ class MemoryLibrary(Center):
                     project = projects.get(row.get("project_id"))
                     if row.get("project_id") is not None and project is None:
                         raise ValueError("В файле отсутствует проект записи.")
-                    store.save_memory(
+                    item, _ = store.save_memory(
                         content,
                         category=row.get("category", "profile"),
                         key="import:" + str(project) + ":" + store.memory_digest(content),
                         source="user_import",
                         project_id=project,
+                        confidence=float(row.get("confidence", 1)),
+                    )
+                    confirmed = row.get("confirmed", 1)
+                    status = row.get("status", "active")
+                    if confirmed not in (0, 1) or status not in {"active", "stale"}:
+                        raise ValueError("Некорректный статус импортируемой записи.")
+                    self.metadata(
+                        item,
+                        {
+                            "project": project,
+                            "category": row.get("category", "profile"),
+                            "expires_at": row.get("expires_at"),
+                        },
+                    )
+                    store.db.execute(
+                        "UPDATE facts SET confirmed=?,status=? WHERE id=?",
+                        (confirmed, status, item),
                     )
             message = "Импорт завершён."
         elif op == "clear":
@@ -379,9 +398,10 @@ class MemoryLibrary(Center):
         expires = value.get("expires_at") or None
         if expires:
             try:
-                expires = (
-                    datetime.fromisoformat(expires).astimezone(UTC).isoformat(timespec="seconds")
-                )
+                parsed = datetime.fromisoformat(expires)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=ZoneInfo(self.settings.location.tz_name))
+                expires = parsed.astimezone(UTC).isoformat(timespec="seconds")
             except (ValueError, TypeError):
                 raise ValueError("Неверный срок актуальности.") from None
         self.store.db.execute(

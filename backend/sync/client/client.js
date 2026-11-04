@@ -1,17 +1,17 @@
 'use strict';
 const byId = id => document.getElementById(id);
 const encoded = bytes => btoa(String.fromCharCode(...new Uint8Array(bytes))).replaceAll('+','-').replaceAll('/','_').replace(/=+$/,'');
-let db, keys, identity, trusted = false, online = false, capabilities = [], pendingCommands = new Map(), queued = [], invitation = new URLSearchParams(location.hash.slice(1)).get('pair');
+let db, keys, identity, trusted = false, online = false, capabilities = [], pendingCommands = new Map(), queued = [], invitation = new URLSearchParams(location.hash.slice(1)).get('pair'), lastSync=0;
 history.replaceState(null,'',location.pathname);
 function note(message) { byId('notice').textContent = message; }
-function storage(operation, key, value) { return new Promise((resolve,reject) => { const transaction=db.transaction('local',operation); const store=transaction.objectStore('local'); const request=operation==='readonly'?store.get(key):value===undefined?store.delete(key):store.put(value,key); request.onsuccess=()=>resolve(request.result); request.onerror=()=>reject(new Error('Локальное хранилище недоступно')); }); }
+function storage(operation, key, value) { return new Promise((resolve,reject) => { const transaction=db.transaction('local',operation); const store=transaction.objectStore('local'); const request=operation==='readonly'?store.get(key):value===undefined?store.delete(key):store.put(value,key); let result;request.onsuccess=()=>{result=request.result;};transaction.oncomplete=()=>resolve(result);transaction.onerror=()=>reject(new Error('Локальное хранилище недоступно')); }); }
 async function request(operation, value={}) {
   const body=JSON.stringify(value), timestamp=String(Math.floor(Date.now()/1000)), nonce=crypto.randomUUID().replaceAll('-','');
   const payload=`/api/${operation}\n${timestamp}\n${nonce}\n${body}`;
   const signature=await crypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},keys.privateKey,new TextEncoder().encode(payload));
   const response=await fetch(`/api/${operation}`,{method:'POST',headers:{'Content-Type':'application/json','X-Device':identity,'X-Time':timestamp,'X-Nonce':nonce,'X-Signature':encoded(signature)},body,signal:AbortSignal.timeout(12000)});
   const result=await response.json();
-  if(!response.ok) throw new Error(result.error||'Сервис недоступен');
+  if(!response.ok) {const error=new Error(result.error||'Сервис недоступен');error.status=response.status;throw error;}
   return result;
 }
 function card(title, detail='') { const node=document.createElement('article');node.className='card';const heading=document.createElement('strong');heading.textContent=title;node.append(heading);if(detail){const p=document.createElement('p');p.textContent=detail;node.append(p);}return node; }
@@ -49,6 +49,7 @@ async function poll() {
       trusted=true;await storage('readwrite','trusted',true);
     }
     const data=await request('status');statusView(data);
+    if(data.categories.length&&Date.now()-lastSync>30000)await synchronize();
     for(const [id,operation] of pendingCommands) {
       const result=await request('result',{id});
       if(result.status==='running')continue;
@@ -61,11 +62,13 @@ async function poll() {
     for(const item of ready){if(item.expires>Date.now()/1000) await command('chat',item.arguments,item);else note('Устаревший запрос удалён из очереди.');}
   } catch(error) {
     online=false;byId('connection').textContent='Нет подтверждённой связи';
+    if(error.status===403){await storage('readwrite','cache');byId('sync-data').replaceChildren();byId('sync-time').textContent='Доступ не подтверждён. Локальная копия удалена.';}
     if(trusted)note(error.message+' Выполненные команды автоматически не повторяются.');
   }
 }
 async function synchronize() {
   const result=await request('sync');await storage('readwrite','cache',result);
+  lastSync=Date.now();
   renderCache(result);note('Синхронизированы только выбранные на Mac категории.');
 }
 function renderCache(cache) {
