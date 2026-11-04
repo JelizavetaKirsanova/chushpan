@@ -33,6 +33,9 @@ class SettingsCenter:
 
         if getattr(conv.tools, "permission_center", None) is None:
             conv.tools.permission_center = PermissionCenter(settings, store)
+        conv.tools.permission_center.voice_state = lambda: (
+            bool(self.loop.microphone_running) if self.loop else None
+        )
         self.input_devices = None
         self.pending_import = None
         self.original_client = conv.llm

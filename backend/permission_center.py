@@ -296,7 +296,7 @@ def catalog(settings):
                 "сканирует эфир и не включает устройства."
             ),
             ["Подключённые BLE-устройства"],
-            supported=settings.led.enabled,
+            supported=True,
         ),
         row(
             "local_network",
@@ -378,6 +378,7 @@ class PermissionCenter:
         self.lock = asyncio.Lock()
         self.history = []
         self.checks = {}
+        self.voice_state = None
         if store:
             store.db.execute(
                 "CREATE TABLE IF NOT EXISTS permission_checks (id INTEGER PRIMARY KEY, at "
@@ -389,6 +390,24 @@ class PermissionCenter:
         if not item["supported"]:
             return item
         if key == "automation_system_events" and self.s.media.provider != "spotify":
+            return item
+        if key == "background_voice":
+            running = self.voice_state() if self.voice_state else None
+            if "platform" not in self.checks:
+                self.checks["platform"] = await asyncio.to_thread(platform.permission_status)
+            granted = self.checks["platform"].get("microphone") == "granted"
+            item["status"] = "granted" if running is True and granted else "check_needed"
+            item["details"] = {"capture_loop_running": running, "microphone_granted": granted}
+            state = (
+                "активен"
+                if running is True
+                else "приостановлен"
+                if running is False
+                else "недоступен в этой сессии"
+            )
+            item["purpose"] += (
+                " Голосовой цикл: " + state + ". Звук этой проверкой не захватывается."
+            )
             return item
         if key.startswith("video_"):
             if "video" not in self.checks:
@@ -405,6 +424,10 @@ class PermissionCenter:
             if "personal" not in self.checks:
                 self.checks["personal"] = await self.personal.permissions()
             details = self.checks["personal"]
+            details = {
+                **details,
+                "identity": details.get("identities", {}).get(key, details.get("identity", {})),
+            }
             value = details.get(key)
             if key == "location" and details.get("location_services") is False:
                 value = "denied"
@@ -413,10 +436,19 @@ class PermissionCenter:
                 observation = self.store.preference("dashboard", "location") or {}
                 if observation.get("status") == "error":
                     code = observation.get("error_code", "location_unavailable")
+                    reason = {
+                        "location_timeout": "Core Location не прислал свежую геопозицию вовремя.",
+                        "location_disabled": "Службы геолокации macOS выключены.",
+                        "location_permission": "macOS не разрешила геолокацию этому исполнителю.",
+                        "location_city_unavailable": (
+                            "Координаты получены, но город определить не удалось."
+                        ),
+                        "location_native_error": (
+                            "Core Location вернул системную ошибку; код указан ниже."
+                        ),
+                    }.get(code, "Свежая геопозиция сейчас недоступна.")
                     item["last_error"] = (
-                        "Последнее определение города: "
-                        + code
-                        + ". Разрешение и получение координат — разные проверки."
+                        reason + " Разрешение и получение координат — разные проверки."
                     )
                     details = {
                         **details,
@@ -446,6 +478,8 @@ class PermissionCenter:
         item["status"] = (
             value if value in STATES else "denied" if value == "restricted" else "check_needed"
         )
+        if value == "denied":
+            item["can_request"] = False
         item["details"] = details
         identity = details.get("identity") or details
         if identity.get("executable"):

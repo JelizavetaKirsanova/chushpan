@@ -398,3 +398,31 @@ def test_fetch_timeout_keeps_commit_pending_for_retry(repo, monkeypatch):
     assert result["status"] == "pending_push"
     assert "timed out" in result["reason"]
     assert git(sync.root, "log", "-1", "--format=%s") == "fix: retain work through timeout"
+
+
+def test_scoped_sync_leaves_concurrent_work_uncommitted(repo):
+    sync, remote = repo
+    (sync.root / "app.py").write_text("print('scoped fix')\n")
+    (sync.root / "other.py").write_text("print('unfinished parallel work')\n")
+    result = sync.sync("fix: selected change", paths=["app.py"])
+    assert result["status"] == "synced"
+    assert git(sync.root, "show", "--format=", "--name-only", "HEAD") == "app.py"
+    assert "other.py" in git(sync.root, "status", "--porcelain")
+    assert git(remote, "rev-parse", "main") == result["commit"]
+
+
+def test_scoped_sync_refuses_unrelated_staged_work(repo):
+    sync, _ = repo
+    (sync.root / "other.py").write_text("print('other')\n")
+    git(sync.root, "add", "other.py")
+    with pytest.raises(Blocked, match="outside the scoped"):
+        sync.sync("fix: scoped", paths=["app.py"])
+    assert git(sync.root, "diff", "--cached", "--name-only") == "other.py"
+
+
+@pytest.mark.parametrize("path", ["../outside", "/tmp/outside", "-A", ".env"])
+def test_scoped_sync_cannot_escape_or_publish_private_paths(repo, path):
+    sync, _ = repo
+    (sync.root / "app.py").write_text("print('changed')\n")
+    with pytest.raises(Blocked):
+        sync.sync("fix: scoped", paths=[path])

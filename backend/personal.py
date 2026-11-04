@@ -127,12 +127,23 @@ class PersonalContext:
     ) -> dict:
         from datetime import date
 
+        from backend.paths import DESKTOP
+
         if not parts or set(parts) - {"calendar", "location", "signals", "permissions"}:
             raise ValueError("Неизвестный источник личных данных.")
         if permission not in {None, "calendar", "location"}:
             raise ValueError("Неизвестное разрешение личных данных.")
         if day is not None:
             day = date.fromisoformat(day).isoformat()
+        if DESKTOP and "calendar" in parts and len(parts) > 1:
+            combined = {}
+            for part in parts:
+                combined.update(
+                    await self._read(
+                        request_access=request_access, parts=(part,), day=day, city_only=city_only
+                    )
+                )
+            return combined
         async with self._lock:
             app = await self.helper()
             # Only the requested two-day window is returned. Temporary data is removed
@@ -151,10 +162,18 @@ class PersonalContext:
                     )
                 )
                 try:
-                    # LaunchServices establishes the helper's own stable application
-                    # identity for Core Location; executing its Mach-O directly can
-                    # attribute access to the parent instead. Calendar uses this same app.
-                    command = ["open", "-W", "-n", "-g", str(app), "--args"]
+                    # Preserve the working desktop calendar's original attribution.
+                    # Core Location/CoreWLAN need the helper's LaunchServices identity.
+                    calendar = (
+                        parts == ("calendar",)
+                        or parts == ("permissions",)
+                        and permission == "calendar"
+                    )
+                    command = (
+                        [str(app / "Contents/MacOS/chushpan-personal")]
+                        if DESKTOP and calendar
+                        else ["open", "-W", "-n", "-g", str(app), "--args"]
+                    )
                     await process(
                         *command,
                         str(request),
@@ -169,8 +188,15 @@ class PersonalContext:
 
     async def permissions(self, request: str | None = None) -> dict:
         # No events, coordinates, SSIDs, or geocoder calls in this path.
-        return (
-            await self.read(
-                parts=("permissions",), request_access=request is not None, permission=request
-            )
-        ).get("permissions", {})
+        result = {"identities": {}}
+        for key in ("calendar", "location"):
+            value = (
+                await self.read(
+                    parts=("permissions",), request_access=request == key, permission=key
+                )
+            ).get("permissions", {})
+            result[key] = value.get(key, "unknown")
+            result["identities"][key] = value.get("identity", {})
+            if key == "location":
+                result["location_services"] = value.get("location_services")
+        return result

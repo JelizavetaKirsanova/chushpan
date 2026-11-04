@@ -148,7 +148,8 @@ def test_location_grant_does_not_hide_coordinate_failure(center):
     )
     result = asyncio.run(center.report())
     row = next(i for i in result["items"] if i["id"] == "location")
-    assert "location_timeout" in row["last_error"]
+    assert "Core Location" in row["last_error"]
+    assert row["details"]["last_location_error"]["error_code"] == "location_timeout"
     assert "59.43712" not in json.dumps(result)
 
 
@@ -255,3 +256,167 @@ def test_exact_settings_url_and_fallback_use_nsworkspace(monkeypatch):
     assert opened[0].endswith("?Privacy_LocationServices")
     assert result["fallback"] and result["opened"]
     assert "Службы геолокации" in result["message"]
+
+
+def test_automatic_safari_consent_resumes_one_unsubmitted_operation():
+    from backend.media.music_safari import SafariMusicTab
+
+    async def run():
+        tab = SafariMusicTab(Settings())
+        tab._native = AsyncMock(
+            side_effect=[
+                {"automation": "not_determined"},
+                {"automation": "granted"},
+                {"result": "done"},
+            ]
+        )
+        token = requests_allowed.set(True)
+        try:
+            await tab._ready()
+            assert await tab._run("fixed server operation") == "done"
+        finally:
+            requests_allowed.reset(token)
+        calls = [c.args[0] for c in tab._native.call_args_list]
+        assert [c["op"] for c in calls] == ["probe", "request", "script"]
+        assert calls[1]["request_access"] is True
+        assert calls[2]["request_access"] is False
+
+    asyncio.run(run())
+
+
+def test_diagnostics_suppress_consent_even_inside_user_tool():
+    from backend.media.music_safari import SafariMusicTab
+
+    async def run():
+        tab = SafariMusicTab(Settings())
+        tab._native = AsyncMock(return_value={"automation": "not_determined"})
+        token = requests_allowed.set(True)
+        try:
+            result = await tab.diagnose()
+            assert result["error_code"] == "automation_unknown"
+            assert requests_allowed.get()
+        finally:
+            requests_allowed.reset(token)
+        assert all(c.args[0]["op"] == "probe" for c in tab._native.call_args_list)
+
+    asyncio.run(run())
+
+
+def test_personal_manual_grant_resumes_only_failed_calendar_read(monkeypatch):
+    from backend.desktop import platform
+    from backend.personal import PersonalContext
+
+    monkeypatch.setattr(platform, "open_privacy", lambda key: {"opened": True})
+    personal = PersonalContext(Settings())
+    personal._read = AsyncMock(
+        side_effect=[
+            {"calendar": {"error": "calendar_permission"}, "location": {"city": "test"}},
+            {"calendar": {"events": []}},
+        ]
+    )
+    personal.permissions = AsyncMock(side_effect=[{"calendar": "denied"}, {"calendar": "granted"}])
+    result = asyncio.run(personal.read())
+    assert result == {"calendar": {"events": []}, "location": {"city": "test"}}
+    assert personal._read.call_args_list[-1].kwargs["parts"] == ("calendar",)
+    assert personal._read.call_args_list[-1].kwargs["request_access"] is False
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_microphone_callback_alone_is_not_a_grant(monkeypatch, confirmed):
+    import sys
+
+    from backend.desktop.platform import request_microphone
+
+    state = [0]
+
+    def request(media, callback):
+        state[0] = 3 if confirmed else 0
+        callback(True)
+
+    capture = SimpleNamespace(
+        authorizationStatusForMediaType_=lambda media: state[0],
+        requestAccessForMediaType_completionHandler_=request,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "AVFoundation",
+        SimpleNamespace(AVCaptureDevice=capture, AVMediaTypeAudio="mock"),
+    )
+    assert request_microphone() is confirmed
+
+
+@pytest.mark.parametrize(
+    "parts,permission,direct",
+    [
+        (("calendar",), None, True),
+        (("location",), None, False),
+        (("permissions",), "calendar", True),
+        (("permissions",), "location", False),
+    ],
+)
+def test_calendar_keeps_existing_identity_and_location_uses_launchservices(
+    tmp_path, monkeypatch, parts, permission, direct
+):
+    from pathlib import Path
+
+    import backend.paths as paths
+    import backend.personal as module
+
+    monkeypatch.setattr(paths, "DESKTOP", True)
+    personal = module.PersonalContext(Settings())
+    personal.helper = AsyncMock(return_value=tmp_path / "Helper.app")
+
+    async def execute(*args, **kwargs):
+        Path(args[-1]).write_text('{"permissions": {}}')
+        return ""
+
+    process = AsyncMock(side_effect=execute)
+    monkeypatch.setattr(module, "process", process)
+    asyncio.run(personal._read(parts=parts, permission=permission, request_access=False))
+    command = process.call_args.args
+    assert (command[0] != "open") is direct
+    if direct:
+        assert command[0].endswith("Contents/MacOS/chushpan-personal")
+    else:
+        assert command[:4] == ("open", "-W", "-n", "-g")
+
+
+def test_current_geo_profile_wins_over_old_bluetooth_binding():
+    loc = places()
+    home = loc.get("home")
+    binding = signal("device", "test-device", "Test")
+    loc.save(home.model_copy(update={"signals": [binding]}))
+    loc.signal_observation = {
+        "source": "macos",
+        "updated_at": datetime.now(UTC).isoformat(),
+        "signals": [binding],
+    }
+    loc.memory.set_preference("dashboard", "location_enabled", True)
+    loc.provider = lambda: {
+        "source": "macos",
+        "status": "ready",
+        "city": "Tallinn",
+        "latitude": 59.4,
+        "longitude": 24.8,
+        "accuracy_m": 100,
+        "measured_at": datetime.now(UTC).isoformat(),
+    }
+    assert loc.current()["place_id"] == "dorm"
+
+
+def test_background_voice_requires_both_running_loop_and_microphone_grant(center, monkeypatch):
+    import backend.permission_center as module
+
+    center.voice_state = lambda: True
+    first = asyncio.run(center.report())
+    assert (
+        next(i for i in first["items"] if i["id"] == "background_voice")["status"] == "check_needed"
+    )
+    monkeypatch.setattr(module.platform, "permission_status", lambda: {"microphone": "granted"})
+    second = asyncio.run(center.report())
+    assert next(i for i in second["items"] if i["id"] == "background_voice")["status"] == "granted"
+    center.voice_state = lambda: False
+    third = asyncio.run(center.report())
+    assert (
+        next(i for i in third["items"] if i["id"] == "background_voice")["status"] == "check_needed"
+    )

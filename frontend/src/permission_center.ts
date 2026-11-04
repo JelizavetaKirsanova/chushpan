@@ -48,7 +48,7 @@ export function permissionCenter(root:HTMLElement, report:PermissionReport|null,
       const actions=el('div','','permission-actions');
       if(item.can_request&&item.status!=='granted')actions.append(button('Запросить доступ',()=>act(item.id,'request')));
       if(item.url&&item.supported!==false)actions.append(button('Открыть настройки',()=>act(item.id,'open')));
-      actions.append(button('Проверить доступ',()=>act(item.id,'check')));card.append(actions);
+      if(item.supported!==false)actions.append(button('Проверить доступ',()=>act(item.id,'check')));card.append(actions);
       if(item.details&&Object.keys(item.details).length){const details=el('details');details.append(el('summary','Для разработчика: исполнитель и результат API'),el('pre',JSON.stringify(item.details,null,2)));card.append(details);}
       list.append(card);
     }

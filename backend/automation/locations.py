@@ -203,6 +203,7 @@ class Locations:
             "message": "Место неизвестно — используется Общий.",
         }
         signals = self.signal_observation
+        legacy_device = None
         if signals.get("source") == "macos" and 0 <= observation_age(signals) <= 60:
             from backend.context_signals import signal
 
@@ -244,7 +245,7 @@ class Locations:
                 p for p in self.list() if any((v["kind"], v["key"]) in seen for v in p.signals)
             ]
             if len(matches) == 1:
-                return {
+                choice = {
                     "place_id": matches[0].id,
                     "name": matches[0].name,
                     "city": None,
@@ -253,6 +254,12 @@ class Locations:
                     "reason": "explicit_signal_binding",
                     "message": "Явная привязка к текущему Wi-Fi или подключённому устройству.",
                 }
+                if any(
+                    v["kind"] == "wifi" and (v["kind"], v["key"]) in seen
+                    for v in matches[0].signals
+                ):
+                    return choice
+                legacy_device = choice
             if len(matches) > 1:
                 return {
                     **unknown,
@@ -263,17 +270,20 @@ class Locations:
             observed.get("status") != "ready"
             or not 0 <= observation_age(observed) <= LOCATION_TTL_S
         ):
-            return {**unknown, "reason": observed.get("error_code", "location_stale")}
+            return legacy_device or {
+                **unknown,
+                "reason": observed.get("error_code", "location_stale"),
+            }
         if observed.get("source") != "macos":
-            return {**unknown, "reason": "location_source"}
+            return legacy_device or {**unknown, "reason": "location_source"}
         if self.memory.preference("dashboard", "location_enabled") is not True:
-            return unknown
+            return legacy_device or unknown
         checked = native_observation(observed)
         if checked["status"] != "ready":
-            return {**unknown, "reason": checked["error_code"]}
+            return legacy_device or {**unknown, "reason": checked["error_code"]}
         city = observed.get("city")
         if not isinstance(city, str) or not city.strip():
-            return unknown
+            return legacy_device or unknown
         key = normalize_phrase(city)
         zone_matches = []
         for place in self.list():
@@ -343,6 +353,8 @@ class Locations:
                 }
         self._stable, self._candidate = (identity, stamp), None
         place = next((p for p in self.list() if p.id == identifier), None)
+        if place is None and legacy_device:
+            return legacy_device
         return {
             "place_id": place.id if place else None,
             "name": place.name if place else "Общий",

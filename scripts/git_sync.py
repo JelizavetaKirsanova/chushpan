@@ -378,7 +378,9 @@ class Sync:
         self.git("config", f"branch.{branch}.merge", f"refs/heads/{branch}")
         return self.status("synced", commit=local)
 
-    def sync(self, message: str | None = None, *, periodic: bool = False) -> dict:
+    def sync(
+        self, message: str | None = None, *, periodic: bool = False, paths: list[str] | None = None
+    ) -> dict:
         self.ready()
         backup = self.backup()
         dirty = self.git("status", "--porcelain=v1", "-z")
@@ -403,10 +405,24 @@ class Sync:
         self.audit_history()
         if dirty:
             self.guard_paths(self.files())
+            if paths:
+                if any(
+                    not p or Path(p).is_absolute() or ".." in Path(p).parts or p.startswith("-")
+                    for p in paths
+                ):
+                    raise Blocked("Scoped sync requires relative project paths")
+                self.guard_paths(paths)
+
+                def selected(name):
+                    return any(name == p or name.startswith(p.rstrip("/") + "/") for p in paths)
+
+                staged = self.git("diff", "--cached", "--name-only", "-z").split(b"\0")
+                if any(name and not selected(os.fsdecode(name)) for name in staged):
+                    raise Blocked("Index includes paths outside the scoped change")
             index = self.git_dir / "index"
             original_index = index.read_bytes() if index.exists() else None
             try:
-                self.git("add", "-A", "--", ".")
+                self.git("add", "-A", "--", *(paths or ["."]))
                 self.audit_index()
             except BaseException:
                 if original_index is None:
@@ -443,6 +459,12 @@ def main(argv: list[str] | None = None) -> int:
         ],
     )
     parser.add_argument("-m", "--message")
+    parser.add_argument(
+        "--path",
+        action="append",
+        dest="paths",
+        help="Commit only these project paths; retain all safety checks",
+    )
     args = parser.parse_args(argv)
     sync = Sync()
     if args.command == "status":
@@ -501,7 +523,9 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 if args.command == "complete":
                     (sync.state / "active-turn").unlink(missing_ok=True)
-                result = sync.sync(args.message, periodic=args.command == "periodic")
+                result = sync.sync(
+                    args.message, periodic=args.command == "periodic", paths=args.paths
+                )
             print(json.dumps(result, ensure_ascii=False))
             return 1 if result["status"] in {"blocked", "pending_push"} else 0
     except (Blocked, OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as exc:
