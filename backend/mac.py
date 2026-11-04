@@ -258,8 +258,15 @@ class MacDesktop:
             elif mode == "window":
                 window = await self.bridge.request("desktop_capture_window")
                 selection = ["-l", str(window["window_id"])]
-            await process("/usr/sbin/screencapture", "-x", "-t", "png", *selection, str(path),
-                          **({"timeout": 25} if mode == "region" else {}))
+            await process(
+                "/usr/sbin/screencapture",
+                "-x",
+                "-t",
+                "png",
+                *selection,
+                str(path),
+                **({"timeout": 25} if mode == "region" else {}),
+            )
             path.chmod(0o600)
             with path.open("rb") as stream:
                 header = stream.read(24)

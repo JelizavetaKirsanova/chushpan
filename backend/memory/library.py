@@ -1,13 +1,12 @@
 """Projects, FTS retrieval and a desktop library over the existing facts table."""
 
 import json
-import re
 import sqlite3
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from backend.center import Center, identifier, rows, text
-from backend.memory.profile import CATEGORY_LABELS, _SENSITIVE, tokens
+from backend.memory.profile import _SENSITIVE, CATEGORY_LABELS, tokens
 from backend.memory.store import _now
 
 SCHEMA = (
@@ -43,9 +42,7 @@ def migrate(store):
             if name not in fields:
                 db.execute(f"ALTER TABLE facts ADD COLUMN {name} {declaration}")
         db.execute("CREATE INDEX IF NOT EXISTS memory_project ON facts(project_id,status)")
-        existed = db.execute(
-            "SELECT 1 FROM sqlite_master WHERE name='memory_fts'"
-        ).fetchone()
+        existed = db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_fts'").fetchone()
         try:
             db.execute(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(content, "
@@ -108,8 +105,13 @@ def search(store, query, project=None, limit=100, *, context=False):
         arguments.append("%" + query.casefold().replace("%", "")[:200] + "%")
     return rows(
         store.db,
-        "SELECT f.* FROM facts f" + join + " WHERE " + " AND ".join(where)
-        + " ORDER BY " + order + " LIMIT ?",
+        "SELECT f.* FROM facts f"
+        + join
+        + " WHERE "
+        + " AND ".join(where)
+        + " ORDER BY "
+        + order
+        + " LIMIT ?",
         (*arguments, limit),
     )
 
@@ -149,15 +151,31 @@ class MemoryLibrary(Center):
         if self.category:
             records = [r for r in records if r["category"] == self.category]
         today = datetime.now(ZoneInfo(self.settings.location.tz_name)).date()
-        used = rows(db, "SELECT DISTINCT memory_id,at FROM memory_access_log ORDER BY id DESC LIMIT 1000")
+        used = rows(
+            db, "SELECT DISTINCT memory_id,at FROM memory_access_log ORDER BY id DESC LIMIT 1000"
+        )
         return {
             "items": records,
-            "projects": rows(db, "SELECT p.*,COUNT(f.id) AS memories FROM memory_projects p "
-                             "LEFT JOIN facts f ON f.project_id=p.id GROUP BY p.id ORDER BY p.updated_at DESC"),
+            "projects": rows(
+                db,
+                "SELECT p.*,COUNT(f.id) AS memories FROM memory_projects p "
+                "LEFT JOIN facts f ON f.project_id=p.id GROUP BY p.id ORDER BY p.updated_at DESC",
+            ),
             "total": db.execute("SELECT COUNT(*) FROM facts WHERE status='active'").fetchone()[0],
-            "used_today": len({r["memory_id"] for r in used if datetime.fromisoformat(r["at"]).astimezone(
-                ZoneInfo(self.settings.location.tz_name)).date() == today}),
-            "access": rows(db, "SELECT a.*,f.content FROM memory_access_log a JOIN facts f ON f.id=a.memory_id ORDER BY a.id DESC LIMIT 100"),
+            "used_today": len(
+                {
+                    r["memory_id"]
+                    for r in used
+                    if datetime.fromisoformat(r["at"])
+                    .astimezone(ZoneInfo(self.settings.location.tz_name))
+                    .date()
+                    == today
+                }
+            ),
+            "access": rows(
+                db,
+                "SELECT a.*,f.content FROM memory_access_log a JOIN facts f ON f.id=a.memory_id ORDER BY a.id DESC LIMIT 100",
+            ),
             "pending": self.store.preference("memory", "pending") or [],
             "fts": self.store.memory_fts,
             "project": self.project,
@@ -172,7 +190,9 @@ class MemoryLibrary(Center):
         if value in (None, ""):
             return None
         value = identifier(value)
-        if not self.store.db.execute("SELECT 1 FROM memory_projects WHERE id=?", (value,)).fetchone():
+        if not self.store.db.execute(
+            "SELECT 1 FROM memory_projects WHERE id=?", (value,)
+        ).fetchone():
             raise ValueError("Проект не найден.")
         return value
 
@@ -194,9 +214,14 @@ class MemoryLibrary(Center):
                 with store.memory_transaction():
                     # A scoped key prevents deduplication across independent projects.
                     key = "library:" + str(project) + ":" + store.memory_digest(content)
-                    item, _ = store.save_memory(content, category=value.get("category", "profile"),
-                                               key=key, source="desktop_library", sensitive=sensitive,
-                                               project_id=project)
+                    item, _ = store.save_memory(
+                        content,
+                        category=value.get("category", "profile"),
+                        key=key,
+                        source="desktop_library",
+                        sensitive=sensitive,
+                        project_id=project,
+                    )
                     self.metadata(item, value)
             else:
                 item = identifier(value.get("id"))
@@ -209,7 +234,10 @@ class MemoryLibrary(Center):
                     store.forget_fact(item, expected_revision=row["revision"])
                 elif op == "confirm":
                     with store.memory_transaction():
-                        store.db.execute("UPDATE facts SET confirmed=1,revision=revision+1,updated_at=? WHERE id=?", (_now(), item))
+                        store.db.execute(
+                            "UPDATE facts SET confirmed=1,revision=revision+1,updated_at=? WHERE id=?",
+                            (_now(), item),
+                        )
                 else:
                     content = text(value.get("content"))
                     sensitive = bool(_SENSITIVE.search(content)) or value.get("sensitive") is True
@@ -217,7 +245,16 @@ class MemoryLibrary(Center):
                         raise ValueError("Подтверди сохранение чувствительной записи.")
                     with store.memory_transaction():
                         store._suppress(row["content"])
-                        store.db.execute("UPDATE facts SET content=?,category=?,sensitive=?,revision=revision+1,updated_at=? WHERE id=?", (content, value.get("category", row["category"]), int(sensitive), _now(), item))
+                        store.db.execute(
+                            "UPDATE facts SET content=?,category=?,sensitive=?,revision=revision+1,updated_at=? WHERE id=?",
+                            (
+                                content,
+                                value.get("category", row["category"]),
+                                int(sensitive),
+                                _now(),
+                                item,
+                            ),
+                        )
                         self.metadata(item, value)
                         store.invalidate_memory_context()
             message = "Память обновлена."
@@ -226,41 +263,82 @@ class MemoryLibrary(Center):
             if description:
                 description = text(description, 1000)
             with store.memory_transaction():
-                store.db.execute("INSERT INTO memory_projects(name,description,created_at,updated_at) VALUES(?,?,?,?)", (name, description, _now(), _now()))
+                store.db.execute(
+                    "INSERT INTO memory_projects(name,description,created_at,updated_at) VALUES(?,?,?,?)",
+                    (name, description, _now(), _now()),
+                )
             message = "Создано отдельное пространство памяти."
         elif op == "project_bind":
             project = self.project_id(value.get("project"))
             conversation = identifier(value.get("conversation"))
-            if project is None or not store.db.execute("SELECT 1 FROM conversations WHERE id=? AND deleted_at IS NULL", (conversation,)).fetchone():
+            if (
+                project is None
+                or not store.db.execute(
+                    "SELECT 1 FROM conversations WHERE id=? AND deleted_at IS NULL", (conversation,)
+                ).fetchone()
+            ):
                 raise ValueError("Укажи существующий проект и разговор.")
             with store.memory_transaction():
-                store.db.execute("DELETE FROM memory_project_conversations WHERE conversation_id=?", (conversation,))
-                store.db.execute("INSERT INTO memory_project_conversations VALUES(?,?)", (project, conversation))
+                store.db.execute(
+                    "DELETE FROM memory_project_conversations WHERE conversation_id=?",
+                    (conversation,),
+                )
+                store.db.execute(
+                    "INSERT INTO memory_project_conversations VALUES(?,?)", (project, conversation)
+                )
                 store.invalidate_memory_context()
         elif op == "export":
-            result = {"schema": 1, "items": store.memories(), "projects": rows(store.db, "SELECT * FROM memory_projects")}
-            return {"data": self.snapshot(), "download": {"name": "chushpan-memory.json", "mime": "application/json", "content": json.dumps(result, ensure_ascii=False, indent=2)}}
+            result = {
+                "schema": 1,
+                "items": store.memories(),
+                "projects": rows(store.db, "SELECT * FROM memory_projects"),
+            }
+            return {
+                "data": self.snapshot(),
+                "download": {
+                    "name": "chushpan-memory.json",
+                    "mime": "application/json",
+                    "content": json.dumps(result, ensure_ascii=False, indent=2),
+                },
+            }
         elif op == "import":
             raw = value.get("content", "")
             if not isinstance(raw, str) or len(raw) > 1_000_000:
                 raise ValueError("Импорт: файл до 1 МБ.")
             data = json.loads(raw)
-            if data.get("schema") != 1 or not isinstance(data.get("items"), list) or len(data["items"]) > 1000:
+            if (
+                data.get("schema") != 1
+                or not isinstance(data.get("items"), list)
+                or len(data["items"]) > 1000
+            ):
                 raise ValueError("Нужен экспорт памяти версии 1, до 1000 записей.")
             with store.memory_transaction():
                 projects = {}
                 for p in data.get("projects", [])[:100]:
                     name = text(p.get("name"), 80)
-                    store.db.execute("INSERT OR IGNORE INTO memory_projects(name,description,created_at,updated_at) VALUES(?,?,?,?,?)", (name, text(p.get("description") or name, 1000), _now(), _now()))
-                    projects[p["id"]] = store.db.execute("SELECT id FROM memory_projects WHERE name=?", (name,)).fetchone()[0]
+                    store.db.execute(
+                        "INSERT OR IGNORE INTO memory_projects(name,description,created_at,updated_at) VALUES(?,?,?,?,?)",
+                        (name, text(p.get("description") or name, 1000), _now(), _now()),
+                    )
+                    projects[p["id"]] = store.db.execute(
+                        "SELECT id FROM memory_projects WHERE name=?", (name,)
+                    ).fetchone()[0]
                 for row in data["items"]:
                     content = text(row.get("content"))
                     if _SENSITIVE.search(content) or row.get("sensitive"):
-                        raise ValueError("Чувствительные записи импортируй отдельно с явным согласием.")
+                        raise ValueError(
+                            "Чувствительные записи импортируй отдельно с явным согласием."
+                        )
                     project = projects.get(row.get("project_id"))
                     if row.get("project_id") is not None and project is None:
                         raise ValueError("В файле отсутствует проект записи.")
-                    store.save_memory(content, category=row.get("category", "profile"), key="import:"+str(project)+":"+store.memory_digest(content), source="user_import", project_id=project)
+                    store.save_memory(
+                        content,
+                        category=row.get("category", "profile"),
+                        key="import:" + str(project) + ":" + store.memory_digest(content),
+                        source="user_import",
+                        project_id=project,
+                    )
             message = "Импорт завершён."
         elif op == "clear":
             if value.get("confirmed") is not True:
@@ -269,11 +347,17 @@ class MemoryLibrary(Center):
             if category and category not in CATEGORY_LABELS:
                 raise ValueError("Неизвестная категория.")
             with store.memory_transaction():
-                targets = rows(store.db, "SELECT * FROM facts" + (" WHERE category=?" if category else ""), (category,) if category else ())
+                targets = rows(
+                    store.db,
+                    "SELECT * FROM facts" + (" WHERE category=?" if category else ""),
+                    (category,) if category else (),
+                )
                 for row in targets:
                     store.forget_fact(row["id"])
                 store.clear_preference("memory", "pending")
-            message = "Записи исключены из поиска и контекста. Старые резервные копии удаляются отдельно."
+            message = (
+                "Записи исключены из поиска и контекста. Старые резервные копии удаляются отдельно."
+            )
         else:
             raise ValueError("Неизвестное действие памяти.")
         return {"data": self.snapshot(), "message": message}
@@ -286,9 +370,15 @@ class MemoryLibrary(Center):
         expires = value.get("expires_at") or None
         if expires:
             try:
-                expires = datetime.fromisoformat(expires).astimezone(UTC).isoformat(timespec="seconds")
+                expires = (
+                    datetime.fromisoformat(expires).astimezone(UTC).isoformat(timespec="seconds")
+                )
             except (ValueError, TypeError):
                 raise ValueError("Неверный срок актуальности.") from None
-        self.store.db.execute("UPDATE facts SET project_id=?,expires_at=? WHERE id=?", (project, expires, item))
+        self.store.db.execute(
+            "UPDATE facts SET project_id=?,expires_at=? WHERE id=?", (project, expires, item)
+        )
         if project:
-            self.store.db.execute("UPDATE memory_projects SET updated_at=? WHERE id=?", (_now(), project))
+            self.store.db.execute(
+                "UPDATE memory_projects SET updated_at=? WHERE id=?", (_now(), project)
+            )

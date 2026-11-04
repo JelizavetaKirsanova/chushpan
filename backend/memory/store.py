@@ -399,7 +399,8 @@ class MemoryStore:
     def facts(self) -> list[tuple[int, str]]:
         rows = self.db.execute(
             "SELECT id, content FROM facts WHERE status='active' AND project_id IS NULL "
-            "AND (expires_at IS NULL OR expires_at>?) ORDER BY id", (_now(),)
+            "AND (expires_at IS NULL OR expires_at>?) ORDER BY id",
+            (_now(),),
         ).fetchall()
         return [(r["id"], r["content"]) for r in rows]
 

@@ -29,6 +29,7 @@ dependencies = [
     "torch>=2.5,<3",
     "google-genai>=2.34,<3",
     "pillow>=11,<14",
+    "cryptography>=46,<51",
 ]
 
 [dependency-groups]

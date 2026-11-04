@@ -242,8 +242,11 @@ class ProfileMemory:
                 "SELECT content FROM facts WHERE semantic_key=? AND project_id IS NULL",
                 (key,),
             ).fetchone()
-            if (previous and previous["content"].casefold() != value.casefold()
-                    and not re.search(r"\bтеперь\b|\bбольше\b|^нет[, ]|на самом деле", text, re.I)):
+            if (
+                previous
+                and previous["content"].casefold() != value.casefold()
+                and not re.search(r"\bтеперь\b|\bбольше\b|^нет[, ]|на самом деле", text, re.I)
+            ):
                 self.propose(value, category, key)
                 continue
             self.store.save_memory(
@@ -285,15 +288,22 @@ class ProfileMemory:
             ).fetchone()
             project = bound[0] if bound else None
         candidates = search(self.store, text, project, 128, context=True)
-        globals_ = [dict(r) for r in self.store.db.execute(
-            "SELECT * FROM facts WHERE project_id IS NULL AND status='active' AND "
-            "semantic_key IN ('response_style','chushpan:mobile') LIMIT 8"
-        )]
+        globals_ = [
+            dict(r)
+            for r in self.store.db.execute(
+                "SELECT * FROM facts WHERE project_id IS NULL AND status='active' AND "
+                "semantic_key IN ('response_style','chushpan:mobile') LIMIT 8"
+            )
+        ]
         if re.search(r"продолжим|вчера делали|активн.{0,8}проект", text, re.I):
-            candidates += [dict(r) for r in self.store.db.execute(
-                "SELECT * FROM facts WHERE project_id IS ? AND category='project' "
-                "AND status='active' ORDER BY updated_at DESC LIMIT 16", (project,)
-            )]
+            candidates += [
+                dict(r)
+                for r in self.store.db.execute(
+                    "SELECT * FROM facts WHERE project_id IS ? AND category='project' "
+                    "AND status='active' ORDER BY updated_at DESC LIMIT 16",
+                    (project,),
+                )
+            ]
         rows = [
             r
             for r in {r["id"]: r for r in candidates + globals_}.values()

@@ -4,6 +4,7 @@ import ApplicationServices
 import Foundation
 import IOKit.graphics
 import Vision
+import CoreImage
 
 func output(_ value: [String: Any]) -> Never {
     let data = try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
@@ -86,6 +87,16 @@ func settable(_ element: AXUIElement, _ attribute: String) -> Bool {
     return AXUIElementIsAttributeSettable(element, attribute as CFString, &value) == .success && value.boolValue
 }
 func desktop(_ request: [String: Any], _ op: String) -> Never {
+    if op == "desktop_qr" {
+        guard let value = request["text"] as? String, value.utf8.count <= 2048,
+              let filter = CIFilter(name: "CIQRCodeGenerator") else { fail("qr_unavailable") }
+        filter.setValue(value.data(using: .utf8), forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        guard let image = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 7, y: 7)),
+              let cg = CIContext().createCGImage(image, from: image.extent),
+              let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { fail("qr_unavailable") }
+        output(["image": "data:image/png;base64," + png.base64EncodedString()])
+    }
     if op == "desktop_activity_status" {
         let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .null)
         output(["idle_s": idle.isFinite ? idle : 86400])
