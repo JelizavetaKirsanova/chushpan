@@ -481,6 +481,9 @@ class ToolRegistry:
                 profile.update(result_status=decoded["result_status"])
             result = _dump(decoded)
         notify("result", decoded)
+        if observer := getattr(self, "analytics", None):
+            if isinstance(decoded, dict):
+                observer.observe_tool(name, decoded)
         return result
 
     async def _call(self, name: str, arguments: dict[str, Any] | str | None) -> str:

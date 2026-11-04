@@ -176,6 +176,7 @@ def explicit_request(name: str, arguments: dict, text: str) -> bool:
         return bool(re.match(verb, command)) and app_mentioned(arguments.get("name", ""), command)
     if name == "manage_window":
         verbs = {
+            "close": r"закрой|close",
             "focus": r"переключ|покажи|выбери|активируй|focus|switch",
             "minimize": r"сверни|сворачивай|minimize",
             "restore": r"разверни|восстанови|покажи|restore",
@@ -281,6 +282,7 @@ def risk_for(name: str, arguments: dict) -> Risk:
     if (
         name in {"remember", "forget", "mac_power"}
         or (name == "manage_app" and arguments.get("action") == "quit")
+        or (name == "manage_window" and arguments.get("action") == "close")
         or (name == "music_playlist" and arguments.get("action") == "assign")
     ):
         return Risk.DANGEROUS

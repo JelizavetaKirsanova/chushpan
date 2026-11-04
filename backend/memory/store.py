@@ -71,6 +71,9 @@ class MemoryStore:
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.executescript(SCHEMA)
         self._migrate()
+        from backend.memory.library import migrate
+
+        migrate(self)
         from backend.performance import PerformanceHistory
 
         self.performance = PerformanceHistory(self)
@@ -395,7 +398,8 @@ class MemoryStore:
 
     def facts(self) -> list[tuple[int, str]]:
         rows = self.db.execute(
-            "SELECT id, content FROM facts WHERE status='active' ORDER BY id"
+            "SELECT id, content FROM facts WHERE status='active' AND project_id IS NULL "
+            "AND (expires_at IS NULL OR expires_at>?) ORDER BY id", (_now(),)
         ).fetchall()
         return [(r["id"], r["content"]) for r in rows]
 
@@ -482,6 +486,7 @@ class MemoryStore:
         sensitive: bool = False,
         automatic: bool = False,
         expected_revision: int | None = None,
+        project_id: int | None = None,
     ) -> tuple[int, bool]:
         """Extend the existing fact table; slot updates and deduplication are atomic."""
         self._require_memory()
@@ -516,7 +521,10 @@ class MemoryStore:
                     (self.memory_digest(content), self.memory_digest("slot:" + key)),
                 )
             old = (
-                self.db.execute("SELECT * FROM facts WHERE semantic_key=?", (key,)).fetchone()
+                self.db.execute(
+                    "SELECT * FROM facts WHERE semantic_key=? AND project_id IS ?",
+                    (key, project_id),
+                ).fetchone()
                 if key
                 else None
             )
@@ -535,7 +543,9 @@ class MemoryStore:
             duplicate = next(
                 (
                     r
-                    for r in self.db.execute("SELECT id, content FROM facts")
+                    for r in self.db.execute(
+                        "SELECT id, content FROM facts WHERE project_id IS ?", (project_id,)
+                    )
                     if r["content"].casefold() == content.casefold()
                 ),
                 None,
@@ -545,8 +555,9 @@ class MemoryStore:
                 fact_id = duplicate["id"]
             else:
                 fact_id = self.db.execute(
-                    "INSERT INTO facts(content, created_at, updated_at) VALUES (?, ?, ?)",
-                    (content, _now(), _now()),
+                    "INSERT INTO facts(content, created_at, updated_at, project_id) "
+                    "VALUES (?, ?, ?, ?)",
+                    (content, _now(), _now(), project_id),
                 ).lastrowid
             if new or key:
                 self.db.execute(

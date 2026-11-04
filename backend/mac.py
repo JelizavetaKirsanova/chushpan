@@ -150,6 +150,7 @@ class MacDesktop:
                 **geometry,
             )
             labels = {
+                "close": "Окно закрыто",
                 "focus": "Окно выбрано",
                 "minimize": "Окно свёрнуто",
                 "restore": "Окно восстановлено",
@@ -231,7 +232,9 @@ class MacDesktop:
         }[action]
         return result
 
-    async def screenshot(self) -> dict:
+    async def screenshot(self, mode: str = "screen") -> dict:
+        if mode not in {"screen", "region", "window"}:
+            raise ToolError("Выбери экран, активное окно или область.")
         if not (await self.bridge.request("desktop_capture_status"))["granted"]:
             from backend.permission_policy import requests_allowed
 
@@ -249,7 +252,14 @@ class MacDesktop:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.close(fd)
         try:
-            await process("/usr/sbin/screencapture", "-x", "-t", "png", "-D", "1", str(path))
+            selection = ["-D", "1"]
+            if mode == "region":
+                selection = ["-i", "-s"]
+            elif mode == "window":
+                window = await self.bridge.request("desktop_capture_window")
+                selection = ["-l", str(window["window_id"])]
+            await process("/usr/sbin/screencapture", "-x", "-t", "png", *selection, str(path),
+                          **({"timeout": 25} if mode == "region" else {}))
             path.chmod(0o600)
             with path.open("rb") as stream:
                 header = stream.read(24)

@@ -3,6 +3,7 @@ import AppKit
 import ApplicationServices
 import Foundation
 import IOKit.graphics
+import Vision
 
 func output(_ value: [String: Any]) -> Never {
     let data = try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
@@ -85,6 +86,41 @@ func settable(_ element: AXUIElement, _ attribute: String) -> Bool {
     return AXUIElementIsAttributeSettable(element, attribute as CFString, &value) == .success && value.boolValue
 }
 func desktop(_ request: [String: Any], _ op: String) -> Never {
+    if op == "desktop_activity_status" {
+        let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .null)
+        output(["idle_s": idle.isFinite ? idle : 86400])
+    }
+    if op == "desktop_ocr" {
+        guard let path = request["path"] as? String,
+              path.hasSuffix(".png"), FileManager.default.fileExists(atPath: path) else { fail("invalid_image") }
+        let recognition = VNRecognizeTextRequest()
+        recognition.recognitionLevel = .accurate
+        recognition.recognitionLanguages = ["ru-RU", "en-US"]
+        recognition.usesLanguageCorrection = true
+        do {
+            try VNImageRequestHandler(url: URL(fileURLWithPath: path)).perform([recognition])
+            let observations = recognition.results ?? []
+            let lines: [[String: Any]] = observations.prefix(200).compactMap { observation in
+                guard let candidate = observation.topCandidates(1).first else { return nil }
+                let box = observation.boundingBox
+                return ["text": String(candidate.string.prefix(500)), "confidence": candidate.confidence,
+                        "box": [box.minX, box.minY, box.width, box.height]]
+            }
+            output(["ok": true, "lines": lines, "mode": "local_ocr"])
+        } catch { fail("ocr_unavailable") }
+    }
+    if op == "desktop_capture_window" {
+        guard AXIsProcessTrusted(), let app = NSWorkspace.shared.frontmostApplication else { fail("accessibility_permission") }
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        guard let focused = attr(root, kAXFocusedWindowAttribute), CFGetTypeID(focused) == AXUIElementGetTypeID() else { fail("window_unavailable") }
+        let title = text(focused as! AXUIElement, kAXTitleAttribute)
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        let candidates = windows.filter { ($0[kCGWindowOwnerPID as String] as? Int32) == app.processIdentifier
+            && ($0[kCGWindowName as String] as? String ?? "") == title
+            && ($0[kCGWindowLayer as String] as? Int) == 0 }
+        guard candidates.count == 1, let number = candidates[0][kCGWindowNumber as String] as? Int else { fail("window_ambiguous") }
+        output(["window_id": number])
+    }
     if op == "desktop_displays" {
         var ids = [CGDirectDisplayID](repeating: 0, count: 32)
         var count: UInt32 = 0
@@ -182,7 +218,15 @@ func desktop(_ request: [String: Any], _ op: String) -> Never {
         }
         return candidates.count == 1 ? candidates[0] : window
     }
-    if action == "focus" {
+    if action == "close" {
+        guard let button = attr(window, kAXCloseButtonAttribute), CFGetTypeID(button) == AXUIElementGetTypeID(),
+              AXUIElementPerformAction(button as! AXUIElement, kAXPressAction as CFString) == .success else { fail("window_close_unavailable") }
+        let closed = waitFor {
+            let fresh = attr(root, kAXWindowsAttribute) as? [AXUIElement] ?? []
+            return !fresh.contains { CFEqual($0, window) }
+        }
+        guard closed else { fail("window_close_not_verified") }
+    } else if action == "focus" {
         guard AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success,
               app.activate(options: []), waitFor({
                   app.isActive && attr(root, kAXFocusedWindowAttribute).map { CFEqual($0, window) } == true

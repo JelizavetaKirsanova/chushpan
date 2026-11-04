@@ -55,6 +55,11 @@ def build_registry(
     from backend.tools.weather import WeatherService, weather_tools
     from backend.vision import vision_tools
 
+    if desktop is None:
+        from backend.mac import MacDesktop
+
+        desktop = MacDesktop(s)
+
     enabled = set(s.tools.enabled)
     tools: list[Tool] = []
     led = LEDStrip(s) if s.led.enabled and "system" in enabled else None
@@ -153,6 +158,7 @@ def build_registry(
     )
     registry.memory = profile
     registry.mac_agent = agent
+    registry.desktop = desktop
     registry.youtube_video = video
     if store is not None:
         from backend.automation.service import Automations

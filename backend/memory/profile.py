@@ -238,6 +238,14 @@ class ProfileMemory:
             if policy.automatic == "ask":
                 self.propose(value, category, key)
                 continue
+            previous = self.store.db.execute(
+                "SELECT content FROM facts WHERE semantic_key=? AND project_id IS NULL",
+                (key,),
+            ).fetchone()
+            if (previous and previous["content"].casefold() != value.casefold()
+                    and not re.search(r"\bтеперь\b|\bбольше\b|^нет[, ]|на самом деле", text, re.I)):
+                self.propose(value, category, key)
+                continue
             self.store.save_memory(
                 value,
                 category=category,
@@ -263,10 +271,35 @@ class ProfileMemory:
         policy = MemoryPolicy.model_validate(self.store.preference("settings", "memory") or {})
         cutoff = (datetime.now(UTC) - timedelta(days=policy.temporary_days)).isoformat()
         query = tokens(text)
+        from backend.memory.library import log_access, search
+
+        # Select one explicit project scope from the conversation binding; global
+        # retrieval never scans other projects or all historical facts.
+        c = request_context.get()
+        project = None
+        if c:
+            bound = self.store.db.execute(
+                "SELECT p.project_id FROM memory_project_conversations p JOIN dialogue_sessions s "
+                "ON s.conversation_id=p.conversation_id WHERE s.session_id=?",
+                (c.device.session_id,),
+            ).fetchone()
+            project = bound[0] if bound else None
+        candidates = search(self.store, text, project, 128, context=True)
+        globals_ = [dict(r) for r in self.store.db.execute(
+            "SELECT * FROM facts WHERE project_id IS NULL AND status='active' AND "
+            "semantic_key IN ('response_style','chushpan:mobile') LIMIT 8"
+        )]
+        if re.search(r"продолжим|вчера делали|активн.{0,8}проект", text, re.I):
+            candidates += [dict(r) for r in self.store.db.execute(
+                "SELECT * FROM facts WHERE project_id IS ? AND category='project' "
+                "AND status='active' ORDER BY updated_at DESC LIMIT 16", (project,)
+            )]
         rows = [
             r
-            for r in self.store.memories()
+            for r in {r["id"]: r for r in candidates + globals_}.values()
             if r["status"] == "active"
+            and r["confirmed"]
+            and (r["expires_at"] is None or r["expires_at"] > _now())
             and r["category"] not in policy.excluded
             and (r["category"] not in {"episode", "habit"} or r["updated_at"] >= cutoff)
             and not r["sensitive"]
@@ -307,6 +340,7 @@ class ProfileMemory:
                 del self.selected[next(iter(self.selected))]
         else:
             self.selected.pop(self.binding(), None)
+        log_access(self.store, result)
         return result
 
     def route(self, text: str) -> dict | None:

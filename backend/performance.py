@@ -113,6 +113,8 @@ class PerformanceHistory:
 
     def save(self, profile):
         row = profile.snapshot()
+        if observer := getattr(self, "analytics", None):
+            observer.observe_trace(row)
         try:
             with self.store.memory_transaction():
                 self.store.db.execute(

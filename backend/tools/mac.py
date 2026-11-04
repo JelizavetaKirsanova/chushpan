@@ -68,6 +68,7 @@ def mac_tools(s: Settings, desktop: MacDesktop | None = None) -> list[Tool]:
                     "type": "string",
                     "enum": [
                         "focus",
+                        "close",
                         "minimize",
                         "restore",
                         "maximize",
@@ -123,6 +124,7 @@ def mac_tools(s: Settings, desktop: MacDesktop | None = None) -> list[Tool]:
             "По явной просьбе сохранить PNG основного экрана локально и вернуть путь. "
             "Не анализирует изображение и никуда его не отправляет. Нужен Screen Recording.",
             mac.screenshot,
+            {"mode": {"type": "string", "enum": ["screen", "window", "region"]}},
             reply=reply,
         ),
         Tool(
