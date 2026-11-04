@@ -44,6 +44,7 @@ export class Link {
   automations(value: object): void { this.post({type: 'automations', value}); }
   settings(value: object): void { this.post({type:'settings_center',value}); }
   devices(value: object): void { this.post({type:'devices',value}); }
+  cinema(value: object): void { this.post({type:'cinema',value}); }
   history(value = 0): void { this.post({type: "history", value}); }
   historySearch(value: object): void { this.post({type: 'history_search', value}); }
   dashboard(value: object): void { this.post({type: 'dashboard', value}); }

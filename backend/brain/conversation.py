@@ -699,6 +699,7 @@ class Conversation:
                         control_session=self.controls,
                         binding=(context.binding, self.id),
                         comfortable_brightness=self.s.led.comfortable_brightness,
+                        cinema=getattr(self.tools, "cinema", None),
                     )
                     if self.s.locale.lang == "ru"
                     else None

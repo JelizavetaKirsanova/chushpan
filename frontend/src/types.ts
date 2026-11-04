@@ -124,6 +124,7 @@ export interface ExportedEvent {
 }
 
 type HudPayload =
+  | import('./cinema').CinemaEvent
   | import('./settings_center').SettingsEvent
   | import('./devices').DevicesEvent
   | import('./automations').AutomationsEvent

@@ -146,7 +146,7 @@ function disclosure(f: ReturnType<typeof fixture>, selector: string) {
 
 test('reference editor keeps navigation, inline controls, tags and advanced disclosure', async()=>{
   const f=fixture();try {
-    assert.deepEqual([...f.window.document.querySelectorAll('.workspace-nav > button[data-view]')].map(n=>n.getAttribute('data-view')),['home','automations','devices','performance','settings']);
+    assert.deepEqual([...f.window.document.querySelectorAll('.workspace-nav > button[data-view]')].map(n=>n.getAttribute('data-view')),['home','automations','devices','cinema','performance','settings']);
     assert.equal(f.window.document.querySelector('.permissions-page'),null);
     assert.ok(f.window.document.querySelector('.settings-page .permission-settings'));
     f.button('+ Создать сценарий');
@@ -227,7 +227,7 @@ test('reopening saved actions keeps rows compact, supports reorder and preserves
 
 test('primary navigation selects its parent and keeps chat history and memory reachable',async()=>{
   const f=fixture();try {
-    const destinations=['home','automations','devices','performance','settings'];
+    const destinations=['home','automations','devices','cinema','performance','settings'];
     for(const view of destinations){
       (f.window.document.querySelector(`.workspace-nav [data-view="${view}"]`)! as unknown as HTMLButtonElement).click();
       assert.equal(f.window.document.querySelector('.hud')!.getAttribute('data-view'),view);

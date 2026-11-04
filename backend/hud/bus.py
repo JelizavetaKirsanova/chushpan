@@ -40,6 +40,7 @@ STICKY = {
     "voice_settings",
     "settings_center",
     "devices",
+    "cinema",
 }
 TRANSCRIPT_LINES = 8
 QUEUE_SIZE = 512  # ~15 s of audio levels; a stalled client loses the oldest events

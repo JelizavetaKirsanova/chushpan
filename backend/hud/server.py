@@ -7,11 +7,12 @@ import contextlib
 import json
 import logging
 import socket
+import sqlite3
 import webbrowser
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from backend.config import ROOT_DIR, Settings
@@ -40,6 +41,7 @@ REQUESTS: dict[str, type] = {
     "automations": dict,
     "settings_center": dict,
     "devices": dict,
+    "cinema": dict,
 }
 RECONNECT_S = 1.5  # an already open HUD page reconnects within this; then no new tab
 
@@ -63,6 +65,24 @@ def create_app(bus: HudBus, origins: set[str], dist: Path = DIST_DIR, native=Non
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     if native is not None:
         native.routes(app)
+
+    @app.post("/cinema/progress/{token}")
+    async def cinema_progress(token: str, request: Request) -> Response:
+        cinema = getattr(bus, "cinema", None)
+        if not cinema or len(token) > 64:
+            return Response(status_code=403)
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 4096:
+                return Response(status_code=413)
+        try:
+            accepted = await cinema.telemetry(
+                token, request.headers.get("origin"), json.loads(body)
+            )
+        except (ValueError, TypeError, sqlite3.Error):
+            accepted = False
+        return Response(status_code=204 if accepted else 403)
 
     @app.websocket("/ws")
     async def events(ws: WebSocket) -> None:
@@ -153,6 +173,7 @@ class HudServer:
         if port == 0:
             port = sock.getsockname()[1]
             self.s.server.port = port
+        self.bus.cinema_url = f"http://127.0.0.1:{port}"
         app = create_app(self.bus, allowed_origins(host, port), native=self.native)
         config = uvicorn.Config(app, log_level="warning", lifespan="off", ws_ping_interval=None)
         self._server = Server(config)

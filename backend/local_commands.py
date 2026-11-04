@@ -5,7 +5,11 @@ import re
 from backend.security import command_text, local_app_name
 
 
-def route(text: str, *, control_session=None, binding=None, comfortable_brightness=None):
+def route(
+    text: str, *, control_session=None, binding=None, comfortable_brightness=None, cinema=None
+):
+    if cinema is not None and (cinema_route := cinema.route(text)):
+        return cinema_route
     if control_session is not None:
         plan = control_session.plan(text, binding, comfortable_brightness)
         if plan is not None:

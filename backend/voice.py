@@ -637,6 +637,9 @@ class VoiceLoop:
             is not None
         )
         automations = getattr(registry, "automations", None)
+        cinema = getattr(registry, "cinema", None)
+        if cinema and cinema.session and cinema.route(text):
+            control_context = True
         if not control_context and automations and automations.recognize(text)["scenario_id"]:
             control_context = True
         # A separately spoken wake word grants just the first request in its short window.
@@ -2180,6 +2183,8 @@ async def _run_voice(
         tools.automations.bind(bus, conv)
     if tools.devices:
         tools.devices.bind(bus, conv)
+    if tools.cinema:
+        tools.cinema.bind(bus, conv)
     export_button(s, bus, store, conv)
     stt = WhisperSTT(s.stt.model, s.stt_language, s.stt_hint, s.resources.mlx_cache_mb)
     speaker = make_speaker(s)
@@ -2449,6 +2454,8 @@ async def _run_voice(
             await tools.automations.close()
         if tools.devices:
             await tools.devices.close()
+        if tools.cinema:
+            await tools.cinema.close()
         if window:
             await window.close()
         if server:

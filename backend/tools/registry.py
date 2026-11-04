@@ -341,6 +341,7 @@ class ToolRegistry:
         self._execution_id = 0
         self.availability = {}
         self.devices = None
+        self.cinema = None
         for tool in tools:
             self.add(tool)
 

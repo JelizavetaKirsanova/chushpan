@@ -161,4 +161,8 @@ def build_registry(
         from backend.devices.service import Devices
 
         registry.devices = Devices(registry, s, store)
+        if "media" in enabled:
+            from backend.cinema.service import Cinema
+
+            registry.cinema = Cinema(registry, s, store)
     return registry
