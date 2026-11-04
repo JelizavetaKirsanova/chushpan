@@ -82,7 +82,7 @@ for await(const line of createInterface({input:process.stdin})) {
       await hud.locator('.cinema-content .cinema-personal-rating').filter({hasText:'9.5'}).waitFor();
       await hud.locator('.cinema-tabs').getByRole('button',{name:'Каталог',exact:true}).click();
       const restored=await target.evaluate(card=>({top:card.getBoundingClientRect().top,scroll:card.closest('.workspace-page').scrollTop}));
-      if(Math.abs(before.top-restored.top)>2||Math.abs(before.scroll-restored.scroll)>2)throw Error('Returning from favorites changed catalogue scroll');
+      if(Math.abs(before.top-restored.top)>2||Math.abs(before.scroll-restored.scroll)>2)throw Error(`Returning from favorites changed catalogue scroll: ${JSON.stringify({before,restored})}`);
       const keys=await hud.locator('.cinema-catalogue-grid .cinema-card').evaluateAll(cards=>cards.map(card=>card.dataset.catalogueKey));if(new Set(keys).size!==keys.length)throw Error('Duplicate catalogue cards');
       const search=hud.locator('.cinema-search input');await search.fill('Interstellar');
       await hud.getByRole('heading',{name:'Поиск: Interstellar',exact:true}).waitFor();

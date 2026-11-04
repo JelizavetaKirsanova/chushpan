@@ -75,7 +75,7 @@
 .cinema-library-badge { font-size: 10px; color: #bfa2dc; min-height: 1.5em; margin: 6px 0 0; }
 .cinema-page button.cinema-favorite { position: absolute; top: 9px; right: 9px; z-index: 1; width: 33px; height: 33px; display: grid; place-items: center; padding: 0; font-size: 23px; line-height: 1; background: #11101b8c; border: 1px solid #ffffff18; border-radius: 10px; color: #f2e4ff; backdrop-filter: blur(12px); }
 .cinema-page button.cinema-favorite[aria-pressed=true] { color: #d191ff; background: #3c235780; }
-.cinema-card .cinema-card-actions { position: absolute; left: 8px; right: 8px; top: 8px; z-index: 2; margin: 0; padding-right: 38px; opacity: 0; pointer-events: none; transition: opacity .15s; }
+.cinema-card .cinema-card-actions { position: absolute; left: 8px; right: 48px; top: 8px; z-index: 2; margin: 0; padding-right: 0; opacity: 0; pointer-events: none; transition: opacity .15s; }
 .cinema-card:hover .cinema-card-actions, .cinema-card:focus-within .cinema-card-actions, .cinema-card:has(details[open]) .cinema-card-actions { opacity: 1; pointer-events: auto; }
 .cinema-card-actions > button:not(.primary) { display: none; }
 .cinema-card .cinema-context { margin-left: 0; background: #11101bd9; border-radius: 9px; }
@@ -131,3 +131,5 @@
   .cinema-dialog .cinema-detail-summary { grid-template-columns: 105px minmax(0, 1fr); gap: 16px; }
 }
 @media (prefers-reduced-motion: reduce) { .cinema-poster img, .cinema-card .cinema-card-actions { transition: none; } }
+.cinema-tabs { position: sticky; top: -1px; z-index: 5; background: #0b0b13ed; backdrop-filter: blur(16px); padding: 10px 0; }
+.cinema-page .cinema-search input, .cinema-page .cinema-composer input { background: transparent; border: 0; }

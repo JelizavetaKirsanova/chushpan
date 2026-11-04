@@ -114,7 +114,7 @@ export class CinemaCatalogueView {
     if(previous&&previous.preferences.recommendations_show_watched!==data.preferences.recommendations_show_watched){this.previews.delete('recommended');if(this.filters.feed==='recommended'){this.window.reset();this.loadPage(1);}this.renderPreviews();this.observe();}
   }
   mount(parent:HTMLElement):void {
-    if(this.root.parentElement!==parent){parent.replaceChildren(this.root);if(!this.mounted){this.render();this.mounted=true;}this.start();this.observe();}
+    if(this.root.parentElement!==parent){parent.replaceChildren(this.root);if(!this.mounted){this.render();this.mounted=true;}this.renderPreviews();this.renderList();this.start();this.observe();}
   }
   search(query:string,debounce=true):void {
     window.clearTimeout(this.debounce);this.debounce=undefined;this.filters.query=query.trim();this.filters.feed='browse';this.mode=query.trim()||this.hasFilters()?'list':'home';this.window.reset();
@@ -134,7 +134,7 @@ export class CinemaCatalogueView {
     if(this.mode==='home'){this.loadPreview('trending');this.observe();}
     else if(this.debounce===undefined&&!this.window.pages.size&&!this.window.pending.size&&!this.window.error)this.loadPage(1);
   }
-  intent(value:{query?:string;genre?:string}):void {this.filters={...blankFilters(),...value};this.callbacks.query?.(this.filters.query);this.mode='list';this.window.reset();if(this.root.isConnected){this.render();this.loadPage(1);}}
+  intent(value:{query?:string;genre?:string}):void {this.filters={...blankFilters(),...value,genres:value.genre?[value.genre]:[],genre:''};this.callbacks.query?.(this.filters.query);this.mode='list';this.window.reset();if(this.root.isConnected){this.render();this.loadPage(1);}}
   private hasFilters():boolean {const f=this.filters;return !!(f.genre||f.genres.length||f.year||f.rating||f.country||f.original_language||f.kind!=='all'||f.sort!=='popularity');}
   private button(label:string,action:()=>void,cls=''):HTMLButtonElement {const b=node('button',label,cls);b.type='button';b.disabled=!this.online;b.onclick=action;return b;}
   private select(label:string,options:[string,string][],value:string,change:(value:string)=>void):HTMLElement {

@@ -67,6 +67,7 @@ MIGRATIONS = [
         t.updated_at,t.updated_at,CASE WHEN u.favorite THEN t.updated_at END
       FROM cinema_library_v2 u JOIN cinema_titles t ON t.id=u.title_id;
     DROP TABLE cinema_library_v2;
+    CREATE INDEX cinema_tmdb_identity ON cinema_titles(catalogue_key) WHERE catalogue_key!='';
     """,
 ]
 
@@ -163,11 +164,26 @@ class CinemaStore:
         identity = f"{entry.kind}:{entry.year}:" + re.sub(r"[\W_]+", "", entry.title.casefold())
         with self.db:
             row = self.db.execute(
-                "SELECT id FROM cinema_titles WHERE identity=? "
-                "AND (catalogue_key='' OR catalogue_key=?) "
-                "OR (catalogue_key!='' AND catalogue_key=?) ORDER BY catalogue_key DESC",
-                (identity, entry.catalogue_key, entry.catalogue_key),
+                "SELECT id FROM cinema_titles WHERE catalogue_key!='' AND catalogue_key=?",
+                (entry.catalogue_key,),
             ).fetchone()
+            if not row:
+                # Legacy/manual titles have a normalized name identity. Only merge
+                # that fallback if no conflicting TMDB identity is known.
+                candidates = self.db.execute(
+                    "SELECT id,title,catalogue_key FROM cinema_titles WHERE kind=? AND year=?",
+                    (entry.kind, entry.year),
+                )
+                row = next(
+                    (
+                        (candidate["id"],)
+                        for candidate in candidates
+                        if (not entry.catalogue_key or not candidate["catalogue_key"])
+                        and re.sub(r"[\W_]+", "", candidate["title"].casefold())
+                        == re.sub(r"[\W_]+", "", entry.title.casefold())
+                    ),
+                    None,
+                )
             if title_id:
                 existing = self.title(title_id)
                 if existing["kind"] != entry.kind:
@@ -533,9 +549,10 @@ class CinemaStore:
                 (episode_id, stamp, ep["title_id"]),
             )
             self.db.execute(
-                "UPDATE cinema_library SET status=?,completed_at=COALESCE(?,completed_at) "
+                "UPDATE cinema_library SET status=?,updated_at=?,"
+                "completed_at=COALESCE(?,completed_at) "
                 "WHERE title_id=?",
-                (status, stamp if status == "watched" else None, ep["title_id"]),
+                (status, stamp, stamp if status == "watched" else None, ep["title_id"]),
             )
             self.db.execute(
                 "INSERT INTO cinema_history(episode_id,link_id,position,duration,event,created_at) "

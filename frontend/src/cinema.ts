@@ -128,7 +128,7 @@ export class CinemaView {
     const sort=this.select([['recent',this.tab==='watching'?'По последнему просмотру':'По дате добавления'],['rating','По моей оценке'],['title','По названию']],this.librarySort);sort.onchange=()=>{this.librarySort=sort.value;this.render();};
     const layout=this.button(this.list?'Карточки':'Список',()=>{this.list=!this.list;this.render();});
     toolbar.append(types,this.field('Сортировка медиатеки',sort),layout,this.button('+ Добавить',()=>this.addForm()));section.append(toolbar);
-    const filters=el('details','','cinema-display');filters.append(el('summary','Поиск и фильтры'));
+    const filters=el('details','','cinema-display');filters.open=this.content.querySelector<HTMLDetailsElement>('.cinema-display')?.open??false;filters.append(el('summary','Поиск и фильтры'));
     const search=this.input(this.libraryQuery,'search');search.placeholder='Название в этом списке';search.onchange=()=>{this.libraryQuery=search.value;this.render();};filters.append(this.field('Поиск в списке',search));
     if(this.tab==='watched'){
       const options=[['0','Любая'],...Array.from({length:19},(_,i)=>[String(1+i*.5),String(1+i*.5)])] as [string,string][];
