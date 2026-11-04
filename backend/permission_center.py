@@ -389,6 +389,7 @@ class PermissionCenter:
         key = item["id"]
         if not item["supported"]:
             return item
+        item["last_error"] = None
         if key == "automation_system_events" and self.s.media.provider != "spotify":
             return item
         if key == "background_voice":
@@ -429,6 +430,11 @@ class PermissionCenter:
                 "identity": details.get("identities", {}).get(key, details.get("identity", {})),
             }
             value = details.get(key)
+            if key == "calendar" and value == "write_only":
+                item["last_error"] = (
+                    "Разрешено только добавление событий. Для чтения календаря нужен полный "
+                    "доступ EventKit; можно запросить его кнопкой ниже."
+                )
             if key == "location" and details.get("location_services") is False:
                 value = "denied"
                 item["last_error"] = "Службы геолокации macOS выключены."
@@ -581,7 +587,15 @@ class PermissionCenter:
                     )
                 if identifier is None or item["id"] == identifier:
                     self.record(item, action)
-            if action == "request" and not message and selected["status"] == "denied":
+            if (
+                action == "request"
+                and not message
+                and (
+                    selected["status"] == "denied"
+                    or identifier == "calendar"
+                    and selected["details"].get("calendar") == "write_only"
+                )
+            ):
                 message = (await asyncio.to_thread(platform.open_privacy, selected["pane"]))[
                     "message"
                 ]

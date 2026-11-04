@@ -420,3 +420,94 @@ def test_background_voice_requires_both_running_loop_and_microphone_grant(center
     assert (
         next(i for i in third["items"] if i["id"] == "background_voice")["status"] == "check_needed"
     )
+
+
+@pytest.mark.parametrize("decision", ["write_only", "granted"])
+def test_calendar_write_only_requests_full_read_and_rechecks(center, decision):
+    state = "write_only"
+
+    async def permission(request=None):
+        nonlocal state
+        if request == "calendar":
+            state = decision
+        return {"calendar": state, "location": "not_determined"}
+
+    center.personal.permissions = AsyncMock(side_effect=permission)
+    result = asyncio.run(center.report("request", "calendar"))
+    calendar = next(i for i in result["items"] if i["id"] == "calendar")
+    assert calendar["status"] == ("granted" if decision == "granted" else "check_needed")
+    assert (
+        sum(
+            c.kwargs.get("request") == "calendar"
+            for c in center.personal.permissions.call_args_list
+        )
+        == 1
+    )
+    if decision == "write_only":
+        assert "добавление" in calendar["last_error"]
+        assert "calendar" in result["message"]
+    else:
+        assert calendar["last_error"] is None
+
+
+@pytest.mark.parametrize("decision", ["granted", "unknown"])
+def test_morning_direct_route_requests_consent_once_and_keeps_order(decision):
+    from backend.brain.morning import MorningRoutine
+    from backend.media.music_safari import SafariMusicTab
+
+    async def run():
+        events = []
+        settings = Settings()
+        settings.media.youtube_music.transport = "safari"
+        tab = SafariMusicTab(settings)
+
+        async def native(request):
+            events.append(request["op"])
+            if request["op"] == "probe":
+                return {"automation": "not_determined"}
+            return {"automation": decision}
+
+        tab._native = AsyncMock(side_effect=native)
+        if decision == "unknown":
+            from unittest.mock import patch
+
+            context = patch(
+                "backend.permission_policy.wait_for_grant",
+                AsyncMock(return_value={"automation": "unknown"}),
+            )
+            opener = patch("backend.desktop.platform.open_privacy", return_value={"opened": True})
+        else:
+            from contextlib import nullcontext
+
+            context = opener = nullcontext()
+
+        async def launch():
+            assert requests_allowed.get()
+            await tab._ready()
+
+        async def volume(**kwargs):
+            events.append("volume")
+            return {"ok": True}
+
+        async def play(**kwargs):
+            events.append("play")
+            return {"ok": True}
+
+        media = SimpleNamespace(
+            youtube=SimpleNamespace(app=SimpleNamespace(launch=launch)),
+            media_volume=volume,
+            play_music=play,
+        )
+        morning = MorningRoutine(settings, None, None, media)
+        with context, opener:
+            result = await morning.start_music()
+        assert not requests_allowed.get()
+        assert events.count("request") == 1
+        if decision == "granted":
+            assert result is None
+            assert events == ["probe", "request", "volume", "play"]
+        else:
+            assert "Музыку включить не удалось" in result
+            assert "play" not in events
+
+    asyncio.run(run())

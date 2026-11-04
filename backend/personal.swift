@@ -116,6 +116,7 @@ func locationAuthorization() -> String {
 func calendarAuthorization() -> String {
     switch EKEventStore.authorizationStatus(for: .event) {
     case .fullAccess: return "granted"
+    case .writeOnly: return "write_only"
     case .notDetermined: return "not_determined"
     case .denied: return "denied"
     case .restricted: return "restricted"
@@ -126,7 +127,7 @@ func calendarAuthorization() -> String {
 func calendarEvents(requestAccess: Bool, day: String? = nil) async -> [String: Any] {
     let store = EKEventStore()
     var status = EKEventStore.authorizationStatus(for: .event)
-    if status == .notDetermined && requestAccess {
+    if (status == .notDetermined || status == .writeOnly) && requestAccess {
         do {
             _ = try await store.requestFullAccessToEvents()
         } catch {
@@ -192,11 +193,12 @@ DispatchQueue.main.async {
     Task { @MainActor in
         if parts.contains("permissions") {
             let requested = requestAccess ? request["permission"] as? String : nil
-            if requested == "calendar" && calendarAuthorization() == "not_determined" {
+            if requested == "calendar" && ["not_determined", "write_only"].contains(calendarAuthorization()) {
                 _ = try? await EKEventStore().requestFullAccessToEvents()
             }
             func permissionResult() -> [String: Any] {
                 return ["calendar": calendarAuthorization(), "location": locationAuthorization(),
+                        "calendar_status_raw": EKEventStore.authorizationStatus(for: .event).rawValue,
                         "location_services": CLLocationManager.locationServicesEnabled(),
                         "identity": ["bundle_id": Bundle.main.bundleIdentifier ?? "local.chushpan.personal",
                                      "executable": CommandLine.arguments[0], "pid": getpid(), "ppid": getppid()]]

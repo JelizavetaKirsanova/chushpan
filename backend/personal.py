@@ -95,7 +95,7 @@ class PersonalContext:
             return result
         status = await self.permissions()
         for key in blocked:
-            if status.get(key) != "denied":
+            if status.get(key) not in {"denied", "write_only"}:
                 continue
             from backend.desktop.platform import open_privacy
 
@@ -196,6 +196,8 @@ class PersonalContext:
                 )
             ).get("permissions", {})
             result[key] = value.get(key, "unknown")
+            if key == "calendar":
+                result["calendar_status_raw"] = value.get("calendar_status_raw")
             result["identities"][key] = value.get("identity", {})
             if key == "location":
                 result["location_services"] = value.get("location_services")

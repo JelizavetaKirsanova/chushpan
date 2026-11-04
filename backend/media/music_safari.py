@@ -193,7 +193,7 @@ class SafariMusicTab:
         permission = await probe()
         if permission.get("automation") != "granted" and requests_allowed.get():
             permission = await self.permission(request=True, target=target, launch=True)
-            if permission.get("automation") == "denied":
+            if permission.get("automation") != "granted":
                 from backend.desktop.platform import open_privacy
 
                 await asyncio.to_thread(open_privacy, "automation")
@@ -230,7 +230,7 @@ class SafariMusicTab:
         self._permission = await self._native({"op": "probe"})
         if self._permission.get("automation") != "granted" and requests_allowed.get():
             self._permission = await self.request_access()
-            if self._permission.get("automation") == "denied":
+            if self._permission.get("automation") != "granted":
                 from backend.desktop.platform import open_privacy
 
                 await asyncio.to_thread(open_privacy, "automation")

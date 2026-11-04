@@ -145,6 +145,11 @@ class MorningRoutine:
     async def start_music(self) -> str | None:
         if not self.media or not self.media.youtube:
             return "Не удалось включить любимый плейлист: YouTube Music недоступен."
+        from backend.permission_policy import requests_allowed
+
+        # This direct route is called only for the explicit morning greeting,
+        # after finish_reply verifies the session and completes speech playback.
+        consent = requests_allowed.set(True)
         try:
             # Set and confirm the quiet level BEFORE playback. If the slider is unavailable,
             # fail instead of briefly blasting music at the previously saved level.
@@ -162,3 +167,5 @@ class MorningRoutine:
             return None
         except ToolError as exc:
             return f"Музыку включить не удалось. {exc}"
+        finally:
+            requests_allowed.reset(consent)
