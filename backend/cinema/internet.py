@@ -1,4 +1,4 @@
-"""Official Brave Search, followed by independent, robots-aware page verification.
+"""Official search providers, followed by independent, robots-aware page verification.
 
 Search snippets never establish identity, legality, region access or playable video.
 New domains need an explicit choice unless an official IMDb-linked homepage verifies them.
@@ -240,9 +240,10 @@ class PageVerifier:
 
 
 class InternetSearch:
-    def __init__(self, credentials, http, *, provider=None):
+    def __init__(self, credentials, http, *, provider=None, name="Brave"):
         self.credentials, self.http = credentials, http
         self.provider = provider or BraveSearch(credentials)
+        self.name = name
 
     @staticmethod
     def queries(query, prefs):
@@ -284,16 +285,21 @@ class InternetSearch:
         return queries
 
     async def search(self, query, prefs, sources):
-        if not self.credentials.configured:
+        if not await asyncio.to_thread(lambda: self.credentials.configured):
             return [
                 self.error(
-                    "Brave Search API не подключён. Добавь ключ в настройках «Поиск и "
+                    f"{self.name} Search API не подключён. Добавь ключ в настройках «Поиск и "
                     "Safari». Поиск по всему интернету не выполнялся."
                 )
             ]
         urls = []
         try:
-            for q in self.queries(query, prefs):
+            queries = (
+                self.provider.queries(query, prefs)
+                if callable(getattr(self.provider, "queries", None))
+                else self.queries(query, prefs)
+            )
+            for q in queries:
                 urls.extend(
                     await self.provider.search(
                         q, prefs.watch_region, "ru" if prefs.prefer_russian else "en"
@@ -354,11 +360,10 @@ class InternetSearch:
                 )
             ]
 
-    @staticmethod
-    def error(message):
+    def error(self, message):
         return {
             "source_id": "",
-            "source_name": "Поиск в интернете · Brave",
+            "source_name": "Поиск в интернете · " + self.name,
             "kind": "error",
             "url": "",
             "match": 0.0,
@@ -374,3 +379,20 @@ class InternetSearch:
             "manual_allowed": False,
             "capabilities": {"mode": "Официальный поисковый API"},
         }
+
+
+class SearchProviders:
+    """Explicit provider selection; never silently spend credits on a fallback."""
+
+    def __init__(self, http, providers):
+        self.http, self.providers = http, providers
+        self.selected = "tavily"
+
+    async def search(self, query, prefs, sources):
+        self.selected = prefs.search_provider
+        engine = self.providers[self.selected]
+        engine.http = self.http
+        return await engine.search(query, prefs, sources)
+
+    def error(self, message):
+        return self.providers[self.selected].error(message)

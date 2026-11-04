@@ -23,11 +23,13 @@ from backend.cinema.adapters import (
 from backend.cinema.catalogue import Catalogue
 from backend.cinema.commands import command
 from backend.cinema.filters import with_preferences
-from backend.cinema.internet import InternetSearch, SearchCredentials
+from backend.cinema.internet import InternetSearch, SearchCredentials, SearchProviders
+from backend.cinema.keychain import TavilyCredentials
 from backend.cinema.models import CatalogueQuery, Source, origin
 from backend.cinema.personal import Recommender, score, signal, taste
 from backend.cinema.sources import SourceManager, capabilities
 from backend.cinema.store import CinemaStore
+from backend.cinema.tavily import TavilySearch
 from backend.cinema.tmdb import TMDB, TMDBCredentials, TMDBRateLimited
 from backend.context import RequestContext, request_scope, voice_addressed
 from backend.mac_agent import LocalMacAgent
@@ -72,7 +74,17 @@ class Cinema:
         self.catalogue = Catalogue(self.tmdb)
         self.sources = SourceManager(self.db, opener=self.opener)
         self.search_credentials = SearchCredentials(settings.data_path / "integrations")
-        self.sources.web = InternetSearch(self.search_credentials, self.sources.http)
+        self.tavily_credentials = TavilyCredentials()
+        self.tavily = TavilySearch(self.tavily_credentials)
+        self.sources.web = SearchProviders(
+            self.sources.http,
+            {
+                "tavily": InternetSearch(
+                    self.tavily_credentials, self.sources.http, provider=self.tavily, name="Tavily"
+                ),
+                "brave": InternetSearch(self.search_credentials, self.sources.http),
+            },
+        )
         self.watch_confirmations = {}
         self.open_approvals = {}
         self.watch_sequence = 0
@@ -198,6 +210,12 @@ class Cinema:
         if not self.bus or self.closed:
             return
         data = await self.db("snapshot")
+        tavily_status = await asyncio.to_thread(self.tavily_credentials.status)
+        provider = data["preferences"]["search_provider"]
+        search_status = {
+            "tavily": tavily_status,
+            "brave": {"configured": self.search_credentials.configured, "storage": "private_file"},
+        }
         for source in data["sources"]:
             source["capabilities"] = capabilities(source)
         self.bus.publish(
@@ -218,8 +236,9 @@ class Cinema:
                 "matches": self.matches,
                 "tmdb": {"configured": self.tmdb.credentials.configured},
                 "internet_search": {
-                    "provider": "brave",
-                    "configured": self.search_credentials.configured,
+                    "provider": provider,
+                    "configured": search_status[provider]["configured"],
+                    "providers": search_status,
                 },
                 "next_episode": self.next_episode,
                 **extra,
@@ -273,6 +292,26 @@ class Cinema:
                     if self.search_credentials.configured
                     else "Ключ Brave Search API удалён."
                 )
+            elif op == "tavily_credentials":
+                await asyncio.to_thread(self.tavily_credentials.save, value.get("credential", ""))
+                self.sources.invalidate()
+                self.message = (
+                    "Ключ Tavily сохранён в macOS Keychain."
+                    if value.get("credential")
+                    else "Ключ Tavily удалён из macOS Keychain."
+                )
+            elif op == "tavily_check":
+                try:
+                    connection = await self.tavily.check()
+                except ToolError as exc:
+                    connection = {
+                        "provider": "tavily",
+                        "ok": False,
+                        "code": getattr(exc, "code", "keychain"),
+                        "message": str(exc),
+                    }
+                await self.publish(search_connection=connection)
+                return
             elif op == "cinema_diagnostics":
                 await self.publish(
                     cinema_diagnostics=await self.db(

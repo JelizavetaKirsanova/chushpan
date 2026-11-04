@@ -1,6 +1,6 @@
 [project]
 name = "my-jarvis"
-version = "0.2.9"
+version = "0.2.10"
 description = "A Russian voice assistant for macOS with Gemini and local Ollama fallback"
 readme = "README.md"
 license = "MIT"
@@ -22,6 +22,7 @@ dependencies = [
     "uvicorn>=0.32",
     "websockets>=13",
     "pywebview>=6.2",
+    "pyobjc-framework-Security>=12.2.2,<13; sys_platform == 'darwin'",
     "livekit>=1.0",
     "scipy>=1.13",
     "ytmusicapi>=1.12.3,<2",

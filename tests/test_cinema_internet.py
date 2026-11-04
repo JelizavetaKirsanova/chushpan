@@ -291,7 +291,8 @@ def test_web_discovery_new_domain_consent_then_one_click_saved_episode(tmp_path)
         try:
             service.search_credentials.save("BSA_fixture_search_key")
             service.sources.http = HTTP()
-            service.sources.web.provider = provider
+            service.sources.web.providers["brave"].provider = provider
+            await service.db("configure", {"search_provider": "brave"})
             await service.db(
                 "save_source", {"name": "KION", "base_url": "https://kion.ru", "enabled": False}
             )

@@ -310,3 +310,28 @@ test('remembered Safari playback remains manually resumable when anonymous check
     const resume=button(f,'Продолжить в Safari');assert.equal(resume.disabled,false);resume.click();assert.equal(sent.at(-1).op,'source_result_open');assert.equal(sent.at(-1).result_id,'last');
   }finally{f.window.happyDOM.abort();}
 });
+
+test('Tavily is the default search provider and its key is cleared before submission',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);view.receive(snapshot());button(f,'Настройки').click();button(f,'Поиск и Safari').click();
+    const provider=f.window.document.querySelector('select[aria-label="Провайдер интернет-поиска"]');assert.equal(provider.value,'tavily');
+    const key=f.window.document.querySelector('input[aria-label="Ключ Tavily API"]');assert.equal(key.type,'password');assert.equal(key.autocomplete,'new-password');key.value='tvly-fixture-ui-key';key.closest('form').dispatchEvent(new f.window.Event('submit',{cancelable:true}));
+    assert.equal(sent.at(-1).op,'tavily_credentials');assert.equal(sent.at(-1).credential,'tvly-fixture-ui-key');assert.equal(key.value,'');
+    assert.match(f.window.document.querySelector('.cinema-settings-pane').textContent,/macOS Keychain/);
+    button(f,'Проверить подключение').click();assert.equal(sent.at(-1).op,'tavily_check');assert.equal(sent.at(-1).credential,undefined);
+    view.receive({...snapshot(),search_connection:{provider:'tavily',ok:false,code:'credits_exhausted',message:'Лимит кредитов Tavily исчерпан.'}});
+    assert.match(f.window.document.querySelector('[data-tavily-connection]').textContent,/Лимит кредитов/);assert.equal(f.window.document.querySelector('[data-tavily-connection]').dataset.error,'true');
+    provider.value='brave';provider.closest('form').dispatchEvent(new f.window.Event('submit',{cancelable:true}));assert.equal(sent.at(-1).values.search_provider,'brave');
+    button(f,'Удалить ключ Tavily').click();assert.equal(sent.at(-1).op,'tavily_credentials');assert.equal(sent.at(-1).credential,'');
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('connection success shows only usage and keeps the existing Brave setup',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);
+    const initial={...snapshot(),internet_search:{provider:'tavily',configured:true,providers:{tavily:{configured:true,storage:'keychain',state:'saved'},brave:{configured:true,storage:'private_file'}}}};view.receive(initial);button(f,'Настройки').click();button(f,'Поиск и Safari').click();
+    assert.match(f.window.document.querySelector('.cinema-settings-pane').textContent,/Ключ Tavily|Ключ сохранён в macOS Keychain/);assert.match(f.window.document.querySelector('.cinema-settings-pane').textContent,/Ключ Brave сохранён/);
+    view.receive({...initial,search_connection:{provider:'tavily',ok:true,code:'connected',message:'Tavily подключён.',usage:4,limit:100}});
+    assert.match(f.window.document.querySelector('[data-tavily-connection]').textContent,/4 \/ 100/);assert.equal(f.window.document.querySelector('input[aria-label="Ключ Tavily API"]').value,'');
+  }finally{f.window.happyDOM.abort();}
+});

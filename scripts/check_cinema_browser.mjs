@@ -146,6 +146,11 @@ for await(const line of createInterface({input:process.stdin})) {
       const ids=await hud.locator('.cinema-source-card').evaluateAll(rows=>rows.map(r=>r.dataset.sourceId));
       if(ids.length>1){await hud.locator('.cinema-source-card').nth(1).dragTo(hud.locator('.cinema-source-card').nth(0));await hud.waitForFunction(id=>document.querySelector('.cinema-source-card')?.dataset.sourceId===id,ids[1]);}
       if(request.screenshot)await hud.screenshot({path:request.screenshot.replace('.png','-sources.png'),fullPage:true});
+      await hud.getByRole('button',{name:'Поиск и Safari',exact:true}).click();
+      if(await hud.getByLabel('Провайдер интернет-поиска',{exact:true}).inputValue()!=='tavily')throw Error('Tavily is not the default provider');
+      if(await hud.getByLabel('Ключ Tavily API',{exact:true}).getAttribute('type')!=='password')throw Error('Tavily key input is not masked');
+      await hud.getByRole('button',{name:'Проверить подключение',exact:true}).waitFor();
+      if(request.screenshot){await hud.setViewportSize({width:1200,height:1000});await hud.getByRole('heading',{name:'Tavily Search API',exact:true}).scrollIntoViewIfNeeded();await hud.screenshot({path:request.screenshot.replace('.png','-search.png'),fullPage:true});}
       await hud.getByRole('button',{name:'Рекомендации',exact:true}).click();await hud.getByLabel('Учитывать мои оценки',{exact:true}).waitFor();
       await hud.getByRole('button',{name:'Приватность и данные',exact:true}).click();
       const downloading=hud.waitForEvent('download');await hud.getByRole('button',{name:'Экспортировать медиатеку',exact:true}).click();const downloaded=await downloading;
@@ -167,12 +172,12 @@ for await(const line of createInterface({input:process.stdin})) {
       await hud.getByRole('button',{name:'Смотрю',exact:true}).click();
       await hud.locator('.cinema-content').getByRole('button',{name:'Встроенный тест',exact:true}).click();
       await hud.locator('dialog').getByRole('button',{name:'Найти и смотреть',exact:true}).click();
-      await hud.getByRole('button',{name:'Выбрать вручную',exact:true}).waitFor();
+      const manual=hud.locator('dialog[open]').getByRole('button',{name:/^(Выбрать вручную|Продолжить в Safari)$/});await manual.waitFor();
       if(await hud.locator('.cinema-embedded video').count())throw Error('Unknown cost was opened automatically under free-only');
       const dialog=hud.locator('dialog[open]');if((await dialog.boundingBox()).width>620)throw Error('Source search is too wide');
       if(request.screenshot)await hud.screenshot({path:request.screenshot.replace('.png','-compact.png'),fullPage:true});
       await hud.setViewportSize({width:390,height:844});if(await hud.evaluate(()=>document.documentElement.scrollWidth>innerWidth))throw Error('Compact search overflows mobile viewport');
-      await hud.getByRole('button',{name:'Выбрать вручную',exact:true}).click();
+      await manual.click();
       await hud.locator('.cinema-embedded video').waitFor();
       await hud.getByText('Воспроизведение подтверждено.',{exact:true}).waitFor();
       await hud.getByRole('button',{name:'Сохранить и закрыть плеер',exact:true}).click();
