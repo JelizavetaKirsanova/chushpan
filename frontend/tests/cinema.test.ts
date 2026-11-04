@@ -11,6 +11,8 @@ function fixture() {
   const code=stripTypeScriptTypes(readFileSync(new URL('../src/cinema.ts',import.meta.url),'utf8'),{mode:'transform'})
     .replace(/^import .*;\n/gm,'').replace(/^export /gm,'')+'\nexports.api={CinemaView,playbackTime,parsePlaybackTime,viewingProgress};';
   const sandbox={exports:{} as Record<string,any>,document:window.document,window,icon:()=>'<svg></svg>'};
+  const catalogue=stripTypeScriptTypes(readFileSync(new URL('../src/cinema_catalogue.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'');
+  vm.runInNewContext(`{${catalogue}globalThis.CinemaCatalogueView=CinemaCatalogueView;}`,sandbox);
   vm.runInNewContext(code,sandbox);
   return {window,...sandbox.exports.api};
 }
@@ -82,9 +84,9 @@ test('catalogue displays metadata and applies filters in app',()=>{
     assert.match(f.window.document.body.textContent??'',/TMDB Film|триллер|120 мин|8.0/);
     const input=f.window.document.querySelector('.cinema-search input') as HTMLInputElement;input.value='Триллер';input.dispatchEvent(new f.window.Event('input'));
     const genre=f.window.document.querySelector('[aria-label="Жанр"]') as HTMLSelectElement;genre.value='триллер';genre.dispatchEvent(new f.window.Event('change'));
-    const form=f.window.document.querySelector('.cinema-filters')!;form.dispatchEvent(new f.window.Event('submit',{cancelable:true}));
-    assert.equal(sent.at(-1).op,'search');assert.equal(sent.at(-1).query,'Триллер');assert.equal(sent.at(-1).genre,'триллер');
-    button(f,'Хочу посмотреть').click(); // tab; catalogue quick action is found explicitly below
+    const form=f.window.document.querySelector('.cinema-catalogue-filters')!;form.dispatchEvent(new f.window.Event('submit',{cancelable:true}));
+    assert.equal(sent.at(-1).op,'catalogue_page');assert.equal(sent.at(-1).filters.query,'Триллер');assert.equal(sent.at(-1).filters.genre,'триллер');
+    view.receive({...snapshot(),catalogue_page:{request_id:sent.at(-1).request_id,page:1,items:[match],next_page:null,total_pages:1}});button(f,'Хочу посмотреть').click(); // tab; catalogue quick action is found explicitly below
     button(f,'Каталог').click();const quick=[...f.window.document.querySelectorAll('.cinema-card button')].find((n:any)=>n.textContent==='Хочу посмотреть') as HTMLButtonElement;quick.click();assert.equal(sent.at(-1).op,'catalogue_add');
   }finally{f.window.happyDOM.abort();}
 });

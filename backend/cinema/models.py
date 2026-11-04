@@ -137,6 +137,11 @@ class Metadata(BaseModel):
     rating: float = Field(default=0, ge=0, le=10, allow_inf_nan=False)
     seasons: list[dict] = Field(default_factory=list, max_length=1000)
     episode_count: int = Field(default=0, ge=0)
+    original_title: str = Field(default="", max_length=500)
+    original_language: str = ""
+    countries: list[str] = Field(default_factory=list)
+    release_date: str = ""
+    popularity: float = Field(default=0, ge=0, allow_inf_nan=False)
 
 
 class Preferences(BaseModel):
@@ -148,3 +153,34 @@ class Preferences(BaseModel):
     devices: dict[str, Literal["mac", "airplay"]] = Field(default_factory=dict)
     watch_region: str = Field(default="EE", pattern=r"^[A-Z]{2}$")
     save_progress: bool = True
+    recommendations_show_watched: bool = False
+
+
+class CatalogueQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    feed: Literal[
+        "browse",
+        "trending",
+        "popular_movies",
+        "popular_series",
+        "new",
+        "upcoming",
+        "top",
+        "scifi",
+        "comedy",
+        "horror",
+        "thriller",
+        "mystery",
+        "drama",
+        "animation",
+        "recommended",
+    ] = "browse"
+    query: str = Field(default="", max_length=200)
+    page: int = Field(default=1, ge=1, le=500)
+    kind: Literal["all", "movie", "series"] = "all"
+    genre: str = Field(default="", max_length=80)
+    year: int = Field(default=0, ge=0, le=2200)
+    rating: float = Field(default=0, ge=0, le=10, allow_inf_nan=False)
+    country: str = Field(default="", pattern=r"^(?:[A-Z]{2})?$")
+    original_language: str = Field(default="", pattern=r"^(?:[a-z]{2})?$")
+    sort: Literal["popularity", "rating", "date", "title"] = "popularity"

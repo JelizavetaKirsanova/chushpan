@@ -328,6 +328,34 @@ class CinemaStore:
             if query.casefold() in (item := self.detail(row[0]))["title"].casefold()
         ]
 
+    def recommendation_context(self, kind="all"):
+        rows = self.db.execute(
+            "SELECT t.catalogue_key,t.kind,t.title,t.year,u.status,u.favorite,"
+            "u.user_rating,t.updated_at "
+            "FROM cinema_titles t JOIN cinema_library u ON u.title_id=t.id "
+            "ORDER BY u.favorite DESC,"
+            "COALESCE(u.user_rating,0) DESC,t.updated_at DESC"
+        ).fetchall()
+        seeds = [
+            r["catalogue_key"]
+            for r in rows
+            if r["catalogue_key"].startswith("tmdb:")
+            and (kind == "all" or r["kind"] == kind)
+            and (
+                r["favorite"]
+                or (r["user_rating"] or 0) >= 7
+                or r["status"] in {"watching", "watched"}
+            )
+            and (r["user_rating"] is None or r["user_rating"] >= 7)
+        ][:2]
+        excluded = [r["catalogue_key"] for r in rows if r["status"] == "watched"]
+        excluded_titles = [
+            (r["kind"], " ".join(r["title"].casefold().split()), r["year"])
+            for r in rows
+            if r["status"] == "watched"
+        ]
+        return {"seeds": seeds, "excluded": excluded, "excluded_titles": excluded_titles}
+
     def latest(self, kind=None, unfinished=False):
         row = self.db.execute(
             "SELECT e.title_id FROM cinema_episodes e JOIN cinema_titles t ON t.id=e.title_id "

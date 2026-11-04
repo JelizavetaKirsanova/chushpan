@@ -1,11 +1,17 @@
 """Official TMDB metadata only. Credentials never enter snapshots, tools or URLs in logs."""
 
 import asyncio
+import hashlib
 import json
 import logging
+import math
 import os
 import re
 import tempfile
+import time
+from collections import OrderedDict
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import httpx
@@ -30,6 +36,23 @@ class CredentialLogFilter(logging.Filter):
 
 
 logging.getLogger("httpx").addFilter(CredentialLogFilter())
+
+
+class TMDBRateLimited(ToolError):
+    def __init__(self, seconds):
+        self.retry_after = max(1, math.ceil(seconds))
+        super().__init__(f"Лимит TMDB: повтори через {self.retry_after} с.")
+
+
+def retry_delay(value):
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            seconds = (parsedate_to_datetime(value) - datetime.now(UTC)).total_seconds()
+        except (ValueError, TypeError, OverflowError):
+            seconds = 5
+    return max(1, math.ceil(seconds)) if math.isfinite(seconds) else 5
 
 
 class TMDBCredentials:
@@ -72,38 +95,94 @@ class TMDBCredentials:
 
 
 class TMDB:
-    def __init__(self, credentials, *, transport=None):
+    CACHE_LIMIT = 160
+    CACHE_TTL = 900
+
+    def __init__(self, credentials, *, transport=None, request_interval=0.25, clock=time.monotonic):
         self.credentials, self.transport = credentials, transport
         self.genre_cache = {}
+        self.cache = OrderedDict()
+        self.inflight = {}
+        self.rate_lock = asyncio.Lock()
+        self.request_slots = asyncio.Semaphore(3)
+        self.request_interval, self.clock = request_interval, clock
+        self.next_request = self.blocked_until = 0
+
+    def clear_cache(self):
+        self.cache.clear()
+        self.genre_cache.clear()
+
+    async def close(self):
+        tasks = list(self.inflight.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def get(self, path, **params):
         credential = await asyncio.to_thread(self.credentials.read)
+        # Partition the cache by credential without retaining it in cache keys.
+        key = (hashlib.sha256(credential.encode()).digest(), path, tuple(sorted(params.items())))
+        cached = self.cache.get(key)
+        if cached and cached[0] > self.clock():
+            self.cache.move_to_end(key)
+            return cached[1]
+        if key not in self.inflight:
+            self.inflight[key] = asyncio.create_task(
+                self._cached_request(key, credential, path, params)
+            )
+        return await asyncio.shield(self.inflight[key])
+
+    async def _cached_request(self, key, credential, path, params):
+        try:
+            data = await self._fetch(credential, path, params)
+            self.cache[key] = (self.clock() + self.CACHE_TTL, data)
+            self.cache.move_to_end(key)
+            while len(self.cache) > self.CACHE_LIMIT:
+                self.cache.popitem(last=False)
+            return data
+        finally:
+            self.inflight.pop(key, None)
+
+    async def _fetch(self, credential, path, params):
         headers = {"Accept": "application/json"}
+        params = dict(params)
         if re.fullmatch(r"[a-fA-F0-9]{32}", credential):
             params["api_key"] = credential
         else:
             headers["Authorization"] = f"Bearer {credential}"
         try:
-            async with httpx.AsyncClient(
-                base_url="https://api.themoviedb.org/3/",
-                timeout=8,
-                transport=self.transport,
-                follow_redirects=False,
-            ) as client:
-                response = await client.get(
-                    path, params={"language": "ru-RU", **params}, headers=headers
-                )
+            async with self.request_slots:
+                async with self.rate_lock:
+                    if self.blocked_until > self.clock():
+                        raise TMDBRateLimited(math.ceil(self.blocked_until - self.clock()))
+                    await asyncio.sleep(max(0, self.next_request - self.clock()))
+                    if self.blocked_until > self.clock():
+                        raise TMDBRateLimited(math.ceil(self.blocked_until - self.clock()))
+                    self.next_request = self.clock() + self.request_interval
+                async with httpx.AsyncClient(
+                    base_url="https://api.themoviedb.org/3/",
+                    timeout=8,
+                    transport=self.transport,
+                    follow_redirects=False,
+                ) as client:
+                    response = await client.get(
+                        path, params={"language": "ru-RU", **params}, headers=headers
+                    )
             if response.status_code in {401, 403}:
                 raise ToolError("TMDB отклонил ключ. Проверь настройки интеграции.")
             if response.status_code == 429:
-                raise ToolError("Лимит TMDB исчерпан. Повтори поиск позже.")
+                delay = retry_delay(response.headers.get("Retry-After", "5"))
+                self.blocked_until = max(self.blocked_until, self.clock() + delay)
+                raise TMDBRateLimited(delay)
             response.raise_for_status()
             data = response.json()
-            if not isinstance(data, dict):
+            expected = (
+                list if path in {"configuration/countries", "configuration/languages"} else dict
+            )
+            if not isinstance(data, expected) or len(response.content) > 2_000_000:
                 raise ValueError()
             return data
         except (httpx.HTTPError, ValueError, TypeError):
-            # Never forward httpx exceptions: request URLs may contain the API key.
             raise ToolError(
                 "TMDB временно недоступен. Личная медиатека сохранена локально."
             ) from None
@@ -118,7 +197,9 @@ class TMDB:
         date = row.get("release_date" if kind == "movie" else "first_air_date") or ""
         poster = row.get("poster_path") or ""
         return {
-            "title": row.get("title" if kind == "movie" else "name") or "Без названия",
+            "title": row.get("title" if kind == "movie" else "name")
+            or row.get("original_title" if kind == "movie" else "original_name")
+            or "Без названия",
             "kind": "movie" if kind == "movie" else "series",
             "year": int(date[:4]) if date[:4].isdigit() else 0,
             "catalogue_key": f"tmdb:{kind}:{int(row['id'])}",
@@ -141,55 +222,33 @@ class TMDB:
                     if s.get("season_number", 0) > 0
                 ],
                 "episode_count": row.get("number_of_episodes") or 0,
+                "original_title": row.get("original_title" if kind == "movie" else "original_name")
+                or "",
+                "original_language": row.get("original_language") or "",
+                "countries": row.get("origin_country")
+                or [c["iso_3166_1"] for c in row.get("production_countries", [])],
+                "release_date": date,
+                "popularity": row.get("popularity") or 0,
             },
         }
 
-    async def search(self, query="", *, kind="all", genre="", year=0, rating=0):
-        if kind not in {"all", "movie", "series"}:
-            raise ToolError("Выбери фильмы или сериалы.")
-        if not 0 <= int(year) <= 2200 or not 0 <= float(rating) <= 10:
-            raise ToolError("Проверь год и рейтинг.")
-        if len(query) > 200 or len(genre) > 80:
-            raise ToolError("Слишком длинный запрос.")
-        kinds = ["movie", "tv"] if kind == "all" else ["movie" if kind == "movie" else "tv"]
+    async def search(self, query="", *, kind="all", genre="", year=0, rating=0, page=1):
+        # Compatibility for deterministic voice commands and existing catalogue adapters.
+        from backend.cinema.catalogue import Catalogue
+        from backend.cinema.models import CatalogueQuery
 
-        async def search_kind(media):
-            genres = await self.genres(media)
-            params = {"include_adult": "false"}
-            genre_id = next(
-                (key for key, name in genres.items() if name.casefold() == genre.casefold()), None
+        result = await Catalogue(self).page(
+            CatalogueQuery(
+                query=query,
+                kind=kind,
+                genre=genre,
+                year=year,
+                rating=rating,
+                page=page,
+                sort="rating",
             )
-            if genre and genre_id is None:
-                return []
-            if query.strip():
-                params["query"] = query.strip()
-                if year:
-                    params["year" if media == "movie" else "first_air_date_year"] = int(year)
-                endpoint = f"search/{media}"
-            else:
-                endpoint = f"discover/{media}"
-                params.update({"sort_by": "popularity.desc", "vote_average.gte": float(rating)})
-                if genre_id:
-                    params["with_genres"] = genre_id
-                if year:
-                    params[
-                        "primary_release_year" if media == "movie" else "first_air_date_year"
-                    ] = int(year)
-            data = await self.get(endpoint, **params)
-            return [
-                self.metadata(row, media, genres)
-                for row in data.get("results", [])[:20]
-                if not row.get("adult")
-                and (not genre_id or genre_id in row.get("genre_ids", []))
-                and (row.get("vote_average") or 0) >= float(rating)
-            ]
-
-        results = await asyncio.gather(*(search_kind(media) for media in kinds))
-        return sorted(
-            [row for group in results for row in group],
-            key=lambda row: row["metadata"]["rating"],
-            reverse=True,
         )
+        return result["items"]
 
     @staticmethod
     def identity(key):
@@ -200,7 +259,11 @@ class TMDB:
 
     async def detail(self, key):
         kind, identifier = self.identity(key)
-        return self.metadata(await self.get(f"{kind}/{identifier}"), kind)
+        row = await self.get(f"{kind}/{identifier}")
+        if not row.get("overview"):
+            fallback = await self.get(f"{kind}/{identifier}", language="en-US")
+            row = {**row, "overview": fallback.get("overview") or ""}
+        return self.metadata(row, kind)
 
     async def episodes(self, key, season):
         kind, identifier = self.identity(key)

@@ -13,6 +13,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import httpx
 import uvicorn
 from starlette.routing import Mount
 from starlette.staticfiles import StaticFiles
@@ -20,6 +21,7 @@ from starlette.staticfiles import StaticFiles
 from backend.brain.conversation import Conversation
 from backend.cinema.adapters import PLAYER_ERRORS, HTML5Adapter
 from backend.cinema.service import Cinema
+from backend.cinema.tmdb import TMDB, TMDBCredentials
 from backend.config import Settings
 from backend.hud.bus import HudBus
 from backend.hud.server import allowed_origins, create_app
@@ -59,7 +61,7 @@ class NoLLM:
         yield  # pragma: no cover
 
 
-async def check(module, screenshot, chromium=None):
+async def check(module, screenshot, chromium=None, catalogue=False):
     with tempfile.TemporaryDirectory(prefix="chushpan-cinema-") as folder:
         path = Path(folder)
         media = path / "fixture"
@@ -109,12 +111,75 @@ async def check(module, screenshot, chromium=None):
         bus.cinema_url = base
         settings = Settings(language="ru-RU")
 
+        failures = set()
+
+        def catalogue_fixture(request):
+            if "/genre/" in request.url.path:
+                return httpx.Response(
+                    200,
+                    json={
+                        "genres": [
+                            {"id": 53, "name": "триллер"},
+                            {"id": 878, "name": "фантастика"},
+                            {"id": 35, "name": "комедия"},
+                        ]
+                    },
+                )
+            if "configuration/countries" in request.url.path:
+                return httpx.Response(200, json=[{"iso_3166_1": "US", "english_name": "США"}])
+            if "configuration/languages" in request.url.path:
+                return httpx.Response(200, json=[{"iso_639_1": "en", "name": "Английский"}])
+            page = int(request.url.params.get("page", 1))
+            tv = "/tv" in request.url.path
+            if (
+                page == 3
+                and not tv
+                and page not in failures
+                and ("/discover/" in request.url.path or "/popular" in request.url.path)
+            ):
+                failures.add(page)
+                return httpx.Response(503)
+            rows = [
+                {
+                    "id": (2000 if tv else 1000) + (page - 1) * 20 + i,
+                    "title": f"История {i + (page - 1) * 20}",
+                    "name": f"Сериал {i + (page - 1) * 20}",
+                    "original_title": f"Original story {i}",
+                    "original_name": f"Series {i}",
+                    "release_date": "2025-01-01",
+                    "first_air_date": "2025-01-01",
+                    "poster_path": f"/fixture{i}.jpg",
+                    "original_language": "en",
+                    "genre_ids": [53, 878, 35],
+                    "vote_average": 7 + i / 20,
+                    "popularity": 100 - i,
+                    "overview": "Тестовые метаданные для проверки каталога.",
+                }
+                for i in range(1, 21)
+            ]
+            return httpx.Response(
+                200, json={"page": page, "total_pages": 8, "total_results": 160, "results": rows}
+            )
+
         def setup():
             memory = MemoryStore(path / "assistant.sqlite")
             tools = ToolRegistry()
             tools.mac_agent = LocalMacAgent()
+            tmdb = None
+            if catalogue:
+                credentials = TMDBCredentials(path / "integrations")
+                credentials.save("fixture-token-for-catalogue")
+                tmdb = TMDB(
+                    credentials,
+                    transport=httpx.MockTransport(catalogue_fixture),
+                    request_interval=0,
+                )
             cinema = Cinema(
-                tools, settings, memory, adapter_factory=lambda _: HTML5Adapter(bridge, bridge.open)
+                tools,
+                settings,
+                memory,
+                adapter_factory=lambda _: HTML5Adapter(bridge, bridge.open),
+                tmdb=tmdb,
             )
             tools.cinema = cinema
             conv = Conversation(settings, NoLLM(), memory, tools=tools)
@@ -195,6 +260,8 @@ async def check(module, screenshot, chromium=None):
             async with cinema.lock:
                 await cinema.stop_tracking()
             await bridge.request("ui", url=base, screenshot=screenshot)
+            if catalogue:
+                await bridge.request("catalogue_ui", url=base, screenshot=screenshot)
             print(
                 json.dumps(
                     {
@@ -211,6 +278,7 @@ async def check(module, screenshot, chromium=None):
                             "local_voice_no_llm",
                             "hud_desktop_mobile",
                         ],
+                        "catalogue_tested": catalogue,
                         "safari_tested": False,
                         "external_sources_tested": False,
                     }
@@ -234,5 +302,8 @@ if __name__ == "__main__":
     parser.add_argument("--playwright", required=True)
     parser.add_argument("--screenshot")
     parser.add_argument("--chromium", help="Optional installed Chromium executable")
+    parser.add_argument(
+        "--catalogue", action="store_true", help="Also test paged catalogue with MockTransport"
+    )
     args = parser.parse_args()
-    asyncio.run(check(args.playwright, args.screenshot, args.chromium))
+    asyncio.run(check(args.playwright, args.screenshot, args.chromium, args.catalogue))

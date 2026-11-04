@@ -17,10 +17,11 @@ from backend.cinema.adapters import (
     SafariBridge,
     open_page,
 )
+from backend.cinema.catalogue import Catalogue
 from backend.cinema.commands import command
-from backend.cinema.models import origin
+from backend.cinema.models import CatalogueQuery, origin
 from backend.cinema.store import CinemaStore
-from backend.cinema.tmdb import TMDB, TMDBCredentials
+from backend.cinema.tmdb import TMDB, TMDBCredentials, TMDBRateLimited
 from backend.context import RequestContext, request_scope, voice_addressed
 from backend.mac_agent import LocalMacAgent
 from backend.security import ActionDenied, Risk, command_text
@@ -60,6 +61,8 @@ class Cinema:
         self.message = ""
         self.tmdb = tmdb or TMDB(TMDBCredentials(settings.data_path / "integrations"))
         self.catalogues = {"TMDB": self.tmdb}
+        self.catalogue = Catalogue(self.tmdb)
+        self.catalogue_requests = set()
         self.matches = []
         self.focused = None
         self.search_sequence = 0
@@ -249,6 +252,8 @@ class Cinema:
                 return
             elif op == "tmdb":
                 await asyncio.to_thread(self.tmdb.credentials.save, value["credential"])
+                self.tmdb.clear_cache()
+                self.catalogue = Catalogue(self.tmdb)
                 self.matches = []
                 self.message = "Настройки TMDB сохранены."
                 await self.publish(saved="tmdb")
@@ -260,6 +265,23 @@ class Cinema:
             elif op == "catalogue_add":
                 detail = await self.tmdb.detail(value["key"])
                 result = await self.db("add", detail)
+                values = value.get("values")
+                if values:
+                    result = await self.db("update_title", result["id"], values)
+            elif op == "catalogue_config":
+                try:
+                    config = await self.catalogue.configuration()
+                    await self.publish(catalogue_config=config)
+                except (ToolError, ValueError, KeyError, TypeError) as exc:
+                    await self.publish(
+                        catalogue_config_error=str(exc)
+                        if isinstance(exc, ToolError)
+                        else "Не удалось загрузить справочники TMDB. Повтори позже."
+                    )
+                return
+            elif op == "catalogue_page":
+                await self.catalogue_page(value)
+                return
             elif op == "season":
                 item = await self.db("title", value["id"])
                 episodes = await self.tmdb.episodes(item["catalogue_key"], value["season"])
@@ -375,6 +397,43 @@ class Cinema:
             )
             await self.publish(error=message)
 
+    async def catalogue_page(self, value):
+        request_id = str(value.get("request_id", ""))[:100]
+        if request_id in self.catalogue_requests:
+            return
+        self.catalogue_requests.add(request_id)
+        try:
+            query = CatalogueQuery.model_validate(value.get("filters", {}))
+            context = (
+                await self.db("recommendation_context", query.kind)
+                if query.feed == "recommended"
+                else {}
+            )
+            prefs = await self.db("preferences")
+            result = await self.catalogue.page(
+                query,
+                seeds=context.get("seeds", []),
+                excluded=set(context.get("excluded", []))
+                if not prefs.recommendations_show_watched
+                else set(),
+                excluded_titles=context.get("excluded_titles", [])
+                if not prefs.recommendations_show_watched
+                else [],
+            )
+            await self.publish(catalogue_page={"request_id": request_id, **result})
+        except (ToolError, ValueError, TypeError, KeyError) as exc:
+            await self.publish(
+                catalogue_page={
+                    "request_id": request_id,
+                    "error": str(exc)
+                    if isinstance(exc, ToolError)
+                    else "Проверь фильтры каталога.",
+                    "retry_after": exc.retry_after if isinstance(exc, TMDBRateLimited) else 0,
+                }
+            )
+        finally:
+            self.catalogue_requests.discard(request_id)
+
     async def call(self, name, args, text):
         token = voice_addressed.set(True)
         try:
@@ -405,7 +464,9 @@ class Cinema:
             }
         if action == "discover":
             self.matches = await self.tmdb.search(genre=parsed["genre"], kind="movie")
-            await self.publish(navigate=True, active_tab="catalogue")
+            await self.publish(
+                navigate=True, active_tab="catalogue", catalogue_intent={"genre": parsed["genre"]}
+            )
             return {
                 "message": "Нашла в TMDB: "
                 + ", ".join(item["title"] for item in self.matches[:3])
@@ -442,7 +503,11 @@ class Cinema:
                 ]
                 if len(exact) != 1:
                     self.matches = matches
-                    await self.publish(navigate=True, active_tab="catalogue")
+                    await self.publish(
+                        navigate=True,
+                        active_tab="catalogue",
+                        catalogue_intent={"query": parsed["title"]},
+                    )
                     return {
                         "message": "Выбери нужный фильм в каталоге: название неоднозначно "
                         "или не найдено. Добавление пока не выполнено.",
@@ -790,4 +855,6 @@ class Cinema:
             await self.stop_tracking()
             self.closed = True
         await self.db("close")
+        if hasattr(self.tmdb, "close"):
+            await self.tmdb.close()
         self.worker.shutdown(wait=False)
