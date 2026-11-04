@@ -34,6 +34,7 @@ export class CinemaFilterDrawer {
         value.oninput=()=>{draft[key]=Number(value.value)||0;draft.year=0;range.value=String(draft[key]||fallback);count();};range.oninput=()=>{draft[key]=Number(range.value);draft.year=0;value.value=range.value;count();};bounds.append(field(label,value));ranges.append(range);
       }years.append(bounds,ranges);form.append(years);
       const rating=node('input');rating.type='range';rating.min='0';rating.max='10';rating.step='.5';rating.value=String(draft.rating);const ratingValue=node('output',`от ${draft.rating.toFixed(1)}`);rating.oninput=()=>{draft.rating=Number(rating.value);ratingValue.textContent=`от ${draft.rating.toFixed(1)}`;count();};form.append(field('Минимальный рейтинг TMDB',rating),ratingValue,
+        select('Сортировка каталога',[['popularity','По популярности'],['rating','По рейтингу'],['date','По дате выхода'],['title','По названию']],draft.sort,v=>draft.sort=v),
         select('Тип контента',[['all','Всё'],['movie','Фильмы'],['series','Сериалы']],draft.kind,v=>draft.kind=v),
         select('Страна производства',[['','Любая страна'],...(config?.countries??[{id:'EE',name:'Эстония'},{id:'US',name:'США'},{id:'RU',name:'Россия'},{id:'JP',name:'Япония'}]).map(c=>[c.id,c.name] as [string,string])],draft.country,v=>draft.country=v),
         select('Язык оригинала',[['','Любой язык'],...(config?.languages??[{id:'ru',name:'Русский'},{id:'en',name:'Английский'}]).map(c=>[c.id,c.name] as [string,string])],draft.original_language,v=>draft.original_language=v));

@@ -21,6 +21,8 @@ function fixture() {
   window.HTMLElement.prototype.scrollIntoView=()=>{};
   const code=stripTypeScriptTypes(readFileSync(new URL('../src/cinema_catalogue.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'')+'\nexports.api={CinemaCatalogueView,CatalogueWindow,catalogueFeeds};';
   const sandbox={exports:{} as Record<string,any>,document:window.document,window};
+  const actions=stripTypeScriptTypes(readFileSync(new URL('../src/cinema_actions.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'');
+  vm.runInNewContext(`{${actions}globalThis.posterActions=posterActions;globalThis.syncPosterActions=syncPosterActions;}`,sandbox);
   const filters=stripTypeScriptTypes(readFileSync(new URL('../src/cinema_filters.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'');
   vm.runInNewContext(`{${filters}globalThis.CinemaFilterDrawer=CinemaFilterDrawer;globalThis.activeFilterCount=activeFilterCount;}`,sandbox);vm.runInNewContext(code,sandbox);
   return {window,observers,...sandbox.exports.api};
@@ -88,7 +90,7 @@ test('catalogue actions are explicit and recommendations hide watched items imme
     const library={id:'local',catalogue_key:'tmdb:movie:1',title:'Film 1',status:'watched',favorite:0};
     view.receive(snapshot({items:[library],catalogue_page:{request_id:first.request_id,page:1,items:[entry(1),entry(2)],next_page:null}}));
     assert.equal(f.window.document.querySelectorAll('.cinema-catalogue-grid .cinema-card').length,1);assert.doesNotMatch(f.window.document.querySelector('.cinema-catalogue-grid')!.textContent,/Film 1/);
-    click(f,'Хочу посмотреть');assert.equal(changes.at(-1).values.status,'planned');click(f,'Смотрю');assert.equal(changes.at(-1).values.status,'watching');click(f,'В избранное');assert.equal(changes.at(-1).values.favorite,true);click(f,'Смотреть');assert.equal(watched.at(-1).catalogue_key,'tmdb:movie:2');
+    f.window.document.querySelector('.cinema-quick-bookmark').click();assert.equal(changes.at(-1).values.watchlist,true);f.window.document.querySelector('.cinema-quick-watched').click();assert.equal(changes.at(-1).values.watched,true);f.window.document.querySelector('.cinema-quick-favorite').click();assert.equal(changes.at(-1).values.favorite,true);f.window.document.querySelector('.cinema-quick-play').click();assert.equal(watched.at(-1).catalogue_key,'tmdb:movie:2');
     assert.equal(sent.filter((v:any)=>v.op==='update').length,0); // The host owns SQLite actions; browsing itself cannot write statuses.
   }finally{f.window.happyDOM.abort();}
 });
@@ -143,5 +145,18 @@ test('filter drawer keeps a draft until apply and combines year range with title
     assert.equal(sent.length,before);f.window.document.querySelector('.cinema-filter-drawer').close();f.window.document.querySelector('.cinema-filter-trigger').click();assert.equal(f.window.document.querySelector('[aria-label="Только названия с русскими буквами"]').checked,true);
     const min=f.window.document.querySelector('[aria-label="Год от"]');min.value='1990';min.dispatchEvent(new f.window.Event('input'));const max=f.window.document.querySelector('[aria-label="Год до"]');max.value='2026';max.dispatchEvent(new f.window.Event('input'));
     f.window.document.querySelector('.cinema-filter-drawer form').dispatchEvent(new f.window.Event('submit',{cancelable:true}));const request=sent.at(-1);assert.equal(request.filters.year_min,1990);assert.equal(request.filters.year_max,2026);assert.equal(request.filters.russian_titles,true);assert.equal(request.filters.hide_anime,true);assert.equal(f.window.document.querySelector('dialog'),null);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('catalogue watched icon updates in place and does not propagate into poster details',()=>{
+  const f=fixture();try{
+    const {view,sent,changes}=mount(f);click(f,'Весь каталог');const request=sent.at(-1);
+    view.receive(snapshot({catalogue_page:{request_id:request.request_id,page:1,items:[entry(1)],next_page:null}}));
+    const card=f.window.document.querySelector('.cinema-catalogue-grid .cinema-card');const poster=card.querySelector('.cinema-poster-button');const mark=card.querySelector('.cinema-quick-watched');
+    let bubbled=0;card.addEventListener('click',()=>bubbled++);mark.click();assert.equal(changes.at(-1).values.watched,true);assert.equal(bubbled,0);
+    view.receive(snapshot({items:[{...entry(1),id:'saved',status:'watched',favorite:0,user_rating:8.5}]}));
+    assert.equal(card.querySelector('.cinema-poster-button'),poster);assert.equal(card.querySelector('.cinema-quick-watched'),mark);assert.equal(mark.getAttribute('aria-pressed'),'true');assert.match(mark.title,/Снять отметку/);
+    mark.click();assert.equal(changes.at(-1).values.watched,false);assert.equal(card.querySelectorAll('.cinema-poster-actions button').length,4);assert.equal(card.querySelector('details'),null);
+    view.connection(false);assert.ok([...card.querySelectorAll('.cinema-poster-actions button')].every((b:any)=>b.disabled));
   }finally{f.window.happyDOM.abort();}
 });

@@ -1,4 +1,5 @@
 import type {CinemaEvent, CinemaTitle, CatalogueTitle} from './cinema';
+import {posterActions} from './cinema_actions';
 
 export interface FilmProfile {
   watched_movies:number;watched_series:number;favorites:number;rated_count:number;average:number|null;
@@ -17,7 +18,7 @@ const make=<K extends keyof HTMLElementTagNameMap>(tag:K,text='',className=''):H
 };
 interface PersonalCallbacks {
   send:(value:object)=>void;poster:(item:CatalogueTitle|CinemaTitle)=>HTMLElement;
-  detail:(item:CatalogueTitle|CinemaTitle)=>void;change:(item:CatalogueTitle,values:object)=>void;
+  detail:(item:CatalogueTitle|CinemaTitle)=>void;change:(item:CatalogueTitle|CinemaTitle,values:object)=>void;watch:(item:CatalogueTitle|CinemaTitle)=>void;
   history:(target:HTMLElement)=>void;
 }
 
@@ -34,6 +35,7 @@ export class CinemaPersonalView {
   private error='';
   private items:CinemaTitle[]=[];
   private librarySignature='';
+  private requestedSignature='';
   constructor(private callbacks:PersonalCallbacks){}
   connection(value:boolean):void {this.online=value;this.root.querySelectorAll<HTMLButtonElement|HTMLSelectElement>('button,select').forEach(n=>n.disabled=!value);}
   private button(label:string,fn:()=>void):HTMLButtonElement {const n=make('button',label);n.type='button';n.disabled=!this.online;n.onclick=fn;return n;}
@@ -46,15 +48,17 @@ export class CinemaPersonalView {
   private load(enrich=false):void {
     if(!this.online)return;
     this.pending=`personal-${++this.sequence}`;this.error='';
+    this.requestedSignature=this.librarySignature;
     this.callbacks.send({op:enrich?'personal_enrich':this.mode==='profile'?'profile':'recommendations',request_id:this.pending,mood:this.mood});this.render();
   }
   receive(event:CinemaEvent):void {
     this.items=event.items;
     if(event.personal_recommendations){this.recommendations=event.personal_recommendations;this.pending='';this.mood=event.personal_recommendations.mood;this.render();}
-    const signature=JSON.stringify([this.items.map(i=>[i.id,i.status,i.favorite,i.user_rating]),event.preferences.personalize,event.preferences.free_only,event.preferences.recommendations_show_watched,event.preferences.recommend_ratings,event.preferences.recommend_favorites,event.preferences.recommend_history,event.preferences.russian_titles,event.preferences.hide_animation,event.preferences.hide_anime,event.preferences.hide_documentary]);
+    const signature=JSON.stringify([this.items.map(i=>[i.id,i.status,i.watchlist,i.favorite,i.user_rating]),event.preferences.personalize,event.preferences.free_only,event.preferences.recommendations_show_watched,event.preferences.recommend_ratings,event.preferences.recommend_favorites,event.preferences.recommend_history,event.preferences.russian_titles,event.preferences.hide_animation,event.preferences.hide_anime,event.preferences.hide_documentary]);
     const changed=signature!==this.librarySignature;this.librarySignature=signature;
     if(event.personal_result?.request_id===this.pending){
       this.pending='';this.error=event.personal_result.error??'';
+      if(event.personal_result.profile&&this.requestedSignature!==signature){this.profile=null;this.render();if(this.mode==='profile')this.load();return;}
       if(event.personal_result.profile)this.profile=event.personal_result.profile;
       if(event.personal_result.recommendations)this.recommendations=event.personal_result.recommendations;
       this.render();
@@ -83,9 +87,15 @@ export class CinemaPersonalView {
     for(const value of values){const row=make('div','','cinema-chart-row');const bar=make('div','','cinema-chart-bar');bar.style.setProperty('--value',`${value.count/max*100}%`);row.append(make('span',value.name),bar,make('strong',String(value.count)));row.setAttribute('aria-label',`${value.name}: ${value.count}`);panel.append(row);}
     return panel;
   }
+  private artwork(item:CinemaTitle|CatalogueTitle):HTMLElement {
+    const wrap=make('div','','cinema-poster-wrap');
+    const poster=this.button(`Открыть ${item.title}`,()=>this.callbacks.detail(item));poster.className='cinema-poster-button';poster.replaceChildren(this.callbacks.poster(item));
+    const current=()=>this.items.find(i=>'id' in item?i.id===item.id:i.catalogue_key===item.catalogue_key);
+    wrap.append(poster,posterActions(current,values=>this.callbacks.change(item,values),()=>this.callbacks.watch(item),this.online));return wrap;
+  }
   private posterShelf(title:string,items:CinemaTitle[]):HTMLElement {
     const section=make('section','','cinema-shelf');section.append(make('h3',title));const row=make('div','','cinema-carousel');
-    for(const item of items){const card=make('article','','cinema-card');const poster=this.button(`Открыть ${item.title}`,()=>this.callbacks.detail(item));poster.className='cinema-poster-button';poster.replaceChildren(this.callbacks.poster(item));const body=make('div','','cinema-card-body');body.append(make('strong',item.title),make('p',`Твоя оценка ${item.user_rating}/10`));card.append(poster,body);row.append(card);}section.append(row);return section;
+    for(const item of items){const card=make('article','','cinema-card');const body=make('div','','cinema-card-body');body.append(make('strong',item.title),make('p',`Твоя оценка ${item.user_rating}/10`));card.append(this.artwork(item),body);row.append(card);}section.append(row);return section;
   }
   private renderProfile():void {
     const p=this.profile;if(!p)return;
@@ -107,8 +117,8 @@ export class CinemaPersonalView {
     for(const error of data.errors)this.root.append(make('p',error,'cinema-form-error'));
     for(const shelf of data.shelves){const section=make('section','','cinema-shelf');section.append(make('h3',shelf.name));const row=make('div','','cinema-carousel');
       const watched=new Set(this.items.filter(i=>i.status==='watched').map(i=>i.catalogue_key));
-      for(const item of shelf.items.filter(i=>shelf.id==='rewatch'||!watched.has(i.catalogue_key))){const card=make('article','','cinema-card cinema-personal-card');const poster=this.button(`Открыть ${item.title}`,()=>this.callbacks.detail(item));poster.className='cinema-poster-button';poster.replaceChildren(this.callbacks.poster(item));const body=make('div','','cinema-card-body');body.append(make('strong',item.title),make('p',`${item.year||'—'} · ★ ${item.metadata.rating.toFixed(1)}`),make('p',item.reason,'cinema-recommendation-reason'));
-        const actions=make('div','','cinema-personal-actions');actions.append(this.button('Хочу посмотреть',()=>this.callbacks.change(item,{status:'planned'})),this.button('Уже смотрела',()=>this.callbacks.change(item,{status:'watched'})),this.button('Не интересно',()=>{this.callbacks.send({op:'recommendation_dismiss',key:item.catalogue_key});}));body.append(actions);card.append(poster,body);row.append(card);}
+      for(const item of shelf.items.filter(i=>shelf.id==='rewatch'||!watched.has(i.catalogue_key))){const card=make('article','','cinema-card cinema-personal-card');const body=make('div','','cinema-card-body');body.append(make('strong',item.title),make('p',`${item.year||'—'} · ★ ${item.metadata.rating.toFixed(1)}`),make('p',item.reason,'cinema-recommendation-reason'));
+        const actions=make('div','','cinema-personal-actions');actions.append(this.button('Не интересно',()=>{this.callbacks.send({op:'recommendation_dismiss',key:item.catalogue_key});}));body.append(actions);card.append(this.artwork(item),body);row.append(card);}
       if(!row.children.length)section.append(make('p',shelf.id==='now'?'Пока нет сохранённых источников с недавней успешной проверкой. Найди источник в карточке и сохрани его.':'Пока недостаточно данных для этой подборки. Оценки и избранное помогут её наполнить.','cinema-muted'));else section.append(row);this.root.append(section);
     }
   }

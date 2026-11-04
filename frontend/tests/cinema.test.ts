@@ -11,6 +11,8 @@ function fixture() {
   const code=stripTypeScriptTypes(readFileSync(new URL('../src/cinema.ts',import.meta.url),'utf8'),{mode:'transform'})
     .replace(/^import .*;\n/gm,'').replace(/^export /gm,'')+'\nexports.api={CinemaView,playbackTime,parsePlaybackTime,viewingProgress};';
   const sandbox={exports:{} as Record<string,any>,document:window.document,window,URL:window.URL,icon:()=>'<svg></svg>'};
+  const actions=stripTypeScriptTypes(readFileSync(new URL('../src/cinema_actions.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'');
+  vm.runInNewContext(`{${actions}globalThis.posterActions=posterActions;globalThis.syncPosterActions=syncPosterActions;}`,sandbox);
   const filters=stripTypeScriptTypes(readFileSync(new URL('../src/cinema_filters.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'');
   vm.runInNewContext(`{${filters}globalThis.CinemaFilterDrawer=CinemaFilterDrawer;globalThis.activeFilterCount=activeFilterCount;}`,sandbox);
   const catalogue=stripTypeScriptTypes(readFileSync(new URL('../src/cinema_catalogue.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'');
@@ -74,11 +76,11 @@ test('seven tabs keep lists separate and watch starts automatic discovery',()=>{
     assert.equal(f.window.document.querySelectorAll('.cinema-tabs button').length,7);
     assert.match(f.window.document.querySelector('.cinema-content').textContent,/Начато/);
     assert.doesNotMatch(f.window.document.querySelector('.cinema-content').textContent,/Отложено|Завершено/);
-    button(f,'▶ Продолжить').click();assert.equal(sent.at(-1).op,'watch');f.window.document.querySelector('dialog button[aria-label=Закрыть]').click();
+    f.window.document.querySelector('.cinema-quick-play').click();assert.equal(sent.at(-1).op,'watch');f.window.document.querySelector('dialog button[aria-label=Закрыть]').click();
     button(f,'Хочу посмотреть').click(); // the tab precedes the card quick action
     assert.match(f.window.document.querySelector('.cinema-content').textContent,/Отложено/);
-    button(f,'Смотреть').click();assert.equal(sent.at(-1).op,'watch');assert.equal(sent.at(-1).title_id,'Отложено');assert.equal(sent.at(-1).episode_id,'ep-Отложено');f.window.document.querySelector('dialog button[aria-label=Закрыть]').click();
-    button(f,'Просмотрено').click();button(f,'Пересмотреть').click();assert.equal(sent.at(-1).op,'replay');
+    f.window.document.querySelector('.cinema-quick-play').click();assert.equal(sent.at(-1).op,'watch');assert.equal(sent.at(-1).title_id,'Отложено');assert.equal(sent.at(-1).episode_id,'ep-Отложено');f.window.document.querySelector('dialog button[aria-label=Закрыть]').click();
+    button(f,'Просмотрено').click();f.window.document.querySelector('.cinema-quick-play').click();assert.equal(sent.at(-1).op,'watch');assert.equal(sent.at(-1).title_id,'Завершено');
   }finally{f.window.happyDOM.abort();}
 });
 
@@ -93,7 +95,7 @@ test('catalogue displays metadata and applies filters in app',()=>{
     const form=f.window.document.querySelector('.cinema-filter-drawer form')!;form.dispatchEvent(new f.window.Event('submit',{cancelable:true}));
     assert.equal(sent.at(-1).op,'catalogue_page');assert.equal(sent.at(-1).filters.query,'Триллер');assert.deepEqual(Array.from(sent.at(-1).filters.genres),['триллер']);
     view.receive({...snapshot(),catalogue_page:{request_id:sent.at(-1).request_id,page:1,items:[match],next_page:null,total_pages:1}});button(f,'Хочу посмотреть').click(); // tab; catalogue quick action is found explicitly below
-    button(f,'Каталог').click();const quick=[...f.window.document.querySelectorAll('.cinema-card button')].find((n:any)=>n.textContent==='Хочу посмотреть') as HTMLButtonElement;quick.click();assert.equal(sent.at(-1).op,'catalogue_add');
+    button(f,'Каталог').click();const quick=f.window.document.querySelector('.cinema-quick-bookmark') as HTMLButtonElement;quick.click();assert.equal(sent.at(-1).op,'catalogue_add');
   }finally{f.window.happyDOM.abort();}
 });
 
@@ -176,8 +178,8 @@ test('personal shelves explain recommendations and persist dismiss, watched and 
     const item={...movie('Рекомендация','planned'),catalogue_key:'tmdb:movie:777',reason:'Тебе нравится жанр триллер.'};
     view.receive({...initial,personal_result:{request_id:request.request_id,recommendations:{samples:1,mood:'any',message:'Мало оценок',errors:[],shelves:[{id:'liked',name:'Тебе понравится',items:[item]}]}}});
     assert.match(f.window.document.querySelector('.cinema-personal')!.textContent,/Тебе нравится жанр триллер/);
-    const planned=[...f.window.document.querySelectorAll('.cinema-personal button')].find((b:any)=>b.textContent==='Хочу посмотреть');planned.click();assert.equal(sent.at(-1).op,'catalogue_add');assert.equal(sent.at(-1).values.status,'planned');
-    button(f,'Уже смотрела').click();assert.equal(sent.at(-1).values.status,'watched');
+    const planned=f.window.document.querySelector('.cinema-personal .cinema-quick-bookmark');planned.click();assert.equal(sent.at(-1).op,'catalogue_add');assert.equal(sent.at(-1).values.watchlist,true);
+    f.window.document.querySelector('.cinema-personal .cinema-quick-watched').click();assert.equal(sent.at(-1).values.watched,true);
     button(f,'Не интересно').click();assert.equal(sent.at(-1).op,'recommendation_dismiss');view.receive({...initial,recommendation_dismissed:item.catalogue_key});assert.equal(f.window.document.querySelectorAll('.cinema-personal-card').length,0);
   }finally{f.window.happyDOM.abort();}
 });
@@ -333,5 +335,60 @@ test('connection success shows only usage and keeps the existing Brave setup',()
     assert.match(f.window.document.querySelector('.cinema-settings-pane').textContent,/Ключ Tavily|Ключ сохранён в macOS Keychain/);assert.match(f.window.document.querySelector('.cinema-settings-pane').textContent,/Ключ Brave сохранён/);
     view.receive({...initial,search_connection:{provider:'tavily',ok:true,code:'connected',message:'Tavily подключён.',usage:4,limit:100}});
     assert.match(f.window.document.querySelector('[data-tavily-connection]').textContent,/4 \/ 100/);assert.equal(f.window.document.querySelector('input[aria-label="Ключ Tavily API"]').value,'');
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('four poster icons toggle durable fields without detail clicks and refresh watched and profile',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);
+    const item={...movie('Моя история','planned'),watchlist:1,favorite:1,user_rating:9.5};view.receive(snapshot([item]));button(f,'Хочу посмотреть').click();
+    const panel=f.window.document.querySelector('.cinema-poster-actions');assert.equal(panel.querySelectorAll('button').length,4);
+    assert.deepEqual([...panel.querySelectorAll('button')].map((b:any)=>b.dataset.posterAction),['bookmark','play','watched','favorite']);
+    assert.ok([...panel.querySelectorAll('button')].every((b:any)=>b.title&&b.getAttribute('aria-label')));
+    let bubbled=0;panel.parentElement.addEventListener('click',()=>bubbled++);
+    for(const [key,field,value]of [['bookmark','watchlist',false],['favorite','favorite',false],['watched','watched',true]]){
+      panel.querySelector(`[data-poster-action=${key}]`).click();assert.equal(sent.at(-1).op,'update');assert.equal(sent.at(-1).values[field],value);assert.equal(f.window.document.querySelector('dialog'),null);
+    }
+    assert.equal(bubbled,0);assert.equal(f.window.document.querySelector('.cinema-context'),null);
+    view.receive(snapshot([{...item,status:'watched',watchlist:0}]));assert.equal(f.window.document.querySelectorAll('.cinema-library .cinema-card').length,0);
+    button(f,'Просмотрено').click();const active=f.window.document.querySelector('.cinema-quick-watched');assert.equal(active.getAttribute('aria-pressed'),'true');active.click();assert.equal(sent.at(-1).values.watched,false);assert.equal(f.window.document.querySelector('dialog'),null);
+    button(f,'Мой кинопрофиль').click();const first=sent.at(-1);assert.equal(first.op,'profile');
+    const profile={watched_movies:1,watched_series:0,favorites:1,rated_count:1,average:9.5,distribution:[],genres:[],directors:[],cast:[],top:[],least:[],insights:[],trend:[],metadata_coverage:0,positive_count:1};
+    view.receive({...snapshot([{...item,status:'watched',watchlist:0}]),personal_result:{request_id:first.request_id,profile}});
+    assert.equal(f.window.document.querySelector('.cinema-profile-stats strong').textContent,'1');
+    view.receive(snapshot([{...item,status:'watching',watchlist:0}]));const refresh=sent.at(-1);assert.equal(refresh.op,'profile');assert.notEqual(refresh.request_id,first.request_id);
+    view.receive({...snapshot([{...item,status:'watching',watchlist:0}]),personal_result:{request_id:refresh.request_id,profile:{...profile,watched_movies:0}}});
+    assert.equal(f.window.document.querySelector('.cinema-profile-stats strong').textContent,'0');
+    button(f,'Смотрю').click();f.window.document.querySelector('.cinema-quick-play').click();assert.equal(sent.at(-1).op,'watch');assert.ok(!sent.some(v=>v.op==='replay'));
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('profile discards counts computed before a newer manual watched toggle',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);
+    const item=movie('История','watched');view.receive(snapshot([item]));button(f,'Мой кинопрофиль').click();const before=sent.at(-1);
+    const changed=snapshot([{...item,status:'watching'}]);view.receive(changed);
+    const profile={watched_movies:1,watched_series:0,favorites:0,rated_count:0,average:null,distribution:[],genres:[],directors:[],cast:[],top:[],least:[],insights:[],trend:[],metadata_coverage:0,positive_count:0};
+    view.receive({...changed,personal_result:{request_id:before.request_id,profile}});
+    const fresh=sent.at(-1);assert.equal(fresh.op,'profile');assert.notEqual(fresh.request_id,before.request_id);assert.equal(f.window.document.querySelector('.cinema-profile-stats'),null);
+    view.receive({...changed,personal_result:{request_id:fresh.request_id,profile:{...profile,watched_movies:0}}});assert.equal(f.window.document.querySelector('.cinema-profile-stats strong').textContent,'0');
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('AI search stays out of the catalogue flow until opened and voice remains independent',()=>{
+  const f=fixture();try{
+    const messages:string[]=[];let voice=0;
+    const view=new f.CinemaView(()=>{},(text:string)=>messages.push(text),()=>{},()=>voice++);
+    view.connection(true);view.receive(snapshot());
+    const panel=f.window.document.querySelector('.cinema-ai-panel');
+    assert.equal(panel.hidden,true);assert.equal(f.window.document.querySelector('#cinema-root > .cinema-composer'),null);
+    button(f,'✧ AI-поиск').click();assert.equal(panel.hidden,false);
+    const input=panel.querySelector('input');input.value='Найди детектив на вечер';
+    panel.dispatchEvent(new f.window.Event('submit',{bubbles:true,cancelable:true}));
+    assert.deepEqual(messages,['Найди детектив на вечер']);assert.equal(panel.hidden,true);
+    button(f,'✧ AI-поиск').click();panel.dispatchEvent(new f.window.Event('submit',{bubbles:true,cancelable:true}));assert.equal(panel.hidden,false);
+    f.window.document.dispatchEvent(new f.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));assert.equal(panel.hidden,true);
+    f.window.document.querySelector('[aria-label="Голосовая команда"]').click();assert.equal(voice,1);
+    assert.ok(f.window.document.querySelector('[aria-label="Фильтры каталога"]'));
   }finally{f.window.happyDOM.abort();}
 });

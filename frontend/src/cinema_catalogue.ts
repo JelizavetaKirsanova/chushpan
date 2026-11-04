@@ -1,5 +1,6 @@
 import type {CatalogueTitle, CinemaEvent, CinemaTitle} from './cinema';
 import {CinemaFilterDrawer,activeFilterCount} from './cinema_filters';
+import {posterActions,syncPosterActions} from './cinema_actions';
 
 export interface CatalogueFilters {
   feed:string;query:string;kind:string;genre:string;genres:string[];genre_mode:'or'|'and';year:number;rating:number;
@@ -97,6 +98,7 @@ export class CinemaCatalogueView {
     this.online=online;
     if(!online){this.window.pending.clear();for(const p of this.previews.values()){p.loading=false;p.request=undefined;}this.configRequested=false;window.clearTimeout(this.debounce);this.debounce=undefined;}
     if(this.root.isConnected){this.render();this.start();}
+    this.root.querySelectorAll<HTMLButtonElement>('.cinema-poster-actions button').forEach(button=>button.disabled=!online);
   }
   receive(data:CinemaEvent):void {
     const previous=this.data;
@@ -121,7 +123,7 @@ export class CinemaCatalogueView {
       else if(this.window.accept(page)){this.renderList();if(!page.error)this.observe();}
     }
     if(!previous||previous.tmdb?.configured!==data.tmdb?.configured){this.previews.clear();this.window.reset();this.configRequested=false;if(this.root.isConnected){this.render();this.start();}if(!previous&&data.matches?.length)this.legacy(data.matches);}
-    const signature=JSON.stringify(data.items.map(i=>[i.id,i.status,i.favorite,i.user_rating]));
+    const signature=JSON.stringify(data.items.map(i=>[i.id,i.status,i.watchlist,i.favorite,i.user_rating]));
     if(signature!==this.librarySignature){this.librarySignature=signature;if(this.root.isConnected){this.renderPreviews();this.renderList();}}
     if(previous&&previous.preferences.recommendations_show_watched!==data.preferences.recommendations_show_watched){this.previews.delete('recommended');if(this.filters.feed==='recommended'){this.window.reset();this.loadPage(1);}this.renderPreviews();this.observe();}
   }
@@ -162,6 +164,7 @@ export class CinemaCatalogueView {
     if(Object.keys(values).length)this.callbacks.send({op:'preferences',values});
     window.clearTimeout(this.debounce);this.debounce=undefined;this.mode='list';this.window.reset();this.renderFilters();this.renderBody();this.loadPage(1);const scroll=this.root.closest<HTMLElement>('.workspace-page');if(scroll)scroll.scrollTop=0;
   }
+  openFilters():void {if(this.online)this.drawer.open(this.root,this.filters,this.config,()=>this.defaults(),filters=>this.applyFilters(filters));}
   private renderFilters():void {
     const form=node('form','','cinema-catalogue-filters');
     const types=node('div','','cinema-type-switch');types.setAttribute('aria-label','Тип контента');
@@ -272,29 +275,22 @@ export class CinemaCatalogueView {
   }
   private updateCard(card:HTMLElement,item:CatalogueTitle):void {
     const existing=this.data?.items.find(i=>i.catalogue_key===item.catalogue_key);
-    const signature=JSON.stringify([existing?.status,existing?.favorite,existing?.user_rating]);
+    const signature=JSON.stringify([existing?.status,existing?.watchlist,existing?.favorite,existing?.user_rating]);
     if(card.dataset.library===signature)return;
     card.dataset.library=signature;
-    const heart=card.querySelector<HTMLButtonElement>('.cinema-favorite')!;
-    heart.textContent=existing?.favorite?'♥':'♡';heart.setAttribute('aria-pressed',String(!!existing?.favorite));heart.setAttribute('aria-label',existing?.favorite?'Убрать из избранного':'В избранное');
-    card.querySelector('.cinema-library-badge')!.textContent=existing?statuses[existing.status]:'';
+    syncPosterActions(card.querySelector<HTMLElement>('.cinema-poster-actions')!,existing);
+    card.querySelector('.cinema-library-badge')!.textContent=existing&&(existing.status!=='planned'||existing.watchlist!==0)?statuses[existing.status]:'';
     card.querySelector('.cinema-personal-rating')!.textContent=existing?.user_rating?`★ ${existing.user_rating.toFixed(1)}`:'';
-    const menu=card.querySelector('details')!;const favorite=menu.querySelector<HTMLButtonElement>('[data-favorite]')!;
-    favorite.textContent=existing?.favorite?'Убрать из избранного':'В избранное';
-    menu.querySelector('[data-remove]')?.remove();
-    if(existing){const remove=this.button('Удалить из списка',()=>this.callbacks.remove(existing));remove.dataset.remove='';menu.append(remove);}
   }
+
   private card(item:CatalogueTitle):HTMLElement {
     const card=node('article','','cinema-card cinema-catalogue-card');card.dataset.catalogueKey=item.catalogue_key;
     const poster=this.button(`Подробнее: ${item.title}`,()=>this.callbacks.detail(item),'cinema-poster-button');poster.replaceChildren(this.callbacks.poster(item));
     const current=()=>this.data?.items.find(i=>i.catalogue_key===item.catalogue_key);
-    const heart=this.button('♡',()=>this.callbacks.change(item,{favorite:!current()?.favorite}),'cinema-favorite');
+    const artwork=node('div','','cinema-poster-wrap');artwork.append(poster,posterActions(current,values=>this.callbacks.change(item,values),()=>this.callbacks.watch(item),this.online));
     const body=node('div','','cinema-card-body');
     body.append(this.button(item.title,()=>this.callbacks.detail(item),'cinema-title'),node('p',`${item.year||'Год неизвестен'} · ${item.kind==='series'?'Сериал':'Фильм'}`,'cinema-card-year'));
     const ratings=node('div','','cinema-ratings');ratings.append(node('span',item.metadata.rating?`★ ${item.metadata.rating.toFixed(1)}`:'TMDB —','cinema-tmdb-rating'),node('span','','cinema-personal-rating'));body.append(ratings,node('small','','cinema-library-badge'));
-    const actions=node('div','','cinema-card-actions');actions.append(this.button('Смотреть',()=>this.callbacks.watch(item),'primary'),this.button('Хочу посмотреть',()=>this.callbacks.change(item,{status:'planned'})));
-    const menu=node('details','','cinema-context');const summary=node('summary','•••');summary.setAttribute('aria-label',`Действия: ${item.title}`);menu.append(summary);
-    for(const [status,label]of Object.entries(statuses))menu.append(this.button(label,()=>this.callbacks.change(item,{status})));
-    const favorite=this.button('В избранное',()=>this.callbacks.change(item,{favorite:!current()?.favorite}));favorite.dataset.favorite='';menu.append(favorite);actions.append(menu);body.append(actions);card.append(poster,heart,body);this.updateCard(card,item);return card;
+    card.append(artwork,body);this.updateCard(card,item);return card;
   }
 }

@@ -111,6 +111,12 @@ MIGRATIONS = [
       stage TEXT NOT NULL, status TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL);
     ALTER TABLE cinema_source_memory ADD COLUMN last_voice TEXT NOT NULL DEFAULT '';
     """,
+    """
+    ALTER TABLE cinema_library ADD COLUMN manual_watched INTEGER;
+    ALTER TABLE cinema_library ADD COLUMN watchlist INTEGER NOT NULL DEFAULT 0;
+    UPDATE cinema_library SET watchlist=(status='planned'),
+      manual_watched=CASE WHEN status='watched' THEN 1 END;
+    """,
 ]
 
 
@@ -546,7 +552,8 @@ class CinemaStore:
                     ),
                 )
                 self.db.execute(
-                    "INSERT INTO cinema_library(title_id,added_at,updated_at) VALUES (?,?,?)",
+                    "INSERT INTO cinema_library(title_id,added_at,updated_at,watchlist) "
+                    "VALUES (?,?,?,1)",
                     (title_id, now(), now()),
                 )
             if metadata.model_fields_set:
@@ -587,6 +594,7 @@ class CinemaStore:
         row = self.db.execute(
             "SELECT t.*,u.status AS user_status,u.favorite AS user_favorite,"
             "u.user_rating,u.user_note,u.completed_at,u.added_at,u.favorite_added_at,"
+            "u.manual_watched,u.watchlist,"
             "u.updated_at AS library_updated_at FROM cinema_titles t "
             "JOIN cinema_library u ON u.title_id=t.id WHERE t.id=?",
             (identifier,),
@@ -785,8 +793,17 @@ class CinemaStore:
 
     def update_title(self, identifier, values):
         self.title(identifier)
-        if set(values) - {"status", "favorite", "user_rating", "user_note"} or not values:
+        if (
+            set(values) - {"status", "favorite", "user_rating", "user_note", "watched", "watchlist"}
+            or not values
+        ):
             raise ValueError("Нельзя изменить эти поля.")
+        values = dict(values)
+        if "watched" in values and "status" in values:
+            raise ValueError("Укажи либо ручную отметку, либо статус.")
+        for key in ("watched", "watchlist"):
+            if key in values and type(values[key]) is not bool:
+                raise ValueError("Отметка должна быть логическим значением.")
         if "status" in values and values["status"] not in {"watching", "planned", "watched"}:
             raise ValueError("Неизвестный статус.")
         if "favorite" in values and type(values["favorite"]) is not bool:
@@ -807,6 +824,30 @@ class CinemaStore:
         ):
             raise ValueError("Оценка должна быть от 1 до 10 с шагом 0.5.")
         with self.transaction():
+            if "watched" in values:
+                watched = values.pop("watched")
+                if watched:
+                    values["watchlist"] = False
+                started = self.db.execute(
+                    "SELECT 1 FROM cinema_episodes WHERE title_id=? "
+                    "AND (last_viewed IS NOT NULL OR position>0 OR watched=1) LIMIT 1",
+                    (identifier,),
+                ).fetchone()
+                values["status"] = "watched" if watched else "watching" if started else "planned"
+                self.db.execute(
+                    "UPDATE cinema_library SET manual_watched=? WHERE title_id=?",
+                    (watched, identifier),
+                )
+            elif "status" in values:
+                # Existing explicit status controls also remain stable during playback.
+                self.db.execute(
+                    "UPDATE cinema_library SET manual_watched=?,watchlist=? WHERE title_id=?",
+                    (
+                        1 if values["status"] == "watched" else None,
+                        values["status"] == "planned",
+                        identifier,
+                    ),
+                )
             if "user_rating" in values:
                 previous = self.title(identifier).get("user_rating")
                 if previous != values["user_rating"]:
@@ -919,7 +960,18 @@ class CinemaStore:
             )
             # Finishing one episode never marks the whole series as watched.
             title = self.title(ep["title_id"])
-            status = "watched" if title["kind"] == "movie" and complete else "watching"
+            # A title-level manual mark never rewrites individual episode progress.
+            # Explicit removal also survives further samples of completed media.
+            override = title["manual_watched"]
+            status = (
+                "watched"
+                if override == 1
+                else "watching"
+                if override == 0
+                else "watched"
+                if title["kind"] == "movie" and complete
+                else "watching"
+            )
             self.db.execute(
                 "UPDATE cinema_titles SET last_episode_id=?,updated_at=? WHERE id=?",
                 (episode_id, stamp, ep["title_id"]),
@@ -928,7 +980,12 @@ class CinemaStore:
                 "UPDATE cinema_library SET status=?,updated_at=?,"
                 "completed_at=COALESCE(?,completed_at) "
                 "WHERE title_id=?",
-                (status, stamp, stamp if status == "watched" else None, ep["title_id"]),
+                (
+                    status,
+                    stamp,
+                    stamp if status == "watched" and override is None else None,
+                    ep["title_id"],
+                ),
             )
             self.db.execute(
                 "INSERT INTO cinema_history(episode_id,link_id,position,duration,event,created_at) "

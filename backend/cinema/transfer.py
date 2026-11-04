@@ -18,6 +18,8 @@ LIBRARY_FIELDS = (
     "added_at",
     "library_updated_at",
     "favorite_added_at",
+    "manual_watched",
+    "watchlist",
 )
 ENTRY_FIELDS = ("title", "kind", "year", "poster_url", "description", "catalogue_key")
 EVENTS = {"manual", "periodic", "pause", "ended", "switch", "close", "seek", "playing"}
@@ -153,6 +155,10 @@ def _validate_document(document):
         ):
             raise ValueError("Некорректная оценка.")
         note = item.setdefault("user_note", "")
+        item.setdefault("manual_watched", 1 if item["status"] == "watched" else None)
+        item.setdefault("watchlist", int(item["status"] == "planned"))
+        if item["manual_watched"] not in (None, 0, 1) or item["watchlist"] not in (0, 1):
+            raise ValueError("Некорректная ручная отметка.")
         if not isinstance(note, str) or len(note) > 2000:
             raise ValueError("Слишком длинная заметка.")
         for key in ("completed_at", "added_at", "library_updated_at", "favorite_added_at"):
@@ -290,7 +296,8 @@ def import_library(store, document):
                 store.add({**entry, "title_id": identifier, "metadata": item["metadata"]})
                 store.db.execute(
                     "UPDATE cinema_library SET status=?,favorite=?,user_rating=?,user_note=?,"
-                    "completed_at=?,added_at=?,updated_at=?,favorite_added_at=? WHERE title_id=?",
+                    "completed_at=?,added_at=?,updated_at=?,favorite_added_at=?,"
+                    "manual_watched=?,watchlist=? WHERE title_id=?",
                     (
                         item["status"],
                         bool(item["favorite"]),
@@ -300,6 +307,8 @@ def import_library(store, document):
                         item.get("added_at") or now(),
                         item.get("library_updated_at") or now(),
                         item.get("favorite_added_at"),
+                        item["manual_watched"],
+                        item["watchlist"],
                         identifier,
                     ),
                 )
