@@ -314,3 +314,5 @@
 @media(max-width:520px){.cinema-source-line{flex-wrap:wrap}.cinema-source-line>div{flex-basis:100%}}
 .cinema-source-line strong { display:block; margin-bottom:4px; }
 .cinema-source-line>div>small { display:block; }
+
+.cinema-next-offer:not(:empty){display:flex;gap:16px;align-items:center;padding:14px 18px;margin:12px 0;border:1px solid #a65ce944;border-radius:14px;background:#21152c}.cinema-next-offer span{flex:1;font-size:13px}.cinema-diagnostic-log{max-height:340px;overflow:auto;font-size:11px;line-height:1.7;overflow-wrap:anywhere}.cinema-diagnostic-log p{padding:7px 0;border-bottom:1px solid #ffffff12}@media(max-width:520px){.cinema-next-offer{flex-wrap:wrap}}

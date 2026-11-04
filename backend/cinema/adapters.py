@@ -103,6 +103,13 @@ end tell
         token = requests_allowed.set(False)
         try:
             result = json.loads(await self.executor._run(script))
+        except ToolError as exc:
+            messages = {
+                "tab_changed": PLAYER_ERRORS["page_changed"],
+                "automation_unknown": "Разреши управление Safari в медиатеке → Поиск и Safari.",
+                "safari_closed": "Safari закрыт или недоступен этому процессу.",
+            }
+            raise ToolError(messages.get(getattr(exc, "code", ""), str(exc))) from None
         except (ValueError, TypeError):
             raise ToolError("Safari не вернул состояние плеера.") from None
         finally:
@@ -130,30 +137,92 @@ class HTML5Adapter:
 
     async def open(self, target):
         self.url = target["link"]["url"]
+        diagnostic = target.get("diagnostic")
+
+        async def stage(name, status, message):
+            if diagnostic:
+                await diagnostic(name, status, message)
+
         self.context = target.get("tracking", {})
         # Reuse a matching open page if available, otherwise open the explicit URL once.
         try:
             await self.sample()
         except ToolError:
+            await stage("OPEN_SAFARI", "running", "Открываем конкретную страницу в Safari.")
             await self.opener(self.url)
-        deadline = time.monotonic() + 10
+        await stage("DETECT_PLAYER", "running", "Ожидаем доступный HTML5-плеер и метаданные.")
+        deadline = time.monotonic() + 15
         while True:
             try:
                 await self.sample()
+                await stage("DETECT_PLAYER", "success", "Найден один доступный HTML5-плеер.")
                 break
             except ToolError as exc:
                 if time.monotonic() >= deadline:
+                    await stage("DETECT_PLAYER", "limited", str(exc))
                     return {
                         "page_opened": True,
                         "playback_confirmed": False,
                         "mode": "manual",
-                        "message": str(exc),
+                        "message": str(exc)
+                        + f" Сохранённый таймкод: {target['episode']['position']:.1f} с. "
+                        "Установи его вручную.",
                     }
                 await asyncio.sleep(0.5)
         position = target["episode"]["position"]
+        current = await self.sample()
+        if position >= current["duration"] and position > 0:
+            await stage(
+                "RESTORE_POSITION",
+                "limited",
+                "Сохранённый таймкод превышает длительность видео. Прогресс сохранён.",
+            )
+            return {
+                "page_opened": True,
+                "mode": "manual",
+                "playback_confirmed": False,
+                "message": f"Сохранённый таймкод {position:.1f} с превышает длительность видео. "
+                "Возможно, это другое издание. Прежний прогресс сохранён; выбери позицию вручную.",
+            }
         if position or target.get("restart"):
-            await self.control("seek", position)
-        return await self.control("play")
+            await stage("RESTORE_POSITION", "running", f"Восстанавливаем {position:.1f} с.")
+            try:
+                await self.control("seek", position)
+            except ToolError as exc:
+                await stage("RESTORE_POSITION", "limited", str(exc))
+                return {
+                    "page_opened": True,
+                    "mode": "html5",
+                    "playback_confirmed": False,
+                    "message": "Safari не подтвердил восстановление. "
+                    f"Сохранённый таймкод: {position:.1f} с; установи его вручную.",
+                }
+            await stage(
+                "RESTORE_POSITION", "success", f"Плеер подтвердил позицию около {position:.1f} с."
+            )
+        else:
+            await stage("RESTORE_POSITION", "success", "Новый просмотр с начала.")
+        if not target.get("autoplay", True):
+            return {
+                "page_opened": True,
+                "mode": "html5",
+                "playback_confirmed": False,
+                "message": "Позиция подготовлена. Нажми ▶ в Safari; автозапуск отключён.",
+            }
+        await stage("PLAY", "running", "Ждём подтверждения движения времени.")
+        try:
+            result = await self.control("play")
+        except ToolError as exc:
+            await stage("PLAY", "limited", str(exc))
+            return {
+                "page_opened": True,
+                "mode": "html5",
+                "playback_confirmed": False,
+                "message": "Safari не подтвердил запуск. Нажми ▶ в плеере; проверь "
+                "разрешение автовоспроизведения для сайта.",
+            }
+        await stage("PLAY", "success", "Воспроизведение подтверждено движением времени.")
+        return {**result, "mode": "html5", "page_opened": True}
 
     async def control(self, action, position=0):
         if action not in {"pause", "play", "seek"}:

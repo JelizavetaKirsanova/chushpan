@@ -99,6 +99,18 @@ MIGRATIONS = [
       link_id TEXT PRIMARY KEY REFERENCES cinema_links(id) ON DELETE CASCADE,
       data TEXT NOT NULL, checked_at TEXT NOT NULL);
     """,
+    """
+    CREATE TABLE cinema_playback_state (
+      episode_id TEXT PRIMARY KEY REFERENCES cinema_episodes(id) ON DELETE CASCADE,
+      link_id TEXT REFERENCES cinema_links(id) ON DELETE SET NULL,
+      confirmed INTEGER NOT NULL DEFAULT 0, voice TEXT NOT NULL DEFAULT '',
+      position REAL NOT NULL DEFAULT 0, duration REAL NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL);
+    CREATE TABLE cinema_diagnostics (
+      id INTEGER PRIMARY KEY, title_id TEXT, episode_id TEXT, session TEXT NOT NULL,
+      stage TEXT NOT NULL, status TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL);
+    ALTER TABLE cinema_source_memory ADD COLUMN last_voice TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 
@@ -323,6 +335,11 @@ class CinemaStore:
                     (source_id or None, title_id),
                 )
             if link:
+                self.db.execute(
+                    "UPDATE cinema_source_memory SET last_voice=? WHERE title_id=?",
+                    (link["voice"], title_id),
+                )
+            if link:
                 self.select(ep["id"], link["id"])
 
     def feedback(self, key):
@@ -357,6 +374,51 @@ class CinemaStore:
             "SELECT * FROM cinema_link_verification WHERE link_id=?", (link_id,)
         ).fetchone()
         return {**json.loads(row["data"]), "checked_at": row["checked_at"]} if row else {}
+
+    def diagnostic(self, stage, status, message, title_id="", episode_id="", session=""):
+        if stage not in {
+            "SEARCH",
+            "VERIFY",
+            "OPEN_SAFARI",
+            "DETECT_PLAYER",
+            "RESTORE_POSITION",
+            "PLAY",
+            "SAVE_PROGRESS",
+        }:
+            raise ValueError("Неизвестный этап воспроизведения.")
+        with self.transaction():
+            self.db.execute(
+                "INSERT INTO "
+                "cinema_diagnostics(title_id,episode_id,session,stage,status,message,created_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (title_id, episode_id, session, stage, status, str(message)[:600], now()),
+            )
+            self.db.execute(
+                "DELETE FROM cinema_diagnostics WHERE id NOT IN (SELECT id FROM "
+                "cinema_diagnostics ORDER BY id DESC LIMIT 300)"
+            )
+
+    def diagnostics(self, title_id=""):
+        return [
+            dict(r)
+            for r in self.db.execute(
+                "SELECT * FROM cinema_diagnostics WHERE (?='' OR title_id=?) ORDER BY id "
+                "DESC LIMIT 40",
+                (title_id, title_id),
+            )
+        ]
+
+    def playback_state(self, episode_id, link_id, position, duration, confirmed):
+        link = self.db.execute(
+            "SELECT voice FROM cinema_links WHERE id=? AND episode_id=?", (link_id, episode_id)
+        ).fetchone()
+        if not link:
+            raise ValueError("Источник не принадлежит серии.")
+        with self.transaction():
+            self.db.execute(
+                "INSERT OR REPLACE INTO cinema_playback_state VALUES (?,?,?,?,?,?,?)",
+                (episode_id, link_id, bool(confirmed), link["voice"], position, duration, now()),
+            )
 
     def reset_recommendations(self):
         with self.transaction():
@@ -627,6 +689,10 @@ class CinemaStore:
             "SELECT * FROM cinema_episodes WHERE title_id=? ORDER BY season,episode", (identifier,)
         ):
             episode = dict(row)
+            state = self.db.execute(
+                "SELECT * FROM cinema_playback_state WHERE episode_id=?", (row["id"],)
+            ).fetchone()
+            episode["playback_state"] = dict(state) if state else None
             episode["links"] = [
                 {**dict(link), "source_name": self.source(link["source_id"]).name}
                 for link in self.db.execute(
@@ -773,7 +839,7 @@ class CinemaStore:
 
     def select(self, episode_id, link_id):
         row = self.db.execute(
-            "SELECT e.title_id,l.source_id,l.url FROM cinema_episodes e "
+            "SELECT e.title_id,l.source_id,l.url,l.voice FROM cinema_episodes e "
             "JOIN cinema_links l ON l.episode_id=e.id "
             "WHERE e.id=? AND l.id=?",
             (episode_id, link_id),
@@ -794,6 +860,10 @@ class CinemaStore:
                 "last_source_id=excluded.last_source_id,page_url=excluded.page_url,"
                 "episode_id=excluded.episode_id,updated_at=excluded.updated_at",
                 (row[0], row["source_id"], row["url"], episode_id, now()),
+            )
+            self.db.execute(
+                "UPDATE cinema_source_memory SET last_voice=? WHERE title_id=?",
+                (row["voice"], row[0]),
             )
 
     def progress(self, episode_id, position, duration, event="manual", link_id=None, watched=None):

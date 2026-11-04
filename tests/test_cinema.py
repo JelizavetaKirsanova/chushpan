@@ -191,7 +191,7 @@ def test_service_restore_switch_pause_telemetry_permissions_and_airplay(tmp_path
                 await tools.call("cinema_command", {"command": "Продолжи мой сериал"})
             )
         assert result["playback_confirmed"]
-        assert player.opened[-1]["episode"]["position"] == 321
+        assert player.opened[-1]["episode"]["position"] == 318
         token = service.session["token"]
         event = {"sequence": 1, "position": 422, "duration": 1000, "event": "pause"}
         assert not await service.telemetry("bad", "http://localhost:8765", event)
@@ -616,6 +616,7 @@ def test_last_series_and_genre_requests_never_reach_llm_and_reuse_last_source(tm
         preferred = episode["links"][-1]
         service.sources.http = HTTP()
         await service.db("progress", episode["id"], 66, 1000, "manual", preferred["id"])
+        expected_position = 66
         for text in (
             "Чушпан, включи последнюю серию, которую я смотрела",
             "Чушпан, продолжи мой сериал",
@@ -623,7 +624,8 @@ def test_last_series_and_genre_requests_never_reach_llm_and_reuse_last_source(tm
             answer = "".join([part async for part in conv.reply(text)])
             assert "Подтверждено" in answer
             assert player.opened[-1]["link"]["id"] == preferred["id"]
-            assert player.opened[-1]["episode"]["position"] == 66
+            expected_position -= 3
+            assert player.opened[-1]["episode"]["position"] == expected_position
         answer = "".join(
             [part async for part in conv.reply("Чушпан, найди мне какой-нибудь триллер")]
         )

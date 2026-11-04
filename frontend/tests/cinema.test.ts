@@ -283,3 +283,30 @@ test('paid navigation requires an explicit confirmation with the server token',(
     assert.ok(!sent.some(v=>v.op==='watch_confirm'));button(f,'Открыть страницу сервиса').click();assert.equal(sent.at(-1).op,'watch_confirm');assert.equal(sent.at(-1).token,'bound-token');
   }finally{f.window.happyDOM.abort();}
 });
+
+test('Brave search setup masks and clears the key and keeps Safari permissions explicit',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);view.receive(snapshot());button(f,'Настройки').click();button(f,'Поиск и Safari').click();
+    const input=f.window.document.querySelector('input[aria-label="Ключ Brave Search API"]');assert.equal(input.type,'password');input.value='BSA_fixture_search_key';input.closest('form').dispatchEvent(new f.window.Event('submit',{cancelable:true}));assert.equal(sent.at(-1).op,'search_credentials');assert.equal(input.value,'');
+    assert.equal(f.window.document.querySelector('input[data-preference=open_in_safari]').checked,true);
+    button(f,'Проверить интеграцию с Safari').click();assert.equal(sent.at(-1).op,'safari_check');assert.ok(!sent.some(v=>v.op==='safari_access'));
+    view.receive({...snapshot(),safari_check:{method:'Apple Events',extension:'not_installed',automation:'granted',javascript:'not_granted'}});assert.match(f.window.document.querySelector('[data-safari-status]').textContent,/JavaScript — not_granted/);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('next episode offer opens only the offered episode and diagnostics remain readable',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const item=movie('Series','watching');item.kind='series';item.current.season=1;item.current.episode=1;const next={...item.current,id:'next',episode:2};item.episodes.push(next);
+    view.receive({...snapshot([item]),next_episode:{title_id:item.id,episode_id:next.id,season:1,episode:2,title:item.title}});assert.ok(!sent.some(v=>v.op==='watch'));button(f,'Продолжить следующую').click();assert.equal(sent.at(-1).op,'watch');assert.equal(sent.at(-1).episode_id,'next');
+    f.window.document.querySelector('dialog[open] button[aria-label=Закрыть]').click();button(f,'Настройки').click();button(f,'Поиск и Safari').click();button(f,'Показать последние этапы').click();assert.equal(sent.at(-1).op,'cinema_diagnostics');
+    view.receive({...snapshot([item]),cinema_diagnostics:[{id:1,stage:'RESTORE_POSITION',status:'limited',message:'Safari не подтвердил восстановление',created_at:'2026-11-04T21:00:00Z'}]});assert.match(f.window.document.querySelector('[data-cinema-diagnostics]').textContent,/RESTORE_POSITION.*limited.*не подтвердил/);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('remembered Safari playback remains manually resumable when anonymous checks are restricted',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const item=movie('Private film','watching');
+    view.receive({...snapshot([item]),source_results:{title_id:item.id,episode_id:item.current.id,selected_id:null,message:'Анонимная проверка ограничена',results:[{id:'last',source_name:'Last source',source_id:'source',kind:'page',scope:'movie',url:'https://site.example/film',availability:'restricted',reason:'Ранее воспроизводился в Safari',access_status:'UNKNOWN',access_type:'unknown',match:1,allowed:true,manual_allowed:true,previously_played:true,embedded:false,capabilities:{mode:'HTML5'}}]}});
+    const resume=button(f,'Продолжить в Safari');assert.equal(resume.disabled,false);resume.click();assert.equal(sent.at(-1).op,'source_result_open');assert.equal(sent.at(-1).result_id,'last');
+  }finally{f.window.happyDOM.abort();}
+});

@@ -57,7 +57,7 @@ export class CinemaEmbeddedPlayer {
     if(!this.video||!this.current)return;
     const duration=Number.isFinite(this.video.duration)?this.video.duration:0;
     const position=duration?Math.min(duration,Math.max(0,this.video.currentTime)):0;
-    this.send({op:'embedded_event',token:this.current.token,sequence:++this.sequence,event,position,duration,paused:this.video.paused,command_id:this.commandId});this.sentAt=Date.now();
+    this.send({op:'embedded_event',token:this.current.token,sequence:++this.sequence,event,position,duration,paused:this.video.paused,seeking:this.video.seeking,ended:this.video.ended,ready:this.video.readyState,command_id:this.commandId});this.sentAt=Date.now();
     if(['playing','pause','seek','error'].includes(event))this.commandId='';
   }
   private clear():void {

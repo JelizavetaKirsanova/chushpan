@@ -364,6 +364,7 @@ class SourceManager:
         self.results = OrderedDict()
         self.pending = {}
         self.generation = 0
+        self.web = None
 
     def adapter(self, source):
         mode = source.get("search_mode", "manual")
@@ -442,6 +443,21 @@ class SourceManager:
         memory = item.get("source_memory", {})
         last_link = next((link for link in ep["links"] if link["id"] == ep["last_link_id"]), None)
         last = memory.get("last_source_id") or (last_link or {}).get("source_id")
+        played = sorted(
+            (e for e in item["episodes"] if (e.get("playback_state") or {}).get("confirmed")),
+            key=lambda e: e["playback_state"]["updated_at"],
+            reverse=True,
+        )
+        if played:
+            successful = next(
+                (
+                    link
+                    for link in played[0]["links"]
+                    if link["id"] == played[0]["playback_state"]["link_id"]
+                ),
+                None,
+            )
+            last = (successful or {}).get("source_id") or last
         semaphore = asyncio.Semaphore(3)
 
         async def search_source(source):
@@ -457,6 +473,7 @@ class SourceManager:
                                     "kind": "page",
                                     "match": 1.0,
                                     "link_id": link["id"],
+                                    "voice": link.get("voice", ""),
                                     "scope": "series"
                                     if item["kind"] == "series"
                                     and isinstance(adapter, SitemapAdapter)
@@ -471,7 +488,9 @@ class SourceManager:
                         if not saved_only and (
                             not rows
                             or not any(
-                                r["availability"] == "available" and r["match"] >= 0.95
+                                r["availability"] == "available"
+                                and r["match"] >= 0.95
+                                and (item["kind"] == "movie" or r.get("scope") == "episode")
                                 for r in rows
                             )
                         ):
@@ -518,9 +537,11 @@ class SourceManager:
                         playback_confirmed=False,
                     )
                     row["access_type"] = row.get("access_type") or "unknown"
+                    if row.get("region_checked") and row["region_checked"] != prefs.watch_region:
+                        row["region_access"] = "unknown"
                     row["access_status"] = (
                         row.get("access_status", "UNKNOWN")
-                        if source.get("access_status") == "MIXED"
+                        if source.get("access_status") == "MIXED" or row.get("cost_verified")
                         else source.get("access_status", "UNKNOWN")
                     )
                     row["allowed"] = not prefs.free_only or row["access_status"] == "FREE"
@@ -547,7 +568,108 @@ class SourceManager:
         if generation != self.generation:
             raise ToolError("Настройки источников изменились. Повтори поиск.")
         rows = [r for group in groups for r in group if not alternative or r["source_id"] != last]
-        rows.sort(key=lambda r: (r["allowed"], r["score"]), reverse=True)
+
+        def exact(r):
+            return (
+                r["match"] >= 0.95
+                and r["availability"] == "available"
+                and (item["kind"] == "movie" or r.get("scope") == "episode")
+            )
+
+        if (
+            not saved_only
+            and self.web
+            and prefs.internet_search
+            and not any(exact(r) for r in rows)
+        ):
+            self.web.http = self.http
+            preferred = next(
+                (
+                    urlsplit(s["base_url"]).hostname
+                    for s in sources
+                    if s["id"] == last and s["base_url"]
+                ),
+                "",
+            )
+            try:
+                async with asyncio.timeout(90):
+                    discovered = await self.web.search(
+                        {
+                            **item,
+                            "season": ep["season"],
+                            "episode": ep["episode"],
+                            "preferred_source": preferred,
+                        },
+                        prefs,
+                        await self.db("sources"),
+                    )
+            except TimeoutError:
+                discovered = [
+                    self.web.error(
+                        "Истекло время интернет-поиска. Прежний прогресс сохранён; "
+                        "автоматический повтор не выполнялся."
+                    )
+                ]
+            for row in discovered:
+                if alternative and row["source_id"] == last:
+                    continue
+                row.update(title_id=item["id"], episode_id=ep["id"])
+                if row["kind"] == "page":
+                    row.update(
+                        allowed=not prefs.free_only or row["access_status"] == "FREE",
+                        manual_allowed=row["access_status"] == "UNKNOWN",
+                        capabilities=capabilities(
+                            row.get("source_config")
+                            or next(s for s in sources if s["id"] == row["source_id"])
+                        ),
+                    )
+                    row["score"] = 100 + (
+                        16 if prefs.use_last_source and last == row["source_id"] else 0
+                    )
+                rows.append(row)
+        if generation != self.generation:
+            raise ToolError("Настройки источников изменились. Повтори поиск.")
+        for row in rows:
+            row.setdefault("scope", "movie" if item["kind"] == "movie" else "series")
+            row["score"] += (35 if row["scope"] == "episode" else 0) + (
+                20 if prefs.prefer_free and row.get("access_status") == "FREE" else 0
+            )
+            row["score"] += (
+                10 if prefs.prefer_russian and row.get("language", "").startswith("ru") else 0
+            ) + (12 if row.get("region_access") == "allowed" else 0)
+            row["score"] += 6 if row.get("capabilities", {}).get("progress") else 0
+            state = ep.get("playback_state") or {}
+            if state.get("confirmed") and state.get("link_id") == row.get("link_id"):
+                row["score"] += 30
+                row["previously_played"] = True
+            row["voice_change"] = bool(
+                prefs.remember_voice
+                and memory.get("last_voice")
+                and row.get("voice", "") != memory["last_voice"]
+            )
+            row["requires_confirmation"] = (
+                row.get("requires_confirmation", False)
+                or row.get("new_source", False)
+                or row["voice_change"]
+            )
+            if row.get("region_access") == "blocked":
+                row["allowed"] = row["manual_allowed"] = False
+                row["reason"] += " Регион отсутствует в опубликованном списке доступности."
+        rows.sort(
+            key=lambda r: (
+                r["allowed"],
+                r["availability"] == "available"
+                or (
+                    bool(r.get("previously_played"))
+                    and r["availability"] in {"unknown", "restricted"}
+                ),
+                item["kind"] == "series" and r.get("scope") == "episode",
+                r["source_id"] == memory.get("pinned_source_id"),
+                prefs.use_last_source and r["source_id"] == last,
+                r["score"],
+            ),
+            reverse=True,
+        )
         for row in rows:
             row["id"] = uuid4().hex
             self.results[row["id"]] = (self.clock() + 300, row)
@@ -556,7 +678,16 @@ class SourceManager:
         verified = [
             r
             for r in rows
-            if r["allowed"] and r["availability"] == "available" and r["match"] >= 0.95
+            if r["allowed"]
+            and r["match"] >= 0.95
+            and (
+                r["availability"] == "available"
+                or (
+                    r.get("previously_played")
+                    and r.get("scope") in {"episode", "movie"}
+                    and r["availability"] in {"unknown", "restricted"}
+                )
+            )
         ]
         return {
             "title_id": item["id"],

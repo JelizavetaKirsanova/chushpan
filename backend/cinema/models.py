@@ -179,6 +179,7 @@ class Metadata(BaseModel):
     alternative_titles: list[str] = Field(default_factory=list, max_length=100)
     imdb_id: str = Field(default="", max_length=40)
     search_enriched: bool = False
+    homepage: str = ""
 
     @field_validator("backdrop_url")
     @classmethod
@@ -202,6 +203,14 @@ class Preferences(BaseModel):
     auto_search: bool = True
     auto_open: bool = True
     ask_paid: bool = True
+    internet_search: bool = True
+    prefer_free: bool = True
+    prefer_russian: bool = True
+    open_in_safari: bool = True
+    autoplay: bool = True
+    remember_voice: bool = True
+    offer_next: bool = True
+    resume_rewind_seconds: int = Field(default=3, ge=0, le=30)
     use_last_source: bool = True
     embedded_playback: bool = True
     allow_browser: bool = True

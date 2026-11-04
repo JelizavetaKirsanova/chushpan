@@ -17,10 +17,10 @@
   const video = eligible[0];
   if (video.mediaKeys) return JSON.stringify({error: 'protected_player'});
   const snapshot = () => ({position: video.currentTime, duration: video.duration, observed_at: Date.now(),
-    paused: video.paused, ended: video.ended, ready: video.readyState,
+    paused: video.paused, seeking:video.seeking, ended: video.ended, ready: video.readyState,
     remote: video.webkitCurrentPlaybackTargetIsWireless === true || video.remote?.state === 'connected',
     airplay: typeof video.webkitShowPlaybackTargetPicker === 'function' && !video.disableRemotePlayback,
-    error: video.error ? 'media_error' : undefined});
+    error: video.mediaKeys ? 'protected_player' : video.error ? 'media_error' : undefined});
   const old = window.__chushpanCinema;
   if (request.session && (old?.session !== request.session || old?.video !== video)) {
     old?.dispose();

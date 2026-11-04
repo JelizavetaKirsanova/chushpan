@@ -218,6 +218,7 @@ async def check(module, screenshot, chromium=None, catalogue=False, personal=Fal
             source = await cinema.db(
                 "save_source", {"name": "Локальный HTML5", "base_url": base, "adapter": "html5"}
             )
+            await cinema.db("configure", {"resume_rewind_seconds": 0})
             entry = {
                 "title": "Тестовый сериал",
                 "source_id": source["id"],
@@ -319,7 +320,14 @@ async def check(module, screenshot, chromium=None, catalogue=False, personal=Fal
                     inline["current"]["links"][0]["id"],
                 )
                 await cinema.db(
-                    "configure", {"allow_browser": False, "poll_seconds": 2, "auto_next": False}
+                    "configure",
+                    {
+                        "allow_browser": False,
+                        "poll_seconds": 2,
+                        "auto_next": False,
+                        "open_in_safari": False,
+                        "resume_rewind_seconds": 0,
+                    },
                 )
                 await cinema.publish()
                 result = await bridge.request(

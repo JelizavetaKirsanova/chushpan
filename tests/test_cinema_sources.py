@@ -377,7 +377,10 @@ def test_embedded_open_waits_for_real_progress_and_validates_session_events(tmp_
                 "url": "https://site.example/film.mp4",
             },
         )
-        await service.db("configure", {"allow_browser": False})
+        await service.db(
+            "configure",
+            {"allow_browser": False, "open_in_safari": False, "resume_rewind_seconds": 0},
+        )
         result = await service.open(item["id"])
         assert not result["playback_confirmed"] and service.session["mode"] == "embedded"
         token = service.session["token"]

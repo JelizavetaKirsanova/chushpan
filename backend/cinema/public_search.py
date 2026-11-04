@@ -119,10 +119,13 @@ class Page(HTMLParser):
     def __init__(self, html):
         super().__init__()
         self.structured, self.ld, self.buffer = [], False, []
+        self.links = []
         self.feed(html)
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        if tag == "a" and attrs.get("href") and len(self.links) < 10000:
+            self.links.append(attrs["href"])
         if tag == "script" and attrs.get("type", "").lower() == "application/ld+json":
             self.ld, self.buffer = True, []
 
@@ -138,13 +141,16 @@ class Page(HTMLParser):
             except ValueError:
                 pass
 
-    def entities(self):
+    def entities(self, types=None):
+        types = types or {"Movie", "TVSeries"}
+
         def walk(value):
             if isinstance(value, list):
                 for child in value:
                     yield from walk(child)
             elif isinstance(value, dict):
-                if value.get("@type") in {"Movie", "TVSeries"}:
+                kinds = value.get("@type", [])
+                if set(kinds if isinstance(kinds, list) else [kinds]).intersection(types):
                     yield value
                 # Do not accept a recommended item nested in ItemList as the page identity.
                 yield from walk(value.get("@graph", []))
@@ -287,7 +293,8 @@ class PublicCatalogue:
         )
         for url in candidates[:6]:
             response = await self.request(url)
-            for entity in Page(response.text).entities():
+            page = Page(response.text)
+            for entity in page.entities():
                 expected = "TVSeries" if query["kind"] == "series" else "Movie"
                 page_names = {key(entity.get("name", "")), key(entity.get("alternateName", ""))}
                 year = str(entity.get("datePublished") or entity.get("dateCreated") or "")[:4]
@@ -315,5 +322,49 @@ class PublicCatalogue:
                         "scope": "series" if query["kind"] == "series" else "movie",
                     }
                 )
+                if (
+                    query["kind"] == "series"
+                    and self.base == "https://kion.ru"
+                    and query.get("season")
+                    and query.get("episode")
+                ):
+                    episode = await self.kion_episode(page, url, query)
+                    if episode:
+                        results.insert(0, {**results[-1], **episode})
                 break
         return results
+
+    async def kion_episode(self, page, series_url, query):
+        from urllib.parse import urljoin
+
+        slug = urlsplit(series_url).path.rstrip("/").rsplit("/", 1)[-1]
+        for published in page.links:
+            target = urljoin(series_url, published)
+            if origin(target) != self.base:
+                continue
+            match = re.fullmatch(
+                r"/(?:serial|video)/" + re.escape(slug) + r"/sezon-(\d+)/seriya-(\d+)/?",
+                urlsplit(target).path,
+            )
+            if not match or (int(match[1]), int(match[2])) != (query["season"], query["episode"]):
+                continue
+            try:
+                response = await self.request(target)
+                final = getattr(response, "extensions", {}).get("final_url", target)
+                if final.rstrip("/") != target.rstrip("/"):
+                    continue
+                episodes = Page(response.text).entities({"TVEpisode"})
+                if not any(key(e.get("name", "")) == f"серия {query['episode']}" for e in episodes):
+                    continue
+            except (ToolError, OSError, TimeoutError):
+                continue
+            return {
+                "url": target,
+                "scope": "episode",
+                "episode_match": True,
+                "episode_evidence": "publisher_link+TVEpisode",
+                "reason": "Название, год и тип сериала подтверждены. "
+                "Ссылка на нужный сезон и серию опубликована KION "
+                "и отвечает метаданными TVEpisode. Видео ещё не проверено.",
+            }
+        return None

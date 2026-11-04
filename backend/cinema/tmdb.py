@@ -295,6 +295,7 @@ class TMDB:
             row = {**row, "overview": fallback.get("overview") or ""}
         result = self.metadata(row, kind)
         result["metadata"]["search_enriched"] = True
+        result["metadata"]["homepage"] = str(row.get("homepage") or "")[:2048]
         alternatives = row.get("alternative_titles", {})
         result["metadata"]["alternative_titles"] = list(
             dict.fromkeys(

@@ -171,8 +171,11 @@ def test_watch_search_open_saved_repeat_and_episode_restore(tmp_path):
             await service.db("progress", ep["id"], 120, 1000, "manual", ep["links"][0]["id"])
             before = len(service.sources.http.calls)
             await service.resume(item["id"])
-            assert all(method == "HEAD" for _, method in service.sources.http.calls[before:])
-            assert player.opened[-1]["episode"]["position"] == 120
+            assert not any(
+                url.endswith(("map.xml", "robots.txt"))
+                for url, _ in service.sources.http.calls[before:]
+            )
+            assert player.opened[-1]["episode"]["position"] == 117
             await service.db("season", item["id"], [{"season": 2, "episode": 3, "name": "Test"}])
             updated = await service.db("detail", item["id"])
             next_ep = next(e for e in updated["episodes"] if e["season"] == 2)
