@@ -28,12 +28,12 @@ function snapshot(extra:object={}){return {type:'cinema',items:[],sources:[],his
 function mount(f:any){const sent:any[]=[],changes:any[]=[],watched:any[]=[];const view=new f.CinemaCatalogueView({send:(v:any)=>sent.push(v),detail:()=>{},watch:(v:any)=>watched.push(v),change:(item:any,values:any)=>changes.push({item,values}),remove:()=>{},poster:(item:any)=>{const n=f.window.document.createElement('div');n.textContent=item.title;return n;},settings:()=>{}});view.connection(true);view.receive(snapshot());view.mount(f.window.document.getElementById('catalogue'));return {view,sent,changes,watched};}
 function click(f:any,label:string,root:any=f.window.document){const b=[...root.querySelectorAll('button')].find((n:any)=>n.textContent===label) as HTMLButtonElement;assert.ok(b,`Missing button: ${label}`);b.click();}
 
-test('bounded pagination deduplicates cards, pending pages and stale generations',()=>{
+test('stable pagination deduplicates cards, pending pages and stale generations',()=>{
   const f=fixture();try{
     const pages=new f.CatalogueWindow();const id=pages.request(1);assert.equal(pages.request(1),null);
     pages.accept({request_id:id,page:1,items:[entry(1),entry(1)],next_page:2});assert.equal(pages.items().length,1);
     for(let page=2;page<=10;page++){const id=pages.request(page);pages.accept({request_id:id,page,items:[entry(page),entry(page-1)],next_page:page+1});}
-    assert.equal(pages.pages.size,6);assert.equal(new Set(pages.items().map((i:any)=>i.catalogue_key)).size,pages.items().length);
+    assert.equal(pages.pages.size,10);assert.equal(pages.items()[0].catalogue_key,'tmdb:movie:1');assert.equal(new Set(pages.items().map((i:any)=>i.catalogue_key)).size,pages.items().length);
     const old=pages.request(11);pages.reset();assert.equal(pages.accept({request_id:old,page:11,items:[entry(11)]}),false);assert.equal(pages.pages.size,0);
     const failure=pages.request(1);pages.accept({request_id:failure,error:'wait',retry_after:30});assert.equal(pages.request(1),null);assert.ok(pages.retryAt>Date.now());assert.equal(pages.failedPage,1);
   }finally{f.window.happyDOM.abort();}
@@ -61,9 +61,9 @@ test('debounced global search sends only the final text and combines filters',as
     await new Promise(r=>setTimeout(r,400));
     const requests=sent.filter((v:any)=>v.op==='catalogue_page');assert.equal(requests.length,before+1);assert.equal(requests.at(-1).filters.query,'Interstellar');
     const change=(label:string,value:string)=>{const el=f.window.document.querySelector(`[aria-label="${label}"]`);el.value=value;el.dispatchEvent(new f.window.Event('change'));};
-    change('Тип','movie');change('Жанр','триллер');change('Страна','US');change('Язык оригинала','en');change('Рейтинг TMDB','7');change('Сортировка','date');
+    click(f,'Фильмы');const genre=f.window.document.querySelector('input[value=триллер]');genre.checked=true;genre.dispatchEvent(new f.window.Event('change'));change('Страна','US');change('Язык оригинала','en');change('Рейтинг TMDB','7');change('Сортировка','date');
     f.window.document.querySelector('form')!.dispatchEvent(new f.window.Event('submit',{cancelable:true}));
-    const filters=sent.at(-1).filters;assert.equal(filters.kind,'movie');assert.equal(filters.genre,'триллер');assert.equal(filters.country,'US');assert.equal(filters.original_language,'en');assert.equal(filters.rating,7);assert.equal(filters.sort,'date');
+    const filters=sent.at(-1).filters;assert.equal(filters.kind,'movie');assert.deepEqual(Array.from(filters.genres),['триллер']);assert.equal(filters.country,'US');assert.equal(filters.original_language,'en');assert.equal(filters.rating,7);assert.equal(filters.sort,'date');
     const old=requests.at(-1).request_id;view.receive(snapshot({catalogue_page:{request_id:old,page:1,items:[entry(999)],next_page:null}}));assert.doesNotMatch(f.window.document.querySelector('.cinema-catalogue-grid')?.textContent??'',/Film 999/);
   }finally{f.window.happyDOM.abort();}
 });
@@ -88,5 +88,48 @@ test('catalogue actions are explicit and recommendations hide watched items imme
     assert.equal(f.window.document.querySelectorAll('.cinema-catalogue-grid .cinema-card').length,1);assert.doesNotMatch(f.window.document.querySelector('.cinema-catalogue-grid')!.textContent,/Film 1/);
     click(f,'Хочу посмотреть');assert.equal(changes.at(-1).values.status,'planned');click(f,'Смотрю');assert.equal(changes.at(-1).values.status,'watching');click(f,'В избранное');assert.equal(changes.at(-1).values.favorite,true);click(f,'Смотреть');assert.equal(watched.at(-1).catalogue_key,'tmdb:movie:2');
     assert.equal(sent.filter((v:any)=>v.op==='update').length,0); // The host owns SQLite actions; browsing itself cannot write statuses.
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('appending eight pages keeps the exact prefix, poster nodes and scroll offset',()=>{
+  const f=fixture();try{
+    const {view,sent}=mount(f);click(f,'Весь каталог');
+    const receive=(items:any[],page:number)=>view.receive(snapshot({catalogue_page:{request_id:sent.at(-1).request_id,page,items,next_page:page<8?page+1:null,total_pages:8}}));
+    receive([entry(1),entry(2)],1);
+    const grid=f.window.document.querySelector('.cinema-catalogue-grid');
+    const first=grid.firstElementChild;const poster=first.firstElementChild;
+    const scroller=f.window.document.querySelector('.workspace-page');scroller.scrollTop=850;
+    for(let page=2;page<=8;page++){click(f,'Загрузить ещё');receive([entry(page*10),entry(1)],page);assert.equal(grid.firstElementChild,first);assert.equal(first.firstElementChild,poster);}
+    assert.equal(scroller.scrollTop,850);
+    assert.deepEqual([...grid.children].map((c:any)=>c.dataset.catalogueKey),['tmdb:movie:1','tmdb:movie:2',...Array.from({length:7},(_,i)=>`tmdb:movie:${(i+2)*10}`)]);
+    view.receive(snapshot({items:[{id:'saved',catalogue_key:'tmdb:movie:1',favorite:1,status:'watched',user_rating:9.5}]}));
+    assert.equal(grid.firstElementChild,first);assert.equal(first.firstElementChild,poster);assert.equal(scroller.scrollTop,850);
+    assert.equal(first.querySelector('.cinema-favorite').getAttribute('aria-pressed'),'true');assert.match(first.textContent,/9.5/);
+    const parent=f.window.document.getElementById('catalogue');parent.replaceChildren();view.mount(parent);assert.equal(grid.firstElementChild,first);assert.equal(scroller.scrollTop,850);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('page order is deterministic even if responses arrive out of order and numeric IDs overlap',()=>{
+  const f=fixture();try{
+    const pages=new f.CatalogueWindow();const one=pages.request(1),two=pages.request(2);
+    pages.accept({request_id:two,page:2,items:[entry(20)],next_page:3});
+    const tv={...entry(1),kind:'series',catalogue_key:'tmdb:tv:1'};
+    pages.accept({request_id:one,page:1,items:[entry(1),tv],next_page:2});
+    assert.deepEqual(Array.from(pages.items(),(i:any)=>i.catalogue_key),['tmdb:movie:1','tmdb:tv:1','tmdb:movie:20']);assert.equal(pages.next,3);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('genre chips combine, clear separately and ignore results from the previous filter',()=>{
+  const f=fixture();try{
+    const {view,sent}=mount(f);click(f,'Весь каталог');const old=sent.at(-1).request_id;
+    view.receive(snapshot({catalogue_config:{feeds:[],genres:['триллер','детектив'],genres_by_kind:{movie:['триллер','детектив'],series:['детектив']},countries:[],languages:[]}}));
+    for(const name of ['триллер','детектив']){const input=f.window.document.querySelector(`input[value="${name}"]`);input.checked=true;input.dispatchEvent(new f.window.Event('change'));}
+    const mode=f.window.document.querySelector('[aria-label="Режим жанров"]');mode.value='and';mode.dispatchEvent(new f.window.Event('change'));
+    f.window.document.querySelector('form').dispatchEvent(new f.window.Event('submit',{cancelable:true}));
+    assert.deepEqual(Array.from(sent.at(-1).filters.genres),['триллер','детектив']);assert.equal(sent.at(-1).filters.genre_mode,'and');
+    view.receive(snapshot({catalogue_page:{request_id:old,page:1,items:[entry(999)],next_page:null}}));assert.doesNotMatch(f.window.document.querySelector('.cinema-catalogue-grid').textContent,/999/);
+    click(f,'триллер ×');assert.equal(f.window.document.querySelectorAll('.cinema-genre-chip').length,1);
+    click(f,'Снять все жанры');assert.equal(f.window.document.querySelectorAll('.cinema-genre-chip').length,0);
+    click(f,'Сериалы');assert.equal(f.window.document.querySelector('input[value=триллер]'),null);assert.ok(f.window.document.querySelector('input[value=детектив]'));
   }finally{f.window.happyDOM.abort();}
 });

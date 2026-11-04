@@ -53,6 +53,21 @@ MIGRATIONS = [
       data TEXT NOT NULL);
     ALTER TABLE cinema_episodes ADD COLUMN name TEXT NOT NULL DEFAULT '';
     """,
+    """
+    ALTER TABLE cinema_library RENAME TO cinema_library_v2;
+    CREATE TABLE cinema_library (
+      title_id TEXT PRIMARY KEY REFERENCES cinema_titles(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'planned', favorite INTEGER NOT NULL DEFAULT 0,
+      user_rating REAL CHECK(user_rating IS NULL OR
+        (user_rating BETWEEN 1 AND 10 AND user_rating*2=CAST(user_rating*2 AS INTEGER))),
+      completed_at TEXT, added_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      favorite_added_at TEXT);
+    INSERT INTO cinema_library
+      SELECT u.title_id,u.status,u.favorite,u.user_rating,u.completed_at,
+        t.updated_at,t.updated_at,CASE WHEN u.favorite THEN t.updated_at END
+      FROM cinema_library_v2 u JOIN cinema_titles t ON t.id=u.title_id;
+    DROP TABLE cinema_library_v2;
+    """,
 ]
 
 
@@ -149,8 +164,9 @@ class CinemaStore:
         with self.db:
             row = self.db.execute(
                 "SELECT id FROM cinema_titles WHERE identity=? "
-                "OR (catalogue_key!='' AND catalogue_key=?)",
-                (identity, entry.catalogue_key),
+                "AND (catalogue_key='' OR catalogue_key=?) "
+                "OR (catalogue_key!='' AND catalogue_key=?) ORDER BY catalogue_key DESC",
+                (identity, entry.catalogue_key, entry.catalogue_key),
             ).fetchone()
             if title_id:
                 existing = self.title(title_id)
@@ -164,7 +180,7 @@ class CinemaStore:
                     "catalogue_key,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
                     (
                         title_id,
-                        identity,
+                        entry.catalogue_key or identity,
                         entry.title,
                         entry.kind,
                         entry.year,
@@ -174,7 +190,10 @@ class CinemaStore:
                         now(),
                     ),
                 )
-                self.db.execute("INSERT INTO cinema_library(title_id) VALUES (?)", (title_id,))
+                self.db.execute(
+                    "INSERT INTO cinema_library(title_id,added_at,updated_at) VALUES (?,?,?)",
+                    (title_id, now(), now()),
+                )
             if metadata.model_fields_set:
                 # Metadata enrichment never changes status, history or playback position.
                 self.db.execute(
@@ -212,7 +231,8 @@ class CinemaStore:
     def title(self, identifier):
         row = self.db.execute(
             "SELECT t.*,u.status AS user_status,u.favorite AS user_favorite,"
-            "u.user_rating,u.completed_at FROM cinema_titles t "
+            "u.user_rating,u.completed_at,u.added_at,u.favorite_added_at,"
+            "u.updated_at AS library_updated_at FROM cinema_titles t "
             "JOIN cinema_library u ON u.title_id=t.id WHERE t.id=?",
             (identifier,),
         ).fetchone()
@@ -407,16 +427,30 @@ class CinemaStore:
         if (
             "user_rating" in values
             and values["user_rating"] is not None
-            and (type(values["user_rating"]) is not int or not 1 <= values["user_rating"] <= 10)
+            and (
+                type(values["user_rating"]) not in {int, float}
+                or not math.isfinite(values["user_rating"])
+                or not 1 <= values["user_rating"] <= 10
+                or values["user_rating"] * 2 != int(values["user_rating"] * 2)
+            )
         ):
-            raise ValueError("Оценка должна быть от 1 до 10.")
+            raise ValueError("Оценка должна быть от 1 до 10 с шагом 0.5.")
         with self.db:
+            if "favorite" in values:
+                self.db.execute(
+                    "UPDATE cinema_library SET favorite_added_at=CASE WHEN ? "
+                    "THEN COALESCE(favorite_added_at,?) ELSE NULL END WHERE title_id=?",
+                    (values["favorite"], now(), identifier),
+                )
             for key, value in values.items():
                 self.db.execute(
                     f"UPDATE cinema_library SET {key}=? WHERE title_id=?",
                     (value, identifier),
                 )
             self.db.execute("UPDATE cinema_titles SET updated_at=? WHERE id=?", (now(), identifier))
+            self.db.execute(
+                "UPDATE cinema_library SET updated_at=? WHERE title_id=?", (now(), identifier)
+            )
             if values.get("status") == "watched":
                 self.db.execute(
                     "UPDATE cinema_library SET completed_at=? WHERE title_id=?",

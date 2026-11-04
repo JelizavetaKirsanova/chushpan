@@ -50,6 +50,7 @@ class Catalogue:
         return {
             "feeds": [{"id": key, "name": name} for key, name in FEEDS],
             "genres": sorted(set(movie.values()) | set(tv.values())),
+            "genres_by_kind": {"movie": sorted(movie.values()), "series": sorted(tv.values())},
             "countries": [
                 {"id": c["iso_3166_1"], "name": c.get("native_name") or c["english_name"]}
                 for c in countries
@@ -89,10 +90,10 @@ class Catalogue:
 
         async def fetch(kind, endpoint):
             genres = await self.tmdb.genres(kind)
-            genre = next(
-                (key for key, name in genres.items() if name.casefold() == q.genre.casefold()), None
-            )
-            if q.genre and genre is None:
+            selected = set(q.genres) | ({q.genre.casefold()} if q.genre else set())
+            genre = [key for key, name in genres.items() if name.casefold() in selected]
+            # A genre missing from this type cannot satisfy AND; OR can use the rest.
+            if selected and (not genre or (q.genre_mode == "and" and len(genre) < len(selected))):
                 return [], 0, 0
             params = self.parameters(q, kind, endpoint, genre)
             count_key = (endpoint, tuple(sorted((k, v) for k, v in params.items() if k != "page")))
@@ -147,7 +148,7 @@ class Catalogue:
             "total_pages": pages,
             "total_results": sum(g[2] for g in groups),
             "next_page": q.page + 1 if q.page < pages else None,
-            "sort_scope": "loaded" if local_filters or len(targets) > 1 else "global",
+            "sort_scope": "page" if local_filters or len(targets) > 1 else "global",
             "filtered_total": not (q.query or personalized or excluded),
             "message": "На основе твоих оценок, избранного и истории."
             if personalized
@@ -166,6 +167,7 @@ class Catalogue:
             if (
                 q.sort != "popularity"
                 or q.genre
+                or q.genres
                 or q.year
                 or q.country
                 or q.original_language
@@ -193,10 +195,14 @@ class Catalogue:
             params["vote_average.gte"] = q.rating
             if q.sort == "rating" or q.feed == "top":
                 params["vote_count.gte"] = 100
-            genre_ids = {genre} if genre else set()
-            if q.feed in GENRE_FEEDS:
-                genre_ids.add(GENRE_FEEDS[q.feed][kind])
+            genre_ids = set(genre)
             if genre_ids:
+                separator = "," if q.genre_mode == "and" else "|"
+                params["with_genres"] = separator.join(str(g) for g in sorted(genre_ids))
+            # A shelf genre is an additional constraint, independent of the user's OR.
+            # TMDB has no parenthesized genre expressions; filter that case locally.
+            if q.feed in GENRE_FEEDS and (not genre_ids or q.genre_mode == "and"):
+                genre_ids.add(GENRE_FEEDS[q.feed][kind])
                 params["with_genres"] = ",".join(str(g) for g in sorted(genre_ids))
             if q.year:
                 params["primary_release_year" if kind == "movie" else "first_air_date_year"] = (
@@ -221,7 +227,9 @@ class Catalogue:
         if (row.get("vote_average") or 0) < q.rating:
             return False
         ids = row.get("genre_ids") or [g["id"] for g in row.get("genres", [])]
-        if genre and genre not in ids:
+        if genre and not (
+            all(g in ids for g in genre) if q.genre_mode == "and" else any(g in ids for g in genre)
+        ):
             return False
         if q.feed in GENRE_FEEDS and GENRE_FEEDS[q.feed].get(kind) not in ids:
             return False

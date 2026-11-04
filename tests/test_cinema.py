@@ -432,7 +432,7 @@ def test_metadata_status_replay_delete_and_source_less_watchlist(tmp_path):
     store.replay(item["id"])
     assert store.detail(item["id"])["current"]["position"] == 0
     assert len(store.history()) == 1
-    for invalid in (True, 0, 11, 3.5):
+    for invalid in (True, 0, 11, 3.25, float("nan"), float("inf")):
         with pytest.raises(ValueError):
             store.update_title(item["id"], {"user_rating": invalid})
     store.delete(item["id"])
@@ -622,3 +622,80 @@ def test_last_series_and_genre_requests_never_reach_llm_and_reuse_last_source(tm
         memory.close()
 
     asyncio.run(run())
+
+
+def test_half_ratings_favorites_persist_independently_and_survive_metadata_replay(tmp_path):
+    path = tmp_path / "library.sqlite"
+    store = CinemaStore(path)
+    values = {"title": "Любимая история", "kind": "movie", "catalogue_key": "tmdb:movie:10"}
+    item = store.add(values)
+    identifier = item["id"]
+    store.progress(item["current"]["id"], 25, 100, "manual")
+    store.update_title(identifier, {"status": "watched", "favorite": True, "user_rating": 9.5})
+    added = store.detail(identifier)["favorite_added_at"]
+    store.update_title(identifier, {"user_rating": 7.5})
+    store.add({**values, "metadata": {"rating": 8.2}})
+    store.close()
+    store = CinemaStore(path)
+    item = store.detail(identifier)
+    assert item["user_rating"] == 7.5 and item["favorite"] == 1 and item["status"] == "watched"
+    assert item["current"]["position"] == 25 and item["favorite_added_at"] == added
+    store.replay(identifier)
+    item = store.detail(identifier)
+    assert item["status"] == "watching" and item["user_rating"] == 7.5 and item["favorite"] == 1
+    assert len(store.history()) == 1
+    store.update_title(identifier, {"favorite": False, "user_rating": None})
+    item = store.detail(identifier)
+    assert item["user_rating"] is None and item["favorite_added_at"] is None
+    assert item["status"] == "watching" and not item["favorite"]
+    store.update_title(identifier, {"favorite": True})
+    assert store.detail(identifier)["status"] == "watching"
+    store.close()
+
+
+def test_v2_migration_preserves_integer_rating_dates_links_and_progress(tmp_path, monkeypatch):
+    import backend.cinema.store as module
+
+    path = tmp_path / "old.sqlite"
+    monkeypatch.setattr(module, "MIGRATIONS", MIGRATIONS[:2])
+    old = CinemaStore(path)
+    with old.db:
+        old.db.execute(
+            "INSERT INTO cinema_titles VALUES "
+            "('old','movie:2020:film','Film','movie',2020,'','','tmdb:movie:1',"
+            "'planned',0,NULL,'2026-11-01')"
+        )
+        old.db.execute("INSERT INTO cinema_library VALUES ('old','watched',1,9,'2026-10-30')")
+        old.db.execute("INSERT INTO cinema_episodes VALUES ('ep','old',0,0,50,100,0,NULL,NULL,'')")
+        old.db.execute(
+            "INSERT INTO cinema_history VALUES (1,'ep',NULL,50,100,'manual','2026-10-30')"
+        )
+    old.close()
+    monkeypatch.setattr(module, "MIGRATIONS", MIGRATIONS)
+    store = CinemaStore(path)
+    item = store.detail("old")
+    assert (item["status"], item["favorite"], item["user_rating"]) == ("watched", 1, 9)
+    assert item["completed_at"] == "2026-10-30"
+    assert item["favorite_added_at"] == item["added_at"] == "2026-11-01"
+    assert item["current"]["position"] == 50 and len(store.history()) == 1
+    store.update_title("old", {"user_rating": 9.5})
+    assert store.db.execute("PRAGMA foreign_key_check").fetchall() == []
+    store.close()
+    store = CinemaStore(path)
+    assert store.detail("old")["user_rating"] == 9.5
+    store.close()
+
+
+def test_tmdb_identity_distinguishes_types_and_same_named_releases(tmp_path):
+    store = CinemaStore(tmp_path / "library.sqlite")
+    a = store.add({"title": "Same", "year": 2020, "kind": "movie", "catalogue_key": "tmdb:movie:1"})
+    b = store.add({"title": "Same", "year": 2020, "kind": "series", "catalogue_key": "tmdb:tv:1"})
+    c = store.add({"title": "Same", "year": 2020, "kind": "movie", "catalogue_key": "tmdb:movie:2"})
+    assert len({a["id"], b["id"], c["id"]}) == 3
+    assert (
+        store.add(
+            {"title": "Localized", "year": 2020, "kind": "movie", "catalogue_key": "tmdb:movie:1"}
+        )["id"]
+        == a["id"]
+    )
+    store.close()

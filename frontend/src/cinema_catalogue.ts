@@ -1,7 +1,7 @@
 import type {CatalogueTitle, CinemaEvent, CinemaTitle} from './cinema';
 
 export interface CatalogueFilters {
-  feed:string;query:string;kind:string;genre:string;year:number;rating:number;
+  feed:string;query:string;kind:string;genre:string;genres:string[];genre_mode:'or'|'and';year:number;rating:number;
   country:string;original_language:string;sort:string;
 }
 export interface CataloguePage {
@@ -12,6 +12,7 @@ export interface CataloguePage {
 export interface CatalogueConfig {
   feeds:{id:string;name:string}[];genres:string[];countries:{id:string;name:string}[];
   languages:{id:string;name:string}[];
+  genres_by_kind?:{movie:string[];series:string[]};
 }
 export const catalogueFeeds:[string,string][]=[
   ['trending','Сейчас в тренде'],['popular_movies','Популярные фильмы'],
@@ -20,11 +21,11 @@ export const catalogueFeeds:[string,string][]=[
   ['horror','Ужасы'],['thriller','Триллеры'],['mystery','Детективы'],
   ['drama','Драмы'],['animation','Мультфильмы'],['recommended','Рекомендовано для меня'],
 ];
-const blankFilters=():CatalogueFilters=>({feed:'browse',query:'',kind:'all',genre:'',year:0,rating:0,country:'',original_language:'',sort:'popularity'});
+const blankFilters=():CatalogueFilters=>({feed:'browse',query:'',kind:'all',genre:'',genres:[],genre_mode:'or',year:0,rating:0,country:'',original_language:'',sort:'popularity'});
 const node=<K extends keyof HTMLElementTagNameMap>(tag:K,text='',cls=''):HTMLElementTagNameMap[K]=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const statuses:Record<string,string>={planned:'Хочу посмотреть',watching:'Смотрю',watched:'Просмотрено'};
 
-/** A sliding page window, independent of DOM; never retains the whole catalogue. */
+/** Keep the order of accepted pages. Loading a page never re-sorts earlier cards. */
 export class CatalogueWindow {
   readonly pages=new Map<number,CataloguePage>();
   readonly pending=new Map<number,string>();
@@ -46,18 +47,15 @@ export class CatalogueWindow {
     this.pending.delete(page);
     if(event.error){this.failedPage=page;this.error=event.error;this.retryAt=Date.now()+(event.retry_after??0)*1000;return true;}
     this.failedPage=null;this.pages.set(page,event);
-    while(this.pages.size>6){const keys=[...this.pages.keys()].sort((a,b)=>a-b);this.pages.delete(page===keys[0]?keys.at(-1)!:keys[0]!);}
     const last=this.pages.get(Math.max(...this.pages.keys()))!;
     this.next=last.next_page??null;
     this.emptyPages=event.items?.length?0:this.emptyPages+1;
     return true;
   }
-  items(sort='popularity'):CatalogueTitle[] {
+  items():CatalogueTitle[] {
     const unique=new Map<string,CatalogueTitle>();
     for(const [,page] of [...this.pages].sort(([a],[b])=>a-b))for(const item of page.items??[])if(!unique.has(item.catalogue_key))unique.set(item.catalogue_key,item);
-    const result=[...unique.values()];
-    result.sort((a,b)=>sort==='title'?a.title.localeCompare(b.title,'ru'):sort==='date'?(b.metadata.release_date??'').localeCompare(a.metadata.release_date??''):sort==='rating'?b.metadata.rating-a.metadata.rating:(b.metadata.popularity??0)-(a.metadata.popularity??0));
-    return result;
+    return [...unique.values()];
   }
 }
 
@@ -92,10 +90,11 @@ export class CinemaCatalogueView {
   private configSlot=node('div');
   private advanced:HTMLDetailsElement|null=null;
   private librarySignature='';
+  private mounted=false;
   constructor(private callbacks:Callbacks) {}
   connection(online:boolean):void {
     this.online=online;
-    if(!online){this.window.reset();for(const p of this.previews.values()){p.loading=false;p.request=undefined;}this.configRequested=false;window.clearTimeout(this.debounce);}
+    if(!online){this.window.pending.clear();for(const p of this.previews.values()){p.loading=false;p.request=undefined;}this.configRequested=false;window.clearTimeout(this.debounce);this.debounce=undefined;}
     if(this.root.isConnected){this.render();this.start();}
   }
   receive(data:CinemaEvent):void {
@@ -115,7 +114,7 @@ export class CinemaCatalogueView {
     if(previous&&previous.preferences.recommendations_show_watched!==data.preferences.recommendations_show_watched){this.previews.delete('recommended');if(this.filters.feed==='recommended'){this.window.reset();this.loadPage(1);}this.renderPreviews();this.observe();}
   }
   mount(parent:HTMLElement):void {
-    if(this.root.parentElement!==parent){parent.replaceChildren(this.root);this.render();this.start();}
+    if(this.root.parentElement!==parent){parent.replaceChildren(this.root);if(!this.mounted){this.render();this.mounted=true;}this.start();this.observe();}
   }
   search(query:string,debounce=true):void {
     window.clearTimeout(this.debounce);this.debounce=undefined;this.filters.query=query.trim();this.filters.feed='browse';this.mode=query.trim()||this.hasFilters()?'list':'home';this.window.reset();
@@ -136,7 +135,7 @@ export class CinemaCatalogueView {
     else if(this.debounce===undefined&&!this.window.pages.size&&!this.window.pending.size&&!this.window.error)this.loadPage(1);
   }
   intent(value:{query?:string;genre?:string}):void {this.filters={...blankFilters(),...value};this.callbacks.query?.(this.filters.query);this.mode='list';this.window.reset();if(this.root.isConnected){this.render();this.loadPage(1);}}
-  private hasFilters():boolean {const f=this.filters;return !!(f.genre||f.year||f.rating||f.country||f.original_language||f.kind!=='all'||f.sort!=='popularity');}
+  private hasFilters():boolean {const f=this.filters;return !!(f.genre||f.genres.length||f.year||f.rating||f.country||f.original_language||f.kind!=='all'||f.sort!=='popularity');}
   private button(label:string,action:()=>void,cls=''):HTMLButtonElement {const b=node('button',label,cls);b.type='button';b.disabled=!this.online;b.onclick=action;return b;}
   private select(label:string,options:[string,string][],value:string,change:(value:string)=>void):HTMLElement {
     const field=node('label','','cinema-field');field.append(node('span',label));const input=node('select');input.setAttribute('aria-label',label);input.disabled=!this.online;
@@ -146,22 +145,45 @@ export class CinemaCatalogueView {
   private renderFilters():void {
     const wasOpen=this.advanced?.open??false;
     const form=node('form','','cinema-catalogue-filters');
-    form.append(this.select('Тип',[['all','Фильмы и сериалы'],['movie','Фильмы'],['series','Сериалы']],this.filters.kind,v=>{this.filters.kind=v;this.changed();}),
-      this.select('Жанр',[['','Все жанры'],...(this.config?.genres??['триллер','комедия','драма','ужасы','фантастика','детектив','мультфильм']).map(g=>[g,g] as [string,string])],this.filters.genre,v=>{this.filters.genre=v;this.changed();}),
-      this.select('Сортировка',[['popularity','По популярности'],['rating','По рейтингу'],['date','По дате выхода'],['title','По названию']],this.filters.sort,v=>{this.filters.sort=v;this.changed();}));
-    const more=node('details','','cinema-catalogue-advanced');more.open=wasOpen;more.append(node('summary','Ещё фильтры'));this.advanced=more;
+    const types=node('div','','cinema-type-switch');types.setAttribute('aria-label','Тип контента');
+    for(const [id,label] of [['all','Всё'],['movie','Фильмы'],['series','Сериалы']]){
+      const b=this.button(label,()=>{this.filters.kind=id;this.changed();this.renderFilters();});
+      b.setAttribute('aria-pressed',String(this.filters.kind===id));types.append(b);
+    }
+    form.append(types,this.select('Сортировка',[['popularity','По популярности'],['rating','По рейтингу'],['date','По дате выхода'],['title','По названию']],this.filters.sort,v=>{this.filters.sort=v;this.changed();}));
+    const genrePanel=node('details','','cinema-genre-panel');
+    genrePanel.append(node('summary',`Жанры${this.filters.genres.length?` · ${this.filters.genres.length}`:''}`));
+    const genreSearch=node('input');genreSearch.type='search';genreSearch.placeholder='Поиск жанров…';genreSearch.setAttribute('aria-label','Поиск жанров');
+    const genres=node('div','','cinema-genre-options');
+    const available=this.filters.kind==='all'?this.config?.genres:this.config?.genres_by_kind?.[this.filters.kind as 'movie'|'series'];
+    for(const genre of available??this.config?.genres??['триллер','комедия','драма','ужасы','фантастика','детектив','мультфильм']){
+      const label=node('label');const input=node('input');input.type='checkbox';input.value=genre;input.checked=this.filters.genres.includes(genre);
+      input.onchange=()=>{this.filters.genres=input.checked?[...this.filters.genres,genre]:this.filters.genres.filter(g=>g!==genre);this.filters.genre='';this.changed();this.renderGenreChips();};
+      label.append(input,node('span',genre));genres.append(label);
+    }
+    genreSearch.oninput=()=>{for(const label of [...genres.children] as HTMLElement[])label.hidden=!label.textContent?.toLocaleLowerCase('ru').includes(genreSearch.value.toLocaleLowerCase('ru'));};
+    genrePanel.append(genreSearch,genres);form.append(genrePanel,
+      this.select('Режим жанров',[['or','Любой из выбранных (OR)'],['and','Все выбранные (AND)']],this.filters.genre_mode,v=>{this.filters.genre_mode=v as 'or'|'and';this.changed();}));
+    const more=node('details','','cinema-catalogue-advanced');more.open=wasOpen;more.append(node('summary','Фильтры'));this.advanced=more;
     const inner=node('div','','cinema-catalogue-filter-grid');const year=node('input');year.type='number';year.min='0';year.max='2200';year.placeholder='Любой';year.value=String(this.filters.year||'');year.setAttribute('aria-label','Год');year.oninput=()=>{this.filters.year=Number(year.value)||0;this.changed();};const field=node('label','','cinema-field');field.append(node('span','Год'),year);
     inner.append(field,this.select('Рейтинг TMDB',[['0','Любой рейтинг'],['6','От 6'],['7','От 7'],['8','От 8'],['9','От 9']],String(this.filters.rating),v=>{this.filters.rating=Number(v);this.changed();}),
       this.select('Страна',[['','Любая страна'],...(this.config?.countries??[{id:'US',name:'США'},{id:'RU',name:'Россия'},{id:'EE',name:'Эстония'},{id:'GB',name:'Великобритания'},{id:'JP',name:'Япония'},{id:'KR',name:'Южная Корея'}]).map(c=>[c.id,c.name] as [string,string])],this.filters.country,v=>{this.filters.country=v;this.changed();}),
       this.select('Язык оригинала',[['','Любой язык'],...(this.config?.languages??[{id:'ru',name:'Русский'},{id:'en',name:'Английский'},{id:'ja',name:'Японский'},{id:'ko',name:'Корейский'}]).map(c=>[c.id,c.name] as [string,string])],this.filters.original_language,v=>{this.filters.original_language=v;this.changed();}));
     const watched=node('input');watched.type='checkbox';watched.checked=!!this.data?.preferences.recommendations_show_watched;watched.onchange=()=>this.callbacks.send({op:'preferences',values:{recommendations_show_watched:watched.checked}});const watchLabel=node('label','','cinema-recommendation-setting');watchLabel.append(watched,node('span','Показывать просмотренное в рекомендациях'));inner.append(watchLabel);more.append(inner);
     const submit=this.button('Найти',()=>{},'primary');submit.type='submit';form.append(more,submit,this.button('Сбросить',()=>{this.filters=blankFilters();this.callbacks.query?.('');this.mode='home';this.window.reset();this.render();this.start();}));form.onsubmit=e=>{e.preventDefault();if(!form.reportValidity())return;window.clearTimeout(this.debounce);this.debounce=undefined;this.mode='list';this.window.reset();this.renderBody();this.loadPage(1);};
-    this.configSlot.replaceChildren(form);
+    this.configSlot.replaceChildren(form,node('div','','cinema-genre-chips'));this.renderGenreChips();
     if(this.configError){const warning=node('p',this.configError,'cinema-muted');warning.append(this.button('Повторить',()=>{this.configRequested=true;this.callbacks.send({op:'catalogue_config'});}));this.configSlot.append(warning);}
+  }
+  private renderGenreChips():void {
+    const chips=this.configSlot.querySelector('.cinema-genre-chips');if(!chips)return;
+    chips.replaceChildren(...this.filters.genres.map(g=>this.button(`${g} ×`,()=>{
+      this.filters.genres=this.filters.genres.filter(v=>v!==g);this.changed();this.renderFilters();
+    },'cinema-genre-chip')));
+    if(this.filters.genres.length)chips.append(this.button('Снять все жанры',()=>{this.filters.genres=[];this.filters.genre='';this.changed();this.renderFilters();}));
   }
   private render():void {
     this.observer?.disconnect();this.rows.clear();this.root.replaceChildren();
-    const hero=node('header','','cinema-catalogue-hero');hero.append(node('small','ТВОЙ СЛЕДУЮЩИЙ ВЕЧЕР'),node('h2','Истории, которые захватят'),node('p','Открой новое. Сохрани на потом. Продолжи своё.'));
+    const hero=node('header','','cinema-catalogue-hero');hero.append(node('small','ВЫБЕРИ СВОЮ ИСТОРИЮ'),node('h2','Что посмотрим сегодня?'),node('p','Открывай новое и собирай свою медиатеку.'));
     const actions=node('div','','cinema-actions');actions.append(this.button('Весь каталог',()=>this.openFeed('browse')),this.button('Для меня',()=>this.openFeed('recommended')));hero.append(actions);this.root.append(hero,this.configSlot);this.renderFilters();this.renderBody();
   }
   private renderBody():void {
@@ -202,11 +224,11 @@ export class CinemaCatalogueView {
   }
   private renderPreviews():void {
     if(this.mode!=='home')return;
-    for(const [id,section]of this.rows){const state=this.previews.get(id);const track=section.querySelector<HTMLElement>('.cinema-carousel')!;const offset=track.scrollLeft;track.replaceChildren();track.setAttribute('aria-busy',String(!!state?.loading));
+    for(const [id,section]of this.rows){const state=this.previews.get(id);const track=section.querySelector<HTMLElement>('.cinema-carousel')!;const offset=track.scrollLeft;track.setAttribute('aria-busy',String(!!state?.loading));
       const message=section.querySelector<HTMLElement>('.cinema-shelf-message')!;message.textContent=state?.message??'';
-      if(state?.loaded){for(const item of this.recommendationFilter(state.items,id))track.append(this.card(item));if(!track.childElementCount)track.append(node('p','В этой подборке пока ничего не найдено.','cinema-muted'));}
-      else if(state?.error){track.append(node('p',state.error,'cinema-form-error'),this.button('Повторить',()=>{if(state){state.error='';this.loadPreview(id);this.observe();}}));}
-      else{for(let i=0;i<5;i++)track.append(node('div','','cinema-poster-skeleton'));if(!state?.loading)track.append(this.button('Загрузить подборку',()=>this.loadPreview(id)));}
+      if(state?.loaded){this.reconcile(track,this.recommendationFilter(state.items,id));if(!track.childElementCount)track.append(node('p','В этой подборке пока ничего не найдено.','cinema-muted'));}
+      else if(state?.error){track.replaceChildren();track.append(node('p',state.error,'cinema-form-error'),this.button('Повторить',()=>{if(state){state.error='';this.loadPreview(id);this.observe();}}));}
+      else{track.replaceChildren();for(let i=0;i<5;i++)track.append(node('div','','cinema-poster-skeleton'));if(!state?.loading)track.append(this.button('Загрузить подборку',()=>this.loadPreview(id)));}
       track.scrollLeft=offset;
     }
     // Once one visible shelf settles, observe shelves that were held by the concurrency limit.
@@ -221,29 +243,56 @@ export class CinemaCatalogueView {
   }
   private renderList():void {
     if(this.mode!=='list'||!this.root.contains(this.results))return;
-    const items=this.recommendationFilter(this.window.items(this.filters.sort));
-    const keys=new Set(items.map(i=>i.catalogue_key));const anchor=[...this.results.querySelectorAll<HTMLElement>('[data-catalogue-key]')].find(e=>keys.has(e.dataset.catalogueKey!)&&e.getBoundingClientRect().top>=0);const top=anchor?.getBoundingClientRect().top;
-    this.results.replaceChildren(...items.map(i=>this.card(i)));
-    if(anchor&&top!==undefined){const next=[...this.results.querySelectorAll<HTMLElement>('[data-catalogue-key]')].find(e=>e.dataset.catalogueKey===anchor.dataset.catalogueKey);const scroller=this.root.closest<HTMLElement>('.workspace-page');if(next&&scroller)scroller.scrollTop+=next.getBoundingClientRect().top-top;}
+    const items=this.recommendationFilter(this.window.items());
+    this.reconcile(this.results,items);
     const title=this.filters.query?`Поиск: ${this.filters.query}`:catalogueFeeds.find(([id])=>id===this.filters.feed)?.[1]??'Весь каталог';this.heading.replaceChildren(this.button('‹ Подборки',()=>{this.mode='home';this.filters=blankFilters();this.callbacks.query?.('');this.window.reset();this.render();this.start();}),node('h2',title));
     const pages=[...this.window.pages.keys()].sort((a,b)=>a-b);const last=pages.length?this.window.pages.get(pages.at(-1)!)!:null;
     if(pages.length){this.heading.append(node('p',`Страницы ${pages[0]}–${pages.at(-1)}${last?.total_pages?` из ${last.total_pages}`:''} · Показано: ${items.length}`,'cinema-muted'));if(pages[0]!>1)this.heading.append(this.button('Предыдущая страница',()=>this.loadPage(pages[0]!-1)));}
     if(last?.message)this.heading.append(node('p',last.message,'cinema-muted'));
-    if(last?.sort_scope==='loaded')this.heading.append(node('small','При поиске по названию и смешении типов сортировка применяется к загруженным результатам.','cinema-muted'));
+    if(last?.sort_scope==='page'||last?.sort_scope==='loaded')this.heading.append(node('small','Поиск и смешанные подборки упорядочены внутри каждой страницы. Новые результаты добавляются в конец.','cinema-muted'));
     this.footer.replaceChildren();this.results.setAttribute('aria-busy',String(!!this.window.pending.size));this.footer.setAttribute('role','status');
     if(this.window.pending.size){this.footer.append(node('span','Загружаю следующую страницу…','cinema-loading'));if(!items.length)for(let i=0;i<6;i++)this.results.append(node('div','','cinema-poster-skeleton'));}
     else if(this.window.error){this.footer.append(node('p',this.window.error,'cinema-form-error'));const wait=Math.max(0,Math.ceil((this.window.retryAt-Date.now())/1000));const retry=this.button(wait?`Повторить через ${wait} с`:'Повторить загрузку',()=>this.loadPage(this.window.failedPage??this.window.next??1));retry.disabled=!this.online||!!wait;this.footer.append(retry);window.clearTimeout(this.retryTimer);if(wait)this.retryTimer=window.setTimeout(()=>this.renderList(),Math.min(wait*1000,1000));}
     else if(this.window.next){this.footer.append(this.button('Загрузить ещё',()=>this.loadPage(this.window.next!)));if(!items.length)this.footer.prepend(node('p','На проверенных страницах совпадений нет. Можно продолжить поиск.','cinema-muted'));}
     else if(pages.length)this.footer.append(node('p',items.length?'Все доступные страницы этой подборки загружены.':'По выбранным фильтрам ничего не найдено.','cinema-muted'));
   }
+  private reconcile(container:HTMLElement,items:CatalogueTitle[]):void {
+    const existing=new Map([...container.querySelectorAll<HTMLElement>(':scope > [data-catalogue-key]')].map(card=>[card.dataset.catalogueKey!,card]));
+    const keys=new Set(items.map(i=>i.catalogue_key));
+    for(const child of [...container.children])if(!keys.has((child as HTMLElement).dataset.catalogueKey!))child.remove();
+    for(const [index,item] of items.entries()){
+      let card=existing.get(item.catalogue_key);
+      if(!card)card=this.card(item);
+      else this.updateCard(card,item);
+      // Avoid moving an existing node: focus, poster decoding and native scroll anchoring survive.
+      if(container.children[index]!==card)container.insertBefore(card,container.children[index]??null);
+    }
+  }
+  private updateCard(card:HTMLElement,item:CatalogueTitle):void {
+    const existing=this.data?.items.find(i=>i.catalogue_key===item.catalogue_key);
+    const signature=JSON.stringify([existing?.status,existing?.favorite,existing?.user_rating]);
+    if(card.dataset.library===signature)return;
+    card.dataset.library=signature;
+    const heart=card.querySelector<HTMLButtonElement>('.cinema-favorite')!;
+    heart.textContent=existing?.favorite?'♥':'♡';heart.setAttribute('aria-pressed',String(!!existing?.favorite));heart.setAttribute('aria-label',existing?.favorite?'Убрать из избранного':'В избранное');
+    card.querySelector('.cinema-library-badge')!.textContent=existing?statuses[existing.status]:'';
+    card.querySelector('.cinema-personal-rating')!.textContent=existing?.user_rating?`★ ${existing.user_rating.toFixed(1)}`:'';
+    const menu=card.querySelector('details')!;const favorite=menu.querySelector<HTMLButtonElement>('[data-favorite]')!;
+    favorite.textContent=existing?.favorite?'Убрать из избранного':'В избранное';
+    menu.querySelector('[data-remove]')?.remove();
+    if(existing){const remove=this.button('Удалить из списка',()=>this.callbacks.remove(existing));remove.dataset.remove='';menu.append(remove);}
+  }
   private card(item:CatalogueTitle):HTMLElement {
     const card=node('article','','cinema-card cinema-catalogue-card');card.dataset.catalogueKey=item.catalogue_key;
     const poster=this.button(`Подробнее: ${item.title}`,()=>this.callbacks.detail(item),'cinema-poster-button');poster.replaceChildren(this.callbacks.poster(item));
-    const body=node('div','','cinema-card-body');const existing=this.data?.items.find(i=>i.catalogue_key===item.catalogue_key);const m=item.metadata;
-    body.append(this.button(item.title,()=>this.callbacks.detail(item),'cinema-title'),node('p',[item.year||'',item.kind==='series'?'Сериал':'Фильм',m.rating?`★ ${m.rating.toFixed(1)}`:''].filter(Boolean).join(' · ')));
-    if(m.original_title&&m.original_title!==item.title)body.append(node('small',m.original_title,'cinema-original-title'));
-    if(existing)body.append(node('small',`${statuses[existing.status]}${existing.favorite?' · ★ Избранное':''}`,'cinema-library-badge'));
+    const current=()=>this.data?.items.find(i=>i.catalogue_key===item.catalogue_key);
+    const heart=this.button('♡',()=>this.callbacks.change(item,{favorite:!current()?.favorite}),'cinema-favorite');
+    const body=node('div','','cinema-card-body');
+    body.append(this.button(item.title,()=>this.callbacks.detail(item),'cinema-title'),node('p',`${item.year||'Год неизвестен'} · ${item.kind==='series'?'Сериал':'Фильм'}`,'cinema-card-year'));
+    const ratings=node('div','','cinema-ratings');ratings.append(node('span',item.metadata.rating?`★ ${item.metadata.rating.toFixed(1)}`:'TMDB —','cinema-tmdb-rating'),node('span','','cinema-personal-rating'));body.append(ratings,node('small','','cinema-library-badge'));
     const actions=node('div','','cinema-card-actions');actions.append(this.button('Смотреть',()=>this.callbacks.watch(item),'primary'),this.button('Хочу посмотреть',()=>this.callbacks.change(item,{status:'planned'})));
-    const menu=node('details','','cinema-context');const summary=node('summary','•••');summary.setAttribute('aria-label',`Действия: ${item.title}`);menu.append(summary);for(const [status,label]of Object.entries(statuses))menu.append(this.button(label,()=>this.callbacks.change(item,{status})));menu.append(this.button(existing?.favorite?'Убрать из избранного':'В избранное',()=>this.callbacks.change(item,{favorite:!existing?.favorite})));if(existing)menu.append(this.button('Удалить из списка',()=>this.callbacks.remove(existing)));actions.append(menu);body.append(actions);card.append(poster,body);return card;
+    const menu=node('details','','cinema-context');const summary=node('summary','•••');summary.setAttribute('aria-label',`Действия: ${item.title}`);menu.append(summary);
+    for(const [status,label]of Object.entries(statuses))menu.append(this.button(label,()=>this.callbacks.change(item,{status})));
+    const favorite=this.button('В избранное',()=>this.callbacks.change(item,{favorite:!current()?.favorite}));favorite.dataset.favorite='';menu.append(favorite);actions.append(menu);body.append(actions);card.append(poster,heart,body);this.updateCard(card,item);return card;
   }
 }

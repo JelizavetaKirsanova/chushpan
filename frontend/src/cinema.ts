@@ -9,7 +9,7 @@ export interface CinemaEpisode {id:string;title_id:string;season:number;episode:
 export interface CinemaMetadata {genres:string[];runtime:number;rating:number;seasons:{season:number;episodes:number;name:string}[];episode_count:number;original_title?:string;original_language?:string;countries?:string[];release_date?:string;popularity?:number}
 export interface CatalogueTitle {title:string;kind:'movie'|'series';year:number;poster_url:string;description:string;catalogue_key:string;metadata:CinemaMetadata}
 interface SourceOptions {title_id:string;episode_id:string;options:{source:CinemaSource;link:CinemaLink|null;available:boolean;reason:string}[];official?:{region:string;url:string;providers:{name:string;type:string}[]};provider_error?:string}
-export interface CinemaTitle {id:string;title:string;kind:'movie'|'series';year:number;poster_url:string;description:string;status:'watching'|'planned'|'watched';favorite:number;catalogue_key?:string;metadata?:CinemaMetadata;user_rating?:number|null;completed_at?:string|null;episodes:CinemaEpisode[];current:CinemaEpisode|null}
+export interface CinemaTitle {id:string;title:string;kind:'movie'|'series';year:number;poster_url:string;description:string;status:'watching'|'planned'|'watched';favorite:number;catalogue_key?:string;metadata?:CinemaMetadata;user_rating?:number|null;completed_at?:string|null;added_at?:string;favorite_added_at?:string|null;episodes:CinemaEpisode[];current:CinemaEpisode|null}
 interface CinemaHistory {id:number;episode_id:string;title:string;title_id:string;season:number;episode:number;position:number;duration:number;created_at:string;event:string;source_name:string;watched:number}
 export interface CinemaEvent {type:'cinema';items:CinemaTitle[];sources:CinemaSource[];history:CinemaHistory[];preferences:{watched_threshold:number;auto_next:boolean;startup:'continue'|'library';poll_seconds:number;watch_region?:string;save_progress?:boolean;recommendations_show_watched?:boolean;devices:Record<string,'mac'|'airplay'>};location:string;devices:{id:string;name:string;available:boolean;reason:string}[];durable:boolean;session:{title_id:string;episode_id:string;mode:string}|null;message:string;error?:string;saved?:string;navigate?:boolean;matches?:CatalogueTitle[];tmdb?:{configured:boolean};catalogue_detail?:CatalogueTitle;source_options?:SourceOptions;active_tab?:string;season_loaded?:string;loaded_season?:number;catalogue_page?:CataloguePage;catalogue_config?:CatalogueConfig;catalogue_config_error?:string;catalogue_intent?:{query?:string;genre?:string}}
 
@@ -38,7 +38,13 @@ export class CinemaView {
   private tab='continue';
   private query='';
   private list=false;
-  private favoritesOnly=false;
+  private libraryKind='all';
+  private librarySort='recent';
+  private ratingMin=0;
+  private ratingMax=10;
+  private libraryQuery='';
+  private scrollPositions=new Map<string,number>();
+  private renderedTab='';
   private catalogueView:CinemaCatalogueView;
   private pendingWatch:string|null=null;
   private dialog:HTMLDialogElement|null=null;
@@ -48,10 +54,10 @@ export class CinemaView {
   private dateFilter='';
   private first=true;
   constructor(private send:(value:object)=>void,private chat:(text:string)=>void,private navigate:()=>void,private listen:()=>void) {
-    const heading=el('header','','cinema-heading');const title=el('h1');title.innerHTML=icon('film');title.append(el('span','Кино и сериалы'));
-    const searchForm=el('form','','cinema-search');const glyph=el('span');glyph.innerHTML=icon('search');this.search=el('input');this.search.type='search';this.search.placeholder='Найти фильм или сериал…';this.search.setAttribute('aria-label','Поиск по кинотеке');this.search.maxLength=200;
-    this.search.oninput=()=>{this.query=this.search.value;this.tab='catalogue';this.catalogueView.search(this.query);this.render();};searchForm.onsubmit=e=>{e.preventDefault();this.tab='catalogue';this.catalogueView.search(this.query,false);this.render();};searchForm.append(glyph,this.search);
-    const mic=this.button('Голосовая команда',this.listen,'cinema-mic');mic.innerHTML=icon('mic');mic.setAttribute('aria-label','Голосовая команда');heading.append(title,searchForm,mic,this.button('Настройки',()=>{this.tab='sources';this.render();}));
+    const heading=el('header','','cinema-heading');const title=el('h1');title.innerHTML=icon('film');title.append(el('span','Фильмы и сериалы'));
+    const searchForm=el('form','','cinema-search');const glyph=el('span');glyph.innerHTML=icon('search');this.search=el('input');this.search.type='search';this.search.placeholder='Поиск фильмов и сериалов…';this.search.setAttribute('aria-label','Поиск по кинотеке');this.search.maxLength=200;
+    this.search.oninput=()=>{this.query=this.search.value;this.changeTab('catalogue',false);this.catalogueView.search(this.query);this.render();};searchForm.onsubmit=e=>{e.preventDefault();this.changeTab('catalogue',false);this.catalogueView.search(this.query,false);this.render();};searchForm.append(glyph,this.search);
+    const mic=this.button('Голосовая команда',this.listen,'cinema-mic');mic.innerHTML=icon('mic');mic.setAttribute('aria-label','Голосовая команда');heading.append(title,searchForm,mic,this.button('Настройки',()=>{this.changeTab('sources');}));
     this.tabs.setAttribute('aria-label','Разделы кинотеки');this.feedback.setAttribute('role','status');this.feedback.setAttribute('aria-live','polite');
     const composer=el('form','','cinema-composer');const spark=el('span');spark.innerHTML=icon('activity');const input=el('input');input.placeholder='Скажи, что посмотреть…';input.setAttribute('aria-label','Команда Чушпану о кино');input.maxLength=400;
     const submit=this.button('Отправить',()=>{});submit.type='submit';submit.innerHTML=icon('send');submit.setAttribute('aria-label','Отправить команду о кино');composer.append(spark,input,submit);composer.onsubmit=e=>{e.preventDefault();if(this.online&&input.value.trim()){this.chat(input.value.trim());input.value='';}};
@@ -59,9 +65,9 @@ export class CinemaView {
       detail:item=>{const existing=this.data?.items.find(v=>v.catalogue_key===item.catalogue_key);if(existing)this.detail(existing.id);else this.request({op:'catalogue_detail',key:item.catalogue_key});},
       watch:item=>{const existing=this.data?.items.find(v=>v.catalogue_key===item.catalogue_key);if(existing)this.open(existing);else{this.pendingWatch=item.catalogue_key;this.request({op:'catalogue_add',key:item.catalogue_key});}},
       change:(item,values)=>{const existing=this.data?.items.find(v=>v.catalogue_key===item.catalogue_key);if(existing)this.request({op:'update',id:existing.id,values});else this.request({op:'catalogue_add',key:item.catalogue_key,values});},
-      remove:item=>this.deleteTitle(item),query:value=>{this.query=value;this.search.value=value;},settings:()=>{this.tab='sources';this.render();}});
+      remove:item=>this.deleteTitle(item),query:value=>{this.query=value;this.search.value=value;},settings:()=>{this.changeTab('sources');}});
     this.root.append(heading,this.tabs,this.feedback,this.content,composer);
-    document.addEventListener('cinema:settings',()=>{this.tab='sources';this.render();});
+    document.addEventListener('cinema:settings',()=>{this.changeTab('sources');});
     document.addEventListener('workspace:navigate',event=>{if((event as CustomEvent).detail==='cinema'&&this.online)this.request({op:'refresh'});});
     this.connection(false);
   }
@@ -87,25 +93,78 @@ export class CinemaView {
     if(event.season_loaded)this.detail(event.season_loaded,event.items.find(i=>i.id===event.season_loaded)?.episodes.find(ep=>ep.season===event.loaded_season)?.id);
     if(event.saved&&this.pendingWatch){const item=event.items.find(v=>v.id===event.saved);if(item){this.pendingWatch=null;this.open(item);}}
   }
+  private changeTab(tab:string,render=true):void {
+    if(this.tab!==tab){const scroller=this.root.closest<HTMLElement>('.workspace-page');if(scroller)this.scrollPositions.set(this.tab,scroller.scrollTop);this.tab=tab;}
+    if(render)this.render();
+  }
   private render():void {
-    this.tabs.replaceChildren(...[['watching','play','Смотрю'],['planned','bookmark','Хочу посмотреть'],['watched','history','Просмотрено'],['catalogue','search','Каталог']].map(([id,glyph,label])=>{const b=this.button(label,()=>{this.tab=id;this.render();});b.innerHTML=icon(glyph);b.append(el('span',label));b.setAttribute('aria-current',this.tab===id?'page':'false');return b;}));
-    if(this.tab!=='catalogue')this.content.replaceChildren();
-    if(!this.data){this.content.append(this.empty(this.online?'Загружаю твою кинотеку…':'Кинотека появится после подключения к Чушпану.'));return;}
-    if(this.tab==='sources'){this.sources();return;}
-    if(this.tab==='catalogue'){this.catalogue();return;}
-    const visible=this.data.items.filter(item=>item.status===this.tab&&(!this.favoritesOnly||!!item.favorite)&&item.title.toLocaleLowerCase('ru').includes(this.query.toLocaleLowerCase('ru')));
-    const section=el('section');section.append(this.sectionHeading(statuses[this.tab as keyof typeof statuses]??'Медиатека',this.button('+ Добавить',()=>this.addForm())));
-    const display=el('details','','cinema-display');display.append(el('summary','Вид и фильтры'),this.button(this.list?'Карточки':'Список',()=>{this.list=!this.list;this.render();}),this.button(this.favoritesOnly?'Все названия':'☆ Только избранное',()=>{this.favoritesOnly=!this.favoritesOnly;this.render();}));section.append(display);
-    if(this.tab==='watching')visible.sort((a,b)=>(b.current?.last_viewed??'').localeCompare(a.current?.last_viewed??''));
+    this.tabs.replaceChildren(...[['catalogue','search','Каталог'],['planned','bookmark','Хочу посмотреть'],['watching','play','Смотрю'],['watched','history','Просмотрено'],['favorites','heart','Избранное']].map(([id,glyph,label])=>{
+      const b=this.button(label,()=>this.changeTab(id));b.innerHTML=icon(glyph);b.append(el('span',label));b.setAttribute('aria-current',this.tab===id?'page':'false');return b;
+    }));
+    const scroller=this.root.closest<HTMLElement>('.workspace-page');
+    const top=this.renderedTab===this.tab?scroller?.scrollTop??0:this.scrollPositions.get(this.tab)??0;
+    this.renderedTab=this.tab;
+    if(!this.data){this.content.replaceChildren(this.empty(this.online?'Загружаю твою кинотеку…':'Кинотека появится после подключения к Чушпану.'));return;}
+    if(this.tab==='catalogue'){this.catalogue();}
+    else if(this.tab==='sources'){this.content.replaceChildren();this.sources();}
+    else this.renderLibrary();
+    if(scroller)scroller.scrollTop=top;
+    this.syncDetail();
+  }
+  private renderLibrary():void {
+    if(!this.data)return;
+    const visible=this.data.items.filter(item=>(this.tab==='favorites'?!!item.favorite:item.status===this.tab)
+      &&(this.libraryKind==='all'||item.kind===this.libraryKind)
+      &&item.title.toLocaleLowerCase('ru').includes(this.libraryQuery.toLocaleLowerCase('ru'))
+      &&(this.tab!=='watched'||(!this.ratingMin&&this.ratingMax===10)||
+        (item.user_rating!=null&&item.user_rating>=this.ratingMin&&item.user_rating<=this.ratingMax)));
+    visible.sort((a,b)=>this.librarySort==='rating'?(b.user_rating??-1)-(a.user_rating??-1)||a.title.localeCompare(b.title,'ru'):
+      this.librarySort==='title'?a.title.localeCompare(b.title,'ru'):
+      (this.tab==='favorites'?b.favorite_added_at??b.added_at??'':this.tab==='watching'?b.current?.last_viewed??'':b.added_at??'')
+        .localeCompare(this.tab==='favorites'?a.favorite_added_at??a.added_at??'':this.tab==='watching'?a.current?.last_viewed??'':a.added_at??'')||a.title.localeCompare(b.title,'ru'));
+    const section=el('section','','cinema-library');
+    const toolbar=el('div','','cinema-library-toolbar');const types=el('div','','cinema-type-switch');
+    for(const [id,label] of [['all','Всё'],['movie','Фильмы'],['series','Сериалы']]){const b=this.button(label,()=>{this.libraryKind=id;this.render();});b.setAttribute('aria-pressed',String(this.libraryKind===id));types.append(b);}
+    const sort=this.select([['recent',this.tab==='watching'?'По последнему просмотру':'По дате добавления'],['rating','По моей оценке'],['title','По названию']],this.librarySort);sort.onchange=()=>{this.librarySort=sort.value;this.render();};
+    const layout=this.button(this.list?'Карточки':'Список',()=>{this.list=!this.list;this.render();});
+    toolbar.append(types,this.field('Сортировка медиатеки',sort),layout,this.button('+ Добавить',()=>this.addForm()));section.append(toolbar);
+    const filters=el('details','','cinema-display');filters.append(el('summary','Поиск и фильтры'));
+    const search=this.input(this.libraryQuery,'search');search.placeholder='Название в этом списке';search.onchange=()=>{this.libraryQuery=search.value;this.render();};filters.append(this.field('Поиск в списке',search));
+    if(this.tab==='watched'){
+      const options=[['0','Любая'],...Array.from({length:19},(_,i)=>[String(1+i*.5),String(1+i*.5)])] as [string,string][];
+      const min=this.select(options,String(this.ratingMin));const max=this.select(options.slice(1),String(this.ratingMax));
+      min.onchange=()=>{this.ratingMin=Number(min.value);this.ratingMax=Math.max(this.ratingMin,this.ratingMax);this.render();};max.onchange=()=>{this.ratingMax=Number(max.value);this.ratingMin=Math.min(this.ratingMin,this.ratingMax);this.render();};
+      const range=el('div','','cinema-rating-range');range.append(this.field('Моя оценка от',min),this.field('Моя оценка до',max));filters.append(range);
+      if(this.ratingMin||this.ratingMax!==10)filters.append(this.button('Сбросить оценки',()=>{this.ratingMin=0;this.ratingMax=10;this.render();}));
+    }
+    section.append(filters);
     const grid=el('div','',this.list?'cinema-grid cinema-list':this.tab==='watching'?'cinema-continue-grid':'cinema-grid');grid.append(...visible.map(item=>this.card(item,this.tab==='watching'&&!this.list)));section.append(grid);
-    if(!visible.length)section.append(this.empty(this.query?'В этом списке ничего не найдено.':this.tab==='watching'?'Вечер начинается с хорошей истории. Начни просмотр — и Чушпан запомнит, где ты остановилась.':this.tab==='planned'?'Сохраняй сюда фильмы и сериалы на будущее. Источник можно привязать позже.':'Здесь появятся завершённые просмотры и твои оценки.','Найти в каталоге',()=>{this.tab='catalogue';this.render();}));
-    this.content.append(section);
+    if(!visible.length)section.append(this.empty(this.libraryQuery||this.ratingMin||this.ratingMax!==10?'По выбранным фильтрам ничего не найдено.':this.tab==='watching'?'Вечер начинается с хорошей истории. Начни просмотр — и Чушпан запомнит, где ты остановилась.':this.tab==='planned'?'Сохраняй сюда фильмы и сериалы на будущее. Источник можно привязать позже.':this.tab==='favorites'?'Любимые истории всегда рядом. Нажми сердечко на карточке, чтобы сохранить их здесь.':'Здесь появятся завершённые просмотры и твои оценки.','Найти в каталоге',()=>this.changeTab('catalogue')));
+    this.content.replaceChildren(section);
     if(this.tab==='watched'){const history=el('details');history.append(el('summary','Журнал просмотра'));const holder=el('div');this.content.append(history);this.history(holder);history.append(holder);}
     if(this.data.session){const session=this.data.session;const toolbar=el('div','','cinema-player-bar');toolbar.append(el('span',session.mode==='html5'?'Активный HTML5-плеер':'Ручной режим · сохрани прогресс в карточке'),...['Поставь фильм на паузу','Продолжай','Включи следующую серию','Какая это серия?'].map(command=>this.button(command,()=>this.request({op:'control',command}))));this.content.append(toolbar);}
   }
+  private syncDetail():void {
+    const item=this.data?.items.find(i=>(!!this.dialog?.dataset.titleId&&i.id===this.dialog.dataset.titleId)||(!!this.dialog?.dataset.catalogueKey&&i.catalogue_key===this.dialog.dataset.catalogueKey));
+    if(!item||!this.dialog)return;
+    const rating=this.dialog.querySelector<HTMLSelectElement>('[data-personal-rating]');if(rating)rating.value=String(item.user_rating??'');
+    const status=this.dialog.querySelector<HTMLSelectElement>('[data-status]');if(status)status.value=item.status;
+    const personal=this.dialog.querySelector('.cinema-personal-rating');if(personal)personal.textContent=`Моя оценка: ${item.user_rating??'—'}/10`;
+    const heart=this.dialog.querySelector<HTMLButtonElement>('[data-detail-favorite]');if(heart){heart.textContent=item.favorite?'♥ В избранном':'♡ В избранное';heart.setAttribute('aria-pressed',String(!!item.favorite));}
+  }
+  private detailFavorite(item:CinemaTitle|CatalogueTitle):HTMLButtonElement {
+    const current=()=>this.data?.items.find(i=>'id' in item?i.id===item.id:i.catalogue_key===item.catalogue_key);
+    const b=this.button('♡ В избранное',()=>{const existing=current();this.request(existing?{op:'update',id:existing.id,values:{favorite:!existing.favorite}}:{op:'catalogue_add',key:item.catalogue_key,values:{favorite:true}});},'cinema-detail-favorite');b.dataset.detailFavorite='';b.setAttribute('aria-pressed',String(!!current()?.favorite));b.textContent=current()?.favorite?'♥ В избранном':'♡ В избранное';return b;
+  }
   private metadata(item:{year:number;kind:string;metadata?:CinemaMetadata}):string {const m=item.metadata;return [item.kind==='series'?'Сериал':'Фильм',item.year||'',m?.genres.join(', '),m?.runtime?`${m.runtime} мин`:'',m?.rating?`★ ${m.rating.toFixed(1)}`:''].filter(Boolean).join(' · ');}
   private catalogue():void {this.catalogueView.mount(this.content);}
-  private catalogueDetail(item:CatalogueTitle):void {const dialog=this.showDialog(item.title);const summary=el('div','','cinema-detail-summary');summary.append(this.poster(item),el('p',item.description||'Описание пока отсутствует.'));dialog.append(summary,el('p',this.metadata(item),'cinema-muted'));if(item.kind==='series')dialog.append(el('p',`${item.metadata.seasons.length} сезонов · ${item.metadata.episode_count} серий`),...item.metadata.seasons.map(s=>el('p',`${s.name||`Сезон ${s.season}`} · ${s.episodes} серий`)));const existing=this.data?.items.find(v=>v.catalogue_key===item.catalogue_key);dialog.append(this.button(existing?'Открыть карточку':'Хочу посмотреть',()=>{if(existing)this.detail(existing.id);else{this.request({op:'catalogue_add',key:item.catalogue_key});this.closeDialog();}},'primary'));}
+  private catalogueDetail(item:CatalogueTitle):void {
+    const dialog=this.showDialog(item.title);dialog.dataset.catalogueKey=item.catalogue_key;
+    const summary=el('div','','cinema-detail-summary');summary.append(this.poster(item),el('p',item.description||'Описание пока отсутствует.'));dialog.append(summary,el('p',this.metadata(item),'cinema-muted'));
+    const ratings=el('div','','cinema-ratings');ratings.append(el('span',`TMDB: ${item.metadata.rating.toFixed(1)}/10`,'cinema-tmdb-rating'),el('span','Моя оценка: —/10','cinema-personal-rating'));dialog.append(ratings,this.detailFavorite(item));
+    if(item.kind==='series')dialog.append(el('p',`${item.metadata.seasons.length} сезонов · ${item.metadata.episode_count} серий`),...item.metadata.seasons.map(s=>el('p',`${s.name||`Сезон ${s.season}`} · ${s.episodes} серий`)));
+    dialog.append(this.button('Хочу посмотреть',()=>{this.request({op:'catalogue_add',key:item.catalogue_key});this.closeDialog();},'primary'));
+  }
   private sourceChoices(choices:SourceOptions):void {
     const item=this.data?.items.find(v=>v.id===choices.title_id);if(!item)return;const ep=item.episodes.find(v=>v.id===choices.episode_id);if(!ep)return;
     const dialog=this.showDialog(`Смотреть · ${item.title}`);dialog.append(el('p',`${episodeCaption(item,ep)} · ${playbackTime(ep.position)}`,'cinema-muted'));
@@ -113,16 +172,23 @@ export class CinemaView {
     for(const option of choices.options){const row=el('article','','cinema-source-option');row.append(el('strong',option.source.name+(option.link?.id===ep.last_link_id?' · последний источник':'')+(option.link?.voice?` · ${option.link.voice}`:'')),el('p',option.reason|| (option.source.adapter==='html5'?'Попытаюсь восстановить позицию в доступном HTML5-плеере. Доступ к видео проверяется при запуске.':'Открытие вручную. Автоматический прогресс недоступен; сохрани позицию в карточке.')));if(!option.link&&option.source.enabled&&option.source.search_url)row.append(this.button('Найти на сайте ↗',()=>this.request({op:'source_search',source_id:option.source.id,query:item.title})));if(option.available&&option.link)row.append(this.button(option.source.adapter==='html5'?'Смотреть':'Открыть вручную',()=>{this.open(item,ep,option.link!.id);this.closeDialog();},'primary'));else row.append(this.button(option.source.enabled?'Привязать источник':'Настроить источник',()=>{if(option.source.enabled)this.addForm(item,undefined,ep,option.source.id);else this.sourceForm(option.source);}));dialog.append(row);}
     if(choices.provider_error)dialog.append(el('p',choices.provider_error,'cinema-muted'));
     if(choices.official){const official=choices.official;dialog.append(el('h3',`Официальные предложения · ${official.region}`),el('p',official.providers.map(p=>`${p.name} · ${{flatrate:'подписка',free:'бесплатно',ads:'с рекламой',rent:'аренда',buy:'покупка'}[p.type]??p.type}`).join(', ')||'В этом регионе предложения не найдены.'),el('p','Данные JustWatch через TMDB. Подписка, доступность и запуск видео проверяются в сервисе. Сохрани точную страницу сервиса один раз.','cinema-muted'));if(official.url)dialog.append(this.button('Открыть предложения сервисов ↗',()=>this.request({op:'provider_page',title_id:item.id})));}
-    dialog.append(this.button('+ Привязать страницу или файл',()=>this.addForm(item,undefined,ep)),this.button('Настроить источники',()=>{this.closeDialog();this.tab='sources';this.render();}));
+    dialog.append(this.button('+ Привязать страницу или файл',()=>this.addForm(item,undefined,ep)),this.button('Настроить источники',()=>{this.closeDialog();this.changeTab('sources');}));
   }
   private sectionHeading(title:string,action?:HTMLElement):HTMLElement {const n=el('div','','cinema-section-heading');n.append(el('h2',title));if(action)n.append(action);return n;}
   private empty(message:string,label?:string,action?:()=>void):HTMLElement {const n=el('div','','cinema-empty');const symbol=el('span');symbol.innerHTML=icon('film');n.append(symbol,el('p',message));if(label&&action)n.append(this.button(label,action,'primary'));return n;}
   private poster(item:{title:string;poster_url:string;kind:string}):HTMLElement {const n=el('div','','cinema-poster');n.style.setProperty('--poster-hue',String([...item.title].reduce((sum,c)=>sum+c.charCodeAt(0),0)%360));if(item.poster_url){const image=el('img');image.src=item.poster_url;image.alt=`Постер: ${item.title}`;image.loading='lazy';image.referrerPolicy='no-referrer';image.onerror=()=>image.remove();n.append(image);}const placeholder=el('div','','cinema-poster-placeholder');const glyph=el('span');glyph.innerHTML=icon('film');placeholder.append(glyph,el('strong',item.title),el('small',item.kind==='series'?'СЕРИАЛ':'ФИЛЬМ'));n.append(placeholder);return n;}
   private progress(ep:CinemaEpisode|null):HTMLElement {const n=el('div','','cinema-progress');const p=el('progress');p.max=100;p.value=viewingProgress(ep);p.setAttribute('aria-label','Прогресс просмотра');n.append(p,el('span',`${Math.round(p.value)}%`));return n;}
   private card(item:CinemaTitle,wide=false):HTMLElement {
-    const card=el('article','',wide?'cinema-card cinema-wide':'cinema-card');const poster=this.button(`Открыть ${item.title}`,()=>this.detail(item.id),'cinema-poster-button');poster.replaceChildren(this.poster(item));poster.setAttribute('aria-label',`Открыть ${item.title}`);
-    const body=el('div','','cinema-card-body');const heading=el('div','','cinema-card-heading');heading.append(this.button(item.title,()=>this.detail(item.id),'cinema-title'),this.button(item.favorite?'★':'☆',()=>this.request({op:'update',id:item.id,values:{favorite:!item.favorite}}),'cinema-favorite'));heading.lastElementChild?.setAttribute('aria-label',item.favorite?'Убрать из избранного':'В избранное');body.append(heading,el('p',wide?episodeCaption(item):statuses[item.status]));if(!wide&&item.kind==='series')body.append(el('small',episodeCaption(item)));if(wide)body.append(this.progress(item.current),el('small',`${playbackTime(item.current?.position??0)} из ${item.current?.duration?playbackTime(item.current.duration):'—'}`));else body.append(this.progress(item.current));body.append(el('p',this.metadata(item)));if(item.user_rating)body.append(el('small',`Твоя оценка: ${item.user_rating}/10`));if(item.completed_at)body.append(el('small',`Просмотрено ${new Date(item.completed_at).toLocaleDateString('ru-RU')}`));const actions=el('div','','cinema-card-actions');actions.append(this.button(item.status==='watching'?'▶ Продолжить':item.status==='watched'?'Пересмотреть':'Смотреть',()=>{if(item.status==='watched'){this.request({op:'replay',id:item.id});this.pendingWatch=item.id;}else this.open(item);},'primary'),this.button('Хочу посмотреть',()=>this.request({op:'update',id:item.id,values:{status:'planned'}})));const menu=el('details','','cinema-context');menu.append(el('summary','•••'));for(const [status,label]of Object.entries(statuses))menu.append(this.button(label,()=>this.request({op:'update',id:item.id,values:{status}})));menu.append(this.button(item.favorite?'Убрать из избранного':'В избранное',()=>this.request({op:'update',id:item.id,values:{favorite:!item.favorite}})),this.button('Удалить из медиатеки',()=>this.deleteTitle(item)));actions.append(menu);body.append(actions);
-    card.append(poster,body);return card;
+    const card=el('article','',wide?'cinema-card cinema-wide':'cinema-card');card.dataset.titleId=item.id;
+    const poster=this.button(`Открыть ${item.title}`,()=>this.detail(item.id),'cinema-poster-button');poster.replaceChildren(this.poster(item));poster.setAttribute('aria-label',`Открыть ${item.title}`);
+    const heart=this.button(item.favorite?'♥':'♡',()=>this.request({op:'update',id:item.id,values:{favorite:!item.favorite}}),'cinema-favorite');heart.setAttribute('aria-label',item.favorite?'Убрать из избранного':'В избранное');heart.setAttribute('aria-pressed',String(!!item.favorite));
+    const body=el('div','','cinema-card-body');body.append(this.button(item.title,()=>this.detail(item.id),'cinema-title'),el('p',`${item.year||'Год неизвестен'} · ${item.kind==='series'?'Сериал':'Фильм'}`,'cinema-card-year'));
+    const ratings=el('div','','cinema-ratings');ratings.append(el('span',item.metadata?.rating?`★ ${item.metadata.rating.toFixed(1)}`:'TMDB —','cinema-tmdb-rating'));
+    if(item.user_rating)ratings.append(el('span',`★ ${item.user_rating.toFixed(1)}`,'cinema-personal-rating'));body.append(ratings,el('small',statuses[item.status],'cinema-library-badge'));
+    if(wide||item.kind==='series')body.append(el('small',episodeCaption(item)));
+    if(wide||item.status==='watching'){body.append(this.progress(item.current),el('small',`${playbackTime(item.current?.position??0)} из ${item.current?.duration?playbackTime(item.current.duration):'—'}`));}
+    const actions=el('div','','cinema-card-actions');actions.append(this.button(item.status==='watching'?'▶ Продолжить':item.status==='watched'?'Пересмотреть':'Смотреть',()=>{if(item.status==='watched'){this.request({op:'replay',id:item.id});this.pendingWatch=item.id;}else this.open(item);},'primary'),this.button('Хочу посмотреть',()=>this.request({op:'update',id:item.id,values:{status:'planned'}})));
+    const menu=el('details','','cinema-context');menu.append(el('summary','•••'));for(const [status,label]of Object.entries(statuses))menu.append(this.button(label,()=>this.request({op:'update',id:item.id,values:{status}})));menu.append(this.button(item.favorite?'Убрать из избранного':'В избранное',()=>this.request({op:'update',id:item.id,values:{favorite:!item.favorite}})),this.button('Удалить из медиатеки',()=>this.deleteTitle(item)));actions.append(menu);body.append(actions);card.append(poster,heart,body);return card;
   }
   private deleteTitle(item:CinemaTitle):void {const dialog=this.showDialog('Удалить из медиатеки?');dialog.append(el('p',`«${item.title}»: будут удалены прогресс и привязки этого названия.`),this.button('Удалить',()=>{this.request({op:'delete',id:item.id});this.closeDialog();}),this.button('Отмена',()=>this.closeDialog()));}
   private open(item:CinemaTitle,ep=item.current,linkId?:string,device?:string):void {this.request({op:linkId||device==='airplay'?'open':'options',title_id:item.id,...(ep?{episode_id:ep.id}:{}),...(linkId?{link_id:linkId}:{}),...(device?{device}:{})});}
@@ -132,7 +198,7 @@ export class CinemaView {
     const item=this.data?.items.find(v=>v.id===id);if(!item)return;
     const ep=item.episodes.find(v=>v.id===episodeId)??item.current;if(!ep)return;this.request({op:'focus',id});
     const link=ep.links.find(v=>v.id===(linkId??ep.last_link_id))??ep.links[0];this.selectedLink=link?.id??null;
-    const dialog=this.showDialog(item.title);const summary=el('div','','cinema-detail-summary');summary.append(this.poster(item),el('p',item.description||`${item.kind==='series'?'Сериал':'Фильм'}${item.year?` · ${item.year}`:''}. Прогресс сохраняется отдельно для каждой серии.`));dialog.append(summary,el('p',this.metadata(item),'cinema-muted'));const rating=this.select([['','Без оценки'],...Array.from({length:10},(_,i)=>[String(i+1),`${i+1}/10`] as [string,string])],String(item.user_rating??''));rating.onchange=()=>this.request({op:'update',id,values:{user_rating:rating.value?Number(rating.value):null}});dialog.append(this.field('Твоя оценка',rating));
+    const dialog=this.showDialog(item.title);dialog.dataset.titleId=id;const summary=el('div','','cinema-detail-summary');summary.append(this.poster(item),el('p',item.description||`${item.kind==='series'?'Сериал':'Фильм'}${item.year?` · ${item.year}`:''}. Прогресс сохраняется отдельно для каждой серии.`));dialog.append(summary,el('p',this.metadata(item),'cinema-muted'));const ratings=el('div','','cinema-ratings');ratings.append(el('span',`TMDB: ${item.metadata?.rating?.toFixed(1)??'—'}/10`,'cinema-tmdb-rating'),el('span',`Моя оценка: ${item.user_rating??'—'}/10`,'cinema-personal-rating'));dialog.append(ratings,this.detailFavorite(item));const rating=this.select([['','Без оценки'],...Array.from({length:19},(_,i)=>[String(1+i*.5),`${1+i*.5}/10`] as [string,string])],String(item.user_rating??''));rating.dataset.personalRating='';rating.onchange=()=>this.request({op:'update',id,values:{user_rating:rating.value?Number(rating.value):null}});dialog.append(this.field('Моя оценка',rating));
     const choices=el('div','','cinema-detail-choices');const seasons=[...new Set([...item.episodes.map(v=>v.season),...(item.metadata?.seasons.map(v=>v.season)??[])])].sort((a,b)=>a-b);
     if(item.kind==='series'){
       const season=this.select(seasons.map(v=>[String(v),`Сезон ${v}`]),String(ep.season));season.onchange=()=>{const loaded=item.episodes.find(v=>v.season===Number(season.value));if(loaded)this.detail(id,loaded.id);else this.request({op:'season',id,season:Number(season.value)});};
@@ -140,7 +206,7 @@ export class CinemaView {
     }
     const source=this.select([...new Map(ep.links.map(v=>[v.source_id,v.source_name])).entries()],link?.source_id??'');source.onchange=()=>this.detail(id,ep.id,ep.links.find(v=>v.source_id===source.value)?.id);
     const voice=this.select(ep.links.filter(v=>v.source_id===link?.source_id).map(v=>[v.id,v.voice||'Озвучка сайта']),link?.id??'');voice.onchange=()=>{this.selectedLink=voice.value;};choices.append(this.field('Источник',source),this.field('Озвучка',voice));dialog.append(choices);
-    const status=this.select(Object.entries(statuses),item.status);status.onchange=()=>this.request({op:'update',id,values:{status:status.value}});dialog.append(this.field('Статус',status),this.progress(ep),el('p',`${episodeCaption(item,ep)} · ${playbackTime(ep.position)} из ${ep.duration?playbackTime(ep.duration):'—'}`));
+    const status=this.select(Object.entries(statuses),item.status);status.dataset.status='';status.onchange=()=>this.request({op:'update',id,values:{status:status.value}});dialog.append(this.field('Статус',status),this.progress(ep),el('p',`${episodeCaption(item,ep)} · ${playbackTime(ep.position)} из ${ep.duration?playbackTime(ep.duration):'—'}`));
     const devices=this.select((this.data?.devices??[]).filter(d=>d.id==='mac'||d.id==='airplay').map(d=>[d.id,d.name+(d.available?'':' · недоступно')]),this.data?.preferences.devices[this.data.location]??'mac');const location=this.data?.location??'general';
     devices.onchange=()=>{this.request({op:'preferences',values:{devices:{...this.data?.preferences.devices,[location]:devices.value}}});reason.textContent=this.data?.devices.find(d=>d.id===devices.value)?.reason??'';};const reason=el('p',this.data?.devices.find(d=>d.id===devices.value)?.reason??'','cinema-muted');dialog.append(this.field(`Устройство · ${{home:'Дом',dorm:'Общага',general:'Общий'}[location]??location}`,devices),reason);
     const actions=el('div','','cinema-actions');actions.append(this.button('▶ Продолжить просмотр',()=>this.open(item,ep,undefined,devices.value),'primary'),this.button('Следующая серия',()=>{const next=item.episodes[item.episodes.findIndex(v=>v.id===ep.id)+1];if(next){this.detail(item.id,next.id);this.open(item,next);}else this.feedback.textContent='Следующая серия ещё не добавлена. Укажи её страницу.';}),this.button('Добавить серию / источник',()=>this.addForm(item,undefined,ep)));dialog.append(actions);

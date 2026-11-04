@@ -16,7 +16,7 @@ for await(const line of createInterface({input:process.stdin})) {
     if(request.op==='ui') {
       const hud=await context.newPage();const errors=[];hud.on('pageerror',error=>errors.push(error.message));
       await hud.goto(request.url);await hud.locator('.workspace-nav [data-view=cinema]').click();
-      await hud.getByRole('heading',{name:'Кино и сериалы'}).waitFor();
+      await hud.getByRole('heading',{name:'Фильмы и сериалы'}).waitFor();
       await hud.locator('.cinema-content .cinema-title').first().waitFor();
       if(request.screenshot)await hud.screenshot({path:request.screenshot,fullPage:true});
       await hud.locator('.cinema-content .cinema-title').first().click();
@@ -51,18 +51,53 @@ for await(const line of createInterface({input:process.stdin})) {
       if(await hud.locator('.cinema-catalogue-grid .cinema-card').count()!==40)throw Error('Error discarded loaded cards');
       await hud.getByRole('button',{name:'Повторить загрузку'}).click();
       await hud.waitForFunction(()=>document.querySelectorAll('.cinema-catalogue-grid .cinema-card').length>=60);
+      // Stress the former six-page boundary. Existing DOM nodes and prefixes must survive.
+      const prefix=await hud.locator('.cinema-catalogue-grid .cinema-card').evaluateAll(cards=>{
+        window.__firstCatalogueCard=cards[0];return cards.map(card=>card.dataset.catalogueKey);
+      });
+      for(let count=80;count<=160;count+=20){
+        await hud.locator('.cinema-sentinel').scrollIntoViewIfNeeded();
+        await hud.waitForFunction(expected=>document.querySelectorAll('.cinema-catalogue-grid .cinema-card').length===expected,count);
+        const stable=await hud.evaluate(prefix=>document.querySelector('.cinema-catalogue-grid .cinema-card')===window.__firstCatalogueCard&&prefix.every((key,i)=>document.querySelectorAll('.cinema-catalogue-grid .cinema-card')[i]?.dataset.catalogueKey===key),prefix);
+        if(!stable)throw Error('Pagination changed an earlier card or its DOM node');
+      }
+      // A detail dialog and personal-library snapshots must leave the catalogue in place.
+      const target=hud.locator('.cinema-catalogue-grid .cinema-card').nth(75);
+      await target.scrollIntoViewIfNeeded();
+      const before=await target.evaluate(card=>({top:card.getBoundingClientRect().top,scroll:card.closest('.workspace-page').scrollTop}));
+      await target.locator('.cinema-title').click();await hud.locator('dialog[open]').waitFor();
+      await hud.getByRole('button',{name:'Закрыть',exact:true}).click();
+      const after=await target.evaluate(card=>({top:card.getBoundingClientRect().top,scroll:card.closest('.workspace-page').scrollTop}));
+      if(Math.abs(before.top-after.top)>2||Math.abs(before.scroll-after.scroll)>2)throw Error('Detail changed catalogue scroll position');
+      const beforeLibrary=await target.locator('.cinema-title').textContent();
+      await target.getByRole('button',{name:'В избранное',exact:true}).first().click();
+      await target.locator('.cinema-favorite[aria-pressed=true]').waitFor();
+      await hud.locator('.cinema-tabs').getByRole('button',{name:'Избранное',exact:true}).click();
+      await hud.locator('.cinema-content .cinema-title').filter({hasText:beforeLibrary}).click();
+      await hud.getByLabel('Моя оценка',{exact:true}).selectOption('9.5');
+      await hud.locator('dialog .cinema-personal-rating').filter({hasText:'9.5'}).waitFor();
+      await hud.getByLabel('Статус',{exact:true}).selectOption('watched');
+      await hud.getByRole('button',{name:'Закрыть',exact:true}).click();
+      await hud.locator('.cinema-tabs').getByRole('button',{name:'Просмотрено',exact:true}).click();
+      await hud.locator('.cinema-content .cinema-personal-rating').filter({hasText:'9.5'}).waitFor();
+      await hud.locator('.cinema-tabs').getByRole('button',{name:'Каталог',exact:true}).click();
+      const restored=await target.evaluate(card=>({top:card.getBoundingClientRect().top,scroll:card.closest('.workspace-page').scrollTop}));
+      if(Math.abs(before.top-restored.top)>2||Math.abs(before.scroll-restored.scroll)>2)throw Error('Returning from favorites changed catalogue scroll');
       const keys=await hud.locator('.cinema-catalogue-grid .cinema-card').evaluateAll(cards=>cards.map(card=>card.dataset.catalogueKey));if(new Set(keys).size!==keys.length)throw Error('Duplicate catalogue cards');
       const search=hud.locator('.cinema-search input');await search.fill('Interstellar');
       await hud.getByRole('heading',{name:'Поиск: Interstellar',exact:true}).waitFor();
       await hud.locator('.cinema-catalogue-grid .cinema-card').first().waitFor();
-      await hud.getByLabel('Тип',{exact:true}).selectOption('movie');
-      await hud.getByLabel('Жанр',{exact:true}).selectOption('триллер');
+      await hud.getByRole('button',{name:'Фильмы',exact:true}).click();
+      await hud.locator('.cinema-genre-panel > summary').click();
+      await hud.getByLabel('триллер',{exact:true}).check();
+      await hud.getByLabel('фантастика',{exact:true}).check();
+      await hud.getByLabel('Режим жанров').selectOption('and');
       await hud.getByRole('button',{name:'Найти',exact:true}).click();
       await hud.locator('.cinema-catalogue-grid .cinema-card').first().waitFor();
       await hud.setViewportSize({width:720,height:900});
       if(await hud.evaluate(()=>document.documentElement.scrollWidth>innerWidth))throw Error('Catalogue overflows mobile viewport');
       if(request.screenshot)await hud.screenshot({path:request.screenshot.replace('.png','-catalogue-mobile.png'),fullPage:true});
-      if(errors.length)throw Error(errors.join('; '));await hud.close();result={catalogue:true,infinite_scroll:true,retry:true,mobile:true};
+      if(errors.length)throw Error(errors.join('; '));await hud.close();result={catalogue:true,pages:8,stable_order:true,scroll_restored:true,favorites:true,half_rating:true,multiple_genres:true,infinite_scroll:true,retry:true,mobile:true};
     }
     if(request.op==='shutdown'){await browser.close();process.stdout.write(JSON.stringify({ok:true})+'\n');process.stdin.destroy();break;}
     process.stdout.write(JSON.stringify({ok:true,result})+'\n');

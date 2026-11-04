@@ -179,8 +179,17 @@ class CatalogueQuery(BaseModel):
     page: int = Field(default=1, ge=1, le=500)
     kind: Literal["all", "movie", "series"] = "all"
     genre: str = Field(default="", max_length=80)
+    genres: list[str] = Field(default_factory=list, max_length=30)
+    genre_mode: Literal["or", "and"] = "or"
     year: int = Field(default=0, ge=0, le=2200)
     rating: float = Field(default=0, ge=0, le=10, allow_inf_nan=False)
     country: str = Field(default="", pattern=r"^(?:[A-Z]{2})?$")
     original_language: str = Field(default="", pattern=r"^(?:[a-z]{2})?$")
     sort: Literal["popularity", "rating", "date", "title"] = "popularity"
+
+    @field_validator("genres")
+    @classmethod
+    def selected_genres(cls, values):
+        if any(not value.strip() or len(value) > 80 for value in values):
+            raise ValueError("Некорректный жанр.")
+        return list(dict.fromkeys(value.strip().casefold() for value in values))

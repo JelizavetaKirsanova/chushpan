@@ -183,7 +183,7 @@ def test_search_all_names_filters_every_page_and_does_not_stop_on_sparse_page(tm
         assert second["items"][0]["title"] == "Interstellar"
         search = next(r for r in calls if "/search/" in r.url.path)
         assert search.url.params["query"] == "Интерстеллар"
-        assert second["sort_scope"] == "loaded"
+        assert second["sort_scope"] == "page"
         original = await catalogue.page(CatalogueQuery(query="Interstellar", kind="movie"))
         assert original["items"][0]["title"] == "Interstellar"
         await tmdb.close()
@@ -447,6 +447,83 @@ def test_recommendations_of_another_type_use_explicit_cold_start(tmp_path):
         )
         assert len(result["items"]) == 1
         assert "мало истории" in result["message"]
+        await tmdb.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("search", [False, True])
+@pytest.mark.parametrize("mode,expected", [("or", [1, 2, 3]), ("and", [3])])
+def test_multiple_genres_or_and_in_discover_and_search(tmp_path, search, mode, expected):
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        if "/genre/" in request.url.path:
+            return httpx.Response(
+                200,
+                json={"genres": [{"id": 53, "name": "Триллер"}, {"id": 9648, "name": "Детектив"}]},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "total_pages": 2,
+                "results": [
+                    movie(1, genre_ids=[53]),
+                    movie(2, genre_ids=[9648]),
+                    movie(3, genre_ids=[53, 9648]),
+                    movie(4, genre_ids=[35]),
+                ],
+            },
+        )
+
+    async def run():
+        tmdb = api(tmp_path, handle)
+        result = await Catalogue(tmdb).page(
+            CatalogueQuery(
+                kind="movie",
+                query="story" if search else "",
+                genres=["Триллер", "Детектив"],
+                genre_mode=mode,
+                year=2025,
+                rating=7,
+            )
+        )
+        assert {int(i["catalogue_key"].split(":")[-1]) for i in result["items"]} == set(expected)
+        if not search:
+            assert calls[-1].url.params["with_genres"] == ("53|9648" if mode == "or" else "53,9648")
+        assert result["next_page"] == 2
+        await tmdb.close()
+
+    asyncio.run(run())
+
+
+def test_type_specific_genres_handle_missing_genre_in_or_and_and_configuration(tmp_path):
+    def handle(request):
+        if "/genre/" in request.url.path:
+            genres = (
+                [{"id": 53, "name": "Триллер"}]
+                if "/movie/" in request.url.path
+                else [{"id": 18, "name": "Драма"}]
+            )
+            return httpx.Response(200, json={"genres": genres})
+        if "/configuration/" in request.url.path:
+            return httpx.Response(200, json=[])
+        return httpx.Response(
+            200,
+            json={
+                "results": [movie(1, genre_ids=[18], name="Series", first_air_date="2025-10-01")]
+            },
+        )
+
+    async def run():
+        tmdb = api(tmp_path, handle)
+        catalogue = Catalogue(tmdb)
+        config = await catalogue.configuration()
+        assert config["genres_by_kind"] == {"movie": ["Триллер"], "series": ["Драма"]}
+        values = {"kind": "series", "genres": ["Триллер", "Драма"]}
+        assert len((await catalogue.page(CatalogueQuery(**values)))["items"]) == 1
+        assert not (await catalogue.page(CatalogueQuery(**values, genre_mode="and")))["items"]
         await tmdb.close()
 
     asyncio.run(run())

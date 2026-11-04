@@ -61,11 +61,11 @@ function movie(id:string,status:string) {
 }
 function button(f:any,text:string) {const b=[...f.window.document.querySelectorAll('button')].find((n:any)=>n.textContent===text) as HTMLButtonElement;assert.ok(b,`Missing button ${text}`);return b;}
 
-test('four tabs keep lists separate and watch requests source choices before opening',()=>{
+test('five tabs keep lists separate and watch requests source choices before opening',()=>{
   const f=fixture();try{
     const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);
     view.receive(snapshot([movie('Начато','watching'),movie('Отложено','planned'),movie('Завершено','watched')]));
-    assert.equal(f.window.document.querySelectorAll('.cinema-tabs button').length,4);
+    assert.equal(f.window.document.querySelectorAll('.cinema-tabs button').length,5);
     assert.match(f.window.document.querySelector('.cinema-content').textContent,/Начато/);
     assert.doesNotMatch(f.window.document.querySelector('.cinema-content').textContent,/Отложено|Завершено/);
     button(f,'▶ Продолжить').click();assert.equal(sent.at(-1).op,'options');
@@ -83,9 +83,9 @@ test('catalogue displays metadata and applies filters in app',()=>{
     view.receive({...snapshot(),matches:[match]});button(f,'Каталог').click();
     assert.match(f.window.document.body.textContent??'',/TMDB Film|триллер|120 мин|8.0/);
     const input=f.window.document.querySelector('.cinema-search input') as HTMLInputElement;input.value='Триллер';input.dispatchEvent(new f.window.Event('input'));
-    const genre=f.window.document.querySelector('[aria-label="Жанр"]') as HTMLSelectElement;genre.value='триллер';genre.dispatchEvent(new f.window.Event('change'));
+    const genre=f.window.document.querySelector('input[value=триллер]') as HTMLInputElement;genre.checked=true;genre.dispatchEvent(new f.window.Event('change'));
     const form=f.window.document.querySelector('.cinema-catalogue-filters')!;form.dispatchEvent(new f.window.Event('submit',{cancelable:true}));
-    assert.equal(sent.at(-1).op,'catalogue_page');assert.equal(sent.at(-1).filters.query,'Триллер');assert.equal(sent.at(-1).filters.genre,'триллер');
+    assert.equal(sent.at(-1).op,'catalogue_page');assert.equal(sent.at(-1).filters.query,'Триллер');assert.deepEqual(Array.from(sent.at(-1).filters.genres),['триллер']);
     view.receive({...snapshot(),catalogue_page:{request_id:sent.at(-1).request_id,page:1,items:[match],next_page:null,total_pages:1}});button(f,'Хочу посмотреть').click(); // tab; catalogue quick action is found explicitly below
     button(f,'Каталог').click();const quick=[...f.window.document.querySelectorAll('.cinema-card button')].find((n:any)=>n.textContent==='Хочу посмотреть') as HTMLButtonElement;quick.click();assert.equal(sent.at(-1).op,'catalogue_add');
   }finally{f.window.happyDOM.abort();}
@@ -121,5 +121,33 @@ test('existing movie binds a local file with valid hidden episode fields',()=>{
     assert.equal(input.type,'text');input.value='/tmp/movie.mp4';
     const form=f.window.document.querySelector('dialog form')!;assert.ok((form as HTMLFormElement).reportValidity());form.dispatchEvent(new f.window.Event('submit',{cancelable:true}));
     assert.equal(sent.at(-1).op,'add');assert.equal(sent.at(-1).entry.title_id,'Film');assert.equal(sent.at(-1).entry.url,'/tmp/movie.mp4');
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('favorites is independent of status, filters types and sorts by personal rating',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);
+    const a={...movie('Favorite movie','planned'),favorite:1,user_rating:7.5};
+    const b={...movie('Favorite series','watched'),kind:'series',favorite:1,user_rating:9.5};
+    view.receive(snapshot([a,b,movie('Other','watched')]));button(f,'Избранное').click();
+    assert.equal(f.window.document.querySelectorAll('.cinema-content .cinema-card').length,2);
+    const sort=f.window.document.querySelector('[aria-label="Сортировка медиатеки"]');sort.value='rating';sort.dispatchEvent(new f.window.Event('change'));
+    assert.equal(f.window.document.querySelector('.cinema-content .cinema-card').dataset.titleId,b.id);
+    button(f,'Фильмы').click();assert.equal(f.window.document.querySelectorAll('.cinema-content .cinema-card').length,1);
+    const heart=f.window.document.querySelector('.cinema-content .cinema-favorite');heart.click();assert.equal(sent.at(-1).values.favorite,false);assert.equal(sent.at(-1).values.status,undefined);
+    view.receive(snapshot([{...a,favorite:0},b]));assert.equal(f.window.document.querySelectorAll('.cinema-content .cinema-card').length,0);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('half rating can be edited, deleted and synchronizes open detail without losing manual input',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const item={...movie('Rated','watched'),user_rating:9};view.receive(snapshot([item]));button(f,'Просмотрено').click();button(f,'Rated').click();
+    const rating=f.window.document.querySelector('[aria-label="Моя оценка"]');assert.ok([...rating.options].some((v:any)=>v.value==='9.5'));rating.value='9.5';rating.dispatchEvent(new f.window.Event('change'));assert.equal(sent.at(-1).values.user_rating,9.5);
+    const position=f.window.document.querySelector('[aria-label="Позиция · мин:сек"]');position.value='12:34';
+    view.receive(snapshot([{...item,user_rating:9.5,favorite:1}]));assert.equal(rating.value,'9.5');assert.equal(position.value,'12:34');assert.match(f.window.document.querySelector('dialog .cinema-ratings').textContent,/TMDB: 8.0\/10.*Моя оценка: 9.5\/10/);
+    rating.value='';rating.dispatchEvent(new f.window.Event('change'));assert.equal(sent.at(-1).values.user_rating,null);
+    f.window.document.querySelector('[aria-label="Закрыть"]').click();
+    const min=f.window.document.querySelector('[aria-label="Моя оценка от"]');min.value='9.5';min.dispatchEvent(new f.window.Event('change'));assert.equal(f.window.document.querySelectorAll('.cinema-content .cinema-card').length,1);
+    view.receive(snapshot([{...item,user_rating:7.5}]));assert.equal(f.window.document.querySelectorAll('.cinema-content .cinema-card').length,0);
   }finally{f.window.happyDOM.abort();}
 });

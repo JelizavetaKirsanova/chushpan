@@ -157,6 +157,15 @@ async def check(module, screenshot, chromium=None, catalogue=False):
                 }
                 for i in range(1, 21)
             ]
+            if request.url.path.rsplit("/", 1)[-1].isdigit():
+                identifier = int(request.url.path.rsplit("/", 1)[-1])
+                row = {
+                    **rows[0],
+                    "id": identifier,
+                    "title": f"История {identifier - 1000}",
+                    "genres": [{"id": 53, "name": "триллер"}],
+                }
+                return httpx.Response(200, json=row)
             return httpx.Response(
                 200, json={"page": page, "total_pages": 8, "total_results": 160, "results": rows}
             )
