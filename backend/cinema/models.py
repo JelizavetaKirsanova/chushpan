@@ -56,9 +56,15 @@ class Source(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     base_url: str = ""
     search_url: str = ""
-    adapter: Literal["manual", "html5", "local"] = "manual"
+    adapter: Literal["manual", "html5", "local", "direct"] = "manual"
     category: Literal["site", "streaming", "local"] = "site"
     enabled: bool = True
+    priority: int = Field(default=0, ge=0, le=10000)
+    preferred: bool = False
+    search_mode: Literal["manual", "archive"] = "manual"
+    language: str = Field(default="", max_length=40)
+    access_type: Literal["unknown", "free", "subscription", "rent", "buy"] = "unknown"
+    embed_allowed: bool = False
 
     @model_validator(mode="after")
     def urls(self):
@@ -70,6 +76,10 @@ class Source(BaseModel):
         if self.category == "local":
             raise ValueError("Для файлов выбери локальный адаптер.")
         self.base_url = web_url(self.base_url)
+        if self.search_mode == "archive" and urlsplit(self.base_url).hostname != "archive.org":
+            raise ValueError("Официальный API Internet Archive доступен только на archive.org.")
+        if self.adapter == "direct" and not self.embed_allowed:
+            raise ValueError("Для встроенного видео нужно разрешение источника на встраивание.")
         if self.search_url:
             if self.search_url.count("{query}") != 1:
                 raise ValueError("Адрес поиска должен содержать один {query}.")
@@ -142,6 +152,11 @@ class Metadata(BaseModel):
     countries: list[str] = Field(default_factory=list)
     release_date: str = ""
     popularity: float = Field(default=0, ge=0, allow_inf_nan=False)
+    keywords: list[str] = Field(default_factory=list, max_length=100)
+    directors: list[str] = Field(default_factory=list, max_length=40)
+    cast: list[str] = Field(default_factory=list, max_length=40)
+    vote_count: int = Field(default=0, ge=0)
+    enriched: bool = False
 
 
 class Preferences(BaseModel):
@@ -154,6 +169,13 @@ class Preferences(BaseModel):
     watch_region: str = Field(default="EE", pattern=r"^[A-Z]{2}$")
     save_progress: bool = True
     recommendations_show_watched: bool = False
+    preferred_language: str = Field(default="ru", max_length=40)
+    free_only: bool = False
+    auto_select_source: bool = True
+    use_last_source: bool = True
+    embedded_playback: bool = True
+    allow_browser: bool = True
+    personalize: bool = True
 
 
 class CatalogueQuery(BaseModel):
