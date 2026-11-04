@@ -91,11 +91,12 @@ coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="Chushpan"
 app = BUNDLE(
     coll,
     name="Чушпан.app",
-    icon=str(root / "build/macos/icon.icns"),
+    icon=str(root / "packaging/macos/resources/icon.icns"),
     bundle_identifier="ee.chushpan.desktop",
     info_plist={
         "CFBundleDisplayName": "Чушпан",
         "CFBundleName": "Чушпан",
+        "CFBundleIconFile": "icon.icns",
         "CFBundleShortVersionString": "0.2.4",
         "CFBundleVersion": "6",
         "LSMinimumSystemVersion": "26.2",

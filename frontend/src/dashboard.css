@@ -8,7 +8,7 @@ button,input,select,textarea { -webkit-tap-highlight-color:transparent; } button
 [data-icon] { display:inline-flex;align-items:center;justify-content:center;flex-shrink:0; }[data-icon] svg { width:21px;height:21px; }
 .workspace-nav { grid-area:auto;grid-column:1;grid-row:1/-1;gap:3px;padding:23px 13px 14px;background:linear-gradient(130deg,#20192d,#191522 70%);border-right:1px solid #65507644;z-index:9;min-height:0; }
 .nav-brand { display:flex;align-items:center;gap:9px;padding:0 3px 25px;letter-spacing:-.45px;white-space:nowrap;font-size:19px; }
-.nav-brand strong { font-weight:600; }.nav-brand i,.location-card i { font-style:normal;color:#c7a3f3; }.nav-avatar { width:39px;height:39px;flex-shrink:0; }.nav-avatar svg { width:100%;height:100%; }
+.nav-brand strong { font-weight:600; }.nav-brand i,.location-card i { font-style:normal;color:#c7a3f3; }.nav-avatar { width:39px;height:39px;flex-shrink:0; }.nav-avatar img { display:block;width:100%;height:100%;object-fit:contain; }
 .workspace-nav > button { display:flex;align-items:center;gap:13px;padding:12px 13px;font-size:13px;color:#c3b8d1;border-radius:12px;min-height:43px; }
 .workspace-nav button[aria-current] { background:linear-gradient(100deg,#624b7d,#4c3a67);border-color:#8c6bb933;color:#faf4ff;box-shadow:0 4px 16px #0c071a22; }
 .workspace-nav button:hover { background-color:#57416c55;color:#fff; }.workspace-nav button svg { width:20px;height:20px;color:#cdb8e9; } kbd { margin-left:auto;color:#d0bbeb;font-size:9px; }

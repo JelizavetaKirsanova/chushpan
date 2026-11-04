@@ -446,9 +446,12 @@ class Application(_Api):
         self.status_item = AppKit.NSStatusBar.systemStatusBar().statusItemWithLength_(
             AppKit.NSVariableStatusItemLength
         )
-        symbol = AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_(
-            "waveform.circle", "Чушпан"
-        )
+        from backend.app_bundle import ICON_SOURCE
+
+        symbol = AppKit.NSImage.alloc().initWithContentsOfFile_(str(ICON_SOURCE))
+        symbol.setSize_((18, 18))
+        symbol.setTemplate_(False)
+        self.status_item.button().setAccessibilityLabel_("Чушпан")
         self.status_item.button().setImage_(symbol)
         menu = AppKit.NSMenu.alloc().init()
         self.menu_state = menu.addItemWithTitle_action_keyEquivalent_("Чушпан · Запуск", None, "")

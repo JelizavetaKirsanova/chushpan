@@ -26,6 +26,7 @@ def main():
     for executable in ("xcrun", "codesign", "iconutil", "npm"):
         if not shutil.which(executable):
             raise SystemExit(f"Не найден {executable}. Установи Command Line Tools / Node.js.")
+    run(sys.executable, "-m", "scripts.prepare_macos_icon")
     run("npm", "--prefix", "frontend", "ci")
     run("npm", "--prefix", "frontend", "run", "build")
     native = ROOT / "build/macos/native"
@@ -111,11 +112,6 @@ def main():
         str(helper / "MacOS/chushpan-personal"),
     )
     run("codesign", "--force", "--sign", "-", str(helper.parent))
-    from PIL import Image
-
-    from backend.app_bundle import icon_pixels
-
-    Image.fromarray(icon_pixels()).save(ROOT / "build/macos/icon.icns", format="ICNS")
     run(
         sys.executable,
         "-m",

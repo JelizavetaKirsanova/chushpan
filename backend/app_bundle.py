@@ -24,12 +24,14 @@ import zlib
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 from backend.config import Settings
 
 log = logging.getLogger(__name__)
 
 BUNDLE_ID = "local.my-jarvis"
+ICON_SOURCE = Path(__file__).resolve().parent / "assets/chushpan-original.png"
 LSREGISTER = (
     "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework"
     "/Support/lsregister"
@@ -136,46 +138,14 @@ def remove(s: Settings) -> None:
         shutil.rmtree(app)
 
 
-# Icon: the HUD's rings, drawn with numpy (no imaging library needed)
-
-
 def icon_pixels(size: int = 1024) -> np.ndarray:
-    """RGBA image: dark rounded square, cyan rings, a glowing core."""
-    y, x = np.mgrid[0:size, 0:size].astype(np.float32)
-    c = (size - 1) / 2
-    dx, dy = (x - c) / size, (y - c) / size
-    r = np.hypot(dx, dy)
-    angle = np.arctan2(dy, dx)
-    aa = 1.5 / size
-
-    def band(radius: float, width: float) -> np.ndarray:
-        return np.clip((width / 2 - np.abs(r - radius)) / aa + 0.5, 0, 1)
-
-    # Rounded square (macOS icon grid: ~80% of the canvas, ~22% corner radius).
-    half, corner = 0.40, 0.09
-    qx, qy = np.abs(dx) - (half - corner), np.abs(dy) - (half - corner)
-    dist = np.hypot(np.maximum(qx, 0), np.maximum(qy, 0)) + np.minimum(np.maximum(qx, qy), 0)
-    shape = np.clip((corner - dist) / aa + 0.5, 0, 1)
-
-    bg = (
-        np.array([2, 5, 10], np.float32)
-        + np.array([8, 20, 32], np.float32) * np.clip(1 - r / 0.45, 0, 1)[..., None]
-    )
-    cyan = np.array([0, 229, 255], np.float32)
-    light = np.zeros_like(r)
-    light += band(0.30, 0.008) * 0.55
-    segments = (np.mod(angle * 18 / np.pi, 2) < 1.4).astype(np.float32)
-    light += band(0.255, 0.024) * segments * 0.9
-    arc = ((angle > -2.6) & (angle < -0.4)).astype(np.float32)
-    light += band(0.205, 0.016) * arc
-    light += band(0.165, 0.006) * 0.6
-    light += np.exp(-((r / 0.075) ** 2)) * 1.1 + np.exp(-((r / 0.16) ** 2)) * 0.25
-    light = np.clip(light, 0, 1.4)
-
-    rgb = bg + cyan * np.clip(light, 0, 1)[..., None]
-    rgb += 255 * np.clip(light - 1, 0, 1)[..., None]  # white-hot centre
-    rgba = np.concatenate([np.clip(rgb, 0, 255), shape[..., None] * 255], axis=-1)
-    return rgba.astype(np.uint8)
+    """Resize the supplied artwork without cropping, recolouring or changing its alpha."""
+    with Image.open(ICON_SOURCE) as source:
+        image = source.convert("RGBA")
+        image.thumbnail((size, size), Image.Resampling.LANCZOS)
+        canvas = Image.new("RGBA", (size, size))
+        canvas.paste(image, ((size - image.width) // 2, (size - image.height) // 2))
+        return np.array(canvas)
 
 
 def png_bytes(pixels: np.ndarray) -> bytes:
@@ -195,11 +165,11 @@ def png_bytes(pixels: np.ndarray) -> bytes:
     )
 
 
-def write_icon(path: Path) -> None:
-    """An .icns from an iconset drawn at each size (`sips` fails to write .icns on macOS 26)."""
+def write_icon(path: Path, *, iconset: Path | None = None) -> None:
+    """Build all standard macOS 1x/2x representations from the original artwork."""
     with tempfile.TemporaryDirectory() as tmp:
-        iconset = Path(tmp) / "icon.iconset"
-        iconset.mkdir()
+        iconset = iconset or Path(tmp) / "icon.iconset"
+        iconset.mkdir(parents=True, exist_ok=True)
         for points in (16, 32, 128, 256, 512):
             for scale in (1, 2):
                 suffix = "@2x" if scale == 2 else ""

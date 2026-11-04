@@ -95,7 +95,7 @@ def test_python_env_points_at_this_environment(monkeypatch):
 def test_icon_is_a_valid_png():
     pixels = app_bundle.icon_pixels(64)
     assert pixels.shape == (64, 64, 4)
-    assert pixels[0, 0, 3] == 0 and pixels[32, 32, 3] == 255  # transparent corner, opaque centre
+    assert pixels[0, 0, 3] == pixels[32, 32, 3] == 255  # preserve the supplied opaque artwork
     png = app_bundle.png_bytes(pixels)
     assert png.startswith(b"\x89PNG") and b"IEND" in png
 
