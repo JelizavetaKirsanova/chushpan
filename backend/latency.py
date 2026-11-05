@@ -62,6 +62,7 @@ _META = {
     "input_mode",
     "http_status",
     "device",
+    "device_id",
     "action",
     "rgb",
     "brightness",

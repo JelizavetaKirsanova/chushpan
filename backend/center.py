@@ -41,6 +41,8 @@ class Center:
             self.publish(busy=False, error="Время ожидания истекло. Результат не подтверждён.")
         except (ValueError, ToolError) as exc:
             self.publish(busy=False, error=str(exc))
+        except sqlite3.Error:
+            self.publish(busy=False, error="Локальная база недоступна. Изменения не подтверждены.")
         except Exception as exc:
             # No raw native/network error or user content in diagnostics.
             self.publish(busy=False, error="Операция недоступна: " + type(exc).__name__)

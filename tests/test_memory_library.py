@@ -116,3 +116,39 @@ def test_reopen_legacy_and_fts_remain_consistent(library):
         assert other.memories()[0]["source"] == "desktop_library"
     finally:
         other.close()
+
+
+def test_project_proposal_remains_scoped_and_records_its_base_revision(library):
+    from backend.settings_center import SettingsCenter
+
+    run(library, op="project_add", name="Контекст предложения")
+    project = library.snapshot()["projects"][0]["id"]
+    device = DeviceContext.local_mac("pending-project")
+    conversation = library.store.session_conversation(device.session_id)
+    run(library, op="project_bind", project=project, conversation=conversation)
+    library.store.set_preference("settings", "memory", {"automatic": "ask"})
+    memory = ProfileMemory(library.store)
+    with request_scope(RequestContext(device, "Я учусь в TalTech")):
+        memory.capture("Я учусь в TalTech")
+    pending = library.store.preference("memory", "pending")[0]
+    assert pending["project_id"] == project and pending["base_revision"] is None
+    # The real settings handler must retain the proposal scope.
+    handler = object.__new__(SettingsCenter)
+    handler.store = library.store
+    handler.approve_memory({"id": pending["id"], "approve": True})
+    assert library.store.memories()[0]["project_id"] == project
+    assert library.store.facts() == []
+
+
+def test_stale_memory_proposal_cannot_overwrite_a_newer_edit(library):
+    from backend.settings_center import SettingsCenter
+
+    library.store.save_memory("Первый вариант", key="test-slot")
+    ProfileMemory(library.store).propose("Предложение", "profile", "test-slot")
+    pending = library.store.preference("memory", "pending")[0]
+    library.store.save_memory("Новая явная правка", key="test-slot", expected_revision=1)
+    handler = object.__new__(SettingsCenter)
+    handler.store = library.store
+    with pytest.raises(ValueError, match="изменилось после предложения"):
+        handler.approve_memory({"id": pending["id"], "approve": True})
+    assert library.store.facts()[0][1] == "Новая явная правка"

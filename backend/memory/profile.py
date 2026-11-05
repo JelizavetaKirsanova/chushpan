@@ -241,18 +241,18 @@ class ProfileMemory:
         policy = MemoryPolicy.model_validate(self.store.preference("settings", "memory") or {})
         if policy.automatic == "off":
             return
+        bound = self.store.db.execute(
+            "SELECT p.project_id FROM memory_project_conversations p JOIN dialogue_sessions s "
+            "ON s.conversation_id=p.conversation_id WHERE s.session_id=?",
+            (c.device.session_id,),
+        ).fetchone()
+        project = bound[0] if bound else None
         for category, key, value in extract(text):
             if category in policy.excluded:
                 continue
             if policy.automatic == "ask":
-                self.propose(value, category, key)
+                self.propose(value, category, key, project=project)
                 continue
-            bound = self.store.db.execute(
-                "SELECT p.project_id FROM memory_project_conversations p JOIN dialogue_sessions s "
-                "ON s.conversation_id=p.conversation_id WHERE s.session_id=?",
-                (c.device.session_id,),
-            ).fetchone()
-            project = bound[0] if bound else None
             previous = self.store.db.execute(
                 "SELECT content FROM facts WHERE semantic_key=? AND project_id IS ?",
                 (key, project),
@@ -262,7 +262,7 @@ class ProfileMemory:
                 and previous["content"].casefold() != value.casefold()
                 and not re.search(r"\bтеперь\b|\bбольше\b|^нет[, ]|на самом деле", text, re.I)
             ):
-                self.propose(value, category, key)
+                self.propose(value, category, key, project=project)
                 continue
             self.store.save_memory(
                 value,
@@ -274,12 +274,28 @@ class ProfileMemory:
                 project_id=project,
             )
 
-    def propose(self, value, category, key):
+    def propose(self, value, category, key, *, project=None):
         from uuid import uuid4
 
         pending = self.store.preference("memory", "pending") or []
-        if not any(row["key"] == key and row["content"] == value for row in pending):
-            pending.append({"id": uuid4().hex, "content": value, "category": category, "key": key})
+        if not any(
+            row["key"] == key and row["content"] == value and row.get("project_id") == project
+            for row in pending
+        ):
+            previous = self.store.db.execute(
+                "SELECT revision FROM facts WHERE semantic_key=? AND project_id IS ?",
+                (key, project),
+            ).fetchone()
+            pending.append(
+                {
+                    "id": uuid4().hex,
+                    "content": value,
+                    "category": category,
+                    "key": key,
+                    "project_id": project,
+                    "base_revision": previous[0] if previous else None,
+                }
+            )
             self.store.set_preference("memory", "pending", pending[-30:])
 
     def relevant(self, text: str, limit: int = 6, budget: int = 1600) -> list[dict]:

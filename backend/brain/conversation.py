@@ -636,6 +636,7 @@ class Conversation:
         """Both text and transcribed voice enter the same trusted request boundary."""
         owned = current.get() is None
         profile = current.get() or Profile()
+        profile.update(device_id=self.device.device_id, device=self.device.device_type)
         timing_token = current.set(profile)
         self.store.performance.attach(profile, self.id)
         status = "completed"

@@ -46,6 +46,7 @@ try {
   assert.match(await mobile.locator('#notice').innerText(),/не отправлена/);
   await mobile.getByLabel('Сохранить текстовый запрос до восстановления связи (до 60 секунд)',{exact:true}).check();
   await mobile.getByRole('button',{name:'Отправить',exact:true}).click();
+  await mobile.locator('#notice').filter({hasText:/в очереди/}).waitFor();
   assert.match(await mobile.locator('#notice').innerText(),/в очереди/);
   await context.setOffline(false);await mobile.evaluate(()=>poll());
   await mobile.locator('#messages .assistant').filter({hasText:'TEST REPLY'}).waitFor({timeout:30000});

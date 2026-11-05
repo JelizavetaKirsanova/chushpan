@@ -98,8 +98,8 @@ app = BUNDLE(
         "CFBundleDisplayName": "Чушпан",
         "CFBundleName": "Чушпан",
         "CFBundleIconFile": "icon.icns",
-        "CFBundleShortVersionString": "0.2.10",
-        "CFBundleVersion": "12",
+        "CFBundleShortVersionString": "0.3.0",
+        "CFBundleVersion": "13",
         "LSMinimumSystemVersion": "26.2",
         "NSHighResolutionCapable": True,
         "NSMicrophoneUsageDescription": "Чушпан распознаёт ваши голосовые команды локально на этом Mac.",
@@ -107,5 +107,7 @@ app = BUNDLE(
         "NSAppleEventsUsageDescription": "Чушпан управляет приложениями и Командами по вашей просьбе.",
         "NSLocationUsageDescription": "Чушпан определяет город только после вашего согласия.",
         "NSCalendarsFullAccessUsageDescription": "Чушпан читает события для утренней сводки.",
+        "NSLocalNetworkUsageDescription": "Чушпан подключает доверенные iPhone и iPad только после вашего подтверждения.",
+        "NSBonjourServices": ["_chushpan._tcp"],
     },
 )

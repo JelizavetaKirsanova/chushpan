@@ -118,3 +118,33 @@ def test_bounded_queue_drops_instead_of_blocking_voice(tmp_path):
             store.close()
 
     asyncio.run(go())
+
+
+def test_remote_trace_keeps_device_attribution_and_activation_is_not_a_request(tmp_path):
+    async def go():
+        store, service = setup(tmp_path)
+        try:
+            service.policy = CollectionPolicy(enabled=True)
+            base = {
+                "request_id": "remote",
+                "created_at": datetime.now().astimezone().isoformat(),
+                "kind": "text",
+                "status": "completed",
+                "total_s": 1,
+                "first_content_s": 0.5,
+                "metadata": {"device_id": "test-phone"},
+                "stages": [],
+            }
+            service.observe_trace(base)
+            service.observe_trace(
+                {**base, "request_id": "wake", "kind": "activation", "status": "failed"}
+            )
+            await service.flush()
+            service.query = {"period": "today", "device": "test-phone"}
+            summary = service.snapshot()["summary"]
+            assert summary["count"] == 1 and summary["recognition_errors"] == 1
+        finally:
+            await service.close()
+            store.close()
+
+    asyncio.run(go())

@@ -62,6 +62,7 @@ class MacCenter(Center):
             "preview": self.preview,
             "captured_at": self.captured_at,
             "analysis": self.analysis,
+            "file_roots": list(self.s.mac.file_roots),
             "confirmation": confirmation,
             "actions": [
                 {
@@ -98,7 +99,7 @@ class MacCenter(Center):
 
     def guard_capture(self):
         excluded = (self.store.preference("settings", "access") or {}).get("blocked_apps", [])
-        forbidden = {s.casefold().removesuffix(".app") for s in excluded}
+        forbidden = {s.strip().casefold().removesuffix(".app") for s in excluded}
         forbidden.update({"1password", "passwords", "пароли", "keychain access", "связка ключей"})
         if any(
             a.get("name", "").casefold() in forbidden or a.get("bundle", "").casefold() in forbidden
@@ -165,6 +166,14 @@ class MacCenter(Center):
                     "manage_app", {"name": name, "action": "switch"}, "переключись на " + name
                 )
             message = result.get("message") or "Запрос передан приложению; статус смотри в истории."
+        elif op == "open_file":
+            root, path = value.get("root", ""), value.get("path", ".")
+            result = await self.invoke(
+                "open_path",
+                {"root": root, "path": path, "finder": value.get("finder") is True},
+                "открой " + str(root) + " " + str(path),
+            )
+            message = result.get("message", "Открытие файла не подтверждено.")
         elif op == "window":
             action = value.get("action")
             if action not in WINDOW_COMMANDS:

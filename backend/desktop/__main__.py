@@ -46,6 +46,9 @@ def main():
             "livekit",
             "ServiceManagement",
             "UserNotifications",
+            "backend.personal_modules",
+            "backend.sync.service",
+            "cryptography.x509",
         ]
         result = {}
         for module in modules:

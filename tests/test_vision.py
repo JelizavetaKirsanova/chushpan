@@ -104,6 +104,27 @@ def test_permission_denial_never_calls_model_or_claims_image(tmp_path):
     assert not model.requests
 
 
+def test_missing_local_multimodal_model_falls_back_to_explicit_ocr(tmp_path):
+    selected = image_file(tmp_path)
+    model = VisionModel(fail=True)
+    desktop = SimpleNamespace(
+        screenshot=AsyncMock(return_value={"path": str(selected)}),
+        bridge=SimpleNamespace(request=AsyncMock(return_value={"lines": [{"text": "Test error"}]})),
+    )
+    service = VisionService(
+        Settings(llm={"provider": "ollama"}), desktop, llm_factory=lambda _: model
+    )
+
+    async def go():
+        with request_scope(RequestContext(DeviceContext.local_mac(), "Что у меня на экране?")):
+            return await service.screen()
+
+    result = run(go())
+    assert result["provider"] == "apple_vision" and result["mode"] == "local_ocr"
+    assert "только текст" in result["message"] and "Test error" in result["message"]
+    assert not selected.exists() and model.closed
+
+
 def test_image_model_cannot_execute_functions(tmp_path):
     model = VisionModel(calls=True)
     service = VisionService(Settings(), llm_factory=lambda s: model)

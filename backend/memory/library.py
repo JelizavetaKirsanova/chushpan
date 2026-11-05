@@ -199,6 +199,8 @@ class MemoryLibrary(Center):
 
     async def handle(self, value):
         op, store = value.get("op", "list"), self.store
+        if op not in {"list", "export"}:
+            store._require_memory()
         message = None
         if op == "list":
             self.query = str(value.get("query", ""))[:200]

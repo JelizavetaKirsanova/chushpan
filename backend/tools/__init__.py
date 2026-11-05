@@ -159,6 +159,7 @@ def build_registry(
     registry.memory = profile
     registry.mac_agent = agent
     registry.desktop = desktop
+    desktop.memory = store
     registry.youtube_video = video
     if store is not None:
         from backend.automation.service import Automations

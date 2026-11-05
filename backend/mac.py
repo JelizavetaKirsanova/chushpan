@@ -53,9 +53,26 @@ class MacDesktop:
             raise ToolError("Приложение не запущено или имя неоднозначно. Уточни имя из списка.")
         return matches[0]
 
+    def check_app_access(self, app: dict, *, screen: bool = False) -> None:
+        store = getattr(self, "memory", None)
+        if store is None:
+            return
+        blocked = (store.preference("settings", "access") or {}).get("blocked_apps", [])
+        names = {name.strip().casefold().removesuffix(".app") for name in blocked}
+        if screen:
+            names.update({"1password", "passwords", "пароли", "keychain access", "связка ключей"})
+        if {
+            str(app.get(key, "")).strip().casefold().removesuffix(".app")
+            for key in ("name", "bundle")
+        } & names:
+            raise ToolError(
+                "Приложение исключено настройками приватности. Закрой его перед захватом."
+            )
+
     async def app(self, name: str, action: str) -> dict:
         async with self._lock:
             app = await self._running(name)
+            self.check_app_access(app)
             result = await self.bridge.request(
                 "desktop_app", target_bundle=app["bundle"], pid=app["pid"], action=action
             )
@@ -71,6 +88,7 @@ class MacDesktop:
         if not apps["apps"]:
             raise ToolError("Активное приложение не найдено.")
         app = apps["apps"][0]
+        self.check_app_access(app)
         data = await self.bridge.request(
             "desktop_windows", target_bundle=app["bundle"], pid=app["pid"]
         )
@@ -134,6 +152,7 @@ class MacDesktop:
             )
         async with self._lock:
             reference = self._window(window_id)
+            self.check_app_access(reference.app)
             context = request_context.get()
             if not self.window_intent({"window_id": window_id, "action": action}, context.text):
                 raise ToolError("Операция или приложение не совпадает с текущей просьбой.")
@@ -235,6 +254,9 @@ class MacDesktop:
     async def screenshot(self, mode: str = "screen") -> dict:
         if mode not in {"screen", "region", "window"}:
             raise ToolError("Выбери экран, активное окно или область.")
+        if getattr(self, "memory", None) is not None:
+            for app in (await self.apps()).get("apps", []):
+                self.check_app_access(app, screen=True)
         if not (await self.bridge.request("desktop_capture_status"))["granted"]:
             from backend.permission_policy import requests_allowed
 

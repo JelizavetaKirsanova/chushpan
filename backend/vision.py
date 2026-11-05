@@ -18,6 +18,7 @@ from backend.brain.llm import LLMError
 from backend.brain.providers import create_llm
 from backend.config import Settings
 from backend.context import request_context
+from backend.latency import measure
 from backend.mac import MacDesktop
 from backend.security import Risk, approved_action, command_text, fingerprint, screen_requested
 from backend.tools.registry import Tool, ToolError
@@ -118,7 +119,27 @@ class VisionService:
         path = Path(artifact["path"])
         try:
             image = await asyncio.to_thread(load_image, path)
-            return await self._analyze(image)
+            with measure("screen_analysis"):
+                try:
+                    return await self._analyze(image)
+                except ToolError:
+                    if self.s.llm.provider != "ollama" or not hasattr(self.mac, "bridge"):
+                        raise
+                    from backend.brain.privacy import redact
+
+                    data = await self.mac.bridge.request("desktop_ocr", path=str(path))
+                    content = redact("\n".join(row["text"] for row in data.get("lines", [])))[
+                        :12000
+                    ]
+                    return {
+                        "ok": True,
+                        "provider": "apple_vision",
+                        "mode": "local_ocr",
+                        "image_retained": False,
+                        "message": "Мультимодальная модель недоступна. Распознан только текст, "
+                        "визуальное содержимое не анализировалось.\n"
+                        + (content or "Текст не найден."),
+                    }
         finally:
             path.unlink(missing_ok=True)  # only the newly captured screenshot, never a user file
 

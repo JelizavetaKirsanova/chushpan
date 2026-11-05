@@ -832,8 +832,21 @@ class SettingsCenter:
         if not item:
             raise ValueError("Предложение памяти устарело.")
         if value.get("approve") is True:
+            previous = self.store.db.execute(
+                "SELECT revision FROM facts WHERE semantic_key=? AND project_id IS ?",
+                (item["key"], item.get("project_id")),
+            ).fetchone()
+            if (previous[0] if previous else None) != item.get("base_revision"):
+                raise ValueError(
+                    "Воспоминание изменилось после предложения. Проверь текущую версию."
+                )
             self.store.save_memory(
-                item["content"], category=item["category"], key=item["key"], source="ui_confirmed"
+                item["content"],
+                category=item["category"],
+                key=item["key"],
+                source="ui_confirmed",
+                project_id=item.get("project_id"),
+                expected_revision=item.get("base_revision"),
             )
         self.store.set_preference(
             "memory", "pending", [r for r in pending if r["id"] != item["id"]]

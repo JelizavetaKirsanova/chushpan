@@ -594,6 +594,7 @@ class DeviceSync(Center):
         }
 
     async def start(self, host, port, *, advertise=True):
+        self.memory._require_memory()
         if self.server_task and not self.server_task.done():
             raise ValueError("Сначала останови текущий сервер.")
         host = lan_address(host)

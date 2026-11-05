@@ -98,7 +98,8 @@ func desktop(_ request: [String: Any], _ op: String) -> Never {
         output(["image": "data:image/png;base64," + png.base64EncodedString()])
     }
     if op == "desktop_activity_status" {
-        let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .null)
+        let kinds: [CGEventType] = [.keyDown, .mouseMoved, .leftMouseDown, .rightMouseDown, .scrollWheel]
+        let idle = kinds.map { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) }.min() ?? 86400
         output(["idle_s": idle.isFinite ? idle : 86400])
     }
     if op == "desktop_ocr" {

@@ -76,9 +76,18 @@ class Analytics(Center):
     def __init__(self, settings, store, registry, bus):
         self.s, self.store, self.tools = settings, store, registry
         store.db.executescript(SCHEMA)
-        self.policy = CollectionPolicy.model_validate(store.preference("analytics", "policy") or {})
+        policy_error = None
+        try:
+            self.policy = CollectionPolicy.model_validate(
+                store.preference("analytics", "policy") or {}
+            )
+        except ValueError:
+            self.policy = CollectionPolicy()
+            policy_error = (
+                "Настройки аналитики повреждены. Сбор выключен; сохрани настройки заново."
+            )
         self.queue = asyncio.Queue(maxsize=256)
-        self.dropped, self.failure, self.query = 0, None, {"period": "today"}
+        self.dropped, self.failure, self.query = 0, policy_error, {"period": "today"}
         self.generation = 0
         self.bind(bus)
         registry.analytics = self
@@ -91,10 +100,15 @@ class Analytics(Center):
         self, kind, *, duration=None, metadata=None, event_id=None, at=None, device="local-mac"
     ):
         category = kind.split(".", 1)[0]
-        if not self.policy.enabled or category not in self.policy.categories:
+        if (
+            not self.store.memory_available
+            or not self.policy.enabled
+            or category not in self.policy.categories
+        ):
             return
         if kind not in {
             "assistant.request",
+            "assistant.recognition",
             "mac.activity",
             "mac.switch",
             "scenarios.run",
@@ -153,11 +167,21 @@ class Analytics(Center):
     def observe_trace(self, row):
         if row["status"] == "running":
             return
+        if row["kind"] == "activation":
+            self.record(
+                "assistant.recognition",
+                event_id="trace:" + row["request_id"],
+                at=datetime.fromisoformat(row["created_at"]).timestamp(),
+                metadata={"status": row["status"]},
+                device=row["metadata"].get("device_id", "local-mac"),
+            )
+            return
         self.record(
             "assistant.request",
             event_id="trace:" + row["request_id"],
             at=datetime.fromisoformat(row["created_at"]).timestamp(),
             duration=row.get("total_s"),
+            device=row["metadata"].get("device_id", "local-mac"),
             metadata={
                 "kind": row["kind"],
                 "status": row["status"],
@@ -177,8 +201,13 @@ class Analytics(Center):
             kind = "media.event"
         else:
             return
+        from backend.context import request_context
+
+        context = request_context.get()
         self.record(
-            kind, metadata={"tool": name, "status": result.get("result_status", "unverified")}
+            kind,
+            metadata={"tool": name, "status": result.get("result_status", "unverified")},
+            device=context.device.device_id if context else "local-mac",
         )
 
     def write(self, batch, generation):
@@ -347,6 +376,11 @@ class Analytics(Center):
                 for r in requests[-100:]
             ],
             "events": len(events),
+            "recognition_errors": sum(
+                r["event_type"] == "assistant.recognition"
+                and r["metadata"].get("status") == "failed"
+                for r in events
+            ),
         }
 
     def snapshot(self):
@@ -399,6 +433,7 @@ class Analytics(Center):
                     raise ValueError("Проверь список приложений.")
             self.store.set_preference("analytics", "policy", policy.model_dump())
             self.policy = policy
+            self.failure = None
             with self.store.memory_transaction():
                 self.store.db.execute(
                     "DELETE FROM analytics_events WHERE timestamp<?",
@@ -409,6 +444,7 @@ class Analytics(Center):
             period_bounds(query, self.s.location.tz_name)
             self.query = query
         elif op == "clear":
+            self.store._require_memory()
             if value.get("confirmed") is not True:
                 raise ValueError("Подтверди удаление статистики.")
             self.generation += 1
