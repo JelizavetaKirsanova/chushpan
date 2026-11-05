@@ -569,7 +569,23 @@ def test_last_series_and_genre_requests_never_reach_llm_and_reuse_last_source(tm
 
     class HTTP:
         async def request(self, url, **kwargs):
-            return SimpleNamespace(status_code=200, headers={"content-type": "text/html"})
+            import httpx
+
+            if url.endswith("robots.txt"):
+                return httpx.Response(200, text="User-agent: *\nAllow: /")
+            data = {
+                "@type": "TVEpisode",
+                "name": "Серия 1",
+                "partOfSeries": {"name": "Тестовый сериал", "datePublished": "2026"},
+                "partOfSeason": {"seasonNumber": 1},
+                "episodeNumber": 1,
+                "associatedMedia": {"contentUrl": url + "/full.mp4"},
+            }
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text='<script type="application/ld+json">' + json.dumps(data) + "</script>",
+            )
 
     class Catalogue:
         credentials = SimpleNamespace(configured=True)

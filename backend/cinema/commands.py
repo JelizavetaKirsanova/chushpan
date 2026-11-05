@@ -14,6 +14,13 @@ def command(text, active=False):
         value = re.sub(r"(?: и (?:включи|покажи))? на телевизоре$", "", value)
     action = None
     if not tv:
+        trailer = re.fullmatch(
+            r"(?:смотреть|посмотри|покажи|открой|включи) (?:официальный )?трейлер"
+            r"(?: (?:фильма|сериала))?(?: (.{1,200}))?",
+            value,
+        )
+        if trailer:
+            return {"action": "trailer", "title": trailer[1] or ""}
         if value in {"добавь этот фильм в избранное", "добавь этот сериал в избранное"}:
             return {"action": "favorite"}
         rating = re.fullmatch(

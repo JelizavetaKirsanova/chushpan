@@ -239,6 +239,7 @@ class Pages:
             "partOfSeries": {"name": QUERY["title"], "datePublished": "2025"},
             "partOfSeason": {"seasonNumber": 2},
             "episodeNumber": 3,
+            "associatedMedia": {"@type": "VideoObject", "contentUrl": URL + "/full.mp4"},
             "inLanguage": "ru",
         }
         return httpx.Response(

@@ -2,6 +2,7 @@
 
 import asyncio
 import gzip
+import json
 from types import SimpleNamespace
 
 import httpx
@@ -15,8 +16,9 @@ from backend.tools.registry import ToolError
 
 
 class HTTP:
-    def __init__(self, statuses=None):
+    def __init__(self, statuses=None, *, full_pages=False):
         self.statuses = statuses or {}
+        self.full_pages = full_pages
         self.calls = []
 
     async def request(self, url, **kwargs):
@@ -50,7 +52,23 @@ class HTTP:
             )
         return httpx.Response(
             self.statuses.get(url, 200),
-            headers={"content-type": "video/mp4" if url.endswith(".mp4") else "text/html"},
+            headers={
+                "content-type": "video/mp4"
+                if url.endswith(".mp4") and not self.full_pages
+                else "text/html"
+            },
+            text='<script type="application/ld+json">'
+            + json.dumps(
+                {
+                    "@type": "Movie",
+                    "name": "Film",
+                    "datePublished": "2024",
+                    "associatedMedia": {"contentUrl": url + "/full.mp4"},
+                }
+            )
+            + "</script>"
+            if self.full_pages
+            else "",
         )
 
 
@@ -141,7 +159,8 @@ def test_official_api_rejects_remakes_trailers_restricted_items_and_series(tmp_p
         http = HTTP()
         search = manager(store, http)
         result = await search.search(item["id"])
-        assert len(result["results"]) == 1 and result["selected_id"]
+        assert len(result["results"]) == 1 and result["selected_id"] is None
+        assert not result["results"][0]["content_verified"]
         row = result["results"][0]
         assert row["url"] == "https://archive.org/details/right"
         assert row["match"] == 1 and row["kind"] == "page" and not row["embedded"]
@@ -164,7 +183,7 @@ def test_selection_prefers_pinned_and_last_but_falls_back_when_unavailable(tmp_p
         ep = item["current"]
         link = next(link for link in ep["links"] if link["source_id"] == last["id"])
         store.remember_source(item["id"], last["id"], ep["id"], link["id"], pin=True)
-        http = HTTP()
+        http = HTTP(full_pages=True)
         search = manager(store, http)
         result = await search.search(item["id"])
         assert search.result(result["selected_id"])["source_id"] == last["id"]
@@ -380,6 +399,11 @@ def test_embedded_open_waits_for_real_progress_and_validates_session_events(tmp_
         await service.db(
             "configure",
             {"allow_browser": False, "open_in_safari": False, "resume_rewind_seconds": 0},
+        )
+        await service.db(
+            "verify_link",
+            item["current"]["links"][0]["id"],
+            {"video_type": "full_movie", "content_verified": True},
         )
         result = await service.open(item["id"])
         assert not result["playback_confirmed"] and service.session["mode"] == "embedded"

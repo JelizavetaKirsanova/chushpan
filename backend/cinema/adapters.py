@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Protocol
 
+from backend.cinema.classification import classify
 from backend.cinema.models import local_video, web_url
 from backend.media.music_safari import SafariMusicTab
 from backend.media.safari import process
@@ -15,6 +16,7 @@ from backend.tools.registry import ToolError
 
 PLAYER = Path(__file__).with_name("player.js").read_text()
 PLAYER_ERRORS = {
+    "player_changed": "Плеер или видео изменилось. Соответствие фильму нужно проверить заново.",
     "page_changed": "Страница изменилась. Выбери нужную серию в Чушпане заново.",
     "multiple_players": "На странице несколько плееров; автоматическое управление неоднозначно.",
     "no_player": "Доступный HTML5-плеер не найден. Возможно, видео находится в чужом iframe.",
@@ -167,11 +169,26 @@ class HTML5Adapter:
         self.url = ""
         self.context = {}
         self.voice = ""
+        self.expected = None
+        self.binding = None
+        self.content_verified = False
 
     async def read(self, action="status", position=0):
-        return await self.bridge.evaluate(
-            self.url, {**self.context, "action": action, "position": position, "voice": self.voice}
-        )
+        payload = {**self.context, "action": action, "position": position, "voice": self.voice}
+        if self.expected and action in {"play", "seek", "fullscreen", "voice", "offer_gesture"}:
+            before = await self.read()
+            if not before.get("content_verified"):
+                raise ToolError(before["classification_reason"])
+            payload["binding"] = before.get("binding")
+        state = await self.bridge.evaluate(self.url, payload)
+        if self.expected and action == "status":
+            proof = classify(
+                self.expected, state.get("media_evidence") or {"live": True, "page_url": self.url}
+            )
+            state.update(proof)
+            self.binding = state.get("binding")
+            self.content_verified = proof["content_verified"]
+        return state
 
     async def sample(self):
         return await self.read()
@@ -179,6 +196,15 @@ class HTML5Adapter:
     async def open(self, target):
         self.url = target["link"]["url"]
         self.voice = target["link"].get("voice", "")
+        self.expected = (
+            {
+                **target["item"],
+                "season": target["episode"]["season"],
+                "episode": target["episode"]["episode"],
+            }
+            if target.get("item")
+            else None
+        )
         diagnostic = target.get("diagnostic")
 
         async def stage(name, status, message):
@@ -216,6 +242,25 @@ class HTML5Adapter:
                 await asyncio.sleep(0.5)
         position = target["episode"]["position"]
         current = await self.sample()
+        if self.expected:
+            await stage(
+                "VERIFY",
+                "success" if current.get("content_verified") else "rejected",
+                f"Видео: {current['video_type']}. {current['classification_reason']}",
+            )
+            if not current.get("content_verified"):
+                self.context = {}
+                await self.bridge.evaluate(self.url, {"action": "detach"})
+                return {
+                    "page_opened": True,
+                    "mode": "manual",
+                    "playback_confirmed": False,
+                    "video_type": current["video_type"],
+                    "content_verified": False,
+                    "message": "Источник для просмотра не подтверждён. "
+                    + current["classification_reason"]
+                    + " Прогресс сохранён; автоматический запуск отменён.",
+                }
         if position >= current["duration"] and position > 0:
             await stage(
                 "RESTORE_POSITION",
@@ -323,6 +368,8 @@ class HTML5Adapter:
         while time.monotonic() < deadline:
             await asyncio.sleep(0.15)
             after = await self.sample()
+            if self.expected and action != "pause" and not after.get("content_verified"):
+                raise ToolError(after["classification_reason"])
             if action == "play" and after.get("play_error"):
                 raise ToolError(
                     "Safari заблокировал автозапуск: требуется нажатие пользователя "

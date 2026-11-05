@@ -94,10 +94,22 @@ async def check():
             ],
             check=True,
         )
-        for page in ["one", "two"]:
+        for number, page in enumerate(["one", "two"], 1):
             (folder / (page + ".html")).write_text(
                 '<!doctype html><meta charset="utf-8"><title>Чушпан Safari '
                 'test</title><video muted playsinline controls src="sample.mp4"></video>'
+                + '<script type="application/ld+json">'
+                + json.dumps(
+                    {
+                        "@type": "TVEpisode",
+                        "name": f"Серия {number}",
+                        "partOfSeries": {"name": "Safari test series", "datePublished": "2026"},
+                        "partOfSeason": {"seasonNumber": 1},
+                        "episodeNumber": number,
+                        "associatedMedia": {"@type": "VideoObject", "contentUrl": "sample.mp4"},
+                    }
+                )
+                + "</script>"
             )
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))

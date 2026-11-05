@@ -47,6 +47,7 @@ def entity(**changes):
         "partOfSeries": {"@type": "TVSeries", "name": "Test Series", "datePublished": "2025"},
         "partOfSeason": {"seasonNumber": 2},
         "episodeNumber": 3,
+        "associatedMedia": {"@type": "VideoObject", "contentUrl": URL + "/full.mp4"},
         **changes,
     }
 
@@ -368,12 +369,32 @@ def test_previously_working_safari_source_is_tried_before_switching_on_anonymous
             status = 403
 
             async def request(self, url, **kwargs):
-                return httpx.Response(self.status if "last.example" in url else 200)
+                if "last.example" in url:
+                    return httpx.Response(self.status)
+                if url.endswith("robots.txt"):
+                    return httpx.Response(200, text="User-agent: *\nAllow: /")
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/html"},
+                    text='<script type="application/ld+json">'
+                    + json.dumps(
+                        {
+                            "@type": "Movie",
+                            "name": "Film",
+                            "datePublished": "2025",
+                            "associatedMedia": {"contentUrl": url + "/full.mp4"},
+                        }
+                    )
+                    + "</script>",
+                )
 
         http = CheckHTTP()
         manager = SourceManager(db, http=http)
         result = await manager.search(item["id"], saved_only=True)
-        assert manager.result(result["selected_id"])["source_id"] == first["id"]
+        assert manager.result(result["selected_id"])["source_id"] == other["id"]
+        assert not next(r for r in result["results"] if r["source_id"] == first["id"])[
+            "content_verified"
+        ]
         http.status = 404
         result = await manager.search(item["id"], saved_only=True, refresh=True)
         assert manager.result(result["selected_id"])["source_id"] == other["id"]

@@ -398,7 +398,7 @@ class CinemaStore:
                 "INSERT INTO "
                 "cinema_diagnostics(title_id,episode_id,session,stage,status,message,created_at) "
                 "VALUES (?,?,?,?,?,?,?)",
-                (title_id, episode_id, session, stage, status, str(message)[:600], now()),
+                (title_id, episode_id, session, stage, status, str(message)[:3500], now()),
             )
             self.db.execute(
                 "DELETE FROM cinema_diagnostics WHERE id NOT IN (SELECT id FROM "

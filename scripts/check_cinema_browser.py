@@ -71,8 +71,21 @@ async def check(module, screenshot, chromium=None, catalogue=False, personal=Fal
             .read_text()
             .replace('src="/sample.mp4"', 'src="sample.mp4"')
         )
-        (media / "one.html").write_text(fixture)
-        (media / "two.html").write_text(fixture.replace("серия 1", "серия 2"))
+        for name, number in [("one", 1), ("two", 2)]:
+            entity = {
+                "@type": "TVEpisode",
+                "name": f"Серия {number}",
+                "partOfSeries": {"name": "Тестовый сериал", "datePublished": "2026"},
+                "partOfSeason": {"seasonNumber": 1},
+                "episodeNumber": number,
+                "associatedMedia": {"@type": "VideoObject", "contentUrl": "sample.mp4"},
+            }
+            (media / (name + ".html")).write_text(
+                fixture.replace("серия 1", f"серия {number}")
+                + '<script type="application/ld+json">'
+                + json.dumps(entity)
+                + "</script>"
+            )
         subprocess.run(
             [
                 "ffmpeg",
@@ -221,6 +234,7 @@ async def check(module, screenshot, chromium=None, catalogue=False, personal=Fal
             await cinema.db("configure", {"resume_rewind_seconds": 0})
             entry = {
                 "title": "Тестовый сериал",
+                "year": 2026,
                 "source_id": source["id"],
                 "url": f"{base}/fixture/one.html",
             }

@@ -311,6 +311,24 @@ class TMDB:
         )[:40]
         return result
 
+    async def official_trailer(self, key):
+        """Promotional metadata, exclusively for the explicit trailer action."""
+        kind, identifier = self.identity(key)
+        for language in ("ru-RU", "en-US"):
+            data = await self.get(f"{kind}/{identifier}/videos", language=language)
+            for row in data.get("results", []):
+                if row.get("type") != "Trailer" or row.get("official") is not True:
+                    continue
+                video = str(row.get("key", ""))
+                if row.get("site") == "YouTube" and re.fullmatch(r"[A-Za-z0-9_-]{11}", video):
+                    return {
+                        "url": f"https://www.youtube.com/watch?v={video}",
+                        "video_type": "trailer",
+                    }
+                if row.get("site") == "Vimeo" and re.fullmatch(r"\d{1,15}", video):
+                    return {"url": f"https://vimeo.com/{video}", "video_type": "trailer"}
+        raise ToolError("Официальный трейлер не найден. Полный просмотр не запускался.")
+
     async def episodes(self, key, season):
         kind, identifier = self.identity(key)
         if kind != "tv" or type(season) is not int or not 1 <= season <= 999:

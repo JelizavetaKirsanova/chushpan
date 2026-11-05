@@ -165,7 +165,12 @@ def test_watch_search_open_saved_repeat_and_episode_restore(tmp_path):
         try:
             source, item = await seed(service)
             result = await service.resume(item["id"])
-            assert not result["playback_confirmed"] and player.opened[-1]["link"]["url"] == URL
+            assert not result["playback_confirmed"] and not player.opened
+            assert "Источник для просмотра не найден" in result["message"]
+            choices = await service.sources.search(item["id"])
+            await service.source_result(
+                choices["results"][0]["id"], open_result=True, manual_choice=True
+            )
             first = await service.db("detail", item["id"])
             ep = first["current"]
             await service.db("progress", ep["id"], 120, 1000, "manual", ep["links"][0]["id"])
@@ -175,15 +180,18 @@ def test_watch_search_open_saved_repeat_and_episode_restore(tmp_path):
                 url.endswith(("map.xml", "robots.txt"))
                 for url, _ in service.sources.http.calls[before:]
             )
-            assert player.opened[-1]["episode"]["position"] == 117
+            assert (
+                len(player.opened) == 1
+            )  # A series landing page never becomes a verified episode.
+            assert (await service.db("detail", item["id"]))["current"]["position"] == 120
             await service.db("season", item["id"], [{"season": 2, "episode": 3, "name": "Test"}])
             updated = await service.db("detail", item["id"])
             next_ep = next(e for e in updated["episodes"] if e["season"] == 2)
             result = await service.resume(item["id"], next_ep["id"])
-            assert player.opened[-1]["link"]["url"] == URL
-            assert "сезон 2, серию 3" in result["message"]
+            assert len(player.opened) == 1
+            assert "Источник для просмотра не найден" in result["message"]
             assert not result["playback_confirmed"]
-            assert (await service.db("detail", item["id"]))["current"]["id"] == next_ep["id"]
+            assert (await service.db("detail", item["id"]))["current"]["id"] == ep["id"]
             assert source["id"] == first["source_memory"]["last_source_id"]
         finally:
             await service.close()
@@ -223,6 +231,10 @@ def test_paid_confirmation_bound_to_result_and_never_paywall_bypass(tmp_path):
             _, item = await seed(service, status="PAID")
             result = await service.resume(item["id"])
             assert not player.opened and not result["playback_confirmed"]
+            choices = await service.sources.search(item["id"])
+            await service.source_result(
+                choices["results"][0]["id"], open_result=True, manual_choice=True
+            )
             assert len(service.watch_confirmations) == 1
             token = next(iter(service.watch_confirmations))
             await service.handle({"op": "watch_confirm", "token": token})

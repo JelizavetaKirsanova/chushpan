@@ -120,20 +120,27 @@ class Page(HTMLParser):
         super().__init__()
         self.structured, self.ld, self.buffer = [], False, []
         self.links = []
+        self.heading, self.title = False, ""
         self.feed(html)
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        if tag in {"title", "h1"}:
+            self.heading = True
         if tag == "a" and attrs.get("href") and len(self.links) < 10000:
             self.links.append(attrs["href"])
         if tag == "script" and attrs.get("type", "").lower() == "application/ld+json":
             self.ld, self.buffer = True, []
 
     def handle_data(self, data):
+        if self.heading:
+            self.title = (self.title + " " + data)[:2000]
         if self.ld:
             self.buffer.append(data)
 
     def handle_endtag(self, tag):
+        if tag in {"title", "h1"}:
+            self.heading = False
         if tag == "script" and self.ld:
             self.ld = False
             try:
@@ -294,15 +301,11 @@ class PublicCatalogue:
         for url in candidates[:6]:
             response = await self.request(url)
             page = Page(response.text)
-            for entity in page.entities():
-                expected = "TVSeries" if query["kind"] == "series" else "Movie"
-                page_names = {key(entity.get("name", "")), key(entity.get("alternateName", ""))}
-                year = str(entity.get("datePublished") or entity.get("dateCreated") or "")[:4]
-                if (
-                    entity.get("@type") != expected
-                    or not page_names.intersection(names)
-                    or year != str(query.get("year"))
-                ):
+            for entity in page.entities({"Movie", "TVSeries", "TVEpisode"}):
+                from backend.cinema.internet import verified_entity
+
+                identity = verified_entity(entity, query)
+                if not identity:
                     continue
                 results.append(
                     {
@@ -319,8 +322,16 @@ class PublicCatalogue:
                         "reason": "Публичная карта сайта и метаданные страницы: "
                         "совпали название, год и тип. "
                         "Условия доступа к видео и запуск плеера не подтверждены.",
-                        "scope": "series" if query["kind"] == "series" else "movie",
+                        "scope": identity["scope"],
                     }
+                )
+                from backend.cinema.classification import classify
+
+                results[-1].update(
+                    classify(
+                        query,
+                        {"page_url": url, "page_title": page.title, "structured": page.structured},
+                    )
                 )
                 if (
                     query["kind"] == "series"
@@ -353,12 +364,23 @@ class PublicCatalogue:
                 final = getattr(response, "extensions", {}).get("final_url", target)
                 if final.rstrip("/") != target.rstrip("/"):
                     continue
-                episodes = Page(response.text).entities({"TVEpisode"})
+                episode_page = Page(response.text)
+                episodes = episode_page.entities({"TVEpisode"})
                 if not any(key(e.get("name", "")) == f"серия {query['episode']}" for e in episodes):
                     continue
             except (ToolError, OSError, TimeoutError):
                 continue
+            from backend.cinema.classification import classify
+
             return {
+                **classify(
+                    query,
+                    {
+                        "page_url": target,
+                        "page_title": episode_page.title,
+                        "structured": episode_page.structured,
+                    },
+                ),
                 "url": target,
                 "scope": "episode",
                 "episode_match": True,

@@ -275,7 +275,7 @@ test('hero watch uses the episode selected in the detail card',()=>{
 test('unknown cost is a visible manual choice under free-only, not paid or automatic',()=>{
   const f=fixture();try{
     const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const item=movie('Film','planned');
-    view.receive({...snapshot([item]),source_results:{title_id:item.id,episode_id:item.current.id,selected_id:null,message:'Только подтверждённые бесплатные',results:[{id:'unknown',source_name:'Unknown',source_id:'source',kind:'page',url:'https://site.example/film',availability:'available',reason:'Совпадение проверено',access_status:'UNKNOWN',access_type:'unknown',match:1,allowed:false,manual_allowed:true,embedded:false,capabilities:{mode:'HTML5'}}]}});
+    view.receive({...snapshot([item]),source_results:{title_id:item.id,episode_id:item.current.id,selected_id:null,message:'Только подтверждённые бесплатные',results:[{id:'unknown',content_verified:true,video_type:'full_movie',source_name:'Unknown',source_id:'source',kind:'page',url:'https://site.example/film',availability:'available',reason:'Совпадение проверено',access_status:'UNKNOWN',access_type:'unknown',match:1,allowed:false,manual_allowed:true,embedded:false,capabilities:{mode:'HTML5'}}]}});
     assert.match(f.window.document.querySelector('dialog').textContent,/Условия доступа неизвестны/);const choose=button(f,'Выбрать вручную');assert.equal(choose.disabled,false);assert.ok(!sent.some(v=>v.op==='source_result_open'));choose.click();assert.equal(sent.at(-1).op,'source_result_open');assert.equal(sent.at(-1).result_id,'unknown');
   }finally{f.window.happyDOM.abort();}
 });
@@ -311,7 +311,7 @@ test('remembered Safari playback remains manually resumable when anonymous check
   const f=fixture();try{
     const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const item=movie('Private film','watching');
     view.receive({...snapshot([item]),source_results:{title_id:item.id,episode_id:item.current.id,selected_id:null,message:'Анонимная проверка ограничена',results:[{id:'last',source_name:'Last source',source_id:'source',kind:'page',scope:'movie',url:'https://site.example/film',availability:'restricted',reason:'Ранее воспроизводился в Safari',access_status:'UNKNOWN',access_type:'unknown',match:1,allowed:true,manual_allowed:true,previously_played:true,embedded:false,capabilities:{mode:'HTML5'}}]}});
-    const resume=button(f,'Продолжить в Safari');assert.equal(resume.disabled,false);resume.click();assert.equal(sent.at(-1).op,'source_result_open');assert.equal(sent.at(-1).result_id,'last');
+    const resume=button(f,'Проверить страницу без автозапуска');assert.equal(resume.disabled,false);resume.click();assert.equal(sent.at(-1).op,'source_result_open');assert.equal(sent.at(-1).result_id,'last');
   }finally{f.window.happyDOM.abort();}
 });
 

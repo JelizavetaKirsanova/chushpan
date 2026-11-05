@@ -16,6 +16,13 @@
   if (eligible.length !== 1) return JSON.stringify({error: eligible.length ? 'multiple_players' : blockedFrame&&!videos.length?'cross_origin_player':'no_player'});
   const video = eligible[0];
   if (video.mediaKeys) return JSON.stringify({error: 'protected_player'});
+  if(!video.__chushpanMediaId)video.__chushpanMediaId=globalThis.crypto?.randomUUID?.()||String(window.__chushpanMediaCounter=(window.__chushpanMediaCounter||0)+1);
+  const binding=()=>JSON.stringify([video.__chushpanMediaId,video.currentSrc||video.src,video.ownerDocument.URL,video.duration]);
+  if(request.binding&&request.binding!==binding())return JSON.stringify({error:'player_changed'});
+  const evidence=()=>({live:true,page_url:location.href,frame_url:video.ownerDocument.URL,
+    page_title:document.title,video_title:video.getAttribute('title')||video.getAttribute('aria-label')||'',
+    media_url:video.currentSrc||video.src,duration:video.duration,
+    structured:documents.flatMap(doc=>[...doc.querySelectorAll('script[type="application/ld+json"]')].slice(0,8).flatMap(node=>{try{return [JSON.parse(node.textContent.slice(0,12000))];}catch{return [];}})).slice(0,16)});
   const fullscreen = () => video.webkitDisplayingFullscreen===true || video.ownerDocument.fullscreenElement===video || !!video.ownerDocument.fullscreenElement?.contains(video);
   const tracks=()=>Array.from(video.audioTracks||[]);
   const normalize=value=>String(value||'').trim().toLocaleLowerCase();
@@ -26,6 +33,7 @@
     remote: video.webkitCurrentPlaybackTargetIsWireless === true || video.remote?.state === 'connected',
     airplay: typeof video.webkitShowPlaybackTargetPicker === 'function' && !video.disableRemotePlayback,
     fullscreen:fullscreen(), voice_confirmed:voiceConfirmed(), play_error:window.__chushpanCinema?.playError, fullscreen_error:window.__chushpanCinema?.fullscreenError,
+    binding:binding(),
     error: video.mediaKeys ? 'protected_player' : video.error ? 'media_error' : undefined});
   const old = window.__chushpanCinema;
   if ((request.session || request.action!=='status') && (old?.session !== request.session || old?.video !== video)) {
@@ -90,5 +98,5 @@
     if (!Number.isFinite(request.position) || request.position < 0) return JSON.stringify({error:'invalid_position'});
     video.currentTime = Math.min(request.position, Math.max(0, video.duration - 0.1));
   }
-  return JSON.stringify(snapshot());
+  return JSON.stringify({...snapshot(),...(request.action==='status'?{media_evidence:evidence()}: {})});
 })

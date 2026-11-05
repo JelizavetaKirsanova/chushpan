@@ -18,6 +18,7 @@ from uuid import uuid4
 
 import httpx
 
+from backend.cinema.classification import FULL_TYPES, PROMO_TYPES, classify
 from backend.cinema.models import Source, web_url
 from backend.cinema.personal import normalized
 from backend.cinema.public_search import PublicCatalogue
@@ -194,6 +195,9 @@ class WebsiteAdapter:
         ]
 
     async def resolve(self, content):
+        query = content.get("_expected", {})
+        content = {k: v for k, v in content.items() if k != "_expected"}
+        content.update(classify(query, {"page_url": content["url"]}))
         if self.source["adapter"] != "local" and urlsplit(content["url"]).path in {"", "/"}:
             return {
                 **content,
@@ -204,6 +208,21 @@ class WebsiteAdapter:
                 "страница фильма или сериала.",
             }
         check = await self.checkAvailability(content["url"])
+        if (
+            query
+            and self.source["adapter"] != "local"
+            and check["availability"] == "available"
+            and not check.get("content_type", "").startswith("video/")
+        ):
+            from backend.cinema.internet import PageVerifier
+
+            try:
+                verified = await PageVerifier(self.http).verify(content["url"], query)
+                content.update(verified)
+            except ToolError as exc:
+                content.update(
+                    content_verified=False, video_type="unknown", classification_reason=str(exc)
+                )
         compatible = (
             self.source["adapter"] == "direct"
             and self.source.get("embed_allowed")
@@ -316,6 +335,8 @@ class SitemapAdapter(WebsiteAdapter):
         self.catalogue = PublicCatalogue(self.source, self.http)
 
     async def resolve(self, content):
+        if content.get("_expected"):
+            return await super().resolve(content)
         if urlsplit(content["url"]).path in {"", "/"}:
             return await super().resolve(content)
         try:
@@ -481,6 +502,11 @@ class SourceManager:
                                     "language": source.get("language", ""),
                                     "access_type": source.get("access_type", "unknown"),
                                     **await self.db("verify_link", link["id"]),
+                                    "_expected": {
+                                        **item,
+                                        "season": ep["season"],
+                                        "episode": ep["episode"],
+                                    },
                                 }
                             )
                             for link in links
@@ -571,7 +597,9 @@ class SourceManager:
 
         def exact(r):
             return (
-                r["match"] >= 0.95
+                r.get("content_verified") is True
+                and r.get("video_type") in FULL_TYPES
+                and r["match"] >= 0.95
                 and r["availability"] == "available"
                 and (item["kind"] == "movie" or r.get("scope") == "episode")
             )
@@ -630,6 +658,15 @@ class SourceManager:
         if generation != self.generation:
             raise ToolError("Настройки источников изменились. Повтори поиск.")
         for row in rows:
+            row.setdefault("video_type", "unknown")
+            row.setdefault("content_verified", False)
+            row.setdefault("classification_reason", "Тип самого видео не подтверждён.")
+            if row["video_type"] in PROMO_TYPES:
+                row["allowed"] = row["manual_allowed"] = False
+                row["configurable"] = False
+            row["score"] += (
+                100 if row["content_verified"] and row["video_type"] in FULL_TYPES else -100
+            )
             row.setdefault("scope", "movie" if item["kind"] == "movie" else "series")
             row["score"] += (35 if row["scope"] == "episode" else 0) + (
                 20 if prefs.prefer_free and row.get("access_status") == "FREE" else 0
@@ -679,6 +716,8 @@ class SourceManager:
             r
             for r in rows
             if r["allowed"]
+            and r.get("content_verified") is True
+            and r.get("video_type") in FULL_TYPES
             and r["match"] >= 0.95
             and (
                 r["availability"] == "available"
@@ -696,6 +735,6 @@ class SourceManager:
             "selected_id": verified[0]["id"] if verified and prefs.auto_select_source else None,
             "message": "Найдено совпадение. Выбери вариант просмотра."
             if verified
-            else "Автоматический выбор не выполнен. Причины проверки указаны "
-            "у источников; неизвестная стоимость доступна для ручного выбора.",
+            else "Источник для просмотра не найден. Тип видео или соответствие произведению "
+            "не подтверждены. Причины указаны у источников; трейлер вместо фильма не открывается.",
         }

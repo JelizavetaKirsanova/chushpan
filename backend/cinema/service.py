@@ -5,6 +5,7 @@ import contextlib
 import functools
 import json
 import math
+import re
 import secrets
 import sqlite3
 import time
@@ -21,6 +22,7 @@ from backend.cinema.adapters import (
     open_page,
 )
 from backend.cinema.catalogue import Catalogue
+from backend.cinema.classification import FULL_TYPES, PROMO_TYPES, classify
 from backend.cinema.commands import command
 from backend.cinema.filters import with_preferences
 from backend.cinema.internet import InternetSearch, SearchCredentials, SearchProviders
@@ -413,6 +415,8 @@ class Cinema:
                 self.message = "Рекомендательный профиль сброшен. Оценки и история сохранены."
                 await self.publish(recommendations_reset=True)
                 return
+            elif op == "trailer":
+                result = await self.trailer(value.get("key"), value.get("title_id"))
             elif op == "watch":
                 result = await self.resume(
                     value["title_id"],
@@ -741,12 +745,69 @@ class Cinema:
                 }
             )
 
+    async def trace_source(self, row):
+        from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+        url = urlsplit(row.get("url", ""))
+        query = [
+            (k, "[redacted]" if re.search(r"token|key|auth|signature|credential", k, re.I) else v)
+            for k, v in parse_qsl(url.query, keep_blank_values=True)
+        ]
+        address = urlunsplit((url.scheme, url.netloc, url.path, urlencode(query), ""))
+        accepted = row.get("content_verified") is True and row.get("video_type") in FULL_TYPES
+        await self.trace(
+            "VERIFY",
+            "success"
+            if accepted
+            else "rejected"
+            if row.get("video_type") in PROMO_TYPES
+            else "limited",
+            json.dumps(
+                {
+                    "source": row.get("source_name", row.get("source_id", "")),
+                    "url": address,
+                    "video_type": row.get("video_type", "unknown"),
+                    "accepted": accepted,
+                    "reason": row.get("classification_reason", row.get("reason", "")),
+                },
+                ensure_ascii=False,
+            ),
+            row.get("title_id", ""),
+            row.get("episode_id", ""),
+        )
+
+    async def trailer(self, key=None, title_id=None):
+        self.require_playback()
+        if title_id:
+            key = (await self.db("detail", title_id)).get("catalogue_key")
+        if not key:
+            raise ToolError("Для официального трейлера открой карточку фильма или сериала из TMDB.")
+        if not (await self.db("preferences")).allow_browser:
+            raise ToolError("Открытие браузера отключено в настройках медиатеки.")
+        video = await self.tmdb.official_trailer(key)
+        await self.opener(video["url"])
+        await self.trace(
+            "OPEN_SAFARI",
+            "success",
+            "Открыт только официальный трейлер: " + video["url"],
+            title_id or "",
+        )
+        return {
+            "page_opened": True,
+            "video_type": "trailer",
+            "playback_confirmed": False,
+            "message": "Открыт официальный трейлер. Полный фильм и прогресс просмотра не изменены.",
+        }
+
     async def source_result(
         self, identifier, *, open_result=False, pin=False, manual_choice=False, approved=False
     ):
         if open_result:
             self.require_playback()
         row = self.sources.result(identifier)
+        await self.trace_source(row)
+        if row.get("video_type") in PROMO_TYPES:
+            raise ToolError("Источник для просмотра не найден: это трейлер, тизер или фрагмент.")
         try:
             source = await self.db("source", row["source_id"])
             new_source = False
@@ -880,11 +941,14 @@ class Cinema:
                 "license": row.get("license", ""),
                 "region_access": row.get("region_access", "unknown"),
                 "region_checked": prefs.watch_region,
+                "video_type": row.get("video_type", "unknown"),
+                "content_verified": row.get("content_verified", False),
+                "classification_reason": row.get("classification_reason", ""),
             },
         )
         await self.db("remember_source", item["id"], source.id, ep["id"], link["id"], pin=pin)
         self.sources.cache.clear()
-        if row["availability"] == "available":
+        if row["availability"] == "available" and row.get("content_verified"):
             await self.db(
                 "source_health", source.id, "available", "Проверена страница выбранного контента."
             )
@@ -1066,6 +1130,19 @@ class Cinema:
         if parsed is None:
             raise ToolError("Уточни команду кинотеки.")
         action = parsed["action"]
+        if action == "trailer":
+            if parsed.get("title"):
+                matches = [
+                    i
+                    for i in await self.db("library")
+                    if i["title"].casefold() == parsed["title"].casefold()
+                ]
+                if len(matches) != 1:
+                    raise ToolError(
+                        "Открой карточку нужного фильма или сериала и выбери «Трейлер»."
+                    )
+                return await self.trailer(title_id=matches[0]["id"])
+            return await self.trailer(self.focused_catalogue, self.focused)
         if action in {"favorite", "rate"}:
             identifier = self.focused
             if not identifier and self.focused_catalogue:
@@ -1559,6 +1636,8 @@ class Cinema:
             if sequence != self.watch_sequence:
                 return {"playback_confirmed": False, "message": "Поиск заменён новым запросом."}
             selected = result["selected_id"]
+            for candidate in result["results"]:
+                await self.trace_source(candidate)
             if (
                 exact_only
                 and item["kind"] == "series"
@@ -1582,7 +1661,9 @@ class Cinema:
             return {
                 "playback_confirmed": False,
                 "result_status": "partial_success",
-                "message": "Проверила источники. Выбери вариант просмотра в кинотеке.",
+                "message": result["message"]
+                if not selected
+                else "Выбери вариант просмотра в кинотеке.",
             }
         if not prefs.auto_open:
             result = await self.sources.search(title_id, episode_id, saved_only=True)
@@ -1644,6 +1725,27 @@ class Cinema:
                 link_id = available[0]["link"]["id"]
             target = await self.db("target", title_id, episode_id, link_id)
             source = target["source"]
+            query = {
+                **target["item"],
+                "season": target["episode"]["season"],
+                "episode": target["episode"]["episode"],
+            }
+            link_verification = await self.db("verify_link", target["link"]["id"])
+            marker = classify(query, {"page_url": target["link"]["url"]})
+            if (
+                marker["video_type"] in PROMO_TYPES
+                or link_verification.get("video_type") in PROMO_TYPES
+            ):
+                await self.trace(
+                    "VERIFY",
+                    "rejected",
+                    "URL отклонён: " + target["link"]["url"],
+                    title_id,
+                    target["episode"]["id"],
+                )
+                raise ToolError(
+                    "Источник для просмотра не найден: сохранённая ссылка ведёт на промо-видео."
+                )
             approval = self.open_approvals.pop(target["link"]["id"], None)
             approved = bool(approval and approval[0] > time.monotonic() and approval[1] == source)
             status = source.get("access_status", "UNKNOWN")
@@ -1668,7 +1770,11 @@ class Cinema:
                 resolved = await self.sources.adapter(source).resolve(
                     {"url": target["link"]["url"]}
                 )
-                if resolved["embedded"]:
+                if (
+                    resolved["embedded"]
+                    and link_verification.get("content_verified") is True
+                    and link_verification.get("video_type") in FULL_TYPES
+                ):
                     embed = target["link"]["url"]
             if not embed and source["adapter"] != "local" and not prefs.allow_browser:
                 raise ToolError(
@@ -1787,6 +1893,10 @@ class Cinema:
         if not self.session:
             return False
         session = self.session
+        adapter = session["adapter"]
+        if isinstance(adapter, HTML5Adapter) and adapter.expected:
+            if not adapter.content_verified or state.get("binding") != adapter.binding:
+                return False
         target = session["target"]
         position, duration = state.get("position"), state.get("duration")
         if (

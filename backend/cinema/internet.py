@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from backend.cinema.classification import classify
 from backend.cinema.models import Source, origin, web_url
 from backend.cinema.public_search import Page, PublicCatalogue, Robots, key
 from backend.tools.registry import ToolError
@@ -211,11 +212,16 @@ class PageVerifier:
             raise ToolError(
                 "Найденный адрес перенаправляет на другую страницу; совпадение не подтверждено."
             )
-        for entity in Page(response.text).entities({"Movie", "TVSeries", "TVEpisode"}):
+        page = Page(response.text)
+        classification = classify(
+            query, {"page_url": url, "page_title": page.title, "structured": page.structured}
+        )
+        for entity in page.entities({"Movie", "TVSeries", "TVEpisode"}):
             verified = verified_entity(entity, query)
             if verified:
                 return {
                     **verified,
+                    **classification,
                     "url": url,
                     "kind": "page",
                     "match": 1.0,
