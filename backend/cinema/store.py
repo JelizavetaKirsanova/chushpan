@@ -198,6 +198,23 @@ class CinemaStore:
             )
         return prefs.model_dump()
 
+    def source_diagnostics(self, value=None):
+        if value is not None:
+            if not isinstance(value, dict) or not isinstance(value.get("rows"), list):
+                raise ValueError("Неверный отчёт проверки источников.")
+            encoded = json.dumps(value, ensure_ascii=False)
+            if len(value["rows"]) > 50 or len(encoded) > 600000:
+                raise ValueError("Слишком большой отчёт проверки источников.")
+            with self.transaction():
+                self.db.execute(
+                    "INSERT OR REPLACE INTO cinema_settings VALUES ('source_diagnostics',?)",
+                    (encoded,),
+                )
+        row = self.db.execute(
+            "SELECT value FROM cinema_settings WHERE key='source_diagnostics'"
+        ).fetchone()
+        return json.loads(row[0]) if row else {"running": False, "rows": []}
+
     def sources(self):
         sources = []
         for row in self.db.execute("SELECT data FROM cinema_sources ORDER BY rowid"):

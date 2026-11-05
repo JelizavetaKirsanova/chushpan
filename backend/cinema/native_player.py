@@ -74,7 +74,10 @@ class AVPlayerAdapter:
                     (json.dumps({"id": key, "action": action, **values}) + "\n").encode()
                 )
                 await self.proc.stdin.drain()
-                line = await asyncio.wait_for(self.proc.stdout.readline(), 10)
+                # Wait for remote range I/O without retrying a submitted seek.
+                line = await asyncio.wait_for(
+                    self.proc.stdout.readline(), 30 if action == "seek" else 10
+                )
                 result = json.loads(line)
                 if result.get("id") != key:
                     raise ValueError("stale response")

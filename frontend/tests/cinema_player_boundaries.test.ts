@@ -67,3 +67,41 @@ test('fullscreen stays pending until the browser transition promise resolves',as
     assert.equal(run(window,{}).fullscreen_pending,false);
   }finally{await window.happyDOM.abort();}
 });
+
+test('public video inside an open shadow root is detected and host fullscreen is observed',async()=>{
+  const window=new Window({url});try{
+    const host=window.document.createElement('ia-media-player');window.document.body.append(host);
+    const root=host.attachShadow({mode:'open'});const video=window.document.createElement('video');root.append(video);
+    for(const [key,value]of Object.entries({readyState:4,duration:120,currentTime:35,paused:true}))Object.defineProperty(video,key,{value,configurable:true});
+    Object.defineProperty(video,'getBoundingClientRect',{value:()=>({width:640,height:360})});
+    Object.defineProperty(window.document,'fullscreenElement',{get:()=>host});
+    const state=run(window,{});assert.equal(state.position,35);assert.equal(state.fullscreen,true);assert.equal(state.error,undefined);
+  }finally{await window.happyDOM.abort();}
+});
+
+test('closed shadow root remains inaccessible and cannot claim a player',async()=>{
+  const window=new Window({url});try{
+    const host=window.document.createElement('private-player');window.document.body.append(host);
+    const root=host.attachShadow({mode:'closed'});root.append(window.document.createElement('video'));
+    assert.equal(run(window,{}).error,'no_player');
+  }finally{await window.happyDOM.abort();}
+});
+
+test('metadata preparation loads one lazy video once and never starts it',async()=>{
+  const window=new Window({url});try{
+    const host=window.document.createElement('play-av');window.document.body.append(host);const root=host.attachShadow({mode:'open'});const video=window.document.createElement('video');root.append(video);
+    Object.defineProperty(video,'getBoundingClientRect',{value:()=>({width:640,height:360})});Object.defineProperty(video,'readyState',{value:0});
+    let loads=0,plays=0;video.load=()=>{loads++;};video.play=()=>{plays++;return Promise.resolve();};
+    assert.equal(run(window,{action:'prepare'}).playback_confirmed,false);run(window,{action:'prepare'});
+    assert.equal(loads,1);assert.equal(plays,0);assert.equal(video.preload,'metadata');
+  }finally{await window.happyDOM.abort();}
+});
+
+test('a real video awaiting metadata is distinct from an absent player',async()=>{
+  const window=new Window({url});try{
+    const video=window.document.createElement('video');window.document.body.append(video);
+    Object.defineProperty(video,'getBoundingClientRect',{value:()=>({width:640,height:360})});
+    Object.defineProperty(video,'readyState',{value:0});assert.equal(run(window,{}).error,'player_loading');
+    video.remove();assert.equal(run(window,{}).error,'no_player');
+  }finally{await window.happyDOM.abort();}
+});

@@ -5,18 +5,30 @@
     window.__chushpanCinema?.dispose(); delete window.__chushpanCinema;
     return JSON.stringify({detached:true});
   }
-  const documents = [document]; const seen = new Set(documents); let blockedFrame = false;
-  for (let index = 0; index < documents.length && index < 20; index++) {
-    for (const frame of documents[index].querySelectorAll('iframe')) {
-      try { const doc=frame.contentDocument;if(doc&&!seen.has(doc)){seen.add(doc);documents.push(doc);}else if(!doc)blockedFrame=true; } catch (_) { blockedFrame=true; }
+  const documents = [document], roots = [document]; const seen = new Set(roots); let blockedFrame = false;
+  // Public open shadow roots are used by real web-component players, including
+  // Internet Archive. Closed roots and foreign iframe documents remain inaccessible.
+  for (let index = 0; index < roots.length && index < 100; index++) {
+    for (const element of roots[index].querySelectorAll('*')) {
+      if(element.shadowRoot&&!seen.has(element.shadowRoot)){seen.add(element.shadowRoot);roots.push(element.shadowRoot);}
+      if(element.tagName==='IFRAME'){
+        try { const doc=element.contentDocument;if(doc&&!seen.has(doc)){seen.add(doc);roots.push(doc);documents.push(doc);}else if(!doc)blockedFrame=true; } catch (_) { blockedFrame=true; }
+      }
     }
   }
-  const videos = documents.flatMap(doc => [...doc.querySelectorAll('video')]);
+  const videos = roots.slice(0,100).flatMap(root => [...root.querySelectorAll('video')]);
+  if(request.action==='prepare'){
+    const visible=videos.filter(v=>{const s=v.ownerDocument.defaultView.getComputedStyle(v);return s.display!=='none'&&s.visibility!=='hidden'&&v.getBoundingClientRect().width>0;});
+    if(visible.length===1&&visible[0].readyState===0&&!visible[0].autoplay&&!visible[0].__chushpanMetadataRequested){
+      const v=visible[0];v.__chushpanMetadataRequested=true;v.preload='metadata';v.load();
+    }
+    return JSON.stringify({preparing:visible.length===1,playback_confirmed:false});
+  }
   let eligible = videos.filter(video => {const style=video.ownerDocument.defaultView.getComputedStyle(video);return style.display!=='none'&&style.visibility!=='hidden'&&video.getBoundingClientRect().width>0&&video.readyState>=1&&Number.isFinite(video.duration)&&video.duration>0;});
   // A single already playing element is unambiguous; its identity is still validated.
   const active = eligible.filter(video=>!video.paused&&!video.ended);
   if(eligible.length>1&&active.length===1)eligible=active;
-  if (eligible.length !== 1) return JSON.stringify({error: eligible.length ? 'multiple_players' : videos.length===1&&videos[0].error?'media_error':blockedFrame&&!videos.length?'cross_origin_player':'no_player'});
+  if (eligible.length !== 1) return JSON.stringify({error: eligible.length ? 'multiple_players' : videos.length===1&&videos[0].error?'media_error':videos.length?'player_loading':blockedFrame?'cross_origin_player':'no_player'});
   const video = eligible[0];
   if (video.mediaKeys) return JSON.stringify({error: 'protected_player'});
   if(!video.__chushpanMediaId)video.__chushpanMediaId=globalThis.crypto?.randomUUID?.()||String(window.__chushpanMediaCounter=(window.__chushpanMediaCounter||0)+1);
@@ -26,13 +38,18 @@
     page_title:document.title,video_title:video.getAttribute('title')||video.getAttribute('aria-label')||'',
     media_url:video.currentSrc||video.src,duration:video.duration,
     structured:documents.flatMap(doc=>[...doc.querySelectorAll('script[type="application/ld+json"]')].slice(0,8).flatMap(node=>{try{return [JSON.parse(node.textContent.slice(0,12000))];}catch{return [];}})).slice(0,16)});
-  const fullscreen = () => video.webkitDisplayingFullscreen===true || video.ownerDocument.fullscreenElement===video || !!video.ownerDocument.fullscreenElement?.contains(video);
+  const fullscreen = () => {
+    if(video.webkitDisplayingFullscreen===true||video.getRootNode().fullscreenElement===video)return true;
+    const full=video.ownerDocument.fullscreenElement;
+    for(let node=video;full&&node;node=node.parentNode||node.getRootNode?.().host)if(node===full)return true;
+    return false;
+  };
   const tracks=()=>Array.from(video.audioTracks||[]);
   const normalize=value=>String(value||'').trim().toLocaleLowerCase();
   const desiredVoice=normalize(request.voice);
   const voiceConfirmed=()=>!!desiredVoice&&tracks().some(track=>track.enabled&&[track.label,track.language].some(value=>normalize(value)===desiredVoice));
   const snapshot = () => ({position: video.currentTime, duration: video.duration, observed_at: Date.now(),
-    paused: video.paused, seeking:video.seeking, ended: video.ended, ready: video.readyState,
+    paused: video.paused, muted:video.muted, seeking:video.seeking, ended: video.ended, ready: video.readyState,
     remote: video.webkitCurrentPlaybackTargetIsWireless === true || video.remote?.state === 'connected',
     airplay: typeof video.webkitShowPlaybackTargetPicker === 'function' && !video.disableRemotePlayback,
     fullscreen:fullscreen(), fullscreen_pending:window.__chushpanCinema?.fullscreenPending===true, voice_confirmed:voiceConfirmed(), play_error:window.__chushpanCinema?.playError, fullscreen_error:window.__chushpanCinema?.fullscreenError,
@@ -98,7 +115,8 @@
     }
     video.ownerDocument.body.append(button);tracker.overlay=button;
   };
-  if (request.action === 'pause') video.pause();
+  if (request.action === 'mute'&&[0,1].includes(request.position))video.muted=request.position===1;
+  else if (request.action === 'pause') video.pause();
   else if (request.action === 'play') {
     if(tracker)tracker.playError=null;play();
   } else if(request.action==='fullscreen') {

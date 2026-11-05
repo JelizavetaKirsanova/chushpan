@@ -70,11 +70,16 @@ class SourceValidator:
         proof = verification or {}
         runtime = (query.get("metadata") or {}).get("runtime", 0) * 60
         duration = evidence.get("duration", 0)
+        from backend.cinema.archive_open import verified_alias
+
         if (
             proof.get("content_verified") is True
             and proof.get("video_type")
             == ("episode" if query.get("kind") == "series" else "full_movie")
-            and evidence.get("media_url", "").split("#", 1)[0] == direct_url.split("#", 1)[0]
+            and (
+                evidence.get("media_url", "").split("#", 1)[0] == direct_url.split("#", 1)[0]
+                or verified_alias(proof, direct_url, evidence.get("media_url", ""), query)
+            )
             and duration > 0
             and (not runtime or abs(runtime - duration) <= max(90, runtime * 0.25))
         ):

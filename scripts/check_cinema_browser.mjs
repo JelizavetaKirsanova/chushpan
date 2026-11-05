@@ -31,6 +31,9 @@ for await(const line of createInterface({input:process.stdin})) {
       await hud.locator('.cinema-history article').first().waitFor();
       await hud.locator('#cinema-root').getByRole('button',{name:'Настройки',exact:true}).click();
       await hud.getByRole('button',{name:'Источники просмотра',exact:true}).click();await hud.getByRole('heading',{name:'Локальный HTML5',exact:true}).waitFor();
+      const diagnostics=hud.locator('.cinema-source-diagnostics');
+      await diagnostics.getByRole('button',{name:'Проверить источники',exact:true}).waitFor();
+      if(request.screenshot)await hud.screenshot({path:request.screenshot.replace('.png','-diagnostics.png'),fullPage:true});
       await hud.setViewportSize({width:720,height:900});
       const overflow=await hud.evaluate(()=>document.documentElement.scrollWidth>innerWidth);
       if(overflow)throw Error('Cinema UI overflows the viewport');

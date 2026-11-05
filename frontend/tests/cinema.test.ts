@@ -17,7 +17,7 @@ function fixture() {
   vm.runInNewContext(`{${filters}globalThis.CinemaFilterDrawer=CinemaFilterDrawer;globalThis.activeFilterCount=activeFilterCount;}`,sandbox);
   const catalogue=stripTypeScriptTypes(readFileSync(new URL('../src/cinema_catalogue.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'');
   vm.runInNewContext(`{${catalogue}globalThis.CinemaCatalogueView=CinemaCatalogueView;}`,sandbox);
-  for(const [file,cls]of [['cinema_personal','CinemaPersonalView'],['cinema_player','CinemaEmbeddedPlayer'],['cinema_viewer','CinemaViewer']]){
+  for(const [file,cls]of [['cinema_personal','CinemaPersonalView'],['cinema_player','CinemaEmbeddedPlayer'],['cinema_viewer','CinemaViewer'],['cinema_source_diagnostics','CinemaSourceDiagnostics']]){
     const source=stripTypeScriptTypes(readFileSync(new URL(`../src/${file}.ts`,import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'');
     vm.runInNewContext(`{${source}globalThis.${cls}=${cls};}`,sandbox);
   }
@@ -469,5 +469,19 @@ test('compact viewer binds controls to the session and only offers observed audi
     initial.playback={...initial.playback,token:'session-two',source:{...initial.playback.source,voice:'Русский',capabilities:{audio_tracks:['Русский','English']}}};view.receive(initial);
     const voice=panel.querySelector('[aria-label="Дорожка плеера"]') as HTMLSelectElement;voice.value='English';voice.dispatchEvent(new f.window.Event('change'));assert.equal(sent.at(-1).voice,'English');assert.equal(sent.at(-1).token,'session-two');
     view.connection(false);assert.ok([...panel.querySelectorAll('button,select')].every((n:any)=>n.disabled));
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('source diagnostics keeps HTTP confirmation separate from a real playback trial',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);
+    const item=movie('Film','watching');const data:any={...snapshot([item]),source_diagnostics:{running:false,rows:[{source_id:'one',name:'External',url:'https://example.org',title:'Film',candidate:{},stages:{site:{status:'confirmed',message:'HTTP 200'},content:{status:'needs_user',message:'Тип видео не подтверждён'},playback:{status:'not_checked',message:'Время не проверялось'}},last_error:null}]}};
+    view.receive(data);button(f,'Настройки').click();button(f,'Источники просмотра').click();
+    const panel=f.window.document.querySelector('.cinema-source-diagnostics')!;
+    assert.match(panel.textContent,/HTTP 200/);assert.match(panel.textContent,/Не проверено/);
+    const select=panel.querySelector('select')!;select.value='Film';select.dispatchEvent(new f.window.Event('change'));
+    [...panel.querySelectorAll('button')].find((b:any)=>b.textContent==='Проверить источники')!.click();assert.equal(sent.at(-1).op,'diagnose_sources');assert.equal(sent.at(-1).title_id,'Film');
+    [...panel.querySelectorAll('button')].find((b:any)=>b.textContent==='Проверить плеер в Safari')!.click();assert.equal(sent.at(-1).op,'diagnose_player');assert.equal(sent.at(-1).source_id,'one');
+    view.connection(false);assert.ok([...panel.querySelectorAll('button,select')].every((b:any)=>b.disabled));
   }finally{f.window.happyDOM.abort();}
 });

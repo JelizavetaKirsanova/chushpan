@@ -22,6 +22,8 @@ PLAYER_ERRORS = {
     "Добавь точный адрес плеера и выбери нужную серию заново; управление другой вкладкой отменено.",
     "multiple_players": "На странице несколько плееров; автоматическое управление неоднозначно.",
     "no_player": "Доступный HTML5-плеер не найден. Возможно, видео находится в чужом iframe.",
+    "player_loading": "HTML5-плеер найден, но источник не загрузил метаданные и длительность. "
+    "Проверь загрузку видео на сайте или выбери другой плеер.",
     "protected_player": "Защищённый плеер: автоматическое управление не поддерживается.",
     "media_error": "Плеер сообщил об ошибке загрузки видео.",
     "cross_origin_player": "Видео находится в междоменном iframe. Safari не разрешает "
@@ -183,7 +185,14 @@ class HTML5Adapter:
 
     async def read(self, action="status", position=0):
         payload = {**self.context, "action": action, "position": position, "voice": self.voice}
-        if self.expected and action in {"play", "seek", "fullscreen", "voice", "offer_gesture"}:
+        if self.expected and action in {
+            "play",
+            "seek",
+            "fullscreen",
+            "voice",
+            "offer_gesture",
+            "mute",
+        }:
             before = await self.read()
             if not before.get("content_verified"):
                 raise ToolError(before["classification_reason"])
@@ -241,6 +250,9 @@ class HTML5Adapter:
                 await stage("DETECT_PLAYER", "success", "Найден один доступный HTML5-плеер.")
                 break
             except ToolError as exc:
+                if getattr(exc, "code", "") in {"no_player", "player_loading"}:
+                    with contextlib.suppress(ToolError):
+                        await self.bridge.evaluate(self.url, {"action": "prepare"})
                 if getattr(exc, "code", "") in {
                     "automation_denied",
                     "automation_unknown",

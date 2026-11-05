@@ -24,6 +24,7 @@ from backend.cinema.adapters import (
 from backend.cinema.catalogue import Catalogue
 from backend.cinema.classification import FULL_TYPES, PROMO_TYPES
 from backend.cinema.commands import command
+from backend.cinema.diagnostics import DiagnosticSafariBridge, SourceDiagnostics
 from backend.cinema.filters import with_preferences
 from backend.cinema.internet import InternetSearch, SearchCredentials, SearchProviders
 from backend.cinema.keychain import TavilyCredentials
@@ -95,6 +96,13 @@ class Cinema:
         self.sources = SourceManager(self.db, opener=self.opener)
         self.resolver = SourceResolver(self.sources)
         self.validator = SourceValidator()
+        self.diagnostics = SourceDiagnostics(
+            self.sources,
+            self.db,
+            self.publish,
+            lambda: HTML5Adapter(DiagnosticSafariBridge(settings, executor=self.safari.executor)),
+            self.native_factory,
+        )
         self.search_credentials = SearchCredentials(settings.data_path / "integrations")
         self.tavily_credentials = TavilyCredentials()
         self.tavily = TavilySearch(self.tavily_credentials)
@@ -268,6 +276,10 @@ class Cinema:
                 if self.session
                 else None,
                 "playback": self.playback.snapshot(),
+                "source_diagnostics": {
+                    **await self.db("source_diagnostics"),
+                    "running": self.diagnostics.running,
+                },
                 "message": self.message,
                 "matches": self.matches,
                 "tmdb": {"configured": self.tmdb.credentials.configured},
@@ -320,6 +332,15 @@ class Cinema:
             source_action = None
             if op == "refresh":
                 pass
+            elif op == "diagnose_sources":
+                await self.diagnostics.check(value.get("title_id") or None)
+                return
+            elif op == "diagnose_player":
+                self.require_playback()
+                if self.session:
+                    raise ToolError("Заверши текущий просмотр перед проверкой другого плеера.")
+                await self.diagnostics.live(value["source_id"], value.get("engine", "safari"))
+                return
             elif op == "search_credentials":
                 await asyncio.to_thread(self.search_credentials.save, value.get("credential", ""))
                 self.sources.invalidate()
@@ -1805,6 +1826,8 @@ class Cinema:
             raise
 
     async def _open(self, title_id, episode_id=None, link_id=None, device=None, *, player=None):
+        if self.diagnostics.running:
+            raise ToolError("Дождись завершения проверки источников перед началом просмотра.")
         if not self.available:
             raise ToolError("Долговременная SQLite недоступна.")
         async with self.lock:
@@ -1847,6 +1870,20 @@ class Cinema:
             target = await self.db("target", title_id, episode_id, link_id)
             source = target["source"]
             link_verification = await self.db("verify_link", target["link"]["id"])
+            provider_result = None
+            if source.get("search_mode") == "archive":
+                provider_result = await self.sources.adapter(source).resolve(
+                    {
+                        "url": target["link"]["url"],
+                        "_expected": {
+                            **target["item"],
+                            "season": target["episode"]["season"],
+                            "episode": target["episode"]["episode"],
+                        },
+                    }
+                )
+                if provider_result.get("provider") == "archive_open":
+                    link_verification = {**link_verification, **provider_result}
             playback_source = self.validator.validate(target, link_verification)
             approval = self.open_approvals.pop(target["link"]["id"], None)
             approved = bool(approval and approval[0] > time.monotonic() and approval[1] == source)
@@ -1870,7 +1907,7 @@ class Cinema:
                 and (not prefs.open_in_safari or player in {"native", "embedded"})
                 and player != "safari"
             ):
-                resolved = await self.sources.adapter(source).resolve(
+                resolved = provider_result or await self.sources.adapter(source).resolve(
                     {"url": target["link"]["url"]}
                 )
                 if (
@@ -2021,6 +2058,14 @@ class Cinema:
                     if source["adapter"] == "direct"
                     else None,
                 }
+                if provider_result and provider_result.get("provider") == "archive_open":
+                    opening_target["direct_verification"] = provider_result
+                    opening_target["link"] = {
+                        **target["link"],
+                        "url": provider_result["media_url"]
+                        if native
+                        else provider_result["safari_url"],
+                    }
                 result = await self.player.open(opening_target)
             except (ToolError, OSError, TimeoutError) as exc:
                 if native:

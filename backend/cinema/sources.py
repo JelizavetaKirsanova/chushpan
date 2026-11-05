@@ -142,6 +142,14 @@ class WebsiteAdapter:
             }
         try:
             response = await self.http.request(url or self.source["base_url"], method="HEAD")
+            if response.status_code == 405 and not urlsplit(url).path.lower().endswith(
+                (".mp4", ".webm", ".m4v", ".m3u8")
+            ):
+                # KION's real title pages reject HEAD but permit normal GET.
+                # A method refusal is not evidence that the page is unavailable.
+                response = await self.http.request(
+                    url or self.source["base_url"], max_bytes=4_000_000
+                )
             final = getattr(response, "extensions", {}).get("final_url")
             if url and final and final.rstrip("/") != url.rstrip("/"):
                 return {
@@ -163,15 +171,19 @@ class WebsiteAdapter:
                 else "unavailable",
                 "reason": "Страница отвечает; доступ к видео ещё не подтверждён."
                 if available
-                else "Нужен ручной выбор: сайт ограничил проверку."
+                else f"HTTP {status}: сайт ограничил проверку; нужен ручной выбор."
                 if status in {401, 403, 405, 429}
-                else "Страница недоступна.",
+                else f"HTTP {status}: страница недоступна.",
+                "http_status": status,
                 "content_type": response.headers.get("content-type", "").split(";")[0],
             }
-        except (ToolError, httpx.HTTPError, OSError, TimeoutError, ValueError):
+        except (ToolError, httpx.HTTPError, OSError, TimeoutError, ValueError) as exc:
             return {
                 "availability": "unknown",
-                "reason": "Проверить адрес не удалось; можно выбрать вручную.",
+                "reason": str(exc)
+                if isinstance(exc, ToolError)
+                else f"Проверка сайта не завершена: {type(exc).__name__}. Можно выбрать вручную.",
+                "error_code": getattr(exc, "code", type(exc).__name__),
             }
 
     async def search(self, query):
@@ -254,6 +266,18 @@ class WebsiteAdapter:
 
 
 class ArchiveAdapter(WebsiteAdapter):
+    async def resolve(self, content):
+        from backend.cinema.archive_open import resolve
+
+        known = await resolve(
+            self.http, self.source, query=content.get("_expected"), url=content["url"]
+        )
+        return (
+            {**{k: v for k, v in content.items() if k != "_expected"}, **known}
+            if known
+            else await super().resolve(content)
+        )
+
     @staticmethod
     def title_key(value, year):
         title = normalized(str(value))
@@ -261,6 +285,11 @@ class ArchiveAdapter(WebsiteAdapter):
         return title[: -len(suffix)] if year and title.endswith(suffix) else title
 
     async def search(self, query):
+        from backend.cinema.archive_open import resolve
+
+        known = await resolve(self.http, self.source, query=query)
+        if known:
+            return [known]
         if query["kind"] != "movie":
             return await super().search(query)
         meta = query.get("metadata", {})
