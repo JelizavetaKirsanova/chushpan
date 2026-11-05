@@ -558,5 +558,6 @@ def test_installed_app_discovery_validates_manifest(settings, tmp_path, monkeypa
     settings.media.youtube_music.bundle_id = "com.apple.Safari.WebApp.test"
     assert SafariMusic(settings).discover() == (app_path, info["CFBundleIdentifier"])
     settings.media.youtube_music.bundle_id = "com.apple.Safari.WebApp.missing-test-only"
-    with pytest.raises(ToolError, match="Не найден"):
-        SafariMusic(settings).discover()
+    # A reinstalled Web App may receive a new ID. The explicit path and music
+    # manifest still identify the unique app; a stale ID must not hide it.
+    assert SafariMusic(settings).discover() == (app_path, info["CFBundleIdentifier"])

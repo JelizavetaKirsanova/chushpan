@@ -124,6 +124,9 @@ class Catalogue:
             targets = [(kind, self.endpoint(q, kind)) for kind in kinds]
 
         unavailable = set()
+        conflicts = set()
+        if not kinds:
+            conflicts.add("Выбранный тип контента несовместим с этой подборкой.")
 
         async def fetch(kind, endpoint, page):
             genres = await self.tmdb.genres(kind)
@@ -134,6 +137,41 @@ class Catalogue:
                 unavailable.update(missing)
                 return [], 0, 0
             params = self.parameters(q, kind, endpoint, genre)
+            blocked = ({16} if q.hide_animation else set()) | (
+                {99} if q.hide_documentary else set()
+            )
+            if q.query.strip() and q.relax_restrictions:
+                blocked = set()
+            required = GENRE_FEEDS.get(q.feed, {}).get(kind)
+            if required in blocked or (
+                genre
+                and (
+                    any(g in blocked for g in genre)
+                    if q.genre_mode == "and"
+                    else all(g in blocked for g in genre)
+                )
+            ):
+                conflicts.add(
+                    "Выбранный жанр скрыт настройками исключения мультфильмов "
+                    "или документальных фильмов. Измени жанры или отключи исключение."
+                )
+                return [], 0, 0
+            date_key = "primary_release_date" if kind == "movie" else "first_air_date"
+            lower, upper = params.get(f"{date_key}.gte", ""), params.get(f"{date_key}.lte", "")
+            if (
+                lower
+                and upper
+                and lower > upper
+                or q.year
+                and (
+                    (q.year_min and q.year < q.year_min)
+                    or (q.year_max and q.year > q.year_max)
+                    or (lower and q.year < int(lower[:4]))
+                    or (upper and q.year > int(upper[:4]))
+                )
+            ):
+                conflicts.add("Выбранный год или диапазон годов несовместим с этой подборкой.")
+                return [], 0, 0
             params["page"] = page
             count_key = (endpoint, tuple(sorted((k, v) for k, v in params.items() if k != "page")))
             known = self.page_counts.get(count_key)
@@ -211,10 +249,17 @@ class Catalogue:
             "total_results": sum(g[2] for g in groups),
             "next_page": scanned + 1 if scanned < pages else None,
             "scanned_through": scanned,
-            "empty_reason": ("genre_unavailable" if unavailable and not pages else "filtered")
+            "empty_reason": (
+                "incompatible_filters"
+                if conflicts and not pages
+                else "genre_unavailable"
+                if unavailable and not pages
+                else "filtered"
+            )
             if not items
             else None,
             "unavailable_genres": sorted(unavailable),
+            "filter_conflicts": sorted(conflicts),
             "sort_scope": "page" if local_filters or len(targets) > 1 else "global",
             "filtered_total": not (
                 q.query

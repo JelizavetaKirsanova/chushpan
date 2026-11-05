@@ -392,6 +392,7 @@ class HTML5Adapter:
                 }
             if (
                 action == "seek"
+                and after.get("seeking") is not True
                 and abs(after["position"] - min(position, after["duration"] - 0.1)) < 2
             ):
                 return {
@@ -411,6 +412,11 @@ class HTML5Adapter:
                     "message": "Воспроизведение подтверждено.",
                     "result_status": "success",
                 }
+        if action == "seek" and after.get("seeking") is True:
+            raise ToolError(
+                "Safari ещё не завершил перемотку. Прежний прогресс сохранён. "
+                "Дождись загрузки или запусти видео кнопкой самого плеера и повтори команду."
+            )
         raise ToolError("Плеер не подтвердил действие. Проверь воспроизведение на сайте.")
 
     async def detach(self):

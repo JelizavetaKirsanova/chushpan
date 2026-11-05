@@ -9,6 +9,8 @@ import logging
 import os
 import plistlib
 import re
+import subprocess
+import sys
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -23,6 +25,14 @@ ORIGIN = "https://music.youtube.com"
 PAUSE_NAMES = ("пауза", "приостановить", "pause")
 PLAY_NAMES = ("воспроизвести", "play")
 PERMISSION = instruction("accessibility")
+
+
+class MusicAppNotFound(ToolError):
+    """Only absence, not ambiguity or a broken selection, permits browser fallback."""
+
+
+class ElementChanged(ToolError):
+    """The native precondition rejected the AX path before performing an action."""
 
 
 def validate_url(url: str) -> str:
@@ -66,6 +76,21 @@ def player_nodes(nodes: list[dict]) -> list[dict]:
         ):
             return descendants(nodes, n)
     return []
+
+
+def playback_seconds(value) -> int | None:
+    """AX exposes a display clock, not a number; do not compare it lexically."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return int(value) if 0 <= value < 86400 * 7 else None
+    if not isinstance(value, str):
+        return None
+    clock = value.split(" / ", 1)[0].strip()
+    if not re.fullmatch(r"\d{1,3}:\d{2}(?::\d{2})?", clock):
+        return None
+    parts = [int(v) for v in clock.split(":")]
+    if any(v >= 60 for v in parts[1:]):
+        return None
+    return sum(part * 60**index for index, part in enumerate(reversed(parts)))
 
 
 def player_state(nodes: list[dict]) -> dict:
@@ -285,6 +310,8 @@ class AccessibilityApp:
             "search_field_unavailable": "Поисковое поле YouTube Music сейчас недоступно.",
         }
         if error in messages:
+            if error == "element_changed":
+                raise ElementChanged(messages[error])
             raise ToolError(messages[error])
         if error:
             raise ToolError(f"{self.app_name}: {error}. Действие не подтверждено.")
@@ -293,9 +320,11 @@ class AccessibilityApp:
 
 class SafariMusic(AccessibilityApp):
     def __init__(self, s: Settings) -> None:
-        self.config = s.media.youtube_music
-        super().__init__(s, "YouTube Music", self.config.timeout_s)
-        self._app: tuple[Path, str] | None = None
+        super().__init__(s, "YouTube Music", s.media.youtube_music.timeout_s)
+
+    @property
+    def config(self):
+        return self.s.media.youtube_music
 
     @property
     def bundle_id(self) -> str:
@@ -312,10 +341,17 @@ class SafariMusic(AccessibilityApp):
             info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
         except (OSError, ValueError):
             raise ToolError("Не удалось прочитать идентификатор приложения.") from None
+        if not isinstance(info, dict):
+            raise ToolError("Не удалось прочитать идентификатор приложения.")
         bundle = info.get("CFBundleIdentifier", "")
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{2,200}", bundle):
+        if not isinstance(bundle, str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]{2,200}", bundle
+        ):
             raise ToolError("У приложения нет корректного bundle identifier.")
-        start = urlparse((info.get("Manifest") or {}).get("start_url", ""))
+        manifest = info.get("Manifest") or {}
+        if not isinstance(manifest, dict):
+            raise ToolError("Не удалось прочитать манифест приложения.")
+        start = urlparse(manifest.get("start_url", ""))
         chrome = urlparse(info.get("CrAppModeShortcutURL", ""))
         webapp = (
             bundle.startswith("com.apple.Safari.WebApp.") and start.hostname == "music.youtube.com"
@@ -326,35 +362,66 @@ class SafariMusic(AccessibilityApp):
         return {
             "path": str(app),
             "bundle_id": bundle,
-            "name": (info.get("Manifest") or {}).get("name")
-            or info.get("CFBundleDisplayName")
-            or app.stem,
+            "name": manifest.get("name") or info.get("CFBundleDisplayName") or app.stem,
             "kind": "safari_webapp" if webapp else "browser_pwa" if pwa else "native",
         }
 
+    def application_paths(self) -> list[Path]:
+        """Local bundles plus Spotlight's registered location after a move."""
+        paths = []
+        for root in (Path.home() / "Applications", Path("/Applications")):
+            paths.extend(sorted(root.glob("*.app")))
+            paths.extend(sorted(root.glob("*.localized/*.app")))
+        bundle = self.config.bundle_id
+        if sys.platform == "darwin" and bundle and re.fullmatch(r"[A-Za-z0-9._-]+", bundle):
+            try:
+                result = subprocess.run(
+                    ["/usr/bin/mdfind", f"kMDItemCFBundleIdentifier == '{bundle}'"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                    check=False,
+                )
+                if not result.returncode:
+                    paths.extend(Path(p) for p in result.stdout.splitlines()[:100] if p)
+            except (OSError, subprocess.TimeoutExpired):
+                pass  # Explicit paths and local Applications folders still work.
+        return paths
+
     def discover(self) -> tuple[Path, str]:
-        if self._app and self._app[0].exists():
-            return self._app
+        # Re-read both config and Info.plist: an existing path can be reinstalled,
+        # or settings can be mutated on the same adapter instance.
         configured = self.config.app_path
-        paths = [configured.expanduser()] if configured else []
-        paths += sorted((Path.home() / "Applications").glob("*.app"))
-        paths += sorted(Path("/Applications").glob("*.app"))
-        for app in dict.fromkeys(paths):
+        bundle = self.config.bundle_id
+        configured = configured.expanduser().resolve() if configured else None
+        candidates = {}
+
+        def inspect(app):
             try:
                 details = self.application(
-                    app,
-                    selected=bool(
-                        configured and self.config.bundle_id and app == configured.expanduser()
-                    ),
+                    app, selected=bool(bundle and bundle != "com.apple.Safari")
                 )
             except ToolError:
-                continue
-            bundle = details["bundle_id"]
-            if self.config.bundle_id not in {None, "com.apple.Safari", bundle}:
-                continue
-            self._app = Path(details["path"]), bundle
-            return self._app
-        raise ToolError(
+                return None
+            if details["kind"] == "native" and details["bundle_id"] != bundle:
+                return None
+            return Path(details["path"]), details["bundle_id"]
+
+        if configured and (candidate := inspect(configured)):
+            return candidate
+        for app in dict.fromkeys(self.application_paths()):
+            if candidate := inspect(app):
+                candidates[candidate[0]] = candidate
+        matching = [c for c in candidates.values() if c[1] == bundle]
+        choices = matching or list(candidates.values())
+        if len(choices) == 1:
+            return choices[0]
+        if choices:
+            raise ToolError(
+                "Найдено несколько приложений YouTube Music. Выбери нужное .app в настройках; "
+                "автоматический запуск отменён."
+            )
+        raise MusicAppNotFound(
             "Не найден Safari Web App YouTube Music. Открой его или укажи путь в настройках."
         )
 
@@ -406,12 +473,29 @@ class SafariMusic(AccessibilityApp):
         if node.get("enabled") == "0":
             raise ToolError("Эта кнопка YouTube Music сейчас недоступна.")
         expected = {k: node[k] for k in ("role", "title", "description", "url") if k in node}
-        await self.request(
-            "press" if value is None else "set",
-            path=node["path"],
-            expected=expected,
-            **({"value": value} if value is not None else {}),
-        )
+        for attempt in range(2):
+            try:
+                await self.request(
+                    "press" if value is None else "set",
+                    path=node["path"],
+                    expected=expected,
+                    **({"value": value} if value is not None else {}),
+                )
+                return
+            except ElementChanged:
+                # This code is emitted before AXPress/AXSet, so no action is replayed.
+                # Rebind once to a unique semantic match; other native errors stop.
+                if attempt or not (expected.get("title") or expected.get("url")):
+                    raise
+                matches = [
+                    item
+                    for item in await self.snapshot()
+                    if all(item.get(key) == val for key, val in expected.items())
+                    and item.get("enabled") != "0"
+                ]
+                if len(matches) != 1:
+                    raise
+                node = matches[0]
 
     async def navigate(self, url: str) -> list[dict]:
         validate_url(url)
@@ -419,15 +503,23 @@ class SafariMusic(AccessibilityApp):
         status = await self.request("status")
         if not status["running"]:
             await self.launch()
-        nodes = await self.snapshot()
-        links = [n for n in nodes if n.get("role") == "AXLink" and same_page(n.get("url", ""), url)]
-        links.sort(
-            key=lambda n: not label(n) or label(n).casefold() in ("меню действий", "action menu")
-        )
-        # A native click uses the site's SPA navigation and keeps its audio session.
-        if links:
-            await self.act(links[0])
-        else:
+        deadline = time.monotonic() + self.config.timeout_s
+        library_filter_selected = False
+        while True:
+            nodes = await self.snapshot()
+            links = [
+                n for n in nodes if n.get("role") == "AXLink" and same_page(n.get("url", ""), url)
+            ]
+            links.sort(
+                key=lambda n: (
+                    not label(n) or label(n).casefold() in ("меню действий", "action menu")
+                )
+            )
+            # Library SPA navigation precedes its asynchronously loaded playlist links.
+            # Wait for published links, never synthesize external URL navigation.
+            if links:
+                await self.act(links[0])
+                break
             # Safari Web Apps may delegate external URL opens to ordinary Safari.
             # Keep navigation inside the selected app, including when a deep link
             # is missing from the currently available library/search results.
@@ -435,10 +527,31 @@ class SafariMusic(AccessibilityApp):
                 n.get("role") == "AXWebArea" and same_page(n.get("url", ""), url) for n in nodes
             ):
                 return nodes
-            raise ToolError(
-                "В выбранном приложении нет ссылки на эту страницу. Открой её в библиотеке "
-                "или поиске YouTube Music и повтори команду. Safari не открывался."
-            )
+            if (
+                not library_filter_selected
+                and urlparse(url).path == "/playlist"
+                and any(
+                    n.get("role") == "AXWebArea"
+                    and urlparse(n.get("url", "")).path.startswith("/library")
+                    for n in nodes
+                )
+            ):
+                filters = [
+                    n
+                    for n in nodes
+                    if n.get("role") in {"AXRadioButton", "AXButton"}
+                    and label(n).casefold() in {"плейлисты", "playlists"}
+                    and n.get("value") != "1"
+                ]
+                if len(filters) == 1:
+                    await self.act(filters[0])
+                    library_filter_selected = True
+            if time.monotonic() >= deadline:
+                raise ToolError(
+                    "В выбранном приложении нет ссылки на эту страницу. Открой её в библиотеке "
+                    "или поиске YouTube Music и повтори команду. Safari не открывался."
+                )
+            await asyncio.sleep(0.3)
         deadline = time.monotonic() + self.config.timeout_s
         while time.monotonic() < deadline:
             nodes = await self.snapshot()
@@ -550,7 +663,11 @@ class SafariMusic(AccessibilityApp):
                 if (
                     previous
                     and previous.get("track") == now.get("track")
-                    and now.get("position", 0) > previous.get("position", 0)
+                    and previous.get("artist") == now.get("artist")
+                    and previous.get("album") == now.get("album")
+                    and (current_seconds := playback_seconds(now.get("position"))) is not None
+                    and (old_seconds := playback_seconds(previous.get("position"))) is not None
+                    and 0 < current_seconds - old_seconds <= self.config.timeout_s + 2
                 ):
                     return {
                         **now,
@@ -563,6 +680,8 @@ class SafariMusic(AccessibilityApp):
                         },
                     }
                 previous = now
+            else:
+                previous = None
             await asyncio.sleep(0.4)
         raise ToolError("YouTube Music открыт, но реальное воспроизведение не подтверждено.")
 

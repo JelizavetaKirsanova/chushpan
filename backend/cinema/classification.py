@@ -9,13 +9,14 @@ import unicodedata
 from urllib.parse import unquote, urljoin
 
 FULL_TYPES = {"full_movie", "episode"}
-PROMO_TYPES = {"trailer", "teaser", "clip"}
+PROMO_TYPES = {"trailer", "teaser", "review", "clip"}
 LABELS = {
     "full_movie": "Полный фильм",
     "episode": "Эпизод сериала",
     "trailer": "Трейлер",
     "teaser": "Тизер",
-    "clip": "Обзор или фрагмент",
+    "review": "Обзор",
+    "clip": "Клип или фрагмент",
     "unknown": "Неизвестный тип видео",
 }
 
@@ -45,8 +46,10 @@ def promo_type(value, query=None):
         return "trailer"
     if re.search(r"\b(teaser|тизер)\b", text):
         return "teaser"
+    if re.search(r"\b(review|обзор|рецензия)\b", text):
+        return "review"
     if re.search(
-        r"\b(clip|clips|scene|fragment|review|featurette|фрагмент|отрывок|обзор|сцена|рецензия)\b",
+        r"\b(clip|clips|scene|fragment|featurette|клип|фрагмент|отрывок|сцена)\b",
         text,
     ):
         return "clip"
@@ -179,7 +182,8 @@ def classify(query, evidence):
             video_type="episode" if query.get("kind") == "series" else "full_movie",
             content_verified=True,
             classification_reason=(
-                "Название, год, тип и номера серии совпали; опубликована привязка к полному медиа."
+                "Название, тип и номера серии совпали; известный год проверен. "
+                "Опубликована привязка к полному медиа."
             ),
         )
         runtime = (query.get("metadata") or {}).get("runtime", 0)

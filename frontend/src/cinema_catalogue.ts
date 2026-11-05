@@ -9,7 +9,7 @@ export interface CatalogueFilters {
 export interface CataloguePage {
   request_id:string;feed?:string;page?:number;items?:CatalogueTitle[];next_page?:number|null;
   total_pages?:number;total_results?:number;sort_scope?:string;filtered_total?:boolean;
-  scanned_through?:number;empty_reason?:string|null;unavailable_genres?:string[];
+  scanned_through?:number;empty_reason?:string|null;unavailable_genres?:string[];filter_conflicts?:string[];
   message?:string;error?:string;retry_after?:number;
 }
 export interface CatalogueConfig {
@@ -255,6 +255,7 @@ export class CinemaCatalogueView {
     const pages=[...this.window.pages.keys()].sort((a,b)=>a-b);const last=pages.length?this.window.pages.get(pages.at(-1)!)!:null;
     if(pages.length){this.heading.append(node('p',`Проверены страницы ${pages[0]}–${last?.scanned_through??pages.at(-1)}${last?.total_pages?` из ${last.total_pages}`:''} · Показано: ${items.length}${last?.filtered_total&&last.total_results!==undefined?` из ${last.total_results}`:''}`,'cinema-muted'));if(pages[0]!>1)this.heading.append(this.button('Предыдущая страница',()=>this.loadPage(pages[0]!-1)));}
     if(last?.unavailable_genres?.length)this.heading.append(node('p',`Для выбранного типа нет жанров: ${last.unavailable_genres.join(', ')}. Фильтры сохранены; выбери другой тип или измени жанры.`,'cinema-muted'));
+    for(const conflict of last?.filter_conflicts??[])this.heading.append(node('p',conflict+' Фильтры сохранены.','cinema-muted'));
     if(last?.message)this.heading.append(node('p',last.message,'cinema-muted'));
     if(last&&!items.length&&!this.window.error){const f=this.filters;const constraints=[...f.genres,f.russian_titles?'названия с русскими буквами':'',f.hide_animation?'без мультфильмов':'',f.hide_anime?'без аниме':'',f.hide_documentary?'без документальных':'',f.rating?`рейтинг от ${f.rating}`:'',f.country,f.original_language,f.year||f.year_min||f.year_max?'диапазон годов':''].filter(Boolean);if(constraints.length)this.heading.append(node('p',`Результаты могли исключить: ${constraints.join(', ')}. Измени фильтры или продолжи загрузку следующих страниц.`,'cinema-muted'));}
     if(last?.sort_scope==='page'||last?.sort_scope==='loaded')this.heading.append(node('small','Поиск и смешанные подборки упорядочены внутри каждой страницы. Новые результаты добавляются в конец.','cinema-muted'));

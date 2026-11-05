@@ -294,8 +294,7 @@ class ArchiveAdapter(WebsiteAdapter):
             if (
                 not re.fullmatch(r"[\w.-]{1,200}", identifier)
                 or self.title_key(row.get("title", ""), query.get("year")) not in names
-                or not query.get("year")
-                or year != str(query["year"])
+                or (query.get("year") and year != str(query["year"]))
             ):
                 continue
             response = await self.http.request(f"https://archive.org/metadata/{identifier}")
@@ -308,7 +307,10 @@ class ArchiveAdapter(WebsiteAdapter):
                 or str(meta.get("access-restricted-item", "")).casefold() == "true"
                 or meta.get("mediatype") != "movies"
                 or self.title_key(meta.get("title", ""), query.get("year")) not in names
-                or str(meta.get("year") or meta.get("date", ""))[:4] != str(query["year"])
+                or (
+                    query.get("year")
+                    and str(meta.get("year") or meta.get("date", ""))[:4] != str(query["year"])
+                )
             ):
                 continue
             result.append(
@@ -320,7 +322,7 @@ class ArchiveAdapter(WebsiteAdapter):
                     "embedded": False,
                     "language": str(meta.get("language", ""))[:40],
                     "access_type": self.source.get("access_type", "unknown"),
-                    "reason": "Официальный API: совпали название, год и тип. "
+                    "reason": "Официальный API: совпали название и тип; известный год проверен. "
                     "Доступность воспроизведения и условия доступа проверь на странице.",
                 }
             )

@@ -320,7 +320,7 @@ class PublicCatalogue:
                         if self.source.get("access_status") == "MIXED"
                         else self.source.get("access_status", "UNKNOWN"),
                         "reason": "Публичная карта сайта и метаданные страницы: "
-                        "совпали название, год и тип. "
+                        "совпали название и тип; известный год проверен. "
                         "Условия доступа к видео и запуск плеера не подтверждены.",
                         "scope": identity["scope"],
                     }

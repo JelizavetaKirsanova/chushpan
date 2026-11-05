@@ -146,7 +146,7 @@ def verified_entity(entity, query):
         and re.search(r"imdb\.com/title/" + imdb + r"(?:[/\"?#]|$)", ids)
     )
     year = str(identity.get("datePublished") or identity.get("dateCreated") or "")[:4]
-    if not external and (not query.get("year") or year != str(query["year"])):
+    if query.get("year") and (year != str(query["year"]) if year else not external):
         return None
     if episode:
         season = entity.get("partOfSeason", {})

@@ -423,7 +423,7 @@ class MediaService:
     def refresh_youtube(self):
         s, store = self.s, self.store
         if s.media.provider == "youtube_music" and s.media.youtube_music.enabled:
-            from backend.media.safari import SafariMusic
+            from backend.media.safari import MusicAppNotFound, SafariMusic
 
             config = s.media.youtube_music
             saved = store.preference("media", "youtube_application") if store else None
@@ -452,10 +452,15 @@ class MediaService:
                                 "allow_browser": config.allow_browser,
                             },
                         )
-            except ToolError:
-                self.music_application = {"kind": "not_found", "name": "Приложение не найдено"}
+            except ToolError as exc:
+                absent = isinstance(exc, MusicAppNotFound)
+                self.music_application = {
+                    "kind": "not_found" if absent else "ambiguous",
+                    "name": "Приложение не найдено" if absent else "Выбери приложение",
+                    "error": str(exc),
+                }
                 if mode == "auto":
-                    mode = "safari" if config.allow_browser else "webapp"
+                    mode = "safari" if config.allow_browser and absent else "webapp"
             self.music_application.update(mode=mode, allow_browser=config.allow_browser)
             if mode == "safari" and config.allow_browser:
                 from backend.media.music_safari import SafariYouTubeMusic

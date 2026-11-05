@@ -57,7 +57,7 @@ def evidence(entity=None, **changes):
         ("Official trailer", "trailer"),
         ("Официальный тизер", "teaser"),
         ("Сцена из фильма", "clip"),
-        ("Review", "clip"),
+        ("Review", "review"),
     ],
 )
 def test_explicit_promo_labels_do_not_depend_on_duration(label, expected):

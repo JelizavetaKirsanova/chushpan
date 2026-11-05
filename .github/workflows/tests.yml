@@ -1,0 +1,59 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend tests and TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm --prefix frontend ci
+      - run: npm --prefix frontend test
+      - run: npm --prefix frontend run build
+
+  python:
+    # MLX/PyObjC and the existing uv lock target macOS. Public APIs are mocked;
+    # this job does not validate real Safari, TCC prompts, audio or devices.
+    name: Python on macOS (mocked platform APIs)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked --group dev
+      - run: uv run --locked ruff check .
+      - run: uv run --locked ruff format --check .
+      - run: uv run --locked python -m compileall -q backend scripts
+      - run: uv run --locked pytest -q
+
+  native:
+    name: macOS native compilation (no permission requests)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Typecheck native helpers
+        shell: bash
+        run: |
+          for source in backend/permissions.swift backend/personal.swift backend/devices/native.swift backend/media/ytmusic_ax.swift backend/media/youtube_safari.swift backend/media/music_safari.swift; do
+            xcrun swiftc -typecheck "$source"
+          done

@@ -258,6 +258,32 @@ def test_exact_settings_url_and_fallback_use_nsworkspace(monkeypatch):
     assert "Службы геолокации" in result["message"]
 
 
+@pytest.mark.parametrize("key", ["accessibility", "screen_recording"])
+def test_settings_explain_possible_executor_restart_without_claiming_a_grant(monkeypatch, key):
+    import sys
+
+    from backend.desktop.platform import open_privacy
+
+    monkeypatch.setitem(
+        sys.modules,
+        "AppKit",
+        SimpleNamespace(
+            NSWorkspace=SimpleNamespace(
+                sharedWorkspace=lambda: SimpleNamespace(openURL_=lambda _: True)
+            )
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "Foundation",
+        SimpleNamespace(NSURL=SimpleNamespace(URLWithString_=lambda value: value)),
+    )
+    result = open_privacy(key)
+    assert result["opened"] and "перезапусти указанного" in result["message"]
+    assert "Проверить доступ" in result["message"]
+    assert "granted" not in result
+
+
 def test_automatic_safari_consent_resumes_one_unsubmitted_operation():
     from backend.media.music_safari import SafariMusicTab
 

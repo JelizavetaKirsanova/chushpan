@@ -8,7 +8,7 @@ import pytest
 
 from backend.cinema.adapters import HTML5Adapter
 from backend.config import Settings
-from backend.media.safari import SafariMusic
+from backend.media.safari import MusicAppNotFound, SafariMusic
 from backend.memory.store import MemoryStore
 from backend.tools.media import MediaService, media_tools
 from backend.tools.registry import ToolError
@@ -48,7 +48,7 @@ def test_installed_app_wins_over_legacy_forced_safari_and_choice_survives_restar
 
 def test_missing_app_requires_explicit_browser_fallback(monkeypatch):
     def missing(*_):
-        raise ToolError("missing")
+        raise MusicAppNotFound("missing")
 
     monkeypatch.setattr(SafariMusic, "discover", missing)
     settings = Settings()
@@ -151,6 +151,7 @@ def test_music_missing_deep_link_never_opens_a_browser(tmp_path, monkeypatch):
     settings.media.youtube_music.app_path = path
     settings.media.youtube_music.bundle_id = bundle
     app = SafariMusic(settings)
+    app.config.timeout_s = 0.01
     app.request = AsyncMock(return_value={"running": True})
     app.snapshot = AsyncMock(
         return_value=[{"role": "AXWebArea", "url": "https://music.youtube.com/library"}]

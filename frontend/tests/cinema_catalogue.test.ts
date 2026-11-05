@@ -43,6 +43,17 @@ test('stable pagination deduplicates cards, pending pages and stale generations'
   }finally{f.window.happyDOM.abort();}
 });
 
+test('incompatible filter explanation preserves the active filters',()=>{
+  const f=fixture();try{
+    const {view,sent}=mount(f);click(f,'Весь каталог');const request=sent.at(-1);
+    view.receive(snapshot({catalogue_page:{request_id:request.request_id,page:1,items:[],next_page:null,empty_reason:'incompatible_filters',filter_conflicts:['Выбранный жанр скрыт настройками исключения мультфильмов.']}}));
+    assert.match(f.window.document.querySelector('.cinema-catalogue-heading').textContent,/Выбранный жанр скрыт/);
+    assert.match(f.window.document.querySelector('.cinema-catalogue-heading').textContent,/Фильтры сохранены/);
+    assert.equal(sent.at(-1).request_id,request.request_id);
+    assert.ok(!f.window.document.querySelector('.cinema-catalogue-footer').textContent.includes('Загрузить ещё'));
+  }finally{f.window.happyDOM.abort();}
+});
+
 test('home has fourteen lazy shelves and Show all loads a paged list',()=>{
   const f=fixture();try{
     const {view,sent}=mount(f);click(f,'Подборки');assert.equal(f.window.document.querySelectorAll('.cinema-shelf').length,14);
