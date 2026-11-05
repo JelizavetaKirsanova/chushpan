@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import os
-from datetime import tzinfo
+from datetime import datetime, tzinfo
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import dotenv_values
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
@@ -61,15 +61,30 @@ class LocationConfig(BaseModel):
 
     @property
     def tz(self) -> tzinfo:
-        if self.timezone:
-            return ZoneInfo(self.timezone)
-        from datetime import datetime
-
-        return datetime.now().astimezone().tzinfo  # type: ignore[return-value]
+        return ZoneInfo(self.tz_name)
 
     @property
     def tz_name(self) -> str:
-        return self.timezone or str(self.tz)
+        if self.timezone:
+            return self.timezone
+        # astimezone().tzinfo is often a fixed offset called PST/EET, not an
+        # IANA zone. Consumers reopen this name with ZoneInfo and need DST rules.
+        candidates = [os.environ.get("TZ", "").removeprefix(":")]
+        try:
+            local = str(Path("/etc/localtime").resolve())
+            if "/zoneinfo/" in local:
+                candidates.append(local.split("/zoneinfo/", 1)[1])
+        except OSError:
+            pass
+        candidates.append(str(datetime.now().astimezone().tzinfo))
+        for name in candidates:
+            if not name:
+                continue
+            try:
+                return ZoneInfo(name).key
+            except (ZoneInfoNotFoundError, ValueError):
+                continue
+        return "UTC"
 
 
 class UserConfig(BaseModel):

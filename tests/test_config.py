@@ -1,4 +1,33 @@
-from backend.config import Settings
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from backend.config import LocationConfig, Settings
+
+
+def test_system_timezone_uses_iana_name_and_preserves_dst(monkeypatch):
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    location = LocationConfig()
+    assert location.tz_name == "America/Los_Angeles"
+    assert datetime(2026, 1, 1, tzinfo=location.tz).utcoffset() == timedelta(hours=-8)
+    assert datetime(2026, 7, 1, tzinfo=location.tz).utcoffset() == timedelta(hours=-7)
+
+
+def test_unusable_abbreviation_falls_back_to_system_zoneinfo_link(monkeypatch):
+    monkeypatch.setenv("TZ", "PST")
+    original = Path.resolve
+
+    def resolve(path, *args, **kwargs):
+        if str(path) == "/etc/localtime":
+            return Path("/var/db/timezone/zoneinfo/America/Los_Angeles")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    assert LocationConfig().tz_name == "America/Los_Angeles"
+
+
+def test_explicit_timezone_still_wins_over_system_timezone(monkeypatch):
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    assert LocationConfig(timezone="Europe/Tallinn").tz_name == "Europe/Tallinn"
 
 
 def test_yaml_defaults_are_generic():
