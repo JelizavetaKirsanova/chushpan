@@ -33,17 +33,12 @@ async def check(engine, title, output=None):
         tools.mac_agent = LocalMacAgent()
         executor = InstalledExecutor()
         bridge = SafariBridge(settings, executor=executor)
-        binary = Path(
-            "dist/cinema-playback/Чушпан.app/Contents/Resources/native/cinema_player"
-        ).resolve()
         cinema = Cinema(
             tools,
             settings,
             memory,
             adapter_factory=lambda _: HTML5Adapter(bridge),
-            native_factory=lambda: AVPlayerAdapter(
-                settings, binary=binary if binary.is_file() else None, muted=True
-            ),
+            native_factory=lambda: AVPlayerAdapter(settings, muted=True),
         )
         cinema.bind(HudBus(), SimpleNamespace(device=DeviceContext.local_mac()))
         report = {
@@ -91,7 +86,7 @@ async def check(engine, title, output=None):
                 license=candidate["license"],
             )
             item = await cinema.db(
-                "add", {**query, "source_id": source["id"], "url": candidate["url"]}
+                "add", {**query, "source_id": source["id"], "url": candidate["safari_url"]}
             )
             ep = item["current"]
             await cinema.db(
@@ -138,6 +133,12 @@ async def check(engine, title, output=None):
             report["saved_position"] = saved
             await cinema.stop_tracking()
             reopened = await cinema.resume(item["id"], ep["id"], player=engine)
+            report["reopening"] = {
+                k: reopened.get(k)
+                for k in ("playback_confirmed", "position", "message", "error_code")
+            }
+            if not reopened.get("playback_confirmed"):
+                raise RuntimeError(reopened.get("message", "Повторный запуск не подтверждён."))
             state = await cinema.player.sample()
             report["resume"] = bool(
                 reopened.get("playback_confirmed")
@@ -149,7 +150,12 @@ async def check(engine, title, output=None):
             )
             report["resume_position"] = reopened.get("position")
             report["position_after_fullscreen_wait"] = state["position"]
-            report["status"] = "confirmed" if report["resume"] else "partial"
+            report["status"] = (
+                "confirmed"
+                if all(report.get(key) for key in ("resume", "pause", "seek"))
+                and report["opening"].get("fullscreen_confirmed")
+                else "partial"
+            )
         except Exception as exc:
             report["error"] = {
                 "code": getattr(exc, "code", type(exc).__name__),
@@ -158,7 +164,7 @@ async def check(engine, title, output=None):
         finally:
             await cinema.close()
             memory.close()
-            if candidate:
+            if candidate and engine == "safari":
                 try:
                     await close_fixture(executor, candidate["safari_url"])
                 except Exception:
@@ -183,7 +189,7 @@ def main():
     if not args.live:
         parser.error("Нужен --live: проверка откроет настоящее внешнее видео.")
     report = asyncio.run(check(args.engine, args.title, args.output))
-    return 0 if report.get("playback_confirmed") else 1
+    return 0 if report.get("status") == "confirmed" else 1
 
 
 if __name__ == "__main__":

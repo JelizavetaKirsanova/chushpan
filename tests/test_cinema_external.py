@@ -12,10 +12,15 @@ import pytest
 from backend.cinema.archive_open import FILMS, find, resolve
 from backend.cinema.diagnostics import DiagnosticSafariBridge, SourceDiagnostics
 from backend.cinema.playback import SourceValidator
+from backend.cinema.service import Cinema
 from backend.cinema.sources import SourceManager
 from backend.cinema.store import CinemaStore
 from backend.config import Settings
-from backend.tools.registry import ToolError
+from backend.context import DeviceContext
+from backend.hud.bus import HudBus
+from backend.mac_agent import LocalMacAgent
+from backend.memory.store import MemoryStore
+from backend.tools.registry import ToolError, ToolRegistry
 
 
 class HTTP:
@@ -112,6 +117,50 @@ def test_archive_alias_does_not_authorize_other_media_or_episode():
             assert not SourceValidator.player(
                 query, {**evidence, "media_url": url}, proof["safari_url"], proof
             )["content_verified"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("engine", ["embedded", "native"])
+def test_saved_archive_page_launches_resolved_media_in_both_owned_players(tmp_path, engine):
+    async def run():
+        memory = MemoryStore(tmp_path / "cinema.sqlite")
+        tools = ToolRegistry()
+        tools.mac_agent = LocalMacAgent()
+        native = SimpleNamespace(
+            open=AsyncMock(return_value={"mode": "native", "playback_confirmed": False}),
+            detach=AsyncMock(),
+            sample=AsyncMock(side_effect=ToolError("closed")),
+        )
+        cinema = Cinema(tools, Settings(data_dir=tmp_path), memory, native_factory=lambda: native)
+        cinema.sources.http = HTTP()
+        bus = HudBus()
+        queue = bus.subscribe()
+        cinema.bind(bus, SimpleNamespace(device=DeviceContext.local_mac()))
+        try:
+            source = await cinema.db("save_source", {**SOURCE, "access_status": "FREE"})
+            item = await cinema.db(
+                "add",
+                {
+                    "title": "Синтел",
+                    "kind": "movie",
+                    "year": 2010,
+                    "source_id": source["id"],
+                    "url": "https://archive.org/details/Sintel",
+                },
+            )
+            await cinema.resume(item["id"], player=engine)
+            if engine == "native":
+                actual = native.open.await_args.args[0]["link"]["url"]
+            else:
+                events = []
+                while not queue.empty():
+                    events.append(queue.get_nowait())
+                actual = next(e["embedded_player"]["url"] for e in events if "embedded_player" in e)
+            assert actual == "https://archive.org/download/Sintel/sintel-2048-stereo_512kb.mp4"
+        finally:
+            await cinema.close()
+            memory.close()
 
     asyncio.run(run())
 
@@ -215,6 +264,25 @@ def test_failed_playback_cannot_keep_success_and_disabled_source_is_refused(tmp_
             store.save_source({**src, "enabled": False})
             with pytest.raises(ToolError, match="отключён"):
                 await diag.live(src["id"])
+        finally:
+            store.close()
+
+    asyncio.run(run())
+
+
+def test_error_history_survives_a_new_check_without_promoting_http_success(tmp_path):
+    async def run():
+        store, src, item, diag = diagnostics_fixture(tmp_path, "play")
+        try:
+            await diag.check(item["id"])
+            await diag.live(src["id"])
+            first = store.source_diagnostics()["rows"][0]
+            assert first["error_history"][-1]["stage"] == "playback"
+            await diag.check(item["id"])
+            second = store.source_diagnostics()["rows"][0]
+            assert second["error_history"] == first["error_history"]
+            assert second["verification_status"] == "partial"
+            assert second["last_successful_at"] is None
         finally:
             store.close()
 

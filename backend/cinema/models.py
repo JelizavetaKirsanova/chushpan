@@ -207,7 +207,7 @@ class Preferences(BaseModel):
     search_provider: Literal["tavily", "brave"] = "tavily"
     prefer_free: bool = True
     prefer_russian: bool = True
-    open_in_safari: bool = True
+    open_in_safari: bool = False
     autoplay: bool = True
     remember_voice: bool = True
     offer_next: bool = True

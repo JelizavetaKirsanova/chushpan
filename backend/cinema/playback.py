@@ -45,6 +45,24 @@ def valid_sample(value):
     )
 
 
+def duration_matches(expected, observed):
+    """A known asset duration cannot be replaced by a preview of the same work."""
+    return (
+        type(observed) in {int, float}
+        and math.isfinite(observed)
+        and observed > 0
+        and (
+            not expected
+            or (
+                type(expected) in {int, float}
+                and math.isfinite(expected)
+                and expected > 0
+                and abs(expected - observed) <= max(2, expected * 0.02)
+            )
+        )
+    )
+
+
 @dataclass
 class PlaybackSource:
     url: str
@@ -72,6 +90,13 @@ class SourceValidator:
         duration = evidence.get("duration", 0)
         from backend.cinema.archive_open import verified_alias
 
+        if proof.get("duration") and not duration_matches(proof["duration"], duration):
+            return {
+                **result,
+                "content_verified": False,
+                "classification_reason": "Длительность активного видео не совпала с полным "
+                "произведением; источник мог вернуть превью.",
+            }
         if (
             proof.get("content_verified") is True
             and proof.get("video_type")
@@ -81,6 +106,7 @@ class SourceValidator:
                 or verified_alias(proof, direct_url, evidence.get("media_url", ""), query)
             )
             and duration > 0
+            and duration_matches(proof.get("duration", 0), duration)
             and (not runtime or abs(runtime - duration) <= max(90, runtime * 0.25))
         ):
             result.update(

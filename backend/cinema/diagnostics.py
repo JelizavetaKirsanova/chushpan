@@ -74,6 +74,26 @@ class SourceDiagnostics:
         self.rows = []
 
     async def publish(self):
+        for row in self.rows:
+            if row.get("last_error"):
+                error = row["last_error"]
+                error.setdefault("checked_at", stamp())
+                history = row.setdefault("error_history", [])
+                if not history or history[-1] != error:
+                    history.append(dict(error))
+                row["error_history"] = history[-20:]
+            stages = row["stages"]
+            row["verification_status"] = (
+                "requires_authorization"
+                if stages["site"].get("http_status") == 401
+                else "unavailable"
+                if stages["site"]["status"] == "failed"
+                else "working"
+                if all(stages[k]["status"] == "confirmed" for k in STAGES)
+                else "partial"
+                if any(s["status"] == "confirmed" for s in stages.values())
+                else "not_verified"
+            )
         await self.db("source_diagnostics", {"running": self.running, "rows": self.rows})
         await self.changed()
 
@@ -111,6 +131,7 @@ class SourceDiagnostics:
         if self.running:
             raise ToolError("Дождись завершения проверки источников.")
         self.running = True
+        previous = {r["source_id"]: r for r in (await self.db("source_diagnostics"))["rows"]}
         self.rows = [
             {
                 "source_id": s["id"],
@@ -127,6 +148,8 @@ class SourceDiagnostics:
                 "last_error": None,
                 "candidate": None,
                 "playback_confirmed_at": None,
+                "error_history": previous.get(s["id"], {}).get("error_history", [])[-20:],
+                "last_successful_at": previous.get(s["id"], {}).get("last_successful_at"),
             }
             for s in sources
         ]
@@ -379,6 +402,9 @@ class SourceDiagnostics:
                     expected=resume_at,
                     observed=observed["position"],
                 )
+                if all(row["stages"][k]["status"] == "confirmed" for k in STAGES):
+                    row["last_successful_at"] = stamp()
+                    await self.db("source_health", source_id, "available", playback=True)
         except (ToolError, OSError, TimeoutError, ValueError, httpx.HTTPError) as exc:
             self.error(row, phase, exc, "needs_user")
         finally:

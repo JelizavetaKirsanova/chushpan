@@ -292,7 +292,7 @@ test('Brave search setup masks and clears the key and keeps Safari permissions e
   const f=fixture();try{
     const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);view.receive(snapshot());button(f,'Настройки').click();button(f,'Поиск и Safari').click();
     const input=f.window.document.querySelector('input[aria-label="Ключ Brave Search API"]');assert.equal(input.type,'password');input.value='BSA_fixture_search_key';input.closest('form').dispatchEvent(new f.window.Event('submit',{cancelable:true}));assert.equal(sent.at(-1).op,'search_credentials');assert.equal(input.value,'');
-    assert.equal(f.window.document.querySelector('input[data-preference=open_in_safari]').checked,true);
+    assert.equal(f.window.document.querySelector('input[data-preference=open_in_safari]').checked,false);
     button(f,'Проверить интеграцию с Safari').click();assert.equal(sent.at(-1).op,'safari_check');assert.ok(!sent.some(v=>v.op==='safari_access'));
     view.receive({...snapshot(),safari_check:{method:'Apple Events',extension:'not_installed',automation:'granted',javascript:'not_granted'}});assert.match(f.window.document.querySelector('[data-safari-status]').textContent,/JavaScript — not_granted/);
   }finally{f.window.happyDOM.abort();}
@@ -480,8 +480,19 @@ test('source diagnostics keeps HTTP confirmation separate from a real playback t
     const panel=f.window.document.querySelector('.cinema-source-diagnostics')!;
     assert.match(panel.textContent,/HTTP 200/);assert.match(panel.textContent,/Не проверено/);
     const select=panel.querySelector('select')!;select.value='Film';select.dispatchEvent(new f.window.Event('change'));
-    [...panel.querySelectorAll('button')].find((b:any)=>b.textContent==='Проверить источники')!.click();assert.equal(sent.at(-1).op,'diagnose_sources');assert.equal(sent.at(-1).title_id,'Film');
+    [...panel.querySelectorAll('button')].find((b:any)=>b.textContent==='Проверить все источники')!.click();assert.equal(sent.at(-1).op,'diagnose_sources');assert.equal(sent.at(-1).title_id,'Film');
     [...panel.querySelectorAll('button')].find((b:any)=>b.textContent==='Проверить плеер в Safari')!.click();assert.equal(sent.at(-1).op,'diagnose_player');assert.equal(sent.at(-1).source_id,'one');
     view.connection(false);assert.ok([...panel.querySelectorAll('button,select')].every((b:any)=>b.disabled));
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('embedded preview duration is rejected before autoplay',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const item=movie('Sintel','watching');
+    view.receive({...snapshot([item]),session:{title_id:item.id,episode_id:item.current.id,mode:'embedded'},embedded_player:{token:'proof',url:'https://archive.org/full.mp4',title:'Sintel',position:0,title_id:item.id,episode_id:item.current.id,expected_duration:888.06}});
+    const video=f.window.document.querySelector('video')!;let plays=0;
+    Object.defineProperty(video,'duration',{value:30});Object.defineProperty(video,'play',{value:()=>{plays++;return Promise.resolve();}});
+    video.dispatchEvent(new f.window.Event('loadedmetadata'));
+    assert.equal(plays,0);assert.equal(sent.at(-1).event,'error');assert.equal(sent.at(-1).duration,30);assert.equal(video.getAttribute('src'),null);assert.match(f.window.document.body.textContent!,/превью/);
   }finally{f.window.happyDOM.abort();}
 });

@@ -264,6 +264,15 @@ class CinemaStore:
                 "ON CONFLICT(id) DO UPDATE SET data=excluded.data",
                 (source.id, source.model_dump_json()),
             )
+            if previous and any(
+                getattr(previous, key) != getattr(source, key)
+                for key in ("base_url", "adapter", "search_mode", "embed_allowed")
+            ):
+                self.db.execute(
+                    "UPDATE cinema_source_health SET status='unknown',successes=0,"
+                    "last_success=NULL,reason=? WHERE source_id=?",
+                    ("Настройки просмотра изменены; нужна новая проверка плеера.", source.id),
+                )
         return source.model_dump()
 
     def reorder_sources(self, identifiers):

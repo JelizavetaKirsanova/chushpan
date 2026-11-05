@@ -4,6 +4,7 @@ import asyncio
 import gzip
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -180,6 +181,8 @@ def test_selection_prefers_pinned_and_last_but_falls_back_when_unavailable(tmp_p
         store = CinemaStore(tmp_path / "cinema.sqlite")
         first, item = linked(store, "First", "https://first.example", priority=0, preferred=True)
         last, item = linked(store, "Last", "https://last.example", item["id"], priority=1)
+        for source in (first, last):
+            store.source_health(source["id"], "available", playback=True)
         ep = item["current"]
         link = next(link for link in ep["links"] if link["source_id"] == last["id"])
         store.remember_source(item["id"], last["id"], ep["id"], link["id"], pin=True)
@@ -195,6 +198,49 @@ def test_selection_prefers_pinned_and_last_but_falls_back_when_unavailable(tmp_p
         store.configure({"auto_select_source": False})
         assert (await search.search(item["id"], refresh=True))["selected_id"] is None
         store.close()
+
+    asyncio.run(run())
+
+
+def test_unplayed_source_needs_an_explicit_first_choice_even_after_http_success(tmp_path):
+    async def run():
+        store = CinemaStore(tmp_path / "cinema.sqlite")
+        try:
+            source = store.save_source(
+                {"name": "Site", "base_url": "https://site.example", "preferred": True}
+            )
+            item = store.add({"title": "Film", "kind": "movie", "year": 2024})
+            search = manager(store, HTTP(full_pages=True))
+
+            def install_search():
+                search.adapter(store.source(source["id"]).model_dump()).search = AsyncMock(
+                    return_value=[
+                        {
+                            "url": "https://site.example/film",
+                            "kind": "page",
+                            "match": 1,
+                            "availability": "available",
+                            "embedded": False,
+                            "content_verified": True,
+                            "video_type": "full_movie",
+                            "reason": "Fixture provider record",
+                        }
+                    ]
+                )
+
+            install_search()
+            first = await search.search(item["id"])
+            assert first["results"][0]["content_verified"] and first["selected_id"] is None
+            store.source_health(source["id"], "available")
+            install_search()
+            assert (await search.search(item["id"], refresh=True))["selected_id"] is None
+            store.source_health(source["id"], "available", playback=True)
+            install_search()
+            assert (await search.search(item["id"], refresh=True))["selected_id"] is not None
+            store.save_source({**source, "adapter": "html5"})
+            assert (await search.search(item["id"], refresh=True))["selected_id"] is None
+        finally:
+            store.close()
 
     asyncio.run(run())
 
@@ -409,6 +455,13 @@ def test_embedded_open_waits_for_real_progress_and_validates_session_events(tmp_
         assert not result["playback_confirmed"] and service.session["mode"] == "embedded"
         token = service.session["token"]
         base = {"op": "embedded_event", "token": token, "duration": 100, "paused": False}
+        service.session["expected_duration"] = 100
+        await service.embedded_event(
+            {**base, "duration": 30, "sequence": 1, "event": "playing", "position": 5}
+        )
+        assert service.playback.code == "duration_mismatch"
+        assert not service.session.get("counted")
+        assert (await service.db("detail", item["id"]))["current"]["position"] == 0
         from dataclasses import replace
 
         from backend.security import ActionDenied

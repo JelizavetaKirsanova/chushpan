@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-from backend.cinema.playback import playback_error, valid_sample
+from backend.cinema.playback import duration_matches, playback_error, valid_sample
 from backend.media.safari import process
 from backend.paths import native_helper
 from backend.tools.registry import ToolError
@@ -124,6 +124,13 @@ class AVPlayerAdapter:
                 raise playback_error("native_timeout", "AVPlayer не подтвердил загрузку видео.")
             await asyncio.sleep(0.15)
         position = target["episode"]["position"]
+        proof = target.get("direct_verification") or {}
+        if not duration_matches(proof.get("duration", 0), state["duration"]):
+            raise playback_error(
+                "duration_mismatch",
+                "Длительность видео не совпала с проверенным полным произведением. "
+                "Запуск отменён: источник мог вернуть превью.",
+            )
         if position >= state["duration"] and position > 0:
             raise playback_error("duration_mismatch", "Таймкод превышает длительность этого видео.")
         if position or target.get("restart"):

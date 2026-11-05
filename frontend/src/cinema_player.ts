@@ -1,6 +1,6 @@
 import type {CinemaEvent} from './cinema';
 
-export interface EmbeddedPlayerState {token:string;url:string;title:string;position:number;title_id:string;episode_id:string;autoplay?:boolean}
+export interface EmbeddedPlayerState {token:string;url:string;title:string;position:number;title_id:string;episode_id:string;autoplay?:boolean;expected_duration?:number}
 export interface EmbeddedControl {token:string;action:string;seconds?:number;command_id:string}
 
 /** The media element survives HUD refreshes; only its own events report progress. */
@@ -43,7 +43,7 @@ export class CinemaEmbeddedPlayer {
         const open=document.createElement('button');open.type='button';open.textContent='Открыть серию';open.onclick=()=>{video.pause();this.report('pause');this.send({op:'open',title_id:item.id,episode_id:episode.value});};series.append(season,episode,open);
       }
       this.root.replaceChildren(title,video,this.feedback,series,fullscreen,close);this.container.append(this.root);
-      video.onloadedmetadata=()=>{if(state.position&&Number.isFinite(video.duration))video.currentTime=Math.min(state.position,Math.max(0,video.duration-.1));if(state.autoplay!==false)void video.play().catch(()=>{this.feedback.textContent='Нажми ▶ в плеере, чтобы начать просмотр.';this.report('blocked');});};
+      video.onloadedmetadata=()=>{if(state.expected_duration&&(!Number.isFinite(video.duration)||Math.abs(video.duration-state.expected_duration)>Math.max(2,state.expected_duration*.02))){video.pause();this.feedback.textContent='Длительность не совпала с полным произведением. Источник мог вернуть превью.';this.report('error');video.removeAttribute('src');video.load();return;}if(state.position&&Number.isFinite(video.duration))video.currentTime=Math.min(state.position,Math.max(0,video.duration-.1));if(state.autoplay!==false)void video.play().catch(()=>{this.feedback.textContent='Нажми ▶ в плеере, чтобы начать просмотр.';this.report('blocked');});};
       video.ontimeupdate=()=>{const advanced=!video.paused&&!video.seeking&&video.currentTime>this.previous+.05&&video.currentTime-this.previous<5;this.previous=video.currentTime;if(advanced&&!this.confirmed){this.confirmed=true;this.feedback.textContent='Воспроизведение подтверждено.';this.report('playing');}else if(advanced&&Date.now()-this.sentAt>=(event.preferences.poll_seconds??5)*1000)this.report('periodic');};
       video.onpause=()=>this.report('pause');video.onseeked=()=>{this.previous=video.currentTime;this.report('seek');};video.onended=()=>this.report('ended');video.onerror=()=>{this.feedback.textContent='Не удалось воспроизвести видео. Проверь источник или выбери другой.';this.report('error');};
     }

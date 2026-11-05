@@ -92,16 +92,46 @@ class PublicHTTP:
 
 
 def capabilities(source):
+    health = source.get("health", {})
     source = Source.model_validate({k: v for k, v in source.items() if k != "health"})
+    controlled = source.adapter in {"html5", "direct", "local"}
+    verification = (
+        "requires_authorization"
+        if health.get("reason", "").startswith("HTTP 401:")
+        else "unavailable"
+        if health.get("status") == "unavailable"
+        else "working"
+        if health.get("successes", 0) > 0 and health.get("status") == "available"
+        else "partial"
+        if health.get("status") in {"available", "restricted"}
+        else "not_verified"
+    )
     return {
+        "name": source.name,
+        "content_types": ["movie", "series"],
+        "formats": ["mp4", "m4v", "mov", "hls", "webm"]
+        if source.adapter == "direct"
+        else ["mp4", "m4v", "mov"]
+        if source.adapter == "local"
+        else [],
+        "seasons": source.search_mode == "archive",
+        "voices": False,
+        "playback_methods": ["webkit", "avkit", "safari"]
+        if source.adapter == "direct"
+        else ["avkit", "external"]
+        if source.adapter == "local"
+        else ["safari"],
+        "controls": ["play", "pause", "seek", "fullscreen", "progress"] if controlled else [],
+        "capabilities_verified": False,
+        "verification_status": verification,
         "search": source.search_mode in {"archive", "sitemap"}
         or urlsplit(source.base_url).hostname
         in {"filmix.gg", "kinogo.is", "hdrezka.sh", "kion.ru"},
         "search_page": bool(source.search_url),
         "resolve": source.search_mode == "archive" or source.adapter in {"local", "direct"},
-        "episodes": False,
+        "episodes": source.search_mode == "archive",
         "embedded": source.adapter == "direct" and source.embed_allowed,
-        "progress": source.adapter in {"html5", "direct"},
+        "progress": source.adapter in {"html5", "direct", "local"},
         "mode": "Публичная карта сайта · доступ проверяется"
         if source.search_mode == "sitemap"
         or urlsplit(source.base_url).hostname in {"filmix.gg", "kinogo.is", "hdrezka.sh", "kion.ru"}
@@ -266,6 +296,16 @@ class WebsiteAdapter:
 
 
 class ArchiveAdapter(WebsiteAdapter):
+    async def getEpisodes(self, series):
+        from backend.cinema.archive_open import FILMS, find
+
+        return [
+            {"season": 1, "episode": f["episode"], "name": f["title"], "status": "not_verified"}
+            for f in FILMS
+            if f.get("episode")
+            and find({**series, "kind": "series", "season": 1, "episode": f["episode"]}) == f
+        ]
+
     async def resolve(self, content):
         from backend.cinema.archive_open import resolve
 
@@ -622,6 +662,7 @@ class SourceManager:
                         episode_id=ep["id"],
                         capabilities=adapter.getPlaybackCapabilities(),
                         playback_confirmed=False,
+                        auto_eligible=source.get("health", {}).get("successes", 0) > 0,
                     )
                     row["access_type"] = row.get("access_type") or "unknown"
                     if row.get("region_checked") and row["region_checked"] != prefs.watch_region:
@@ -753,6 +794,14 @@ class SourceManager:
             if row.get("region_access") == "blocked":
                 row["allowed"] = row["manual_allowed"] = False
                 row["reason"] += " Регион отсутствует в опубликованном списке доступности."
+            row["auto_eligible"] = bool(
+                row.get("auto_eligible")
+                or row.get("previously_played")
+                # Saved links are existing explicit choices. A new-domain proposal
+                # only reaches a confirmation, never automatic playback.
+                or row.get("link_id")
+                or row.get("requires_confirmation")
+            )
         rows.sort(
             key=lambda r: (
                 r["allowed"],
@@ -794,7 +843,9 @@ class SourceManager:
             "title_id": item["id"],
             "episode_id": ep["id"],
             "results": rows,
-            "selected_id": verified[0]["id"] if verified and prefs.auto_select_source else None,
+            "selected_id": next((r["id"] for r in verified if r["auto_eligible"]), None)
+            if prefs.auto_select_source
+            else None,
             "message": "Найдено совпадение. Выбери вариант просмотра."
             if verified
             else "Источник для просмотра не найден. Тип видео или соответствие произведению "

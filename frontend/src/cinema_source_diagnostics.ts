@@ -1,7 +1,7 @@
 import type {CinemaEvent} from './cinema';
 
 export interface DiagnosticStage {status:string;message:string;method?:string;checked_at?:string;code?:string}
-export interface SourceDiagnosticReport {running:boolean;rows:{source_id:string;name:string;url:string;title:string;page_url?:string;video_type?:string;engine?:string;playback_confirmed_at?:string|null;candidate?:{embedded?:boolean;content_verified?:boolean}|null;stages:Record<string,DiagnosticStage>;last_error?:{stage:string;message:string;code:string}|null}[]}
+export interface SourceDiagnosticReport {running:boolean;rows:{source_id:string;name:string;url:string;title:string;page_url?:string;video_type?:string;engine?:string;playback_confirmed_at?:string|null;verification_status?:string;last_successful_at?:string|null;error_history?:{stage:string;code:string;message:string;checked_at?:string}[];candidate?:{embedded?:boolean;content_verified?:boolean}|null;stages:Record<string,DiagnosticStage>;last_error?:{stage:string;message:string;code:string}|null}[]}
 const phases:[string,string][]=[['site','Сайт'],['content','Название'],['player','Плеер'],['playback','Запуск'],['pause','Пауза'],['seek','Перемотка'],['fullscreen','Полный экран'],['resume','Продолжение']];
 const stateLabels:Record<string,string>={confirmed:'Подтверждено',failed:'Ошибка',needs_user:'Нужно действие',not_checked:'Не проверено',unsupported:'Не поддерживается'};
 function el<K extends keyof HTMLElementTagNameMap>(tag:K,text=''):HTMLElementTagNameMap[K]{const n=document.createElement(tag);n.textContent=text;return n;}
@@ -23,7 +23,7 @@ export class CinemaSourceDiagnostics {
     const controls=el('div');controls.className='cinema-source-diagnostic-actions';
     const select=el('select');select.setAttribute('aria-label','Название для проверки источников');select.append(el('option','Только доступность сайтов'));
     select.options[0].value='';for(const item of this.data?.items??[]){const option=el('option',`${item.title}${item.year?` (${item.year})`:''}`);option.value=item.id;select.append(option);}select.value=this.selected;select.disabled=!this.online||busy;select.onchange=()=>{this.selected=select.value;};
-    controls.append(select,this.button(busy?'Проверка выполняется…':'Проверить источники',()=>this.send({op:'diagnose_sources',title_id:select.value}),busy));
+    controls.append(select,this.button(busy?'Проверка выполняется…':'Проверить все источники',()=>this.send({op:'diagnose_sources',title_id:select.value}),busy));
     const progress=el('p',busy?'Проверка выполняется. Запуск считается подтверждённым только при движении времени видео.':'Автоматическая проверка не запускает видео.');progress.setAttribute('role','status');
     this.root.replaceChildren(heading,description,controls,progress);
     if(!report?.rows.length)return;
@@ -35,6 +35,6 @@ export class CinemaSourceDiagnostics {
       if(row.candidate){detail.append(this.button('Проверить плеер в Safari',()=>this.send({op:'diagnose_player',source_id:row.source_id,engine:'safari'}),busy));if(row.candidate.embedded&&row.candidate.content_verified)detail.append(this.button('Проверить в AVKit',()=>this.send({op:'diagnose_player',source_id:row.source_id,engine:'native'}),busy));}
       tr.append(detail);body.append(tr);
     }
-    table.append(body);wrap.append(table);this.root.append(wrap);
+    table.append(body);wrap.append(table);const details=el('details');details.append(el('summary','Подробные проверки и запуск видео'),wrap);this.root.append(details);
   }
 }

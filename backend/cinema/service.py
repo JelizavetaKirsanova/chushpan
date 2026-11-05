@@ -24,7 +24,7 @@ from backend.cinema.adapters import (
 from backend.cinema.catalogue import Catalogue
 from backend.cinema.classification import FULL_TYPES, PROMO_TYPES
 from backend.cinema.commands import command
-from backend.cinema.diagnostics import DiagnosticSafariBridge, SourceDiagnostics
+from backend.cinema.diagnostics import DiagnosticSafariBridge, SourceDiagnostics, fingerprint
 from backend.cinema.filters import with_preferences
 from backend.cinema.internet import InternetSearch, SearchCredentials, SearchProviders
 from backend.cinema.keychain import TavilyCredentials
@@ -36,6 +36,7 @@ from backend.cinema.playback import (
     PlaybackState,
     SourceResolver,
     SourceValidator,
+    duration_matches,
     playback_error,
 )
 from backend.cinema.sources import SourceManager, capabilities
@@ -261,6 +262,12 @@ class Cinema:
         }
         for source in data["sources"]:
             source["capabilities"] = capabilities(source)
+        source_report = await self.db("source_diagnostics")
+        current_sources = {s["id"]: s for s in data["sources"]}
+        for row in source_report.get("rows", []):
+            current = current_sources.get(row["source_id"])
+            if not current or row.get("fingerprint") != fingerprint(current):
+                row.update(verification_status="not_verified", candidate=None)
         self.bus.publish(
             {
                 "type": "cinema",
@@ -277,7 +284,7 @@ class Cinema:
                 else None,
                 "playback": self.playback.snapshot(),
                 "source_diagnostics": {
-                    **await self.db("source_diagnostics"),
+                    **source_report,
                     "running": self.diagnostics.running,
                 },
                 "message": self.message,
@@ -1016,10 +1023,20 @@ class Cinema:
             )
             ep = next(e for e in item["episodes"] if e["id"] == row["episode_id"])
         link = next(
-            link
-            for link in ep["links"]
-            if link["source_id"] == source.id and link["url"] == row["url"]
+            (
+                link
+                for link in ep["links"]
+                if link["source_id"] == source.id
+                and (
+                    link["id"] == row["link_id"]
+                    if row.get("link_id")
+                    else link["url"] == row["url"]
+                )
+            ),
+            None,
         )
+        if not link:
+            raise ToolError("Сохранённая привязка источника изменилась. Повтори поиск.")
         await self.db(
             "verify_link",
             link["id"],
@@ -1095,6 +1112,16 @@ class Cinema:
                 "blocked",
             }:
                 raise ValueError("Неверное событие плеера.")
+            if value["duration"] > 0 and not duration_matches(
+                session.get("expected_duration", 0), value["duration"]
+            ):
+                self.message = (
+                    "Длительность видео не совпала с проверенным полным произведением. "
+                    "Источник мог вернуть превью; прогресс не изменён."
+                )
+                self.playback.failure(playback_error("duration_mismatch", self.message))
+                await self.publish()
+                return
             if event == "playing" and (
                 value.get("paused") is not False
                 or value["position"] <= session.get("last_position", 0) + 0.05
@@ -1916,10 +1943,12 @@ class Cinema:
                     and link_verification.get("video_type")
                     == ("episode" if target["item"]["kind"] == "series" else "full_movie")
                 ):
-                    embed = target["link"]["url"]
+                    embed = resolved.get("media_url") or target["link"]["url"]
             from pathlib import Path
 
-            native_format = Path(target["link"]["url"].split("?", 1)[0]).suffix.lower() in {
+            native_format = Path(
+                (embed or target["link"]["url"]).split("?", 1)[0]
+            ).suffix.lower() in {
                 ".mp4",
                 ".m4v",
                 ".mov",
@@ -1934,6 +1963,7 @@ class Cinema:
                         and player is None
                         and prefs.embedded_playback
                         and not prefs.open_in_safari
+                        and source["adapter"] == "local"
                     )
                 )
                 and (bool(embed) or source["adapter"] == "local")
@@ -1944,6 +1974,12 @@ class Cinema:
                     "Нативный просмотр доступен для совместимого прямого видео "
                     "или локального файла. "
                     "Соответствие сетевого видео должно быть подтверждено.",
+                )
+            if player == "embedded" and not embed:
+                raise playback_error(
+                    "unsupported_source",
+                    "Для встроенного плеера нужно разрешённое прямое видео "
+                    "с подтверждённым соответствием произведению. Источник вернул страницу.",
                 )
             if (
                 not embed
@@ -2009,6 +2045,7 @@ class Cinema:
                     "sample_position": starting_position,
                     "confirmed": False,
                     "allow_zero": not prefs.resume_position,
+                    "expected_duration": link_verification.get("duration", 0),
                 },
             )
             if embed and not native:
@@ -2030,6 +2067,7 @@ class Cinema:
                         "title_id": title_id,
                         "episode_id": target["episode"]["id"],
                         "autoplay": prefs.autoplay,
+                        "expected_duration": link_verification.get("duration", 0),
                     }
                 )
                 return {
@@ -2050,6 +2088,9 @@ class Cinema:
                 )
                 opening_target = {
                     **target,
+                    "link": {**target["link"], "url": embed}
+                    if native and embed
+                    else target["link"],
                     "episode": {**target["episode"], "position": starting_position},
                     "restart": not prefs.resume_position,
                     "autoplay": prefs.autoplay,
