@@ -946,7 +946,8 @@ class Cinema:
                 "classification_reason": row.get("classification_reason", ""),
             },
         )
-        await self.db("remember_source", item["id"], source.id, ep["id"], link["id"], pin=pin)
+        if not open_result or manual_choice:
+            await self.db("remember_source", item["id"], source.id, ep["id"], link["id"], pin=pin)
         self.sources.cache.clear()
         if row["availability"] == "available" and row.get("content_verified"):
             await self.db(
@@ -1206,6 +1207,8 @@ class Cinema:
                     or normalized(i["metadata"].get("original_title", ""))
                     == normalized(parsed["title"])
                 ]
+                if parsed.get("kind"):
+                    exact = [i for i in exact if i["kind"] == parsed["kind"]]
                 if not exact and self.tmdb.credentials.configured:
                     matches = await self.tmdb.search(parsed["title"])
                     exact_tmdb = [
@@ -1215,6 +1218,8 @@ class Cinema:
                         or normalized(i["metadata"].get("original_title", ""))
                         == normalized(parsed["title"])
                     ]
+                    if parsed.get("kind"):
+                        exact_tmdb = [i for i in exact_tmdb if i["kind"] == parsed["kind"]]
                     if len(exact_tmdb) == 1:
                         item = await self.db(
                             "add", await self.tmdb.detail(exact_tmdb[0]["catalogue_key"])
@@ -1268,6 +1273,10 @@ class Cinema:
                         "Такой серии пока нет в медиатеке. Добавь её страницу в карточке сериала."
                     )
                 return await self.resume(item["id"], episode["id"])
+            if parsed.get("watch"):
+                return await self.resume(
+                    item["id"], episode["id"], exact_only=item["kind"] == "series"
+                )
             choices = await self.sources.search(
                 item["id"], episode["id"], alternative=action == "alternative"
             )
@@ -1368,11 +1377,18 @@ class Cinema:
             await self.publish(navigate=True)
             return {"message": "Открыла твою библиотеку.", "result_status": "success"}
         if action == "continue":
-            kind = (
+            kind = parsed.get("kind") or (
                 "series"
                 if "сериал" in command.casefold() or "последнюю серию" in command.casefold()
                 else None
             )
+            if parsed.get("focused_watch") and self.focused:
+                selected = await self.db("detail", self.focused)
+                if selected["kind"] != kind:
+                    raise ToolError(
+                        "Выбран другой тип контента. Открой карточку нужного фильма или сериала."
+                    )
+                return await self.resume(selected["id"], selected["current"]["id"])
             latest = await self.db("latest", kind, "последнюю серию" not in command.casefold())
             episode = latest["current"]
             if (
@@ -1865,11 +1881,22 @@ class Cinema:
                 self.session["mode"] = "manual"
                 result = {"playback_confirmed": False, "mode": "manual", "message": str(exc)}
             self.session["mode"] = result.get("mode", self.session["mode"])
+            if result.get("content_verified") is False:
+                await self.db(
+                    "verify_link",
+                    target["link"]["id"],
+                    {
+                        **link_verification,
+                        "content_verified": False,
+                        "video_type": result.get("video_type", "unknown"),
+                        "classification_reason": result.get("message", "Не подтверждён тип видео."),
+                    },
+                )
             if (
                 result.get("page_opened")
                 or result.get("file_opened")
                 or result.get("playback_confirmed")
-            ):
+            ) and result.get("content_verified") is not False:
                 await self.db("select", target["episode"]["id"], target["link"]["id"])
             self.message = result.get("message", "Воспроизведение не подтверждено.")
             if series_page and not result.get("playback_confirmed"):

@@ -120,6 +120,32 @@ async def check(module, screenshot, chromium=None, catalogue=False, personal=Fal
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
         base = f"http://127.0.0.1:{port}"
+        movie_schema = {
+            "@type": "Movie",
+            "name": "Проверка полного фильма",
+            "datePublished": "2026",
+            "associatedMedia": {"@type": "VideoObject", "contentUrl": "sample.mp4?kind=full"},
+            "trailer": {"@type": "VideoObject", "contentUrl": "sample.mp4?kind=promo"},
+        }
+        for name, source, schema in [
+            ("watch", "sample.mp4?kind=promo", movie_schema),
+            ("full", "sample.mp4?kind=full", movie_schema),
+            (
+                "unknown",
+                "sample.mp4",
+                {"@type": "Movie", "name": "Проверка полного фильма", "datePublished": "2026"},
+            ),
+        ]:
+            (media / (name + ".html")).write_text(
+                '<!doctype html><meta charset="utf-8"><title>Проверка полного фильма</title>'
+                '<video width="640" muted controls '
+                + ("autoplay " if name == "watch" else "")
+                + 'src="'
+                + source
+                + '"></video><script type="application/ld+json">'
+                + json.dumps(schema)
+                + "</script>"
+            )
         bus = HudBus()
         bus.cinema_url = base
         settings = Settings(language="ru-RU")
@@ -293,6 +319,50 @@ async def check(module, screenshot, chromium=None, catalogue=False, personal=Fal
             assert cinema.session["target"]["episode"]["position"] >= before
             async with cinema.lock:
                 await cinema.stop_tracking()
+            # Public Movie metadata alone must not authorize a trailer/unknown video.
+            for page, expected in [
+                ("watch", "trailer"),
+                ("unknown", "unknown"),
+                ("full", "full_movie"),
+            ]:
+                film = await cinema.db(
+                    "add",
+                    {
+                        "title": "Проверка полного фильма",
+                        "year": 2026,
+                        "kind": "movie",
+                        "source_id": source["id"],
+                        "url": f"{base}/fixture/{page}.html",
+                    },
+                )
+                ep = film["current"]
+                await cinema.db("progress", ep["id"], 3, 12, "manual", ep["links"][0]["id"])
+                result = await cinema.open(film["id"])
+                assert result.get("video_type") == expected, result
+                assert bool(result.get("playback_confirmed")) == (page == "full"), result
+                if page != "full":
+                    assert (await cinema.db("detail", film["id"]))["current"]["position"] == 3
+                    state = await bridge.evaluate(
+                        f"{base}/fixture/{page}.html", {"action": "status"}
+                    )
+                    assert state["paused"], state
+                else:
+                    adapter = cinema.session["adapter"]
+                    before = (await cinema.db("detail", film["id"]))["current"]["position"]
+                    await bridge.request(
+                        "change_media", media=f"{base}/fixture/sample.mp4?kind=promo"
+                    )
+                    try:
+                        await adapter.control("play")
+                        raise AssertionError("Changed player was accepted as the film")
+                    except ToolError:
+                        pass
+                    assert not await cinema.save(await adapter.sample(), "periodic")
+                    assert (await cinema.db("detail", film["id"]))["current"]["position"] == before
+                async with cinema.lock:
+                    await cinema.stop_tracking()
+            await cinema.db("delete", film["id"])
+            await cinema.publish()
             await bridge.request("ui", url=base, screenshot=screenshot)
             if catalogue:
                 await bridge.request("catalogue_ui", url=base, screenshot=screenshot)

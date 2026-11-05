@@ -17,7 +17,7 @@
   const video = eligible[0];
   if (video.mediaKeys) return JSON.stringify({error: 'protected_player'});
   if(!video.__chushpanMediaId)video.__chushpanMediaId=globalThis.crypto?.randomUUID?.()||String(window.__chushpanMediaCounter=(window.__chushpanMediaCounter||0)+1);
-  const binding=()=>JSON.stringify([video.__chushpanMediaId,video.currentSrc||video.src,video.ownerDocument.URL,video.duration]);
+  const binding=()=>JSON.stringify([video.__chushpanMediaId,video.currentSrc,video.src,video.ownerDocument.URL,video.duration]);
   if(request.binding&&request.binding!==binding())return JSON.stringify({error:'player_changed'});
   const evidence=()=>({live:true,page_url:location.href,frame_url:video.ownerDocument.URL,
     page_title:document.title,video_title:video.getAttribute('title')||video.getAttribute('aria-label')||'',

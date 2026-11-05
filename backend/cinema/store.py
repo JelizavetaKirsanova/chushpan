@@ -580,10 +580,16 @@ class CinemaStore:
             if not entry.source_id:
                 return self.detail(title_id)
             link = self.db.execute(
-                "SELECT id FROM cinema_links WHERE episode_id=? AND source_id=? AND voice=?",
+                "SELECT id,url FROM cinema_links WHERE episode_id=? AND source_id=? AND voice=?",
                 (episode_id, entry.source_id, entry.voice),
             ).fetchone()
             link_id = link[0] if link else uuid4().hex
+            if link and link["url"] != entry.url:
+                self.db.execute("DELETE FROM cinema_link_verification WHERE link_id=?", (link_id,))
+                self.db.execute("DELETE FROM cinema_link_checks WHERE link_id=?", (link_id,))
+                self.db.execute(
+                    "UPDATE cinema_playback_state SET confirmed=0 WHERE link_id=?", (link_id,)
+                )
             self.db.execute(
                 "INSERT INTO cinema_links VALUES (?,?,?,?,?) "
                 "ON CONFLICT(id) DO UPDATE SET url=excluded.url",

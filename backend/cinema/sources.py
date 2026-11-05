@@ -554,7 +554,10 @@ class SourceManager:
                 for row in rows:
                     if row.get("link_id"):
                         await self.db(
-                            "link_check", row["link_id"], row["availability"], row["embedded"]
+                            "link_check",
+                            row["link_id"],
+                            row["availability"],
+                            bool(row["embedded"] and row.get("content_verified")),
                         )
                     row.update(
                         source_id=source["id"],
@@ -697,6 +700,7 @@ class SourceManager:
         rows.sort(
             key=lambda r: (
                 r["allowed"],
+                r.get("content_verified") is True and r.get("video_type") in FULL_TYPES,
                 r["availability"] == "available"
                 or (
                     bool(r.get("previously_played"))

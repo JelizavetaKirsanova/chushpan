@@ -69,6 +69,7 @@ def test_explicit_promo_labels_do_not_depend_on_duration(label, expected):
 
 def test_short_film_is_valid_but_matching_title_or_runtime_alone_is_not():
     assert classify(QUERY, evidence())["content_verified"]
+    assert not classify({**QUERY, "year": 0}, evidence())["content_verified"]
     assert not classify(QUERY, evidence(work(associatedMedia={}), duration=120))["content_verified"]
     assert not classify(QUERY, evidence(work(name="Другая история")))["content_verified"]
     assert not classify(QUERY, evidence(work(datePublished="2024")))["content_verified"]
@@ -171,6 +172,8 @@ def test_tmdb_trailer_without_a_full_source_never_opens_during_watch(tmp_path):
             result = await cinema.resume(item["id"])
             assert "Источник для просмотра не найден" in result["message"]
             assert not result["playback_confirmed"]
+            result = await cinema.execute("смотреть фильм " + QUERY["title"])
+            assert "Источник для просмотра не найден" in result["message"]
             opened.assert_not_awaited()
             player.open.assert_not_awaited()
             assert not any(path.endswith("/videos") for path in requests)
@@ -220,3 +223,51 @@ def test_html5_trailer_is_rejected_before_seek_play_and_fullscreen():
         assert not {"play", "seek", "fullscreen", "offer_gesture"} & set(bridge.actions)
 
     asyncio.run(run())
+
+
+def test_replacing_url_invalidates_verification_but_preserves_progress(tmp_path):
+    from backend.cinema.store import CinemaStore
+
+    store = CinemaStore(tmp_path / "library.sqlite")
+    source = store.save_source({"name": "Источник", "base_url": "https://legal.example"})
+    values = {
+        **{k: QUERY[k] for k in ("title", "kind", "year")},
+        "source_id": source["id"],
+        "url": URL,
+    }
+    item = store.add(values)
+    episode = item["current"]
+    link = episode["links"][0]
+    store.verify_link(link["id"], {"video_type": "trailer", "content_verified": False})
+    store.progress(episode["id"], 20, 120, "manual", link["id"])
+    store.playback_state(episode["id"], link["id"], 20, 120, True)
+    history = store.history()
+    updated = store.add({**values, "title_id": item["id"], "url": URL + "/corrected"})
+    assert store.verify_link(link["id"]) == {}
+    assert updated["current"]["position"] == 20
+    assert not updated["current"]["playback_state"]["confirmed"]
+    assert store.history() == history
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "text,kind",
+    [
+        ("Смотреть фильм Полная история", "movie"),
+        ("Включи сериал Тестовый сериал", "series"),
+        ("Открой фильм Full Story", "movie"),
+    ],
+)
+def test_named_watch_is_routed_to_full_source_search(text, kind):
+    parsed = command(text)
+    assert parsed["action"] == "find_sources" and parsed["watch"]
+    assert parsed["kind"] == kind
+
+
+def test_generic_embedded_video_and_image_are_not_full_encoding():
+    assert not classify(QUERY, evidence(work(associatedMedia={}, video={"contentUrl": MEDIA})))[
+        "content_verified"
+    ]
+    assert not classify(
+        QUERY, evidence(work(associatedMedia={"@type": "ImageObject", "url": MEDIA}))
+    )["content_verified"]

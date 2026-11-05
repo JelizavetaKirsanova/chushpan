@@ -13,6 +13,9 @@ for await(const line of createInterface({input:process.stdin})) {
     if(request.op==='open') {if(page.isClosed())page=await context.newPage();await page.goto(request.url);await page.locator('video').evaluate(video=>new Promise(resolve=>{if(video.readyState>=1)resolve();else video.addEventListener('loadedmetadata',resolve,{once:true});}));}
     if(request.op==='eval') {result=JSON.parse(await page.evaluate(({player,payload})=>(0,eval)(player+'('+JSON.stringify(payload)+')'),{player,payload:{...request.payload,url:request.url}}));}
     if(request.op==='close_page')await page.close();
+    if(request.op==='change_media'){
+      await page.locator('video').evaluate((video,url)=>new Promise(resolve=>{video.addEventListener('loadedmetadata',resolve,{once:true});video.src=url;video.load();}),request.media);
+    }
     if(request.op==='ui') {
       const hud=await context.newPage();const errors=[];hud.on('pageerror',error=>errors.push(error.message));
       await hud.goto(request.url);await hud.locator('.workspace-nav [data-view=cinema]').click();

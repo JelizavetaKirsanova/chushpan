@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Protocol
 
-from backend.cinema.classification import classify
+from backend.cinema.classification import LABELS, classify
 from backend.cinema.models import local_video, web_url
 from backend.media.music_safari import SafariMusicTab
 from backend.media.safari import process
@@ -249,6 +249,13 @@ class HTML5Adapter:
                 f"Видео: {current['video_type']}. {current['classification_reason']}",
             )
             if not current.get("content_verified"):
+                await stage(
+                    "DETECT_PLAYER",
+                    "rejected",
+                    LABELS[current["video_type"]] + ". Автоматический запуск отменён.",
+                )
+                with contextlib.suppress(ToolError):
+                    await self.read("pause")
                 self.context = {}
                 await self.bridge.evaluate(self.url, {"action": "detach"})
                 return {
@@ -257,7 +264,7 @@ class HTML5Adapter:
                     "playback_confirmed": False,
                     "video_type": current["video_type"],
                     "content_verified": False,
-                    "message": "Источник для просмотра не подтверждён. "
+                    "message": "Источник для просмотра не найден. "
                     + current["classification_reason"]
                     + " Прогресс сохранён; автоматический запуск отменён.",
                 }

@@ -21,6 +21,16 @@ def command(text, active=False):
         )
         if trailer:
             return {"action": "trailer", "title": trailer[1] or ""}
+        watch = re.fullmatch(
+            r"(?:смотреть|посмотри|включи|открой) (фильм|сериал)(?: (.{1,200}))?", value
+        )
+        if watch:
+            kind = "movie" if watch[1] == "фильм" else "series"
+            return (
+                {"action": "find_sources", "title": watch[2], "kind": kind, "watch": True}
+                if watch[2]
+                else {"action": "continue", "kind": kind, "focused_watch": True}
+            )
         if value in {"добавь этот фильм в избранное", "добавь этот сериал в избранное"}:
             return {"action": "favorite"}
         rating = re.fullmatch(

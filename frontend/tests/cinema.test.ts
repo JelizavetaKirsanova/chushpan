@@ -424,3 +424,36 @@ test('HTML5 voice restoration requires an exact exposed audio track',async()=>{
     assert.equal(run('Несуществующая').voice_confirmed,false);assert.equal(tracks[1].enabled,true);
   }finally{await window.happyDOM.abort();}
 });
+
+test('official trailer is a separate action and does not request full watch',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);
+    const item=movie('Фильм','planned');item.catalogue_key='tmdb:movie:42';view.receive(snapshot([item]));button(f,'Хочу посмотреть').click();button(f,'Фильм').click();
+    sent.length=0;button(f,'Трейлер').click();
+    assert.equal(sent.at(-1).op,'trailer');assert.equal(sent.at(-1).key,'tmdb:movie:42');
+    assert.equal(sent.some(v=>['watch','open','source_result_open'].includes(v.op)),false);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('trailer search result never offers full-watch or source-binding buttons',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const item=movie('Фильм','planned');
+    view.receive({...snapshot([item]),source_results:{title_id:item.id,episode_id:item.current.id,selected_id:null,message:'Источник для просмотра не найден',results:[{id:'promo',source_name:'Сервис',source_id:'source',kind:'page',url:'https://legal.example/watch',availability:'available',reason:'Только трейлер',classification_reason:'Только трейлер',video_type:'trailer',content_verified:false,configurable:false,access_status:'FREE',match:1,allowed:false,manual_allowed:false,embedded:false,capabilities:{mode:'HTML5'}}]}});
+    const dialog=f.window.document.querySelector('dialog')!;assert.match(dialog.textContent,/Источник для просмотра не найден/);
+    assert.equal(dialog.querySelector('[data-result-id="promo"] button'),null);
+    assert.equal(sent.some(v=>v.op==='source_result_open'),false);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('player media binding prevents an action after source replacement',async()=>{
+  const window=new Window({url:'https://example.org/film'});try{
+    window.document.body.innerHTML='<video src="https://example.org/full.mp4"></video>';const video=window.document.querySelector('video')!;
+    for(const [name,value]of Object.entries({readyState:4,duration:120,currentTime:25,paused:true}))Object.defineProperty(video,name,{value,configurable:true,writable:true});
+    Object.defineProperty(video,'getBoundingClientRect',{value:()=>({width:640,height:360})});
+    let plays=0;Object.defineProperty(video,'play',{value:()=>{plays++;return Promise.resolve();}});
+    const source=readFileSync(new URL('../../backend/cinema/player.js',import.meta.url),'utf8');
+    const run=(request:object)=>JSON.parse(window.eval(source+`(${JSON.stringify({url:'https://example.org/film',...request})})`));
+    const first=run({action:'status'});video.src='https://example.org/preview.mp4';
+    assert.equal(run({action:'play',binding:first.binding}).error,'player_changed');assert.equal(plays,0);
+  }finally{await window.happyDOM.abort();}
+});

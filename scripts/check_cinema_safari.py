@@ -174,7 +174,31 @@ async def check():
                 "cinema_command", {"command": "поставь фильм на паузу"}, "поставь фильм на паузу"
             )
             assert (await cinema.session["adapter"].sample())["paused"]
-            state = await cinema.session["adapter"].control("seek", 9)
+            try:
+                state = await cinema.session["adapter"].control("seek", 9)
+            except ToolError:
+                observed = await cinema.session["adapter"].sample()
+                print(
+                    json.dumps(
+                        {
+                            "failed_step": "paused_seek",
+                            "player": {
+                                k: observed.get(k)
+                                for k in (
+                                    "position",
+                                    "duration",
+                                    "paused",
+                                    "seeking",
+                                    "ready",
+                                    "content_verified",
+                                    "video_type",
+                                )
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                raise
             await cinema.save(state, "seek")
             await close_fixture(executor, urls[0])
             await asyncio.sleep(0.8)

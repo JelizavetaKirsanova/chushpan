@@ -4,6 +4,7 @@ A Movie/TVEpisode card, matching title or runtime never proves that its video is
 full length. Only an encoding explicitly attached to the matching work can do so.
 """
 
+import json
 import re
 import unicodedata
 from urllib.parse import unquote, urljoin
@@ -97,7 +98,19 @@ def same_work(entity, query):
     ):
         return False
     year = str(identity.get("datePublished") or identity.get("dateCreated") or "")[:4]
-    if not query.get("year") or year != str(query["year"]):
+    external = set(
+        re.findall(r"imdb\.com/title/(tt\d{5,12})", json.dumps(identity.get("sameAs", [])))
+    )
+    expected_id = meta.get("imdb_id")
+    if expected_id and external and expected_id not in external:
+        return False
+    external_match = bool(expected_id and expected_id in external)
+    # Unknown year without an exact external ID cannot distinguish remakes.
+    # An encoding proves full media, but does not by itself prove work identity.
+    if query.get("year"):
+        if (year and year != str(query["year"])) or (not year and not external_match):
+            return False
+    elif not external_match:
         return False
     if episode:
         season = entity.get("partOfSeason", {})
@@ -153,6 +166,12 @@ def classify(query, evidence):
             for field in ("associatedMedia", "encoding"):
                 media = entity.get(field, [])
                 for item in media if isinstance(media, list) else [media]:
+                    if (
+                        isinstance(item, dict)
+                        and kinds(item)
+                        and not kinds(item) & {"VideoObject", "MediaObject"}
+                    ):
+                        continue
                     if (
                         isinstance(item, dict)
                         and promo_type(item.get("name", ""), query) in PROMO_TYPES
