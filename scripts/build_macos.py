@@ -37,6 +37,7 @@ def main():
         ("ytmusic_ax", "backend/media/ytmusic_ax.swift"),
         ("youtube_safari", "backend/media/youtube_safari.swift"),
         ("music_safari", "backend/media/music_safari.swift"),
+        ("cinema_player", "backend/cinema/avplayer.swift"),
     ]:
         args = [
             "xcrun",

@@ -1,6 +1,6 @@
 import type {CinemaEvent} from './cinema';
 
-export interface EmbeddedPlayerState {token:string;url:string;title:string;position:number;title_id:string;episode_id:string}
+export interface EmbeddedPlayerState {token:string;url:string;title:string;position:number;title_id:string;episode_id:string;autoplay?:boolean}
 export interface EmbeddedControl {token:string;action:string;seconds?:number;command_id:string}
 
 /** The media element survives HUD refreshes; only its own events report progress. */
@@ -25,11 +25,13 @@ export class CinemaEmbeddedPlayer {
       const video=document.createElement('video');this.video=video;video.controls=true;video.playsInline=true;video.preload='metadata';video.src=state.url;video.setAttribute('aria-label',`Видео: ${state.title}`);
       this.feedback.textContent='Ожидаю запуска видео. Если оно не началось, нажми ▶.';this.feedback.setAttribute('role','status');
       const close=document.createElement('button');close.type='button';close.textContent='Сохранить и закрыть плеер';close.onclick=()=>{this.report('close');this.clear();};
-      const fullscreen=document.createElement('button');fullscreen.type='button';fullscreen.textContent='Полный экран';fullscreen.onclick=()=>{
-        const api=(window as unknown as {pywebview?:{api?:{toggle_fullscreen?:()=>Promise<void>}}}).pywebview?.api;
-        if(api?.toggle_fullscreen){this.root.classList.toggle('cinema-video-fullscreen');void api.toggle_fullscreen();}
-        else if(document.fullscreenElement)void document.exitFullscreen();else void video.requestFullscreen?.();
-      };
+      const fullscreen=document.createElement('button');fullscreen.type='button';fullscreen.textContent='Полный экран';fullscreen.onclick=()=>{void(async()=>{
+        try{
+          const api=(window as unknown as {pywebview?:{api?:{toggle_fullscreen?:()=>Promise<void>}}}).pywebview?.api;
+          if(api?.toggle_fullscreen){await api.toggle_fullscreen();this.root.classList.toggle('cinema-video-fullscreen');}
+          else if(document.fullscreenElement)await document.exitFullscreen();else if(video.requestFullscreen)await video.requestFullscreen();else throw new Error('unsupported');
+        }catch{this.feedback.textContent='Полный экран недоступен. Продолжай просмотр в окне или выбери другой плеер.';}
+      })();};
       const series=document.createElement('div');series.className='cinema-embedded-episodes';
       const item=event.items.find(i=>i.id===state.title_id);
       if(item?.kind==='series'){
@@ -41,7 +43,7 @@ export class CinemaEmbeddedPlayer {
         const open=document.createElement('button');open.type='button';open.textContent='Открыть серию';open.onclick=()=>{video.pause();this.report('pause');this.send({op:'open',title_id:item.id,episode_id:episode.value});};series.append(season,episode,open);
       }
       this.root.replaceChildren(title,video,this.feedback,series,fullscreen,close);this.container.append(this.root);
-      video.onloadedmetadata=()=>{if(state.position&&Number.isFinite(video.duration))video.currentTime=Math.min(state.position,Math.max(0,video.duration-.1));void video.play().catch(()=>{this.feedback.textContent='Нажми ▶ в плеере, чтобы начать просмотр.';});};
+      video.onloadedmetadata=()=>{if(state.position&&Number.isFinite(video.duration))video.currentTime=Math.min(state.position,Math.max(0,video.duration-.1));if(state.autoplay!==false)void video.play().catch(()=>{this.feedback.textContent='Нажми ▶ в плеере, чтобы начать просмотр.';this.report('blocked');});};
       video.ontimeupdate=()=>{const advanced=!video.paused&&!video.seeking&&video.currentTime>this.previous+.05&&video.currentTime-this.previous<5;this.previous=video.currentTime;if(advanced&&!this.confirmed){this.confirmed=true;this.feedback.textContent='Воспроизведение подтверждено.';this.report('playing');}else if(advanced&&Date.now()-this.sentAt>=(event.preferences.poll_seconds??5)*1000)this.report('periodic');};
       video.onpause=()=>this.report('pause');video.onseeked=()=>{this.previous=video.currentTime;this.report('seek');};video.onended=()=>this.report('ended');video.onerror=()=>{this.feedback.textContent='Не удалось воспроизвести видео. Проверь источник или выбери другой.';this.report('error');};
     }
@@ -50,7 +52,7 @@ export class CinemaEmbeddedPlayer {
   private control(command:EmbeddedControl):void {
     const video=this.video;if(!video)return;this.commandId=command.command_id;
     if(command.action==='pause'){video.pause();this.report('pause');}
-    if(command.action==='play'){this.confirmed=false;this.previous=video.currentTime;void video.play().catch(()=>this.report('error'));}
+    if(command.action==='play'){this.confirmed=false;this.previous=video.currentTime;void video.play().catch(()=>this.report('blocked'));}
     if(command.action==='seek'&&Number.isFinite(video.duration))video.currentTime=Math.max(0,Math.min(video.duration-.1,video.currentTime+(command.seconds??0)));
   }
   private report(event:string):void {
@@ -58,7 +60,7 @@ export class CinemaEmbeddedPlayer {
     const duration=Number.isFinite(this.video.duration)?this.video.duration:0;
     const position=duration?Math.min(duration,Math.max(0,this.video.currentTime)):0;
     this.send({op:'embedded_event',token:this.current.token,sequence:++this.sequence,event,position,duration,paused:this.video.paused,seeking:this.video.seeking,ended:this.video.ended,ready:this.video.readyState,command_id:this.commandId});this.sentAt=Date.now();
-    if(['playing','pause','seek','error'].includes(event))this.commandId='';
+    if(['playing','pause','seek','error','blocked'].includes(event))this.commandId='';
   }
   private clear():void {
     if(this.root.classList.contains('cinema-video-fullscreen')){this.root.classList.remove('cinema-video-fullscreen');const api=(window as unknown as {pywebview?:{api?:{toggle_fullscreen?:()=>Promise<void>}}}).pywebview?.api;void api?.toggle_fullscreen?.();}

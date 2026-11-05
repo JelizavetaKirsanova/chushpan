@@ -116,6 +116,18 @@ async def check():
                 )
                 + "</script>"
             )
+        # The first real Safari player lives in an accessible iframe.
+        (folder / "player-frame.html").write_text(
+            '<!doctype html><video muted playsinline controls src="sample.mp4"></video>'
+        )
+        first_page = folder / "one.html"
+        first_page.write_text(
+            first_page.read_text().replace(
+                '<video muted playsinline controls src="sample.mp4"></video>',
+                '<iframe src="player-frame.html" allowfullscreen '
+                'width="640" height="400"></iframe>',
+            )
+        )
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
         base = f"http://127.0.0.1:{sock.getsockname()[1]}"
@@ -255,12 +267,53 @@ async def check():
                 "SAVE_PROGRESS",
             }
             assert expected <= stages, stages
+            direct_url = base + "/fixture/sample.mp4"
+            urls.append(direct_url)
+            direct_source = await cinema.db(
+                "save_source",
+                {
+                    "name": "Verified direct fixture",
+                    "base_url": base,
+                    "adapter": "direct",
+                    "embed_allowed": True,
+                    "access_status": "FREE",
+                },
+            )
+            direct_item = await cinema.db(
+                "add",
+                {
+                    "title": "Safari direct fixture",
+                    "year": 2026,
+                    "kind": "movie",
+                    "source_id": direct_source["id"],
+                    "url": direct_url,
+                },
+            )
+            await cinema.db(
+                "verify_link",
+                direct_item["current"]["links"][0]["id"],
+                {
+                    "content_verified": True,
+                    "video_type": "full_movie",
+                    "scope": "movie",
+                    "title": direct_item["title"],
+                    "year": 2026,
+                    "classification_reason": "Test-owned direct asset provider fixture.",
+                },
+            )
+            direct_result = await cinema.open(direct_item["id"], player="safari")
+            assert direct_result.get("playback_confirmed") and direct_result.get(
+                "content_verified"
+            ), direct_result
+            await cinema.player.control("pause")
             print(
                 json.dumps(
                     {
                         "ok": True,
                         "browser": "Safari",
                         "real_silent_video": True,
+                        "same_origin_iframe": True,
+                        "verified_direct_asset": True,
                         "fullscreen_confirmed": fullscreen_confirmed,
                         "fullscreen_requires_user_action": not fullscreen_confirmed,
                         "exact_page": True,

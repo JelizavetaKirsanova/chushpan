@@ -12,8 +12,11 @@
     }
   }
   const videos = documents.flatMap(doc => [...doc.querySelectorAll('video')]);
-  const eligible = videos.filter(video => {const style=video.ownerDocument.defaultView.getComputedStyle(video);return style.display!=='none'&&style.visibility!=='hidden'&&video.getBoundingClientRect().width>0&&video.readyState>=1&&Number.isFinite(video.duration)&&video.duration>0;});
-  if (eligible.length !== 1) return JSON.stringify({error: eligible.length ? 'multiple_players' : blockedFrame&&!videos.length?'cross_origin_player':'no_player'});
+  let eligible = videos.filter(video => {const style=video.ownerDocument.defaultView.getComputedStyle(video);return style.display!=='none'&&style.visibility!=='hidden'&&video.getBoundingClientRect().width>0&&video.readyState>=1&&Number.isFinite(video.duration)&&video.duration>0;});
+  // A single already playing element is unambiguous; its identity is still validated.
+  const active = eligible.filter(video=>!video.paused&&!video.ended);
+  if(eligible.length>1&&active.length===1)eligible=active;
+  if (eligible.length !== 1) return JSON.stringify({error: eligible.length ? 'multiple_players' : videos.length===1&&videos[0].error?'media_error':blockedFrame&&!videos.length?'cross_origin_player':'no_player'});
   const video = eligible[0];
   if (video.mediaKeys) return JSON.stringify({error: 'protected_player'});
   if(!video.__chushpanMediaId)video.__chushpanMediaId=globalThis.crypto?.randomUUID?.()||String(window.__chushpanMediaCounter=(window.__chushpanMediaCounter||0)+1);
@@ -34,6 +37,9 @@
     airplay: typeof video.webkitShowPlaybackTargetPicker === 'function' && !video.disableRemotePlayback,
     fullscreen:fullscreen(), fullscreen_pending:window.__chushpanCinema?.fullscreenPending===true, voice_confirmed:voiceConfirmed(), play_error:window.__chushpanCinema?.playError, fullscreen_error:window.__chushpanCinema?.fullscreenError,
     binding:binding(),
+    capabilities:{play:true,pause:true,position:true,seek:video.seekable.length>0,
+      fullscreen:fullscreen(),fullscreen_available:typeof (video.requestFullscreen||video.webkitEnterFullscreen||video.webkitEnterFullScreen)==='function',
+      audio_tracks:tracks().map(track=>track.label||track.language).filter(Boolean)},
     error: video.mediaKeys ? 'protected_player' : video.error ? 'media_error' : undefined});
   const old = window.__chushpanCinema;
   if ((request.session || request.action!=='status') && (old?.session !== request.session || old?.video !== video)) {

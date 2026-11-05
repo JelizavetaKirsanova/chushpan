@@ -386,6 +386,7 @@ class CinemaStore:
             "SEARCH",
             "VERIFY",
             "OPEN_SAFARI",
+            "OPEN_NATIVE",
             "DETECT_PLAYER",
             "RESTORE_POSITION",
             "PLAY",
@@ -415,7 +416,7 @@ class CinemaStore:
             )
         ]
 
-    def playback_state(self, episode_id, link_id, position, duration, confirmed):
+    def playback_state(self, episode_id, link_id, position, duration, confirmed, voice=None):
         link = self.db.execute(
             "SELECT voice FROM cinema_links WHERE id=? AND episode_id=?", (link_id, episode_id)
         ).fetchone()
@@ -424,7 +425,28 @@ class CinemaStore:
         with self.transaction():
             self.db.execute(
                 "INSERT OR REPLACE INTO cinema_playback_state VALUES (?,?,?,?,?,?,?)",
-                (episode_id, link_id, bool(confirmed), link["voice"], position, duration, now()),
+                (
+                    episode_id,
+                    link_id,
+                    bool(confirmed),
+                    voice if voice is not None else link["voice"],
+                    position,
+                    duration,
+                    now(),
+                ),
+            )
+
+    def playback_voice(self, episode_id, link_id, voice):
+        if not isinstance(voice, str) or not voice or len(voice) > 100:
+            raise ValueError("Неверная звуковая дорожка.")
+        if not self.db.execute(
+            "SELECT 1 FROM cinema_links WHERE episode_id=? AND id=?", (episode_id, link_id)
+        ).fetchone():
+            raise ValueError("Источник не принадлежит серии.")
+        with self.transaction():
+            self.db.execute(
+                "UPDATE cinema_playback_state SET voice=? WHERE episode_id=? AND link_id=?",
+                (voice, episode_id, link_id),
             )
 
     def reset_recommendations(self):
@@ -784,6 +806,9 @@ class CinemaStore:
         )
         if not link:
             raise ValueError("Добавь страницу этой серии и источник.")
+        state = episode.get("playback_state") or {}
+        if state.get("link_id") == link["id"] and state.get("voice"):
+            link = {**link, "voice": state["voice"]}
         source = self.source(link["source_id"])
         if not source.enabled:
             raise ValueError("Этот источник отключён.")

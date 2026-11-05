@@ -54,6 +54,6 @@ jobs:
       - name: Typecheck native helpers
         shell: bash
         run: |
-          for source in backend/permissions.swift backend/personal.swift backend/devices/native.swift backend/media/ytmusic_ax.swift backend/media/youtube_safari.swift backend/media/music_safari.swift; do
+          for source in backend/permissions.swift backend/personal.swift backend/devices/native.swift backend/media/ytmusic_ax.swift backend/media/youtube_safari.swift backend/media/music_safari.swift backend/cinema/avplayer.swift; do
             xcrun swiftc -typecheck "$source"
           done

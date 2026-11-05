@@ -1,3 +1,19 @@
 <!doctype html><html lang="ru"><meta charset="utf-8"><title>Локальный тестовый HTML5-плеер</title>
 <body><h1>Тестовый сериал · серия 1</h1><video muted controls preload="auto" src="/sample.mp4" width="640"></video>
-<p>Только синтетическое немое видео. Нет внешних источников, рекламы или авторизации.</p></body></html>
+<p>Только синтетическое немое видео. Нет внешних источников, рекламы или авторизации.</p>
+<label>Режим теста <select id="mode"><option>normal</option><option>absent</option><option>autoplay</option><option>frozen</option><option>iframe</option><option>fullscreen</option><option>broken</option></select></label>
+<button id="apply">Применить</button><output id="state"></output>
+<script>
+// Failure modes deliberately simulate API failures; only normal uses actual playback.
+const mode=new URLSearchParams(location.search).get('mode')||'normal';
+document.querySelector('#mode').value=mode;
+document.querySelector('#apply').onclick=()=>{const url=new URL(location);url.searchParams.set('mode',document.querySelector('#mode').value);location.href=url;};
+const video=document.querySelector('video');
+if(mode==='absent')video.remove();
+if(mode==='autoplay')video.play=()=>Promise.reject(new DOMException('Test gesture required','NotAllowedError'));
+if(mode==='frozen')video.play=()=>Promise.resolve();
+if(mode==='fullscreen'){video.requestFullscreen=undefined;video.webkitEnterFullscreen=undefined;video.webkitEnterFullScreen=undefined;}
+if(mode==='broken')video.src='missing.mp4';
+if(mode==='iframe'){const frame=document.createElement('iframe');frame.srcdoc='<video muted controls src="'+new URL(video.getAttribute('src'),location.href)+'" width="640"></video>';video.replaceWith(frame);}
+setInterval(()=>{document.querySelector('#state').textContent=JSON.stringify({mode,time:video.currentTime,paused:video.paused,seeking:video.seeking,error:video.error?.code});},500);
+</script></body></html>

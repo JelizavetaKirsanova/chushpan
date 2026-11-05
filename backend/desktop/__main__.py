@@ -48,6 +48,8 @@ def main():
             "UserNotifications",
             "backend.personal_modules",
             "backend.sync.service",
+            "backend.cinema.playback",
+            "backend.cinema.native_player",
             "cryptography.x509",
         ]
         result = {}

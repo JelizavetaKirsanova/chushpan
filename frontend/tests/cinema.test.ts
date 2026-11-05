@@ -17,7 +17,7 @@ function fixture() {
   vm.runInNewContext(`{${filters}globalThis.CinemaFilterDrawer=CinemaFilterDrawer;globalThis.activeFilterCount=activeFilterCount;}`,sandbox);
   const catalogue=stripTypeScriptTypes(readFileSync(new URL('../src/cinema_catalogue.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'');
   vm.runInNewContext(`{${catalogue}globalThis.CinemaCatalogueView=CinemaCatalogueView;}`,sandbox);
-  for(const [file,cls]of [['cinema_personal','CinemaPersonalView'],['cinema_player','CinemaEmbeddedPlayer']]){
+  for(const [file,cls]of [['cinema_personal','CinemaPersonalView'],['cinema_player','CinemaEmbeddedPlayer'],['cinema_viewer','CinemaViewer']]){
     const source=stripTypeScriptTypes(readFileSync(new URL(`../src/${file}.ts`,import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'');
     vm.runInNewContext(`{${source}globalThis.${cls}=${cls};}`,sandbox);
   }
@@ -456,4 +456,18 @@ test('player media binding prevents an action after source replacement',async()=
     const first=run({action:'status'});video.src='https://example.org/preview.mp4';
     assert.equal(run({action:'play',binding:first.binding}).error,'player_changed');assert.equal(plays,0);
   }finally{await window.happyDOM.abort();}
+});
+
+test('compact viewer binds controls to the session and only offers observed audio tracks',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);
+    const item=movie('Film','watching');const ep=item.current;ep.links=[{id:'link',episode_id:ep.id,source_id:'source',source_name:'Fixture',url:'https://example.org/full.mp4',voice:''}] as any;
+    const initial:any={...snapshot([item]),sources:[{id:'source',name:'Fixture',adapter:'direct'}],session:{title_id:item.id,episode_id:ep.id,mode:'html5'},playback:{state:'PLAYING',message:'Время продвигается.',code:'',token:'session-one',revision:1,last_successful_at:1,source:{title_id:item.id,episode_id:ep.id,link_id:'link',source_id:'source',url:ep.links[0].url,adapter_id:'safari',voice:'',capabilities:{play:true},validation:{content_verified:true}}}};
+    view.receive(initial);const panel=f.window.document.querySelector('.cinema-viewer')!;
+    assert.match(panel.textContent,/Видео воспроизводится/);assert.equal(panel.querySelector('[aria-label="Дорожка плеера"]'),null);
+    [...panel.querySelectorAll('button')].find((b:any)=>b.textContent==='Пауза')!.click();assert.equal(sent.at(-1).token,'session-one');assert.equal(sent.at(-1).action,'pause');
+    initial.playback={...initial.playback,token:'session-two',source:{...initial.playback.source,voice:'Русский',capabilities:{audio_tracks:['Русский','English']}}};view.receive(initial);
+    const voice=panel.querySelector('[aria-label="Дорожка плеера"]') as HTMLSelectElement;voice.value='English';voice.dispatchEvent(new f.window.Event('change'));assert.equal(sent.at(-1).voice,'English');assert.equal(sent.at(-1).token,'session-two');
+    view.connection(false);assert.ok([...panel.querySelectorAll('button,select')].every((n:any)=>n.disabled));
+  }finally{f.window.happyDOM.abort();}
 });

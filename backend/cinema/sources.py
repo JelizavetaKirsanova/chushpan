@@ -227,7 +227,15 @@ class WebsiteAdapter:
             self.source["adapter"] == "direct"
             and self.source.get("embed_allowed")
             and check["availability"] == "available"
-            and check.get("content_type") in {"video/mp4", "video/webm", "video/x-m4v"}
+            and check.get("content_type")
+            in {
+                "video/mp4",
+                "video/webm",
+                "video/x-m4v",
+                "video/quicktime",
+                "application/vnd.apple.mpegurl",
+                "application/x-mpegurl",
+            }
         )
         return {**content, **check, "embedded": bool(compatible)}
 
@@ -388,10 +396,29 @@ class SourceManager:
         self.pending = {}
         self.generation = 0
         self.web = None
+        self.site_adapters = {}
+
+    def register_adapter(self, mode, factory, *, hosts=()):
+        """Trusted application code only; never accepts scripts from source settings."""
+        if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", mode) or not callable(factory):
+            raise ValueError("Адаптер должен реализовать поддерживаемый протокол источников.")
+        if not hosts and mode not in self.adapters:
+            raise ValueError("Укажи точные домены адаптера сайта.")
+        for host in hosts:
+            if not isinstance(host, str) or not re.fullmatch(r"[a-z0-9.-]+", host):
+                raise ValueError("Нужен точный домен без URL и масок.")
+        for host in hosts:
+            self.site_adapters[host] = mode
+        self.adapters[mode] = factory
+        self.adapter_cache.clear()
+        self.invalidate()
 
     def adapter(self, source):
         mode = source.get("search_mode", "manual")
-        if mode == "manual" and urlsplit(source.get("base_url", "")).hostname in {
+        host = urlsplit(source.get("base_url", "")).hostname
+        if host in self.site_adapters:
+            mode = self.site_adapters[host]
+        elif mode == "manual" and host in {
             "filmix.gg",
             "kinogo.is",
             "hdrezka.sh",

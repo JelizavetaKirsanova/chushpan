@@ -391,6 +391,7 @@ async def check(module, screenshot, chromium=None, catalogue=False, personal=Fal
                     except ToolError:
                         pass
                     assert not await cinema.save(await adapter.sample(), "periodic")
+                    assert cinema.playback.state == "BLOCKED", cinema.playback.snapshot()
                     assert (await cinema.db("detail", film["id"]))["current"]["position"] == before
                 async with cinema.lock:
                     await cinema.stop_tracking()

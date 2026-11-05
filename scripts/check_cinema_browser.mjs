@@ -139,10 +139,17 @@ for await(const line of createInterface({input:process.stdin})) {
       await hud.getByText('Воспроизведение подтверждено.',{exact:true}).waitFor();
       await video.evaluate(v=>{window.__embeddedVideo=v;v.pause();v.currentTime=5;});
       await hud.waitForFunction(()=>document.querySelector('.cinema-embedded video')===window.__embeddedVideo&&Math.abs(window.__embeddedVideo.currentTime-5)<.2).catch(async error=>{throw Error('Embedded seek failed: '+JSON.stringify(await video.evaluate(v=>({paused:v.paused,time:v.currentTime,ready:v.readyState,error:v.error?.message}))))});
+      const viewer=hud.locator('.cinema-viewer');
+      await viewer.getByRole('button',{name:'Продолжить',exact:true}).click();
+      await hud.waitForFunction(()=>{const v=document.querySelector('.cinema-embedded video');return v&&!v.paused&&v.currentTime>5.2;});
+      await viewer.getByRole('button',{name:'Пауза',exact:true}).click();
+      await hud.waitForFunction(()=>document.querySelector('.cinema-embedded video')?.paused===true);
+      await viewer.getByText('На паузе',{exact:true}).waitFor();
+      if(request.screenshot)await hud.screenshot({path:request.screenshot.replace('.png','-viewer.png'),fullPage:true});
       await hud.setViewportSize({width:390,height:844});
       if(await hud.evaluate(()=>document.documentElement.scrollWidth>innerWidth))throw Error('Personal cinema UI overflows mobile viewport');
       if(request.screenshot)await hud.screenshot({path:request.screenshot.replace('.png','-embedded.png'),fullPage:true});
-      await hud.getByRole('button',{name:'Сохранить и закрыть плеер',exact:true}).click();
+      await viewer.getByRole('button',{name:'Сохранить и закрыть',exact:true}).click();
       await hud.locator('.cinema-embedded').waitFor({state:'detached'});
 
       await hud.locator('#cinema-root').getByRole('button',{name:'Настройки',exact:true}).click();

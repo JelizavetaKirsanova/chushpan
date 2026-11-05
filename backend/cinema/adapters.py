@@ -7,8 +7,9 @@ import time
 from pathlib import Path
 from typing import Protocol
 
-from backend.cinema.classification import LABELS, classify
+from backend.cinema.classification import LABELS
 from backend.cinema.models import local_video, web_url
+from backend.cinema.playback import SourceValidator, playback_error
 from backend.media.music_safari import SafariMusicTab
 from backend.media.safari import process
 from backend.permission_policy import requests_allowed
@@ -17,7 +18,8 @@ from backend.tools.registry import ToolError
 PLAYER = Path(__file__).with_name("player.js").read_text()
 PLAYER_ERRORS = {
     "player_changed": "Плеер или видео изменилось. Соответствие фильму нужно проверить заново.",
-    "page_changed": "Страница изменилась. Выбери нужную серию в Чушпане заново.",
+    "page_changed": "Страница изменилась или сайт открыл новую вкладку. "
+    "Добавь точный адрес плеера и выбери нужную серию заново; управление другой вкладкой отменено.",
     "multiple_players": "На странице несколько плееров; автоматическое управление неоднозначно.",
     "no_player": "Доступный HTML5-плеер не найден. Возможно, видео находится в чужом iframe.",
     "protected_player": "Защищённый плеер: автоматическое управление не поддерживается.",
@@ -151,7 +153,10 @@ end tell
                 "automation_unknown": "Разреши управление Safari в медиатеке → Поиск и Safari.",
                 "safari_closed": "Safari закрыт или недоступен этому процессу.",
             }
-            raise ToolError(messages.get(getattr(exc, "code", ""), str(exc))) from None
+            raise playback_error(
+                getattr(exc, "code", "safari_unavailable"),
+                messages.get(getattr(exc, "code", ""), str(exc)),
+            ) from None
         except (ValueError, TypeError):
             raise ToolError("Safari не вернул состояние плеера.") from None
         finally:
@@ -159,7 +164,9 @@ end tell
         if not isinstance(result, dict):
             raise ToolError("Неверный ответ плеера.")
         if result.get("error"):
-            raise ToolError(PLAYER_ERRORS.get(result["error"], "Плеер недоступен."))
+            raise playback_error(
+                result["error"], PLAYER_ERRORS.get(result["error"], "Плеер недоступен.")
+            )
         return result
 
 
@@ -172,6 +179,7 @@ class HTML5Adapter:
         self.expected = None
         self.binding = None
         self.content_verified = False
+        self.direct_verification = None
 
     async def read(self, action="status", position=0):
         payload = {**self.context, "action": action, "position": position, "voice": self.voice}
@@ -182,8 +190,11 @@ class HTML5Adapter:
             payload["binding"] = before.get("binding")
         state = await self.bridge.evaluate(self.url, payload)
         if self.expected and action == "status":
-            proof = classify(
-                self.expected, state.get("media_evidence") or {"live": True, "page_url": self.url}
+            proof = SourceValidator.player(
+                self.expected,
+                state.get("media_evidence") or {"live": True, "page_url": self.url},
+                self.url if self.direct_verification else "",
+                self.direct_verification,
             )
             state.update(proof)
             self.binding = state.get("binding")
@@ -196,6 +207,7 @@ class HTML5Adapter:
     async def open(self, target):
         self.url = target["link"]["url"]
         self.voice = target["link"].get("voice", "")
+        self.direct_verification = target.get("direct_verification")
         self.expected = (
             {
                 **target["item"],
@@ -229,6 +241,14 @@ class HTML5Adapter:
                 await stage("DETECT_PLAYER", "success", "Найден один доступный HTML5-плеер.")
                 break
             except ToolError as exc:
+                if getattr(exc, "code", "") in {
+                    "automation_denied",
+                    "automation_unknown",
+                    "javascript_denied",
+                    "javascript_disabled",
+                    "protected_player",
+                }:
+                    raise
                 if time.monotonic() >= deadline:
                     await stage("DETECT_PLAYER", "limited", str(exc))
                     return {
@@ -378,9 +398,10 @@ class HTML5Adapter:
             if self.expected and action != "pause" and not after.get("content_verified"):
                 raise ToolError(after["classification_reason"])
             if action == "play" and after.get("play_error"):
-                raise ToolError(
+                raise playback_error(
+                    "gesture_required",
                     "Safari заблокировал автозапуск: требуется нажатие пользователя "
-                    "или разрешение автовоспроизведения для сайта."
+                    "или разрешение автовоспроизведения для сайта.",
                 )
             if action == "fullscreen":
                 if after.get("fullscreen_error"):
@@ -425,6 +446,13 @@ class HTML5Adapter:
                 "Дождись загрузки или запусти видео кнопкой самого плеера и повтори команду."
             )
         raise ToolError("Плеер не подтвердил действие. Проверь воспроизведение на сайте.")
+
+    async def set_voice(self, voice):
+        self.voice = voice
+        state = await self.read("voice")
+        if not state.get("voice_confirmed"):
+            raise playback_error("voice_unavailable", "Плеер не подтвердил выбор озвучки.")
+        return state
 
     async def detach(self):
         if self.url:

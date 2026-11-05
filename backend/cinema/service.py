@@ -22,26 +22,43 @@ from backend.cinema.adapters import (
     open_page,
 )
 from backend.cinema.catalogue import Catalogue
-from backend.cinema.classification import FULL_TYPES, PROMO_TYPES, classify
+from backend.cinema.classification import FULL_TYPES, PROMO_TYPES
 from backend.cinema.commands import command
 from backend.cinema.filters import with_preferences
 from backend.cinema.internet import InternetSearch, SearchCredentials, SearchProviders
 from backend.cinema.keychain import TavilyCredentials
 from backend.cinema.models import CatalogueQuery, Source, origin
+from backend.cinema.native_player import AVPlayerAdapter
 from backend.cinema.personal import Recommender, score, signal, taste
+from backend.cinema.playback import (
+    PlaybackManager,
+    PlaybackState,
+    SourceResolver,
+    SourceValidator,
+    playback_error,
+)
 from backend.cinema.sources import SourceManager, capabilities
 from backend.cinema.store import CinemaStore
 from backend.cinema.tavily import TavilySearch
 from backend.cinema.tmdb import TMDB, TMDBCredentials, TMDBRateLimited
 from backend.context import RequestContext, request_scope, voice_addressed
 from backend.mac_agent import LocalMacAgent
+from backend.paths import DESKTOP
 from backend.security import ActionDenied, Risk, command_text
 from backend.tools.registry import Tool, ToolError
 
 
 class Cinema:
     def __init__(
-        self, tools, settings, memory, *, adapter_factory=None, opener=open_page, tmdb=None
+        self,
+        tools,
+        settings,
+        memory,
+        *,
+        adapter_factory=None,
+        native_factory=None,
+        opener=open_page,
+        tmdb=None,
     ):
         self.tools, self.s, self.memory = tools, settings, memory
         path = memory.db.execute("PRAGMA database_list").fetchone()[2] or ":memory:"
@@ -63,9 +80,10 @@ class Cinema:
                 else ManualAdapter(opener)
             )
         )
+        self.native_factory = native_factory or (lambda: AVPlayerAdapter(self.s))
         self.opener = opener
         self.bus = self.conv = None
-        self.session = None
+        self.playback = PlaybackManager()
         self.poller = None
         self.jobs = set()
         self.lock = asyncio.Lock()
@@ -75,6 +93,8 @@ class Cinema:
         self.catalogues = {"TMDB": self.tmdb}
         self.catalogue = Catalogue(self.tmdb)
         self.sources = SourceManager(self.db, opener=self.opener)
+        self.resolver = SourceResolver(self.sources)
+        self.validator = SourceValidator()
         self.search_credentials = SearchCredentials(settings.data_path / "integrations")
         self.tavily_credentials = TavilyCredentials()
         self.tavily = TavilySearch(self.tavily_credentials)
@@ -99,6 +119,18 @@ class Cinema:
         self.search_sequence = 0
         self.import_proposals = {}
         self.register()
+
+    @property
+    def session(self):
+        return self.playback.session
+
+    @session.setter
+    def session(self, value):
+        self.playback.session = value
+
+    @property
+    def player(self):
+        return self.session.controller
 
     async def db(self, method, *args, **kwargs):
         return await asyncio.get_running_loop().run_in_executor(
@@ -132,6 +164,7 @@ class Cinema:
                 "episode_id": {"type": "string", "maxLength": 64},
                 "link_id": {"type": "string", "maxLength": 64},
                 "device": {"type": "string", "enum": ["mac", "airplay"]},
+                "player": {"type": "string", "enum": ["native", "safari", "embedded"]},
             },
             ["title_id"],
             risk=Risk.CHANGE,
@@ -234,6 +267,7 @@ class Cinema:
                 }
                 if self.session
                 else None,
+                "playback": self.playback.snapshot(),
                 "message": self.message,
                 "matches": self.matches,
                 "tmdb": {"configured": self.tmdb.credentials.configured},
@@ -423,6 +457,7 @@ class Cinema:
                     value.get("episode_id"),
                     value.get("device"),
                     request_id=str(value.get("request_id", ""))[:100],
+                    player=value.get("player"),
                 )
             elif op == "watch_cancel":
                 self.watch_sequence += 1
@@ -433,10 +468,14 @@ class Cinema:
                 if not confirmation or confirmation[0] < time.monotonic():
                     raise ToolError("Подтверждение устарело. Выбери источник ещё раз.")
                 result = await self.source_result(
-                    confirmation[1], open_result=True, manual_choice=confirmation[2], approved=True
+                    confirmation[1],
+                    open_result=True,
+                    manual_choice=confirmation[2],
+                    approved=True,
+                    player=confirmation[3] if len(confirmation) > 3 else None,
                 )
             elif op == "find_sources":
-                choices = await self.sources.search(
+                choices = await self.resolver.search(
                     value["title_id"],
                     value.get("episode_id"),
                     refresh=value.get("refresh") is True,
@@ -460,6 +499,21 @@ class Cinema:
             elif op == "source_unpin":
                 await self.db("unpin_source", value["title_id"])
                 self.sources.invalidate()
+            elif op in {"playback_control", "playback_switch", "playback_voice"}:
+                self.require_playback()
+                token = str(value.get("token", ""))
+                if not self.session or not secrets.compare_digest(token, self.session["token"]):
+                    raise ToolError("Просмотр изменился. Обнови экран плеера.")
+                if op == "playback_switch":
+                    target = self.session["target"]
+                    result = await self.open(
+                        target["item"]["id"],
+                        target["episode"]["id"],
+                        value.get("link_id") or target["link"]["id"],
+                        player=value.get("player"),
+                    )
+                else:
+                    result = await self.viewer_control(value)
             elif op == "embedded_event":
                 await self.embedded_event(value)
                 return
@@ -594,11 +648,11 @@ class Cinema:
                 item = await self.db("title", value["title_id"])
                 args = {
                     k: value[k]
-                    for k in ("title_id", "episode_id", "link_id", "device")
+                    for k in ("title_id", "episode_id", "link_id", "device", "player")
                     if k in value
                 }
                 if value.get("link_id") and value.get("device") != "airplay":
-                    choices = await self.sources.search(
+                    choices = await self.resolver.search(
                         item["id"], value.get("episode_id"), saved_only=True
                     )
                     row = next(
@@ -610,10 +664,15 @@ class Cinema:
                             "Сохранённая ссылка недоступна. Повтори автоматический поиск."
                         )
                     result = await self.source_result(
-                        row["id"], open_result=True, manual_choice=True
+                        row["id"], open_result=True, manual_choice=True, player=value.get("player")
                     )
                 else:
-                    result = await self.call("cinema_open", args, f"Открой сериал {item['title']}")
+                    kind = "сериал" if item["kind"] == "series" else "фильм"
+                    result = await self.call(
+                        "cinema_open",
+                        args,
+                        f"Открой {kind} {item['title']}",
+                    )
             elif op == "control":
                 result = await self.call(
                     "cinema_command", {"command": value["command"]}, value["command"]
@@ -800,7 +859,14 @@ class Cinema:
         }
 
     async def source_result(
-        self, identifier, *, open_result=False, pin=False, manual_choice=False, approved=False
+        self,
+        identifier,
+        *,
+        open_result=False,
+        pin=False,
+        manual_choice=False,
+        approved=False,
+        player=None,
     ):
         if open_result:
             self.require_playback()
@@ -883,7 +949,12 @@ class Cinema:
             }
             if len(self.watch_confirmations) >= 16:
                 self.watch_confirmations.pop(next(iter(self.watch_confirmations)))
-            self.watch_confirmations[token] = (time.monotonic() + 180, identifier, manual_choice)
+            self.watch_confirmations[token] = (
+                time.monotonic() + 180,
+                identifier,
+                manual_choice,
+                player,
+            )
             message = (
                 "Найден новый сайт. Его безопасность и работа видео ещё не подтверждены. "
                 "Открыть и запомнить этот источник?"
@@ -957,8 +1028,13 @@ class Cinema:
             self.open_approvals[link["id"]] = (time.monotonic() + 30, source.model_dump())
             return await self.call(
                 "cinema_open",
-                {"title_id": item["id"], "episode_id": ep["id"], "link_id": link["id"]},
-                f"Открой сериал {item['title']}",
+                {
+                    "title_id": item["id"],
+                    "episode_id": ep["id"],
+                    "link_id": link["id"],
+                    **({"player": player} if player else {}),
+                },
+                f"Открой {'сериал' if item['kind'] == 'series' else 'фильм'} {item['title']}",
             )
         return {"message": "Источник и точная страница сохранены."}
 
@@ -987,7 +1063,16 @@ class Cinema:
             ):
                 raise ValueError("Неверное состояние встроенного плеера.")
             event = value.get("event")
-            if event not in {"periodic", "playing", "pause", "seek", "ended", "close", "error"}:
+            if event not in {
+                "periodic",
+                "playing",
+                "pause",
+                "seek",
+                "ended",
+                "close",
+                "error",
+                "blocked",
+            }:
                 raise ValueError("Неверное событие плеера.")
             if event == "playing" and (
                 value.get("paused") is not False
@@ -1001,9 +1086,17 @@ class Cinema:
             ):
                 return
             session["sequence"] = value["sequence"]
-            if event == "error":
+            if event in {"error", "blocked"}:
                 self.message = (
                     "Встроенное видео недоступно. Выбери другой источник или открой сайт."
+                )
+                if event == "blocked":
+                    self.message = "Браузер запретил автозапуск. Нажми ▶ во встроенном плеере."
+                self.playback.failure(
+                    playback_error(
+                        "gesture_required" if event == "blocked" else "embedded_unavailable",
+                        self.message,
+                    )
                 )
             else:
                 if event == "playing" or session.get("counted"):
@@ -1021,15 +1114,16 @@ class Cinema:
                 elif event == "pause":
                     self.message = "Фильм на паузе."
             target = session["target"]
-            session["last_position"] = value["position"]
-            session["last_duration"] = value["duration"]
+            if event not in {"error", "blocked"}:
+                session["last_position"] = value["position"]
+                session["last_duration"] = value["duration"]
             control = session.get("control")
             if control and value.get("command_id") == control["id"]:
                 expected = {"play": "playing", "pause": "pause", "seek": "seek"}[control["action"]]
                 confirmed = event == expected and (event != "pause" or value.get("paused") is True)
                 if confirmed and event == "seek":
                     confirmed = abs(value["position"] - control["expected"]) < 2
-                if not control["future"].done() and (confirmed or event == "error"):
+                if not control["future"].done() and (confirmed or event in {"error", "blocked"}):
                     control["future"].set_result(
                         {
                             "playback_confirmed": event == "playing",
@@ -1277,7 +1371,7 @@ class Cinema:
                 return await self.resume(
                     item["id"], episode["id"], exact_only=item["kind"] == "series"
                 )
-            choices = await self.sources.search(
+            choices = await self.resolver.search(
                 item["id"], episode["id"], alternative=action == "alternative"
             )
             await self.publish(navigate=True, source_results=choices)
@@ -1409,52 +1503,26 @@ class Cinema:
         else:
             target = self.session["target"]
         if action == "next":
+            player = "native" if self.session and self.session["mode"] == "native" else None
             following = await self.db("next_target", target["item"]["id"], target["episode"]["id"])
             return await self.open(
-                following["item"]["id"], following["episode"]["id"], device=parsed.get("device")
+                following["item"]["id"],
+                following["episode"]["id"],
+                device=parsed.get("device"),
+                player=player,
             )
         if (
             self.session
             and self.session["mode"] == "embedded"
             and action in {"play", "pause", "seek"}
         ):
-            session = self.session
-            if session.get("control"):
-                raise ToolError("Дождись ответа плеера на предыдущую команду.")
-            control = {
-                "id": secrets.token_hex(8),
-                "action": action,
-                "future": asyncio.get_running_loop().create_future(),
-            }
-            if action == "seek":
-                duration = session.get("last_duration") or target["episode"]["duration"]
-                control["expected"] = max(
-                    0,
-                    min(
-                        max(0, duration - 0.1), session.get("last_position", 0) + parsed["seconds"]
-                    ),
-                )
-            session["control"] = control
-            try:
-                await self.publish(
-                    embedded_control={
-                        "token": session["token"],
-                        "action": action,
-                        "seconds": parsed.get("seconds", 0),
-                        "command_id": control["id"],
-                    }
-                )
-                return await asyncio.wait_for(control["future"], 5)
-            except TimeoutError:
-                raise ToolError(
-                    "Встроенный плеер не подтвердил действие. Проверь его в кинотеке."
-                ) from None
-            finally:
-                session.pop("control", None)
+            return await self.embedded_control(
+                action, parsed.get("seconds", 0), self.session["token"]
+            )
         async with self.lock:
             if action == "info":
                 live = None
-                if self.session and self.session["mode"] == "html5":
+                if self.session and self.session["mode"] in {"html5", "native"}:
                     live = await self.sample("periodic")
                 elif self.session and self.session["mode"] == "embedded":
                     live = {
@@ -1494,15 +1562,15 @@ class Cinema:
                 return {"message": "Серия отмечена просмотренной.", "result_status": "success"}
             if action == "tv" or parsed.get("device") == "airplay":
                 return self.airplay_result()
-            if self.session["mode"] != "html5":
+            if self.session["mode"] not in {"html5", "native"}:
                 raise ToolError("Источник в ручном режиме. Управляй плеером на сайте.")
             if action == "seek":
-                state = await self.session["adapter"].sample()
+                state = await self.player.sample()
                 position = max(0, min(state["duration"], state["position"] + parsed["seconds"]))
                 self.session["allow_zero"] = position == 0
-                result = await self.session["adapter"].control("seek", position)
+                result = await self.player.control("seek", position)
             else:
-                result = await self.session["adapter"].control(action)
+                result = await self.player.control(action)
             await self.save(
                 result, "pause" if action == "pause" else "seek" if action == "seek" else "playing"
             )
@@ -1517,8 +1585,32 @@ class Cinema:
             "message": self.device_options()[1]["reason"],
         }
 
-    async def resume(
-        self, title_id, episode_id=None, device=None, *, request_id="", exact_only=False
+    async def resume(self, *args, **kwargs):
+        self.playback.transition(PlaybackState.SEARCHING, "Ищем сохранённый источник просмотра.")
+        try:
+            result = await self._resume(*args, **kwargs)
+            if self.playback.state == PlaybackState.SEARCHING:
+                self.playback.transition(
+                    PlaybackState.BLOCKED,
+                    result.get("message", "Выбери источник."),
+                    "source_selection",
+                )
+                await self.publish()
+            return result
+        except (ToolError, OSError, TimeoutError, ValueError) as exc:
+            self.playback.failure(exc)
+            await self.publish()
+            raise
+
+    async def _resume(
+        self,
+        title_id,
+        episode_id=None,
+        device=None,
+        *,
+        request_id="",
+        exact_only=False,
+        player=None,
     ):
         from urllib.parse import urlsplit
 
@@ -1617,7 +1709,7 @@ class Cinema:
                 ep["id"],
             )
             result = (
-                await self.sources.search(title_id, episode_id, saved_only=True)
+                await self.resolver.search(title_id, episode_id, saved_only=True)
                 if prefs.use_last_source
                 else None
             )
@@ -1646,9 +1738,9 @@ class Cinema:
                             "priority": 100,
                         },
                     )
-                result = await self.sources.search(title_id, episode_id)
+                result = await self.resolver.search(title_id, episode_id)
             if not result:
-                result = await self.sources.search(title_id, episode_id, saved_only=True)
+                result = await self.resolver.search(title_id, episode_id, saved_only=True)
             if sequence != self.watch_sequence:
                 return {"playback_confirmed": False, "message": "Поиск заменён новым запросом."}
             selected = result["selected_id"]
@@ -1670,7 +1762,7 @@ class Cinema:
             )
             if selected and prefs.auto_open and device != "airplay":
                 await stage("Найдено совпадение… Открываем воспроизведение…")
-                result = await self.source_result(selected, open_result=True)
+                result = await self.source_result(selected, open_result=True, player=player)
                 await stage(result.get("message", "Открытие завершено; запуск ещё не подтверждён."))
                 return result
             await self.publish(navigate=True, source_results={**result, "request_id": request_id})
@@ -1682,12 +1774,37 @@ class Cinema:
                 else "Выбери вариант просмотра в кинотеке.",
             }
         if not prefs.auto_open:
-            result = await self.sources.search(title_id, episode_id, saved_only=True)
+            result = await self.resolver.search(title_id, episode_id, saved_only=True)
             await self.publish(source_results={**result, "request_id": request_id})
             return {"playback_confirmed": False, "message": "Выбери сохранённый вариант просмотра."}
-        return await self.open(title_id, episode_id, device=device)
+        return await self.open(title_id, episode_id, device=device, player=player)
 
-    async def open(self, title_id, episode_id=None, link_id=None, device=None):
+    async def open(self, title_id, episode_id=None, link_id=None, device=None, *, player=None):
+        if player not in {None, "safari", "native", "embedded"}:
+            raise ValueError("Неизвестный плеер.")
+        self.playback.transition(PlaybackState.VALIDATING_SOURCE, "Проверяем выбранный источник.")
+        try:
+            result = await self._open(title_id, episode_id, link_id, device, player=player)
+            if self.session and self.session["mode"] == "embedded":
+                pass
+            elif self.session and not result.get("error_code"):
+                self.playback.outcome(result)
+            elif result.get("error_code"):
+                pass
+            else:
+                self.playback.transition(
+                    PlaybackState.BLOCKED,
+                    result.get("message", "Выбери источник."),
+                    "source_selection",
+                )
+            await self.publish()
+            return {**result, "playback_state": self.playback.state.value}
+        except (ToolError, OSError, TimeoutError, ValueError) as exc:
+            self.playback.failure(exc)
+            await self.publish()
+            raise
+
+    async def _open(self, title_id, episode_id=None, link_id=None, device=None, *, player=None):
         if not self.available:
             raise ToolError("Долговременная SQLite недоступна.")
         async with self.lock:
@@ -1700,19 +1817,7 @@ class Cinema:
             if not link_id:
                 item = await self.db("detail", title_id)
                 ep = next(ep for ep in item["episodes"] if ep["id"] == choices["episode_id"])
-                memory = item.get("source_memory", {})
-                preferred = sorted(
-                    available,
-                    key=lambda choice: (
-                        choice["source"]["id"] == memory.get("pinned_source_id"),
-                        prefs.use_last_source and choice["link"]["id"] == ep["last_link_id"],
-                        prefs.use_last_source
-                        and choice["source"]["id"] == memory.get("last_source_id"),
-                        choice["source"]["preferred"],
-                        -choice["source"]["priority"],
-                    ),
-                    reverse=True,
-                )
+                preferred = self.resolver.preferred(available, item, ep, prefs)
                 link_id = (
                     preferred[0]["link"]["id"]
                     if preferred and prefs.auto_select_source
@@ -1741,27 +1846,8 @@ class Cinema:
                 link_id = available[0]["link"]["id"]
             target = await self.db("target", title_id, episode_id, link_id)
             source = target["source"]
-            query = {
-                **target["item"],
-                "season": target["episode"]["season"],
-                "episode": target["episode"]["episode"],
-            }
             link_verification = await self.db("verify_link", target["link"]["id"])
-            marker = classify(query, {"page_url": target["link"]["url"]})
-            if (
-                marker["video_type"] in PROMO_TYPES
-                or link_verification.get("video_type") in PROMO_TYPES
-            ):
-                await self.trace(
-                    "VERIFY",
-                    "rejected",
-                    "URL отклонён: " + target["link"]["url"],
-                    title_id,
-                    target["episode"]["id"],
-                )
-                raise ToolError(
-                    "Источник для просмотра не найден: сохранённая ссылка ведёт на промо-видео."
-                )
+            playback_source = self.validator.validate(target, link_verification)
             approval = self.open_approvals.pop(target["link"]["id"], None)
             approved = bool(approval and approval[0] > time.monotonic() and approval[1] == source)
             status = source.get("access_status", "UNKNOWN")
@@ -1780,8 +1866,9 @@ class Cinema:
             embed = None
             if (
                 source["adapter"] == "direct"
-                and prefs.embedded_playback
-                and not prefs.open_in_safari
+                and (prefs.embedded_playback or player in {"native", "embedded"})
+                and (not prefs.open_in_safari or player in {"native", "embedded"})
+                and player != "safari"
             ):
                 resolved = await self.sources.adapter(source).resolve(
                     {"url": target["link"]["url"]}
@@ -1789,10 +1876,44 @@ class Cinema:
                 if (
                     resolved["embedded"]
                     and link_verification.get("content_verified") is True
-                    and link_verification.get("video_type") in FULL_TYPES
+                    and link_verification.get("video_type")
+                    == ("episode" if target["item"]["kind"] == "series" else "full_movie")
                 ):
                     embed = target["link"]["url"]
-            if not embed and source["adapter"] != "local" and not prefs.allow_browser:
+            from pathlib import Path
+
+            native_format = Path(target["link"]["url"].split("?", 1)[0]).suffix.lower() in {
+                ".mp4",
+                ".m4v",
+                ".mov",
+                ".m3u8",
+            }
+            native = (
+                native_format
+                and (
+                    player == "native"
+                    or (
+                        DESKTOP
+                        and player is None
+                        and prefs.embedded_playback
+                        and not prefs.open_in_safari
+                    )
+                )
+                and (bool(embed) or source["adapter"] == "local")
+            )
+            if player == "native" and not native:
+                raise playback_error(
+                    "unsupported_source",
+                    "Нативный просмотр доступен для совместимого прямого видео "
+                    "или локального файла. "
+                    "Соответствие сетевого видео должно быть подтверждено.",
+                )
+            if (
+                not embed
+                and not native
+                and source["adapter"] != "local"
+                and not prefs.allow_browser
+            ):
                 raise ToolError(
                     "Открытие браузера отключено. Для этого источника встроенное видео недоступно."
                 )
@@ -1800,6 +1921,9 @@ class Cinema:
             # The final sample may advance the position saved by a previous poll.
             target = await self.db("target", title_id, episode_id, link_id)
             verification = await self.db("verify_link", target["link"]["id"])
+            if not prefs.remember_voice:
+                target["link"] = {**target["link"], "voice": ""}
+                playback_source.voice = ""
             series_page = (
                 target["item"]["kind"] == "series" and verification.get("scope") == "series"
             )
@@ -1808,9 +1932,19 @@ class Cinema:
                 if series_page
                 else "html5"
                 if source["adapter"] == "manual"
-                or (source["adapter"] == "direct" and prefs.open_in_safari)
+                or source["adapter"] == "direct"
+                or player == "safari"
                 else target["source"]["adapter"]
             )
+            if native:
+                adapter = self.native_factory()
+                playback_source.adapter_id = "avkit"
+            elif embed:
+                playback_source.adapter_id = "webkit"
+            else:
+                playback_source.adapter_id = (
+                    "safari" if isinstance(adapter, HTML5Adapter) else source["adapter"]
+                )
             token = secrets.token_urlsafe(32)
             base = getattr(self.bus, "cinema_url", "") if self.bus else ""
             target["tracking"] = {
@@ -1824,20 +1958,26 @@ class Cinema:
                 else 0
             )
             self.next_episode = None
-            self.session = {
-                "token": token,
-                "target": target,
-                "adapter": adapter,
-                "sequence": 0,
-                "observed_at": 0,
-                "mode": target["source"]["adapter"],
-                "errors": 0,
-                "last_position": starting_position,
-                "sample_position": starting_position,
-                "confirmed": False,
-                "allow_zero": not prefs.resume_position,
-            }
-            if embed:
+            self.playback.bind(
+                playback_source,
+                **{
+                    "token": token,
+                    "target": target,
+                    "adapter": adapter,
+                    "sequence": 0,
+                    "observed_at": 0,
+                    "mode": target["source"]["adapter"],
+                    "errors": 0,
+                    "last_position": starting_position,
+                    "sample_position": starting_position,
+                    "confirmed": False,
+                    "allow_zero": not prefs.resume_position,
+                },
+            )
+            if embed and not native:
+                self.playback.transition(
+                    PlaybackState.WAITING_FOR_PLAYER, "Ожидаем встроенный плеер."
+                )
                 self.session["mode"] = "embedded"
                 self.session["last_position"] = starting_position
                 await self.db("select", target["episode"]["id"], target["link"]["id"])
@@ -1852,6 +1992,7 @@ class Cinema:
                         "position": starting_position,
                         "title_id": title_id,
                         "episode_id": target["episode"]["id"],
+                        "autoplay": prefs.autoplay,
                     }
                 )
                 return {
@@ -1862,6 +2003,7 @@ class Cinema:
             try:
 
                 async def diagnostic(stage, status, message):
+                    self.playback.stage(stage, status, message)
                     await self.trace(stage, status, message, title_id, target["episode"]["id"])
 
                 await diagnostic(
@@ -1875,11 +2017,22 @@ class Cinema:
                     "restart": not prefs.resume_position,
                     "autoplay": prefs.autoplay,
                     "diagnostic": diagnostic,
+                    "direct_verification": link_verification
+                    if source["adapter"] == "direct"
+                    else None,
                 }
-                result = await adapter.open(opening_target)
+                result = await self.player.open(opening_target)
             except (ToolError, OSError, TimeoutError) as exc:
+                if native:
+                    await adapter.detach()
                 self.session["mode"] = "manual"
-                result = {"playback_confirmed": False, "mode": "manual", "message": str(exc)}
+                self.playback.failure(exc)
+                result = {
+                    "playback_confirmed": False,
+                    "mode": "manual",
+                    "message": str(exc),
+                    "error_code": getattr(exc, "code", "player_unavailable"),
+                }
             self.session["mode"] = result.get("mode", self.session["mode"])
             if result.get("content_verified") is False:
                 await self.db(
@@ -1893,7 +2046,8 @@ class Cinema:
                     },
                 )
             if (
-                result.get("page_opened")
+                result.get("mode") == "native"
+                or result.get("page_opened")
                 or result.get("file_opened")
                 or result.get("playback_confirmed")
             ) and result.get("content_verified") is not False:
@@ -1909,7 +2063,7 @@ class Cinema:
                     self.message += f" Сохранённый таймкод: {target['episode']['position']:.1f} с."
                 result["message"] = self.message
             # Opening a page is not a viewing event. Preserve the explicitly chosen link.
-            if self.session["mode"] == "html5":
+            if self.session["mode"] in {"html5", "native"}:
                 if "position" in result and result.get("playback_confirmed"):
                     await self.save(result, "playing")
                 self.poller = asyncio.create_task(self.poll())
@@ -1923,6 +2077,12 @@ class Cinema:
         adapter = session["adapter"]
         if isinstance(adapter, HTML5Adapter) and adapter.expected:
             if not adapter.content_verified or state.get("binding") != adapter.binding:
+                self.playback.transition(
+                    PlaybackState.BLOCKED,
+                    "Видео изменилось: соответствие выбранному названию не подтверждено. "
+                    "Прежний прогресс сохранён; выбери источник заново.",
+                    "player_changed",
+                )
                 return False
         target = session["target"]
         position, duration = state.get("position"), state.get("duration")
@@ -1950,6 +2110,14 @@ class Cinema:
         if type(observed) not in (int, float) or not math.isfinite(observed):
             raise ValueError("Неверная отметка времени плеера.")
         if observed and observed < session["observed_at"]:
+            return False
+        self.playback.observe(state, event)
+        if (
+            event == "periodic"
+            and session.get("counted")
+            and abs(position - session.get("sample_position", position)) <= 0.05
+        ):
+            # A stationary clock is not another successful viewing timestamp.
             return False
         if not session.get("counted"):
             advancing = (
@@ -1983,6 +2151,7 @@ class Cinema:
             position,
             duration,
             True,
+            session.source.voice,
         )
         target["episode"].update(position=position, duration=duration)
         await self.trace(
@@ -1994,8 +2163,120 @@ class Cinema:
         )
         return True
 
+    async def embedded_control(self, action, seconds, token):
+        async with self.lock:
+            session = self.session
+            if (
+                not session
+                or session["mode"] != "embedded"
+                or not secrets.compare_digest(token, session["token"])
+            ):
+                raise ToolError("Просмотр изменился. Повтори команду.")
+            if session.get("control"):
+                raise ToolError("Дождись ответа плеера на предыдущую команду.")
+            control = {
+                "id": secrets.token_hex(8),
+                "action": action,
+                "future": asyncio.get_running_loop().create_future(),
+            }
+            if action == "seek":
+                duration = session.get("last_duration") or session["target"]["episode"]["duration"]
+                control["expected"] = max(
+                    0, min(max(0, duration - 0.1), session.get("last_position", 0) + seconds)
+                )
+            session["control"] = control
+        try:
+            await self.publish(
+                embedded_control={
+                    "token": token,
+                    "action": action,
+                    "seconds": seconds,
+                    "command_id": control["id"],
+                }
+            )
+            return await asyncio.wait_for(control["future"], 5)
+        except TimeoutError:
+            if self.session is session:
+                self.playback.transition(
+                    PlaybackState.BLOCKED,
+                    "Встроенный плеер не подтвердил действие.",
+                    "embedded_timeout",
+                )
+            raise ToolError(
+                "Встроенный плеер не подтвердил действие. Проверь его в кинотеке."
+            ) from None
+        finally:
+            session.pop("control", None)
+            await self.publish()
+
+    async def viewer_control(self, value):
+        self.require_playback()
+        if not self.tools.enabled("cinema_command"):
+            raise ToolError("Управление кино отключено в настройках доступа.")
+        if (
+            self.session
+            and self.session["mode"] == "embedded"
+            and value.get("action") in {"play", "pause"}
+        ):
+            return await self.embedded_control(value["action"], 0, str(value.get("token", "")))
+        async with self.lock:
+            if not self.session or not secrets.compare_digest(
+                str(value.get("token", "")), self.session["token"]
+            ):
+                raise ToolError("Просмотр изменился. Обнови экран плеера.")
+            if value["op"] == "playback_voice":
+                voice = str(value.get("voice", ""))[:100]
+                tracks = self.session.source.capabilities.get("audio_tracks", [])
+                if (
+                    not voice
+                    or voice not in tracks
+                    or not hasattr(self.session["adapter"], "set_voice")
+                ):
+                    raise ToolError("Плеер не подтвердил наличие этой звуковой дорожки.")
+                result = await self.session["adapter"].set_voice(voice)
+                self.session.source.voice = voice
+                await self.db(
+                    "playback_voice",
+                    self.session["target"]["episode"]["id"],
+                    self.session["target"]["link"]["id"],
+                    voice,
+                )
+                return {**result, "message": "Плеер подтвердил звуковую дорожку."}
+            action = value.get("action")
+            if action == "close":
+                await self.stop_tracking()
+                return {
+                    "playback_confirmed": False,
+                    "message": "Просмотр закрыт; прогресс сохранён.",
+                }
+            if action not in {"play", "pause", "seek", "fullscreen"}:
+                raise ValueError("Неизвестное действие плеера.")
+            if self.session["mode"] not in {"html5", "native"}:
+                raise ToolError("Используй элементы управления встроенного видео или сайта.")
+            position = value.get("position", 0)
+            if type(position) not in {int, float} or not math.isfinite(position) or position < 0:
+                raise ValueError("Неверная позиция видео.")
+            if action == "seek":
+                current = await self.player.sample()
+                if not current.get("duration") or position >= current["duration"]:
+                    raise ToolError("Позиция выходит за границы видео.")
+                self.session["allow_zero"] = position == 0
+            try:
+                result = await self.player.control(action, position)
+            except (ToolError, OSError, TimeoutError) as exc:
+                if action != "fullscreen":
+                    self.playback.failure(exc)
+                raise
+            if action != "fullscreen":
+                await self.save(
+                    result,
+                    "seek" if action == "seek" else "pause" if action == "pause" else "playing",
+                )
+            self.session.source.capabilities.update(result.get("capabilities") or {})
+            return result
+
     async def sample(self, event):
-        state = await self.session["adapter"].sample()
+        state = await self.player.sample()
         await self.save(state, "ended" if state.get("ended") else event)
         return state
 
@@ -2014,12 +2295,16 @@ class Cinema:
                         return
                     state = await self.sample("periodic")
                     self.session["errors"] = 0
+                    if state.get("closed"):
+                        await self.stop_tracking(flush=False)
+                        await self.publish()
+                        return
                     ended_target = self.session["target"] if state.get("ended") else None
                     await self.publish()
                 if ended_target:
-                    await self.finished(ended_target, prefs.auto_next)
+                    await self.finished(ended_target, (await self.db("preferences")).auto_next)
                     return
-            except (ToolError, OSError, TimeoutError, sqlite3.Error, ValueError):
+            except (ToolError, OSError, TimeoutError, sqlite3.Error, ValueError) as exc:
                 async with self.lock:
                     if not self.session:
                         return
@@ -2030,6 +2315,7 @@ class Cinema:
                             "проверь прогресс вручную."
                         )
                         await self.stop_tracking(flush=False)
+                        self.playback.failure(exc)
                         await self.publish()
                         return
 
@@ -2037,6 +2323,7 @@ class Cinema:
         async with self.lock:
             if not self.session or self.session["target"] is not target:
                 return
+            player = "native" if self.session["mode"] == "native" else None
             await self.stop_tracking(flush=False)
         item = await self.db("detail", target["item"]["id"])
         if item["kind"] != "series":
@@ -2083,10 +2370,13 @@ class Cinema:
                 "season": next_ep["season"],
                 "episode": next_ep["episode"],
                 "title": item["title"],
+                "player": player,
             }
         if auto_next and self.conv and next_ep:
             try:
-                result = await self.resume(item["id"], next_ep["id"], exact_only=True)
+                result = await self.resume(
+                    item["id"], next_ep["id"], exact_only=True, player=player
+                )
                 self.message = result.get("message", self.message)
             except (ValueError, ToolError):
                 self.message = (
@@ -2158,13 +2448,13 @@ class Cinema:
             self.poller.cancel()
         self.poller = None
         if self.session:
-            if flush and self.session["mode"] == "html5":
+            if flush and self.session["mode"] in {"html5", "native"}:
                 with contextlib.suppress(
                     ToolError, OSError, TimeoutError, ValueError, sqlite3.Error
                 ):
                     await self.sample("close")
             await self.session["adapter"].detach()
-        self.session = None
+        self.playback.clear()
 
     async def close(self):
         for task in list(self.jobs):

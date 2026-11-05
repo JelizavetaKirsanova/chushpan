@@ -146,6 +146,7 @@ class FakePlayer:
     async def open(self, target):
         self.opened.append(target)
         self.position = target["episode"]["position"]
+        self.paused = False
         return {**await self.sample(), "playback_confirmed": True, "message": "Подтверждено"}
 
     async def sample(self):

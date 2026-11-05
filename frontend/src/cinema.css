@@ -377,3 +377,8 @@
   .cinema-page .cinema-poster-actions button { flex-basis: 27px; height: 29px; padding: 3px; }
   .cinema-list .cinema-card { grid-template-columns: 120px minmax(0,1fr); }
 }
+
+.cinema-viewer{margin:16px 0;padding:18px 22px;border:1px solid #8d68b84d;border-radius:20px;background:linear-gradient(125deg,#30203d,#1c172b);color:#f3eafa}
+.cinema-viewer[hidden]{display:none}.cinema-viewer>p{margin:5px 0}.cinema-viewer>p:first-child{font-weight:650;color:#d4b4f0}.cinema-viewer[data-state="FAILED"]>p:first-child,.cinema-viewer[data-state="BLOCKED"]>p:first-child{color:#f2c8ab}
+.cinema-viewer-controls{display:flex;gap:9px;flex-wrap:wrap;margin-top:13px}.cinema-viewer-controls select{max-width:min(100%,320px)}
+@media(max-width:640px){.cinema-viewer{padding:15px}.cinema-viewer-controls>*{flex:1 1 140px}}

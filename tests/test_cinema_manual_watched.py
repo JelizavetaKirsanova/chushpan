@@ -109,7 +109,15 @@ def test_hud_toggle_publishes_library_and_keeps_playback_tracking(tmp_path):
         cinema.bind(bus, SimpleNamespace(device=DeviceContext.local_mac()))
         cinema.tavily_credentials.status = lambda: {"configured": False}
         item = await cinema.db("add", {"title": "Сериал", "kind": "series"})
-        cinema.session = {"target": {"item": item, "episode": item["current"]}, "mode": "html5"}
+        from backend.cinema.playback import PlaybackSource
+
+        cinema.playback.bind(
+            PlaybackSource("", item["id"], item["current"]["id"], "", "", "safari", "unknown"),
+            target={"item": item, "episode": item["current"]},
+            mode="html5",
+            token="fixture",
+            adapter=SimpleNamespace(),
+        )
         cinema.stop_tracking = AsyncMock()
         for watched in (True, False):
             await cinema.handle({"op": "update", "id": item["id"], "values": {"watched": watched}})
