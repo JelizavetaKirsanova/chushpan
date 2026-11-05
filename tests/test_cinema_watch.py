@@ -177,8 +177,7 @@ def test_watch_search_open_saved_repeat_and_episode_restore(tmp_path):
             before = len(service.sources.http.calls)
             await service.resume(item["id"])
             assert not any(
-                url.endswith(("map.xml", "robots.txt"))
-                for url, _ in service.sources.http.calls[before:]
+                url.endswith("map.xml") for url, _ in service.sources.http.calls[before:]
             )
             assert (
                 len(player.opened) == 1

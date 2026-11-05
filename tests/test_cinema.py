@@ -621,6 +621,7 @@ def test_last_series_and_genre_requests_never_reach_llm_and_reuse_last_source(tm
                 "kind": "series",
                 "source_id": second["id"],
                 "url": "https://example.org/watch",
+                "year": item["year"],
             },
         )
         episode = item["episodes"][0]
@@ -629,7 +630,7 @@ def test_last_series_and_genre_requests_never_reach_llm_and_reuse_last_source(tm
             return {"items": await service.tmdb.search(genre=query.genre, kind=query.kind)}
 
         service.catalogue.page = genre_page
-        preferred = episode["links"][-1]
+        preferred = next(link for link in episode["links"] if link["source_id"] == second["id"])
         service.sources.http = HTTP()
         await service.db("progress", episode["id"], 66, 1000, "manual", preferred["id"])
         expected_position = 66

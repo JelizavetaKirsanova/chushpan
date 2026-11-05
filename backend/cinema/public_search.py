@@ -270,7 +270,6 @@ class PublicCatalogue:
             meta.get("original_title", ""),
             *meta.get("alternative_titles", []),
         ]
-        names = {key(t) for t in titles if t}
         slugs = {slug(t) for t in titles if len(key(t)) >= 3}
 
         def shortlist():

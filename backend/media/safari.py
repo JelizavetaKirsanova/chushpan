@@ -614,9 +614,34 @@ class SafariMusic(AccessibilityApp):
                 and urlparse(n.get("url", "")).path.startswith("/library")
                 for n in nodes
             ):
+                break
+            await asyncio.sleep(0.2)
+        else:
+            raise ToolError("YouTube Music не открыл библиотеку.")
+        deadline = time.monotonic() + self.config.timeout_s
+        selected = False
+        while True:
+            filters = [
+                n
+                for n in nodes
+                if n.get("role") in {"AXRadioButton", "AXButton"}
+                and label(n).casefold() in {"плейлисты", "playlists"}
+            ]
+            if len(filters) > 1:
+                raise ToolError("Фильтр плейлистов в библиотеке неоднозначен.")
+            if filters and filters[0].get("value") != "1" and not selected:
+                await self.act(filters[0])
+                selected = True
+            elif (
+                any(
+                    n.get("role") == "AXLink" and urlparse(n.get("url", "")).path == "/playlist"
+                    for n in nodes
+                )
+                or time.monotonic() >= deadline
+            ):
                 return nodes
             await asyncio.sleep(0.2)
-        raise ToolError("YouTube Music не открыл библиотеку.")
+            nodes = await self.snapshot()
 
     async def now_playing(self) -> dict:
         status = await self.request("status")

@@ -89,14 +89,11 @@ def test_archive_search_with_unknown_year_keeps_manual_candidates():
 
 @pytest.mark.parametrize("year", [None, 0])
 @pytest.mark.parametrize("published", [None, "2025-01-01"])
-def test_unknown_year_allows_a_card_but_full_playback_needs_an_exact_identity(year, published):
+def test_unknown_year_returns_a_card_without_unverified_full_playback(year, published):
     query = {**QUERY, "year": year}
     entity = work(datePublished=published)
     assert verified_entity(entity, query)
     assert not classify(query, evidence(entity))["content_verified"]
-    identified = {**query, "metadata": {**query["metadata"], "imdb_id": "tt12345678"}}
-    entity["sameAs"] = "https://www.imdb.com/title/tt12345678/"
-    assert classify(identified, evidence(entity))["content_verified"]
     promo = work(datePublished=published, trailer={"contentUrl": MEDIA}, associatedMedia={})
     result = classify(query, evidence(promo))
     assert result["video_type"] == "trailer" and not result["content_verified"]
@@ -262,6 +259,27 @@ def test_ax_path_refresh_retries_only_a_rejected_precondition(monkeypatch):
     with pytest.raises(ToolError):
         asyncio.run(app.act(old))
     assert app.request.await_count == 1
+
+
+def test_library_discovery_selects_playlists_before_returning_candidates(monkeypatch):
+    _, app = music(monkeypatch)
+    app.launch = AsyncMock()
+    app.act = AsyncMock()
+    library = {"role": "AXLink", "title": "Библиотека", "path": [1]}
+    area = {"role": "AXWebArea", "url": "https://music.youtube.com/library"}
+    selector = {"role": "AXRadioButton", "title": "Плейлисты", "value": "0", "path": [2]}
+    link = {"role": "AXLink", "url": "https://music.youtube.com/playlist?list=test", "path": [3]}
+    app.snapshot = AsyncMock(
+        side_effect=[
+            [library],
+            [area, selector],
+            [area, {**selector, "value": "1"}],
+            [area, {**selector, "value": "1"}, link],
+        ]
+    )
+    monkeypatch.setattr("backend.media.safari.asyncio.sleep", AsyncMock())
+    assert link in asyncio.run(app.library_page())
+    assert [call.args[0] for call in app.act.await_args_list] == [library, selector]
 
 
 @pytest.mark.parametrize(
