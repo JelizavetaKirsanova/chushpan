@@ -383,13 +383,13 @@ class HTML5Adapter:
                     "или разрешение автовоспроизведения для сайта."
                 )
             if action == "fullscreen":
-                if after.get("fullscreen") is True:
-                    return {**after, "fullscreen_confirmed": True}
                 if after.get("fullscreen_error"):
                     raise ToolError(
                         "Safari не разрешил fullscreen без действия пользователя "
                         "или плеер его не поддерживает."
                     )
+                if after.get("fullscreen") is True and after.get("fullscreen_pending") is not True:
+                    return {**after, "fullscreen_confirmed": True}
             if action == "pause" and after.get("paused") is True:
                 return {
                     **after,

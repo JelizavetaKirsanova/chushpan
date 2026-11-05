@@ -258,6 +258,9 @@ def test_zero_errors_unconfirmed_play_and_false_ended_do_not_destroy_progress(tm
             assert not await service.save(
                 {"position": 10, "duration": 1000, "paused": False, "ended": False}, "ended"
             )
+            assert not await service.save(
+                {"position": 500, "duration": 1000, "paused": True, "seeking": True}, "seek"
+            )
             saved = await service.db("detail", item["id"])
             assert saved["current"]["position"] == before and not saved["current"]["watched"]
             assert saved["current"]["playback_state"]["confirmed"]

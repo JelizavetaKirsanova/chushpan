@@ -86,6 +86,11 @@ async def check():
                 "-an",
                 "-c:v",
                 "libx264",
+                # A single-keyframe 14-second GOP can leave Safari/AVKit seeking
+                # forever on pause. Keep the positive playback fixture seekable;
+                # pending seeks are covered by independent negative regressions.
+                "-g",
+                "10",
                 "-pix_fmt",
                 "yuv420p",
                 "-movflags",
@@ -199,6 +204,10 @@ async def check():
                     )
                 )
                 raise
+            assert state["paused"] and not state["seeking"], state
+            seek_fullscreen_preserved = state.get("fullscreen") is True
+            if fullscreen_confirmed:
+                assert seek_fullscreen_preserved, state
             await cinema.save(state, "seek")
             await close_fixture(executor, urls[0])
             await asyncio.sleep(0.8)
@@ -258,6 +267,8 @@ async def check():
                         "restored_with_3_second_rewind": True,
                         "pause": True,
                         "seek": True,
+                        "paused_seek_preserved": True,
+                        "seek_fullscreen_preserved": seek_fullscreen_preserved,
                         "close_and_app_restart": True,
                         "next_offer": True,
                         "auto_next": True,

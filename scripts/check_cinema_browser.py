@@ -20,7 +20,9 @@ from starlette.staticfiles import StaticFiles
 
 from backend.brain.conversation import Conversation
 from backend.cinema.adapters import PLAYER_ERRORS, HTML5Adapter
+from backend.cinema.classification import classify
 from backend.cinema.service import Cinema
+from backend.cinema.sources import WebsiteAdapter
 from backend.cinema.tmdb import TMDB, TMDBCredentials
 from backend.config import Settings
 from backend.hud.bus import HudBus
@@ -30,6 +32,36 @@ from backend.memory.store import MemoryStore
 from backend.tools.registry import ToolError, ToolRegistry
 
 ROOT = Path(__file__).resolve().parents[1]
+DIRECT_ORIGIN = "https://cinema-fixture.example"
+DIRECT_MEDIA = DIRECT_ORIGIN + "/sample.mp4"
+
+
+class FixtureDirectAdapter(WebsiteAdapter):
+    """Test provider record, not a claim that arbitrary MP4 proves film identity."""
+
+    async def resolve(self, content):
+        result = await super().resolve(content)
+        if self.source["base_url"] == DIRECT_ORIGIN and content["url"] == DIRECT_MEDIA:
+            expected = content.get("_expected", {})
+            proof = classify(
+                expected,
+                {
+                    "live": True,
+                    "page_url": DIRECT_ORIGIN + "/film",
+                    "media_url": DIRECT_MEDIA,
+                    "duration": 12,
+                    "structured": [
+                        {
+                            "@type": "Movie",
+                            "name": "Встроенный тест",
+                            "datePublished": "2026",
+                            "associatedMedia": {"@type": "VideoObject", "contentUrl": DIRECT_MEDIA},
+                        }
+                    ],
+                },
+            )
+            result.update(proof, scope="movie")
+        return result
 
 
 class BrowserBridge:
@@ -239,6 +271,7 @@ async def check(module, screenshot, chromium=None, catalogue=False, personal=Fal
             )
             if personal:
                 cinema.sources.http = FixtureHTTP()
+                cinema.sources.adapters["manual"] = FixtureDirectAdapter
             tools.cinema = cinema
             conv = Conversation(settings, NoLLM(), memory, tools=tools)
             cinema.bind(bus, conv)
@@ -382,6 +415,7 @@ async def check(module, screenshot, chromium=None, catalogue=False, personal=Fal
                     {
                         "title": "Встроенный тест",
                         "kind": "movie",
+                        "year": 2026,
                         "source_id": direct["id"],
                         "url": "https://cinema-fixture.example/sample.mp4",
                         "metadata": {
