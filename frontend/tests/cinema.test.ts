@@ -49,6 +49,7 @@ test('real library data, source setup and offline controls',()=>{
 test('player DOM adapter handles same-origin HTML5 and refuses ambiguous players',()=>{
   const window=new Window({url:'https://example.org/episode'});window.document.body.innerHTML='<video></video>';
   const video=window.document.querySelector('video')!;
+  Object.defineProperty(video,'getBoundingClientRect',{value:()=>({width:640,height:360})});
   for(const [name,value]of Object.entries({readyState:4,duration:100,currentTime:25,paused:true,ended:false}))Object.defineProperty(video,name,{value,configurable:true,writable:true});
   const source=readFileSync(new URL('../../backend/cinema/player.js',import.meta.url),'utf8');
   const run=(request:object)=>JSON.parse(window.eval(source+`(${JSON.stringify({url:'https://example.org/episode',...request})})`));
@@ -57,6 +58,7 @@ test('player DOM adapter handles same-origin HTML5 and refuses ambiguous players
   assert.equal(window.__chushpanCinema,undefined);
   assert.equal(run({url:'https://different.example',action:'status'}).error,'page_changed');
   const second=video.cloneNode(true);window.document.body.append(second);Object.defineProperty(second,'readyState',{value:4});Object.defineProperty(second,'duration',{value:100});
+  Object.defineProperty(second,'getBoundingClientRect',{value:()=>({width:640,height:360})});
   assert.equal(run({action:'status'}).error,'multiple_players');window.happyDOM.abort();
 });
 
@@ -391,4 +393,34 @@ test('AI search stays out of the catalogue flow until opened and voice remains i
     f.window.document.querySelector('[aria-label="Голосовая команда"]').click();assert.equal(voice,1);
     assert.ok(f.window.document.querySelector('[aria-label="Фильтры каталога"]'));
   }finally{f.window.happyDOM.abort();}
+});
+
+test('player reports gesture requirements and only offers an explicit user button',async()=>{
+  const window=new Window({url:'https://example.org/episode'});try{
+    window.document.body.innerHTML='<video></video>';const video=window.document.querySelector('video')!;
+    for(const [name,value]of Object.entries({readyState:4,duration:100,currentTime:25,paused:true,ended:false}))Object.defineProperty(video,name,{value,configurable:true,writable:true});
+    Object.defineProperty(video,'getBoundingClientRect',{value:()=>({width:640,height:360})});
+    let calls=0;Object.defineProperty(video,'play',{value:()=>{calls++;return Promise.reject(new window.DOMException('Needs user gesture','NotAllowedError'));}});
+    Object.defineProperty(video,'requestFullscreen',{value:()=>Promise.reject(new window.DOMException('Needs user gesture','NotAllowedError'))});
+    const source=readFileSync(new URL('../../backend/cinema/player.js',import.meta.url),'utf8');
+    const run=(action:string)=>JSON.parse(window.eval(source+`(${JSON.stringify({url:'https://example.org/episode',action,session:'test'})})`));
+    run('play');await new Promise(resolve=>setTimeout(resolve,0));assert.equal(run('status').play_error,'gesture_required');
+    run('fullscreen');await new Promise(resolve=>setTimeout(resolve,0));assert.equal(run('status').fullscreen_error,'gesture_required');
+    run('offer_gesture');assert.equal(calls,1);const button=window.document.querySelector<HTMLButtonElement>('[data-chushpan-cinema="play-fullscreen"]')!;assert.ok(button);
+    button.click();await new Promise(resolve=>setTimeout(resolve,0));assert.equal(calls,2);
+    run('detach');assert.equal(window.document.querySelector('[data-chushpan-cinema]'),null);
+  }finally{await window.happyDOM.abort();}
+});
+
+test('HTML5 voice restoration requires an exact exposed audio track',async()=>{
+  const window=new Window({url:'https://example.org/episode'});try{
+    window.document.body.innerHTML='<video></video>';const video=window.document.querySelector('video')!;
+    const tracks=[{label:'Оригинал',language:'en',enabled:true},{label:'Русская',language:'ru',enabled:false}];
+    for(const [name,value]of Object.entries({readyState:4,duration:100,currentTime:25,paused:true,audioTracks:tracks}))Object.defineProperty(video,name,{value,configurable:true,writable:true});
+    Object.defineProperty(video,'getBoundingClientRect',{value:()=>({width:640,height:360})});
+    const source=readFileSync(new URL('../../backend/cinema/player.js',import.meta.url),'utf8');
+    const run=(voice:string)=>JSON.parse(window.eval(source+`(${JSON.stringify({url:'https://example.org/episode',action:'voice',session:'test',voice})})`));
+    assert.equal(run('Русская').voice_confirmed,true);assert.equal(tracks[0].enabled,false);assert.equal(tracks[1].enabled,true);
+    assert.equal(run('Несуществующая').voice_confirmed,false);assert.equal(tracks[1].enabled,true);
+  }finally{await window.happyDOM.abort();}
 });

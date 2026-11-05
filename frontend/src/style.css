@@ -975,3 +975,7 @@ ul {
 .perf-latency-bar[data-status="failed"], .perf-latency-bar[data-status="rejected"] { background:#c77d79; }
 .perf-latency-bar[data-status="cancelled"], .perf-latency-bar[data-status="interrupted"] { background:#bda473; }
 .perf-model { padding:12px 0; border-bottom:1px solid var(--border, #ffffff18); }
+
+.permission-onboarding {color:#f4edff;background:linear-gradient(145deg,#2f1b48,#171121);border:1px solid #a669e0;border-radius:24px;box-shadow:0 24px 90px #000a;max-width:680px;max-height:85vh;overflow:auto;padding:28px;}
+.permission-onboarding::backdrop {background:#090514bb;backdrop-filter:blur(6px);}
+.permission-onboarding>button {margin:12px 12px 0 0;}

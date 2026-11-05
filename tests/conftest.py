@@ -23,6 +23,8 @@ def isolated_settings(monkeypatch, tmp_path):
     config["persona"]["file"] = None
     config["persona"]["max_sentences"] = 2
     config["media"]["provider"] = "spotify"  # original Spotify regression tests
+    config["media"].setdefault("youtube_music", {})["transport"] = "safari"
+    config["media"]["youtube_music"].update(app_path=None, bundle_id=None, allow_browser=True)
     config["tts"]["engine"] = "piper"  # original audio fixtures; Silero has separate tests
     config["llm"]["model"] = "qwen3:8b"
     config["llm"]["think"] = False

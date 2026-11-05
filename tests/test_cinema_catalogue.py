@@ -225,7 +225,8 @@ def test_all_curated_shelves_dates_genres_recommendations_and_cold_start(tmp_pat
         personalized = await catalogue.page(
             CatalogueQuery(feed="recommended"), seeds=["tmdb:movie:10"], excluded={"tmdb:movie:1"}
         )
-        assert personalized["items"] == [] and personalized["next_page"] == 2
+        assert personalized["items"] == [] and personalized["next_page"] is None
+        assert personalized["scanned_through"] == 2
         assert any("/movie/10/recommendations" in r.url.path for r in calls)
         assert any("/movie/10/similar" in r.url.path for r in calls)
         shown = await catalogue.page(CatalogueQuery(feed="recommended"), seeds=["tmdb:movie:10"])
@@ -525,6 +526,136 @@ def test_type_specific_genres_handle_missing_genre_in_or_and_and_configuration(t
         values = {"kind": "series", "genres": ["Триллер", "Драма"]}
         assert len((await catalogue.page(CatalogueQuery(**values)))["items"]) == 1
         assert not (await catalogue.page(CatalogueQuery(**values, genre_mode="and")))["items"]
+        await tmdb.close()
+
+    asyncio.run(run())
+
+
+def test_real_localized_genres_use_separate_movie_and_tv_ids_and_discover(tmp_path):
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        if "/genre/" in request.url.path:
+            tv = "/tv/" in request.url.path
+            return httpx.Response(
+                200,
+                json={
+                    "genres": [
+                        {
+                            "id": 10765 if tv else 878,
+                            "name": "НФ и Фэнтези" if tv else "фантастика",
+                        },
+                        {"id": 18, "name": "драма"},
+                    ]
+                },
+            )
+        tv = request.url.path.endswith("/tv")
+        return httpx.Response(
+            200,
+            json={
+                "total_pages": 2,
+                "total_results": 40,
+                "results": [
+                    movie(
+                        1,
+                        genre_ids=[10765 if tv else 878, 18],
+                        **(
+                            {"name": "Сериал", "first_air_date": "2025-10-01"}
+                            if tv
+                            else {"title": "Фильм"}
+                        ),
+                    )
+                ],
+            },
+        )
+
+    async def run():
+        tmdb = api(tmp_path, handle)
+        for mode, separator in [("or", "|"), ("and", ",")]:
+            result = await Catalogue(tmdb).page(
+                CatalogueQuery(
+                    feed="trending",
+                    genres=["Фантастика", "Драма"],
+                    genre_mode=mode,
+                    russian_titles=True,
+                )
+            )
+            assert len(result["items"]) == 2
+            assert not result["filtered_total"]
+            requests = [
+                r
+                for r in calls
+                if r.url.path.startswith("/3/discover/")
+                and r.url.params.get("with_genres", "").count(separator)
+            ]
+            assert any(
+                r.url.path.endswith("/movie")
+                and r.url.params["with_genres"] == separator.join(["18", "878"])
+                for r in requests
+            )
+            assert any(
+                r.url.path.endswith("/tv")
+                and r.url.params["with_genres"] == separator.join(["18", "10765"])
+                for r in requests
+            )
+        await tmdb.close()
+
+    asyncio.run(run())
+
+
+def test_filtered_empty_pages_advance_cursor_without_weakening_policy(tmp_path):
+    calls = []
+
+    def handle(request):
+        if "/genre/" in request.url.path:
+            return httpx.Response(
+                200,
+                json={
+                    "genres": [{"id": 878, "name": "фантастика"}, {"id": 16, "name": "мультфильм"}]
+                },
+            )
+        page = int(request.url.params["page"])
+        calls.append(page)
+        rows = [
+            movie(page, title="English" if page < 3 else "Космос", genre_ids=[878]),
+            movie(99, title="Аниме", genre_ids=[16]),
+        ]
+        return httpx.Response(200, json={"total_pages": 8, "total_results": 160, "results": rows})
+
+    async def run():
+        tmdb = api(tmp_path, handle)
+        result = await Catalogue(tmdb).page(
+            CatalogueQuery(
+                kind="movie",
+                genres=["фантастика"],
+                russian_titles=True,
+                hide_anime=True,
+                hide_animation=True,
+            )
+        )
+        assert [item["title"] for item in result["items"]] == ["Космос"]
+        assert calls == [1, 2, 3] and result["next_page"] == 4 and result["scanned_through"] == 3
+        assert not result["filtered_total"] and result["total_results"] == 160
+        await tmdb.close()
+
+    asyncio.run(run())
+
+
+def test_unavailable_genre_is_explained_and_network_error_is_not_empty(tmp_path):
+    def handle(request):
+        if "/genre/" in request.url.path:
+            return httpx.Response(200, json={"genres": [{"id": 18, "name": "драма"}]})
+        return httpx.Response(503, json={})
+
+    async def run():
+        tmdb = api(tmp_path, handle)
+        result = await Catalogue(tmdb).page(CatalogueQuery(kind="series", genres=["ужасы"]))
+        assert result["empty_reason"] == "genre_unavailable" and result["unavailable_genres"] == [
+            "ужасы"
+        ]
+        with pytest.raises(ToolError):
+            await Catalogue(tmdb).page(CatalogueQuery(kind="movie", genres=["драма"]))
         await tmdb.close()
 
     asyncio.run(run())

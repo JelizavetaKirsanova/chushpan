@@ -278,7 +278,8 @@ class PlaylistConfig(BaseModel):
 
 class YouTubeMusicConfig(BaseModel):
     enabled: bool = True
-    transport: Literal["safari", "webapp"] = "safari"
+    transport: Literal["auto", "safari", "webapp"] = "auto"
+    allow_browser: bool = False
     bundle_id: str | None = None  # discover Safari Web App by its manifest
     app_path: Path | None = None
     auth_file: Path | None = None  # optional; library otherwise read from the signed-in app

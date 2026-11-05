@@ -153,6 +153,9 @@ async def check():
             await cinema.db("configure", {"poll_seconds": 2, "auto_next": False})
             result = await cinema.resume(item["id"], first["id"])
             assert result.get("playback_confirmed"), result
+            fullscreen_confirmed = result.get("fullscreen_confirmed") is True
+            if not fullscreen_confirmed:
+                assert result.get("result_status") == "partial_success", result
             state = await cinema.session["adapter"].sample()
             assert 6 <= state["position"] < 8, state
             await cinema.call(
@@ -203,6 +206,7 @@ async def check():
                 "DETECT_PLAYER",
                 "RESTORE_POSITION",
                 "PLAY",
+                "FULLSCREEN",
                 "SAVE_PROGRESS",
             }
             assert expected <= stages, stages
@@ -212,6 +216,8 @@ async def check():
                         "ok": True,
                         "browser": "Safari",
                         "real_silent_video": True,
+                        "fullscreen_confirmed": fullscreen_confirmed,
+                        "fullscreen_requires_user_action": not fullscreen_confirmed,
                         "exact_page": True,
                         "restored_with_3_second_rewind": True,
                         "pause": True,

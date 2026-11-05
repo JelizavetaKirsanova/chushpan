@@ -389,6 +389,7 @@ class CinemaStore:
             "DETECT_PLAYER",
             "RESTORE_POSITION",
             "PLAY",
+            "FULLSCREEN",
             "SAVE_PROGRESS",
         }:
             raise ValueError("Неизвестный этап воспроизведения.")

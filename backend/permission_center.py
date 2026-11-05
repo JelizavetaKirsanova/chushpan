@@ -7,7 +7,7 @@ import json
 import sys
 from datetime import UTC, datetime
 
-from backend.desktop import platform
+from backend.desktop import VERSION, platform
 from backend.mac import DesktopBridge
 from backend.media.music_safari import SafariMusicTab
 from backend.media.youtube_playback import SafariPlayback
@@ -170,11 +170,11 @@ def catalog(settings):
             "Системные уведомления",
             "system",
             (
-                "Таймеры и напоминания выводятся внутри Чушпана. Системная доставка уведомлений"
-                " не подключена."
+                "Статус macOS для текущей копии. Таймеры и напоминания Чушпана по-прежнему "
+                "показываются внутри приложения."
             ),
             [],
-            supported=False,
+            request=True,
         ),
         row(
             "login",
@@ -474,7 +474,7 @@ class PermissionCenter:
                 self.checks["desktop"] = await self.desktop.request("permission_status")
             details = self.checks["desktop"]
             value = details.get(key)
-        elif key in {"microphone", "bluetooth", "login"}:
+        elif key in {"microphone", "bluetooth", "login", "notifications"}:
             if "platform" not in self.checks:
                 self.checks["platform"] = await asyncio.to_thread(platform.permission_status)
             details = self.checks["platform"]
@@ -517,7 +517,7 @@ class PermissionCenter:
             "error": item["last_error"],
             "identity": identity,
             "osstatus": details.get("osstatus"),
-            "version": "0.2.4",
+            "version": VERSION,
             "signing": details.get("signing", {}),
         }
         self.history = (self.history + [entry])[-100:]
@@ -573,6 +573,8 @@ class PermissionCenter:
                         await self.personal.permissions(request=key)
                     elif key == "microphone":
                         await asyncio.to_thread(platform.request_microphone)
+                    elif key == "notifications":
+                        await asyncio.to_thread(platform.request_notifications)
                     elif key in {"accessibility", "screen_recording"}:
                         await self.desktop.request("permission_request", permission=key)
             self.checks = {}

@@ -77,6 +77,29 @@ def request_microphone() -> bool:
     )
 
 
+def request_notifications() -> bool:
+    from Foundation import NSBundle
+    from UserNotifications import (
+        UNAuthorizationOptionAlert,
+        UNAuthorizationOptionSound,
+        UNUserNotificationCenter,
+    )
+
+    if not NSBundle.mainBundle().bundleIdentifier():
+        return False
+    done, result = threading.Event(), []
+
+    def answer(granted, error):
+        result.append(bool(granted) and error is None)
+        done.set()
+
+    UNUserNotificationCenter.currentNotificationCenter().requestAuthorizationWithOptions_completionHandler_(
+        UNAuthorizationOptionAlert | UNAuthorizationOptionSound, answer
+    )
+    done.wait(60)
+    return bool(result and result[0])
+
+
 PRIVACY_PANES = {
     "microphone": ("Privacy_Microphone", "Микрофон"),
     "speech": ("Privacy_SpeechRecognition", "Распознавание речи"),

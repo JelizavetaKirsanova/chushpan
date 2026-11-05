@@ -16,14 +16,14 @@ for await(const line of createInterface({input:process.stdin})) {
     if(request.op==='ui') {
       const hud=await context.newPage();const errors=[];hud.on('pageerror',error=>errors.push(error.message));
       await hud.goto(request.url);await hud.locator('.workspace-nav [data-view=cinema]').click();
-      await hud.getByRole('heading',{name:'Фильмы и сериалы'}).waitFor();
+      await hud.getByRole('heading',{name:'Медиатека',exact:true}).waitFor();
       await hud.locator('.cinema-content .cinema-title').first().waitFor();
       if(request.screenshot)await hud.screenshot({path:request.screenshot,fullPage:true});
       await hud.locator('.cinema-content .cinema-title').first().click();
       await hud.locator('dialog[open]').waitFor();
       await hud.getByLabel('Сезон',{exact:true}).selectOption('1');
       await hud.getByRole('button',{name:'Закрыть',exact:true}).click();
-      await hud.getByRole('button',{name:'Просмотрено',exact:true}).click();
+      await hud.locator('.cinema-tabs').getByRole('button',{name:'Просмотрено',exact:true}).click();
       await hud.locator('summary').filter({hasText:'Журнал просмотра'}).click();
       await hud.locator('.cinema-history article').first().waitFor();
       await hud.locator('#cinema-root').getByRole('button',{name:'Настройки',exact:true}).click();
@@ -77,7 +77,9 @@ for await(const line of createInterface({input:process.stdin})) {
       const beforeLibrary=await target.locator('.cinema-title').textContent();
       await target.getByRole('button',{name:'В избранное',exact:true}).first().click();
       await target.locator('.cinema-favorite[aria-pressed=true]').waitFor();
-      await hud.locator('.cinema-tabs').getByRole('button',{name:'Избранное',exact:true}).click();
+      // Component navigation should preserve scroll. Avoid Playwright first scrolling
+      // the offscreen navigation into view, which changes the state being measured.
+      await hud.locator('.cinema-tabs').getByRole('button',{name:'Избранное',exact:true}).dispatchEvent('click');
       await hud.locator('.cinema-content .cinema-title').filter({hasText:beforeLibrary}).click();
       await hud.getByRole('button',{name:'Оценить фильм',exact:true}).click();
       const rating=hud.getByLabel('Выбранная оценка',{exact:true});await rating.focus();await rating.press('End');await rating.press('ArrowLeft');
@@ -87,9 +89,9 @@ for await(const line of createInterface({input:process.stdin})) {
       await hud.locator('dialog .cinema-personal-rating').filter({hasText:'9.5'}).waitFor();
       await hud.locator('.cinema-detail-main-actions').getByRole('button',{name:'Просмотрено',exact:true}).click();
       await hud.getByRole('button',{name:'Закрыть',exact:true}).click();
-      await hud.locator('.cinema-tabs').getByRole('button',{name:'Просмотрено',exact:true}).click();
+      await hud.locator('.cinema-tabs').getByRole('button',{name:'Просмотрено',exact:true}).dispatchEvent('click');
       await hud.locator('.cinema-content .cinema-personal-rating').filter({hasText:'9.5'}).waitFor();
-      await hud.locator('.cinema-tabs').getByRole('button',{name:'Каталог',exact:true}).click();
+      await hud.locator('.cinema-tabs').getByRole('button',{name:'Каталог',exact:true}).dispatchEvent('click');
       const restored=await target.evaluate(card=>({top:card.getBoundingClientRect().top,scroll:card.closest('.workspace-page').scrollTop}));
       if(Math.abs(before.top-restored.top)>2||Math.abs(before.scroll-restored.scroll)>2)throw Error(`Returning from favorites changed catalogue scroll: ${JSON.stringify({before,restored})}`);
       const keys=await hud.locator('.cinema-catalogue-grid .cinema-card').evaluateAll(cards=>cards.map(card=>card.dataset.catalogueKey));if(new Set(keys).size!==keys.length)throw Error('Duplicate catalogue cards');

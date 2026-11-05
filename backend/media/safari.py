@@ -259,6 +259,9 @@ class AccessibilityApp:
             "brightness_not_verified": "Изменение яркости не подтверждено дисплеем.",
             "app_changed": "Приложение уже изменилось или завершилось. Получи список заново.",
             "activation_not_verified": "macOS не подтвердила переключение приложения.",
+            "user_session_locked": (
+                "macOS показывает экран входа. Разблокируй Mac и повтори запуск YouTube Music."
+            ),
             "quit_not_verified": (
                 "Приложение не завершилось. Возможно, оно ждёт сохранения документа; "
                 "принудительно не закрываю."
@@ -298,6 +301,37 @@ class SafariMusic(AccessibilityApp):
     def bundle_id(self) -> str:
         return self.discover()[1]
 
+    @staticmethod
+    def application(path: Path | str, *, selected=False) -> dict:
+        if not isinstance(path, (Path, str)):
+            raise ToolError("Выбери установленное приложение .app.")
+        app = Path(path).expanduser().resolve()
+        if app.suffix.lower() != ".app" or not app.is_dir():
+            raise ToolError("Выбери установленное приложение .app.")
+        try:
+            info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+        except (OSError, ValueError):
+            raise ToolError("Не удалось прочитать идентификатор приложения.") from None
+        bundle = info.get("CFBundleIdentifier", "")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{2,200}", bundle):
+            raise ToolError("У приложения нет корректного bundle identifier.")
+        start = urlparse((info.get("Manifest") or {}).get("start_url", ""))
+        chrome = urlparse(info.get("CrAppModeShortcutURL", ""))
+        webapp = (
+            bundle.startswith("com.apple.Safari.WebApp.") and start.hostname == "music.youtube.com"
+        )
+        pwa = chrome.hostname == "music.youtube.com"
+        if not (webapp or pwa or selected):
+            raise ToolError("Приложение не подтверждено как YouTube Music.")
+        return {
+            "path": str(app),
+            "bundle_id": bundle,
+            "name": (info.get("Manifest") or {}).get("name")
+            or info.get("CFBundleDisplayName")
+            or app.stem,
+            "kind": "safari_webapp" if webapp else "browser_pwa" if pwa else "native",
+        }
+
     def discover(self) -> tuple[Path, str]:
         if self._app and self._app[0].exists():
             return self._app
@@ -307,20 +341,18 @@ class SafariMusic(AccessibilityApp):
         paths += sorted(Path("/Applications").glob("*.app"))
         for app in dict.fromkeys(paths):
             try:
-                info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
-            except (OSError, plistlib.InvalidFileException):
+                details = self.application(
+                    app,
+                    selected=bool(
+                        configured and self.config.bundle_id and app == configured.expanduser()
+                    ),
+                )
+            except ToolError:
                 continue
-            bundle = info.get("CFBundleIdentifier", "")
-            manifest = info.get("Manifest", {})
-            start = urlparse(manifest.get("start_url", ""))
-            if (
-                not bundle.startswith("com.apple.Safari.WebApp.")
-                or start.netloc != "music.youtube.com"
-            ):
+            bundle = details["bundle_id"]
+            if self.config.bundle_id not in {None, "com.apple.Safari", bundle}:
                 continue
-            if self.config.bundle_id and bundle != self.config.bundle_id:
-                continue
-            self._app = app, bundle
+            self._app = Path(details["path"]), bundle
             return self._app
         raise ToolError(
             "Не найден Safari Web App YouTube Music. Открой его или укажи путь в настройках."
@@ -328,8 +360,27 @@ class SafariMusic(AccessibilityApp):
 
     async def launch(self) -> dict:
         app, _ = self.discover()
-        await process("open", "-a", str(app))
-        return {"ok": True, "action": "open", "provider": "youtube_music"}
+        result = await self.request("launch", path=str(app))
+        if result.get("activated") is not True:
+            raise ToolError("macOS не подтвердила активацию установленного YouTube Music.")
+        return {"ok": True, "activated": True, "action": "open", "provider": "youtube_music"}
+
+    async def request_access(self):
+        return await self.request("permission_request", permission="accessibility")
+
+    async def diagnose(self):
+        app, bundle = self.discover()
+        state = await self.request("status")
+        return {
+            "mode": "webapp",
+            "bundle_id": bundle,
+            "path": str(app),
+            **state,
+            "message": "Установленное приложение найдено. "
+            + ("Accessibility разрешён. " if state.get("trusted") else "Требуется Accessibility. ")
+            + ("Приложение активно." if state.get("frontmost") else "Приложение не активно."),
+            "playback_confirmed": False,
+        }
 
     async def snapshot(self) -> list[dict]:
         result = await self.request("snapshot")
@@ -364,7 +415,7 @@ class SafariMusic(AccessibilityApp):
 
     async def navigate(self, url: str) -> list[dict]:
         validate_url(url)
-        app, _ = self.discover()
+        self.discover()
         status = await self.request("status")
         if not status["running"]:
             await self.launch()
@@ -377,7 +428,17 @@ class SafariMusic(AccessibilityApp):
         if links:
             await self.act(links[0])
         else:
-            await process("open", "-a", str(app), url)
+            # Safari Web Apps may delegate external URL opens to ordinary Safari.
+            # Keep navigation inside the selected app, including when a deep link
+            # is missing from the currently available library/search results.
+            if any(
+                n.get("role") == "AXWebArea" and same_page(n.get("url", ""), url) for n in nodes
+            ):
+                return nodes
+            raise ToolError(
+                "В выбранном приложении нет ссылки на эту страницу. Открой её в библиотеке "
+                "или поиске YouTube Music и повтори команду. Safari не открывался."
+            )
         deadline = time.monotonic() + self.config.timeout_s
         while time.monotonic() < deadline:
             nodes = await self.snapshot()

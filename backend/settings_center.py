@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import sqlite3
 import time
@@ -19,16 +20,20 @@ from backend.settings_models import (
     Studio,
     apply_persisted,
 )
+from backend.tools.registry import ToolError
 
 
 class SettingsCenter:
-    def __init__(self, settings, store, conv, bus, *, loop=None):
+    def __init__(self, settings, store, conv, bus, *, loop=None, startup_permissions=False):
         self.s, self.store, self.conv, self.bus, self.loop = settings, store, conv, bus, loop
         self.profiles = personalities(store)
         self.jobs, self.capture_target = set(), None
         self.wake_test_until = None
         self.capture_timer = None
         self.permissions, self.model_status, self.last_preview = None, {}, None
+        self.permission_onboarding = None
+        self.startup_permissions = startup_permissions
+        self.permission_job = None
         from backend.permission_center import PermissionCenter
 
         if getattr(conv.tools, "permission_center", None) is None:
@@ -84,6 +89,8 @@ class SettingsCenter:
             loop.settings_center = self
             self.apply_studio(self.value("studio"))
         self.publish()
+        if startup_permissions:
+            self.request({"op": "permissions"})
 
     def value(self, category):
         value = (
@@ -116,6 +123,10 @@ class SettingsCenter:
                 "expression": False,
             },
             "permissions": self.permissions,
+            "permission_onboarding": self.permission_onboarding,
+            "music_application": getattr(self.conv.tools, "media", None).music_application
+            if getattr(self.conv.tools, "media", None)
+            else None,
             "input_devices": self.input_devices,
             "models": self.model_status,
             "location": automations.locations.current() if automations else {},
@@ -243,9 +254,86 @@ class SettingsCenter:
         ]
 
     def request(self, value):
+        if (
+            value.get("op") == "permissions"
+            and self.permission_job
+            and not self.permission_job.done()
+        ):
+            return
         task = asyncio.create_task(self.handle(value))
+        if value.get("op") == "permissions":
+            self.permission_job = task
         self.jobs.add(task)
         task.add_done_callback(self.jobs.discard)
+
+    def update_permission_onboarding(self):
+        if not self.startup_permissions or not self.permissions:
+            return
+        required = [] if self.value("studio").get("text_only") else ["microphone"]
+        missing = sorted(
+            i["id"]
+            for i in self.permissions["items"]
+            if i["id"] in required and i["status"] != "granted"
+        )
+        fingerprint = hashlib.sha256("|".join(missing).encode()).hexdigest()[:16]
+        dismissed = self.store.preference("permissions", "onboarding_dismissed") or []
+        self.permission_onboarding = {
+            "visible": bool(missing) and fingerprint not in dismissed,
+            "required": required,
+            "missing": missing,
+            "fingerprint": fingerprint,
+        }
+
+    async def music_application(self, value):
+        from backend.media.safari import SafariMusic
+
+        media = getattr(self.conv.tools, "media", None)
+        if media is None:
+            raise ValueError("Музыкальная интеграция недоступна.")
+        config = self.s.media.youtube_music
+        action = value.get("action")
+        if action == "launch":
+            if not media.youtube:
+                raise ValueError("Сначала выбери YouTube Music как музыкальный сервис.")
+            result = await media.youtube.app.launch()
+            if not result.get("ok"):
+                raise ToolError("Не удалось подтвердить запуск YouTube Music.")
+            self.publish(message="YouTube Music открыт. Воспроизведение не запускалось.")
+            return
+        if action in {"detect", "select"}:
+            if action == "detect":
+                # Explicit rediscovery also clears a stale, previously selected path.
+                discovery_settings = self.s.model_copy(deep=True)
+                discovery_settings.media.youtube_music.app_path = None
+                discovery_settings.media.youtube_music.bundle_id = None
+                discovery = SafariMusic(discovery_settings)
+                path, _ = await asyncio.to_thread(discovery.discover)
+                app = SafariMusic.application(path)
+            else:
+                app = SafariMusic.application(value.get("path", ""), selected=True)
+            from pathlib import Path
+
+            config.app_path, config.bundle_id = Path(app["path"]), app["bundle_id"]
+            config.transport = "auto"
+        elif action == "browser":
+            if type(value.get("enabled")) is not bool:
+                raise ValueError("Неверное состояние браузерного режима.")
+            config.allow_browser = value["enabled"]
+            config.transport = "auto"
+        else:
+            raise ValueError("Неизвестная настройка YouTube Music.")
+        self.store.set_preference(
+            "media",
+            "youtube_application",
+            {
+                "transport": config.transport,
+                "app_path": str(config.app_path) if config.app_path else None,
+                "bundle_id": config.bundle_id,
+                "allow_browser": config.allow_browser,
+            },
+        )
+        await asyncio.to_thread(media.refresh_youtube)
+        self.publish(message="Настройка YouTube Music сохранена.")
 
     def require_idle(self):
         if self.loop and self.loop.busy:
@@ -275,6 +363,7 @@ class SettingsCenter:
                     action=value.get("action", "check") if op == "permission_action" else "check",
                     identifier=value.get("id"),
                 )
+                self.update_permission_onboarding()
                 self.publish(
                     message=self.permissions.get("message")
                     or (
@@ -283,7 +372,20 @@ class SettingsCenter:
                     )
                 )
                 return
+            if op == "permissions_dismiss":
+                if self.permission_onboarding:
+                    values = self.store.preference("permissions", "onboarding_dismissed") or []
+                    values = list(
+                        dict.fromkeys([*values, self.permission_onboarding["fingerprint"]])
+                    )[-20:]
+                    self.store.set_preference("permissions", "onboarding_dismissed", values)
+                    self.update_permission_onboarding()
+                    self.publish()
+                return
             self.require_idle()
+            if op == "music_application":
+                await self.music_application(value)
+                return
             if op == "save":
                 await self.save(value["category"], value["value"])
             elif op == "profile_save":
@@ -511,7 +613,7 @@ class SettingsCenter:
             else:
                 raise ValueError("Неизвестная операция настроек.")
             self.publish(message="Сохранено. История разговоров не изменена.")
-        except (ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+        except (ValueError, TypeError, KeyError, sqlite3.Error, ToolError) as exc:
             self.publish(
                 error=str(exc)
                 if not contains_secret(str(exc))

@@ -638,3 +638,42 @@ def test_learning_habits_honors_confirmation_and_excluded_categories():
         memory.observe("open_app", {"name": "Notes"}, {"ok": True})
     assert store.preference("habits", "open_app:notes") is None
     store.close()
+
+
+def test_startup_permission_check_is_read_only_and_dismissal_survives_restart():
+    from unittest.mock import AsyncMock
+
+    async def run():
+        s, store, bus, model, conv, old = fixture()
+        old.closed = True
+        report = {
+            "items": [
+                {"id": "microphone", "status": "denied"},
+                {"id": "location", "status": "denied"},
+            ],
+            "history": [],
+            "scope": "test",
+        }
+        conv.tools.permission_center.report = AsyncMock(return_value=report)
+        center = SettingsCenter(s, store, conv, bus, startup_permissions=True)
+        await asyncio.gather(*center.jobs)
+        conv.tools.permission_center.report.assert_awaited_once_with(
+            action="check", identifier=None
+        )
+        assert center.permission_onboarding["visible"]
+        assert center.permission_onboarding["missing"] == ["microphone"]
+        await center.handle({"op": "permissions_dismiss"})
+        assert not center.permission_onboarding["visible"]
+        await center.handle({"op": "permissions"})
+        assert not center.permission_onboarding["visible"]
+        report["items"][0]["status"] = "granted"
+        await center.handle({"op": "permissions"})
+        assert center.permission_onboarding["missing"] == []
+        assert not center.permission_onboarding["visible"]
+        # Optional location refusal never blocks text or brings onboarding back.
+        center2 = SettingsCenter(s, store, conv, bus, startup_permissions=True)
+        await asyncio.gather(*center2.jobs)
+        assert not center2.permission_onboarding["visible"]
+        store.close()
+
+    asyncio.run(run())

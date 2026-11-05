@@ -13,6 +13,8 @@ export interface SettingsState {type:'settings_center'; version:number; values:R
   engine:string; voices:string[]; voice_support:{rate:boolean;pitch:boolean;expression:boolean};
   input_devices?:{id:number;name:string}[]|null;
   permissions:PermissionReport | null;
+  permission_onboarding?:{visible:boolean;missing:string[];fingerprint:string}|null;
+  music_application?:{name?:string;path?:string;bundle_id?:string;kind?:string;mode?:string;allow_browser:boolean}|null;
   models:{installed?:string[];ollama?:string;tts?:string;gemini?:{models?:{model:string;provider:string;status:string;latency_s?:number|null;error?:string|null}[]};streaming?:boolean};
   location:{name?:string|null;place_id?:string|null;mode?:string;message?:string;reason?:string}; places:Place[];
   signals:{signals?:Signal[];error?:string}; rules:Scenario[];
@@ -76,7 +78,7 @@ export class SettingsCenterUI {
     for(const [title,description,view] of [['Управление Mac','Экран, действия и разрешения','mac-control'],['Синхронизация','Доверенные устройства и категории данных','my-devices'],['Личная аналитика','Сбор данных, исключения и хранение','analytics'],['Приватность','Память, экран, устройства и данные','privacy']]) {
       const button=this.button('',()=>this.navigate(view));button.className='settings-category';const text=el('span');text.append(el('strong',title),el('small',description));button.append(text,el('span','›','settings-chevron'));id('settings-categories').append(button);
     }
-    const recheck=()=>{if(this.page==='access'&&this.online&&!document.hidden&&Date.now()-this.permissionCheckedAt>1500){this.permissionCheckedAt=Date.now();this.send({op:'permissions'});}};
+    const recheck=()=>{if(this.online&&!document.hidden&&Date.now()-this.permissionCheckedAt>1500){this.permissionCheckedAt=Date.now();this.send({op:'permissions'});}};
     window.addEventListener('focus',recheck);document.addEventListener('visibilitychange',recheck);
     const take=(key:string,node:Element|null)=>{if(node){const list=this.legacy.get(key)??[];list.push(node as HTMLElement);this.legacy.set(key,list);}};
     take('voice',id('voice-settings'));take('voice',id('dialogue-settings').closest('details'));
@@ -131,6 +133,7 @@ export class SettingsCenterUI {
     }
     if(event.type!=='settings_center')return;
     this.state=event;
+    this.renderPermissionOnboarding();
     if(!event.message&&!event.error&&/Подключаюсь|Нет связи|Загружаю/.test(id('settings-feedback').textContent??''))this.feedback('Сохранённые настройки загружены.');
     if(event.selected){this.selected=event.selected;this.draft=null;this.dirty=false;this.saving=false;}
     if(this.saving && !event.error && event.message){this.draft=null;this.dirty=false;this.saving=false;}
@@ -142,6 +145,18 @@ export class SettingsCenterUI {
     const focused=this.root.contains(document.activeElement)&&!!document.activeElement?.closest('form');
     if(!this.dirty&&(!focused||this.saving||event.selected))this.render();
     this.root.querySelectorAll<HTMLButtonElement>('button[data-write]').forEach(n=>n.disabled=!this.online||n.dataset.unavailable==='true');
+  }
+  private renderPermissionOnboarding():void {
+    const state=this.state!;let dialog=document.getElementById('permission-onboarding') as HTMLDialogElement|null;
+    if(!state.permission_onboarding?.visible){dialog?.remove();return;}
+    const signature=JSON.stringify([state.permission_onboarding,state.permissions]);
+    if(dialog?.dataset.signature===signature)return;
+    if(!dialog){dialog=document.createElement('dialog');dialog.id='permission-onboarding';dialog.className='permission-onboarding';document.body.append(dialog);dialog.oncancel=event=>{event.preventDefault();this.send({op:'permissions_dismiss'});};}
+    dialog.dataset.signature=signature;
+    dialog.replaceChildren(el('span','ДОБРО ПОЖАЛОВАТЬ','settings-kicker'),el('h2','Подготовим голосовое управление'),el('p','Микрофон нужен для голосовых команд. Текстовый чат доступен и без него. Остальные разрешения можно подключать по мере использования функций.'));
+    const content=el('div');permissionCenter(content,state.permissions?{...state.permissions,history:[],items:state.permissions.items.filter(i=>state.permission_onboarding!.missing.includes(i.id))}:null,this.send,{search:'',group:'',problems:false},this.online);dialog.append(content);
+    dialog.append(this.button('Продолжить без доступа',()=>this.send({op:'permissions_dismiss'})),this.button('Все разрешения',()=>{this.send({op:'permissions_dismiss'});this.navigate('settings');this.open('access');}));
+    if(!dialog.open){if(typeof dialog.showModal==='function')dialog.showModal();else dialog.setAttribute('open','');}
   }
   private render():void {
     const content=id('settings-content');
@@ -291,6 +306,11 @@ export class SettingsCenterUI {
     root.append(this.button('Версии сценариев и другие места',()=>this.navigate('automations')));
   }
   private integrations(root:HTMLElement):void {
+    const app=this.state!.music_application;
+    const music=this.section('Приложение YouTube Music','Чушпан открывает выбранное приложение и использует его уже открытое окно.');
+    music.append(el('p',app?.name??'Приложение ещё не определено'),el('small',app?.path??'Выбери установленный YouTube Music.'));
+    const fallback=this.input(app?.allow_browser??false,'checkbox');fallback.onchange=()=>this.write({op:'music_application',action:'browser',enabled:fallback.checked});
+    music.append(this.button('Найти автоматически',()=>this.write({op:'music_application',action:'detect'}),true),this.button('Выбрать приложение…',()=>{void (async()=>{const api=(window as unknown as {pywebview?:{api?:{choose_music_application?:()=>Promise<{ok:boolean;cancelled?:boolean;message?:string;application?:{path:string}}>}}}).pywebview?.api;if(!api?.choose_music_application){this.feedback('Выбор приложения доступен в установленном Чушпане.',true);return;}try{const result=await api.choose_music_application();if(result.ok&&result.application)this.write({op:'music_application',action:'select',path:result.application.path});else if(!result.cancelled)this.feedback(result.message??'Не удалось выбрать приложение.',true);}catch{this.feedback('Не удалось открыть выбор приложения.',true);}})();},true),this.button('Проверить запуск',()=>this.send({op:'music_application',action:'launch'}),true),this.label('Разрешить Safari, если приложение не найдено',fallback));root.append(music);
     const cinema=this.section('Медиатека','Каталог, источники просмотра, рекомендации и сохранение прогресса.');cinema.append(this.button('Настройки медиатеки',()=>{this.navigate('cinema');document.dispatchEvent(new CustomEvent('cinema:settings'));}));const technical=el('details');technical.append(el('summary','Расширенные настройки интеграций'),this.button('Техническая настройка TMDB',()=>{this.navigate('cinema');document.dispatchEvent(new CustomEvent('cinema:integration'));}));cinema.append(technical);root.append(cinema);
     for(const integration of this.state!.integrations){const box=this.section(integration.name);box.append(el('p',!integration.supported?'Не подключена к текущей сборке':`${integration.enabled?'Включена':'Отключена'} · ${timeLabels[integration.status]??integration.status}`));if(integration.error)box.append(el('p',integration.error,'settings-error'));if(integration.details.length)box.append(el('p',integration.details.join(', ')));for(const tool of integration.tools){const action=this.state!.actions.find(a=>a.id===tool);box.append(el('small',action?.description??tool));}if(integration.id==='calendar'){box.append(this.button('Проверить календарь',()=>this.send({op:'probe',id:'calendar'}),true),this.button(integration.enabled?'Отключить календарь':'Подключить календарь',()=>this.send({op:'calendar',enabled:!integration.enabled}),true));}else if(integration.supported){box.append(this.button('Проверить соединение',()=>this.send({op:'probe',id:integration.id}),true),this.button(integration.enabled?'Отключить':'Включить',()=>{const access=clone(this.state!.values.access);const disabled=new Set(access.disabled_tools as string[]);for(const t of integration.tools)integration.enabled?disabled.add(t):disabled.delete(t);access.disabled_tools=[...disabled];this.write({op:'save',category:'access',value:access});},true));}root.append(box);}
   }

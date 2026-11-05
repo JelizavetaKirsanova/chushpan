@@ -21,7 +21,8 @@ export class CinemaFilterDrawer {
       const header=node('header');const close=button('×',()=>dialog.close());close.setAttribute('aria-label','Закрыть фильтры');header.append(node('h2','Фильтры'),close);
       const form=node('form');const genres=node('fieldset');genres.append(node('legend','Жанры'));
       const search=node('input');search.type='search';search.placeholder='Поиск жанров…';search.setAttribute('aria-label','Поиск жанров');genres.append(search);
-      const options=node('div','','cinema-filter-genres');for(const genre of config?.genres??['триллер','детектив','драма','комедия','ужасы','фантастика','мультфильм']){
+      const available=draft.kind==='movie'?config?.genres_by_kind?.movie:draft.kind==='series'?config?.genres_by_kind?.series:config?.genres;
+      const options=node('div','','cinema-filter-genres');for(const genre of [...new Set([...(available??config?.genres??['триллер','детектив','драма','комедия','ужасы','фантастика','мультфильм']).map(g=>g.toLocaleLowerCase('ru')),...draft.genres])]){
         options.append(checkbox(genre,draft.genres.includes(genre),checked=>{draft.genres=checked?[...draft.genres,genre]:draft.genres.filter(v=>v!==genre);draft.genre='';}));
       }
       search.oninput=()=>{for(const option of [...options.children] as HTMLElement[])option.hidden=!option.textContent?.toLocaleLowerCase('ru').includes(search.value.toLocaleLowerCase('ru'));};
@@ -35,13 +36,13 @@ export class CinemaFilterDrawer {
       }years.append(bounds,ranges);form.append(years);
       const rating=node('input');rating.type='range';rating.min='0';rating.max='10';rating.step='.5';rating.value=String(draft.rating);const ratingValue=node('output',`от ${draft.rating.toFixed(1)}`);rating.oninput=()=>{draft.rating=Number(rating.value);ratingValue.textContent=`от ${draft.rating.toFixed(1)}`;count();};form.append(field('Минимальный рейтинг TMDB',rating),ratingValue,
         select('Сортировка каталога',[['popularity','По популярности'],['rating','По рейтингу'],['date','По дате выхода'],['title','По названию']],draft.sort,v=>draft.sort=v),
-        select('Тип контента',[['all','Всё'],['movie','Фильмы'],['series','Сериалы']],draft.kind,v=>draft.kind=v),
+        select('Тип контента',[['all','Всё'],['movie','Фильмы'],['series','Сериалы']],draft.kind,v=>{draft.kind=v;render();}),
         select('Страна производства',[['','Любая страна'],...(config?.countries??[{id:'EE',name:'Эстония'},{id:'US',name:'США'},{id:'RU',name:'Россия'},{id:'JP',name:'Япония'}]).map(c=>[c.id,c.name] as [string,string])],draft.country,v=>draft.country=v),
         select('Язык оригинала',[['','Любой язык'],...(config?.languages??[{id:'ru',name:'Русский'},{id:'en',name:'Английский'}]).map(c=>[c.id,c.name] as [string,string])],draft.original_language,v=>draft.original_language=v));
       const extra=node('fieldset');extra.append(node('legend','Дополнительно'),checkbox('Только названия с русскими буквами',draft.russian_titles!==false,v=>draft.russian_titles=v),checkbox('Скрывать мультфильмы',draft.hide_animation!==false,v=>draft.hide_animation=v),checkbox('Скрывать аниме',draft.hide_anime!==false,v=>draft.hide_anime=v),checkbox('Скрывать документальные фильмы',!!draft.hide_documentary,v=>draft.hide_documentary=v));
       if(draft.query)extra.append(checkbox('Искать без ограничений · только этот поиск',draft.relax_restrictions,v=>draft.relax_restrictions=v));form.append(extra);
       error=node('p','','cinema-form-error');error.setAttribute('role','alert');form.append(error);
-      const footer=node('footer');submit=button('Применить',()=>{});submit.type='submit';submit.className='primary';footer.append(button('Сбросить',()=>{draft={...defaults(),query:initial.query};render();}),submit);count();form.append(footer);
+      const footer=node('footer');submit=button('Применить',()=>{});submit.type='submit';submit.className='primary';footer.append(button('Сбросить фильтры',()=>{if(window.confirm('Сбросить выбранные фильтры к твоим настройкам по умолчанию?')){draft={...defaults(),query:initial.query};render();}}),submit);count();form.append(footer);
       form.onsubmit=e=>{e.preventDefault();if(!form.reportValidity())return;if(draft.year_min&&draft.year_max&&draft.year_min>draft.year_max){error.textContent='Начало диапазона должно быть раньше конца.';return;}dialog.close();apply(draft);};dialog.replaceChildren(header,form);
     };
     dialog.onclose=()=>{dialog.remove();if(this.dialog===dialog)this.dialog=null;};render();parent.append(dialog);dialog.showModal();

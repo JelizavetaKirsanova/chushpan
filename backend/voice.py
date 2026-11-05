@@ -2378,7 +2378,7 @@ async def _run_voice(
     loop.state.add_listener(resources.on_state)
     from backend.settings_center import SettingsCenter
 
-    settings_center = SettingsCenter(s, store, conv, bus, loop=loop)
+    settings_center = SettingsCenter(s, store, conv, bus, loop=loop, startup_permissions=True)
     if media:
         loop.state.add_listener(media.on_state)
     if loop.state.state is State.SLEEPING:

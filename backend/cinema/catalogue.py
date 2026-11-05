@@ -35,6 +35,40 @@ GENRE_FEEDS = {
 }
 
 
+def genre_ids(selected, genres, kind):
+    """Resolve each label against its own media type, including legacy shelf labels."""
+    aliases = {
+        "фантастика": {"movie": 878, "tv": 10765},
+        "фэнтези": {"movie": 14, "tv": 10765},
+        "sci-fi & fantasy": {"movie": 878, "tv": 10765},
+        "нф и фэнтези": {"movie": 878, "tv": 10765},
+        "боевик": {"movie": 28, "tv": 10759},
+        "приключения": {"movie": 12, "tv": 10759},
+        "action & adventure": {"movie": 28, "tv": 10759},
+        "боевик и приключения": {"movie": 28, "tv": 10759},
+        "военный": {"movie": 10752, "tv": 10768},
+        "war & politics": {"movie": 10752, "tv": 10768},
+        "война и политика": {"movie": 10752, "tv": 10768},
+        "мультфильмы": {"movie": 16, "tv": 16},
+        "драмы": {"movie": 18, "tv": 18},
+        "комедии": {"movie": 35, "tv": 35},
+        "ужасы": {"movie": 27},
+        "триллеры": {"movie": 53},
+        "детективы": {"movie": 9648, "tv": 9648},
+    }
+    names = {name.strip().casefold(): key for key, name in genres.items()}
+    resolved, missing = [], []
+    for label in selected:
+        name = label.strip().casefold()
+        identifier = names.get(name) or aliases.get(name, {}).get(kind)
+        # Never send a movie-only ID into a TV discover call (or the reverse).
+        if identifier is None or identifier not in genres:
+            missing.append(label)
+        else:
+            resolved.append(identifier)
+    return sorted(set(resolved)), missing
+
+
 class Catalogue:
     def __init__(self, tmdb, *, today=None):
         self.tmdb = tmdb
@@ -89,17 +123,21 @@ class Catalogue:
         else:
             targets = [(kind, self.endpoint(q, kind)) for kind in kinds]
 
-        async def fetch(kind, endpoint):
+        unavailable = set()
+
+        async def fetch(kind, endpoint, page):
             genres = await self.tmdb.genres(kind)
             selected = set(q.genres) | ({q.genre.casefold()} if q.genre else set())
-            genre = [key for key, name in genres.items() if name.casefold() in selected]
+            genre, missing = genre_ids(selected, genres, kind)
             # A genre missing from this type cannot satisfy AND; OR can use the rest.
-            if selected and (not genre or (q.genre_mode == "and" and len(genre) < len(selected))):
+            if selected and (not genre or (q.genre_mode == "and" and missing)):
+                unavailable.update(missing)
                 return [], 0, 0
             params = self.parameters(q, kind, endpoint, genre)
+            params["page"] = page
             count_key = (endpoint, tuple(sorted((k, v) for k, v in params.items() if k != "page")))
             known = self.page_counts.get(count_key)
-            if known and known[0] > time.monotonic() and q.page > known[1]:
+            if known and known[0] > time.monotonic() and page > known[1]:
                 return [], known[1], known[2]
             data = await self.tmdb.get(endpoint, **params)
             rows = []
@@ -140,16 +178,25 @@ class Catalogue:
                 self.page_counts.popitem(last=False)
             return rows, pages, total
 
-        groups = await asyncio.gather(*(fetch(kind, endpoint) for kind, endpoint in targets))
-        unique = {}
         excluded_titles = set(excluded_titles)
-        for rows, _, _ in groups:
-            for row in rows:
-                title = " ".join(row["title"].casefold().split())
-                if row["catalogue_key"] not in excluded and not any(
-                    (row["kind"], title, year) in excluded_titles for year in (row["year"], 0)
-                ):
-                    unique.setdefault(row["catalogue_key"], row)
+        unique = {}
+        scanned = q.page
+        # A bounded batch crosses empty pages after local language/anime/history filters.
+        # The returned cursor advances past every scanned page; no results are skipped.
+        for scanned in range(q.page, min(500, q.page + 4) + 1):
+            groups = await asyncio.gather(
+                *(fetch(kind, endpoint, scanned) for kind, endpoint in targets)
+            )
+            for rows, _, _ in groups:
+                for row in rows:
+                    title = " ".join(row["title"].casefold().split())
+                    if row["catalogue_key"] not in excluded and not any(
+                        (row["kind"], title, year) in excluded_titles for year in (row["year"], 0)
+                    ):
+                        unique.setdefault(row["catalogue_key"], row)
+            pages = max((group[1] for group in groups), default=0)
+            if unique or scanned >= pages:
+                break
         items = list(unique.values())
         self.sort(items, q.sort)
         pages = max((group[1] for group in groups), default=0)
@@ -162,12 +209,19 @@ class Catalogue:
             "items": items,
             "total_pages": pages,
             "total_results": sum(g[2] for g in groups),
-            "next_page": q.page + 1 if q.page < pages else None,
+            "next_page": scanned + 1 if scanned < pages else None,
+            "scanned_through": scanned,
+            "empty_reason": ("genre_unavailable" if unavailable and not pages else "filtered")
+            if not items
+            else None,
+            "unavailable_genres": sorted(unavailable),
             "sort_scope": "page" if local_filters or len(targets) > 1 else "global",
             "filtered_total": not (
                 q.query
                 or personalized
                 or excluded
+                or excluded_titles
+                or len(targets) != 1
                 or q.russian_titles
                 or q.hide_animation
                 or q.hide_anime
@@ -184,11 +238,22 @@ class Catalogue:
     def endpoint(self, q, kind):
         if q.query.strip():
             return f"search/{kind}"
-        if q.feed == "trending":
+        filters = bool(
+            q.genre
+            or q.genres
+            or q.year
+            or q.year_min
+            or q.year_max
+            or q.country
+            or q.original_language
+            or q.rating
+        )
+        if q.feed == "trending" and not filters:
             return f"trending/{kind}/week"
         if q.feed in {"popular_movies", "popular_series"}:
             if (
-                q.sort != "popularity"
+                filters
+                or q.sort != "popularity"
                 or q.genre
                 or q.genres
                 or q.year
@@ -199,7 +264,7 @@ class Catalogue:
                 return f"discover/{kind}"
             return f"{kind}/popular"
         if q.feed in {"top", "recommended"}:
-            return f"discover/{kind}" if q.feed == "top" else f"{kind}/top_rated"
+            return f"discover/{kind}" if q.feed == "top" or filters else f"{kind}/top_rated"
         return f"discover/{kind}"
 
     def parameters(self, q, kind, endpoint, genre):

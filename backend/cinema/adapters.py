@@ -1,6 +1,7 @@
 """Extensible, permission-aware public player interface over the existing Safari executor."""
 
 import asyncio
+import contextlib
 import json
 import time
 from pathlib import Path
@@ -19,6 +20,8 @@ PLAYER_ERRORS = {
     "no_player": "Доступный HTML5-плеер не найден. Возможно, видео находится в чужом iframe.",
     "protected_player": "Защищённый плеер: автоматическое управление не поддерживается.",
     "media_error": "Плеер сообщил об ошибке загрузки видео.",
+    "cross_origin_player": "Видео находится в междоменном iframe. Safari не разрешает "
+    "читать этот плеер: запусти его и fullscreen кнопкой самого сайта.",
 }
 
 
@@ -82,6 +85,43 @@ class SafariBridge:
     def __init__(self, settings, executor=None):
         self.executor = executor or SafariMusicTab(settings)
 
+    async def ensure_page(self, url, opener):
+        web_url(url)
+        script = f"""
+tell application "Safari"
+    set matches to {{}}
+    repeat with w in windows
+        repeat with n from 1 to count of tabs of w
+            if URL of tab n of w is {json.dumps(url)} then set end of matches to {{id of w, n}}
+        end repeat
+    end repeat
+    if (count of matches) > 1 then return "multiple"
+    if (count of matches) is 0 then return "missing"
+    set pair to item 1 of matches
+    set targetWindow to window id (item 1 of pair)
+    set current tab of targetWindow to tab (item 2 of pair) of targetWindow
+    set index of window id (item 1 of pair) to 1
+    activate
+    return "found"
+end tell
+"""
+        token = requests_allowed.set(False)
+        try:
+            try:
+                result = await self.executor._run(script)
+            except ToolError as exc:
+                if getattr(exc, "code", None) != "safari_closed":
+                    raise
+                result = "missing"
+            if result == "multiple":
+                raise ToolError("Открыто несколько одинаковых страниц. Выбери одну в Safari.")
+            if result == "missing":
+                await opener(url)
+            elif result != "found":
+                raise ToolError("Safari не подтвердил выбор страницы.")
+        finally:
+            requests_allowed.reset(token)
+
     async def evaluate(self, url, payload):
         web_url(url)
         js = PLAYER + "(" + json.dumps({**payload, "url": url}, ensure_ascii=True) + ")"
@@ -126,10 +166,11 @@ class HTML5Adapter:
         self.bridge, self.opener = bridge, opener
         self.url = ""
         self.context = {}
+        self.voice = ""
 
     async def read(self, action="status", position=0):
         return await self.bridge.evaluate(
-            self.url, {**self.context, "action": action, "position": position}
+            self.url, {**self.context, "action": action, "position": position, "voice": self.voice}
         )
 
     async def sample(self):
@@ -137,6 +178,7 @@ class HTML5Adapter:
 
     async def open(self, target):
         self.url = target["link"]["url"]
+        self.voice = target["link"].get("voice", "")
         diagnostic = target.get("diagnostic")
 
         async def stage(name, status, message):
@@ -145,11 +187,14 @@ class HTML5Adapter:
 
         self.context = target.get("tracking", {})
         # Reuse a matching open page if available, otherwise open the explicit URL once.
-        try:
-            await self.sample()
-        except ToolError:
-            await stage("OPEN_SAFARI", "running", "Открываем конкретную страницу в Safari.")
-            await self.opener(self.url)
+        if hasattr(self.bridge, "ensure_page"):
+            await self.bridge.ensure_page(self.url, self.opener)
+        else:
+            try:
+                await self.sample()
+            except ToolError:
+                await self.opener(self.url)
+        await stage("OPEN_SAFARI", "success", "Страница открыта или выбрана в Safari.")
         await stage("DETECT_PLAYER", "running", "Ожидаем доступный HTML5-плеер и метаданные.")
         deadline = time.monotonic() + 15
         while True:
@@ -202,36 +247,95 @@ class HTML5Adapter:
             )
         else:
             await stage("RESTORE_POSITION", "success", "Новый просмотр с начала.")
+        voice_note = ""
+        if self.voice:
+            voice_state = await self.read("voice")
+            confirmed = voice_state.get("voice_confirmed") is True
+            voice_note = (
+                ""
+                if confirmed
+                else (
+                    f" Сохранена озвучка «{self.voice}», но плеер не подтвердил её выбор. "
+                    "Проверь звуковую дорожку на сайте."
+                )
+            )
+            await stage(
+                "RESTORE_POSITION",
+                "success" if confirmed else "limited",
+                f"Озвучка «{self.voice}» подтверждена." if confirmed else voice_note.strip(),
+            )
         if not target.get("autoplay", True):
             return {
                 "page_opened": True,
                 "mode": "html5",
                 "playback_confirmed": False,
-                "message": "Позиция подготовлена. Нажми ▶ в Safari; автозапуск отключён.",
+                "message": "Позиция подготовлена. Нажми ▶ в Safari; автозапуск отключён."
+                + voice_note,
             }
         await stage("PLAY", "running", "Ждём подтверждения движения времени.")
         try:
             result = await self.control("play")
         except ToolError as exc:
             await stage("PLAY", "limited", str(exc))
+            with contextlib.suppress(ToolError):
+                await self.read("offer_gesture")
             return {
                 "page_opened": True,
                 "mode": "html5",
                 "playback_confirmed": False,
-                "message": "Safari не подтвердил запуск. Нажми ▶ в плеере; проверь "
-                "разрешение автовоспроизведения для сайта.",
+                "message": str(exc) + " Нажми «Чушпан: запустить видео на весь экран» "
+                "на странице или кнопку ▶ самого плеера. Сохранённый прогресс не изменён.",
             }
         await stage("PLAY", "success", "Воспроизведение подтверждено движением времени.")
-        return {**result, "mode": "html5", "page_opened": True}
+        await stage("FULLSCREEN", "running", "Запрашиваем полноэкранный режим у видеоплеера.")
+        try:
+            await self.control("fullscreen")
+            await stage("FULLSCREEN", "success", "Плеер подтвердил полноэкранный режим.")
+            return {
+                **result,
+                "fullscreen_confirmed": True,
+                "mode": "html5",
+                "page_opened": True,
+                "message": result.get("message", "") + voice_note,
+                "result_status": "partial_success" if voice_note else "success",
+            }
+        except ToolError as exc:
+            await stage("FULLSCREEN", "limited", str(exc))
+            with contextlib.suppress(ToolError):
+                await self.read("offer_gesture")
+            return {
+                **result,
+                "fullscreen_confirmed": False,
+                "mode": "html5",
+                "page_opened": True,
+                "result_status": "partial_success",
+                "message": "Видео воспроизводится. "
+                + str(exc)
+                + " Нажми «Чушпан: запустить видео на весь экран» на странице."
+                + voice_note,
+            }
 
     async def control(self, action, position=0):
-        if action not in {"pause", "play", "seek"}:
+        if action not in {"pause", "play", "seek", "fullscreen"}:
             raise ToolError("Этот способ управления плеером не поддерживается.")
         before = await self.read(action, position)
         deadline = time.monotonic() + 4
         while time.monotonic() < deadline:
             await asyncio.sleep(0.15)
             after = await self.sample()
+            if action == "play" and after.get("play_error"):
+                raise ToolError(
+                    "Safari заблокировал автозапуск: требуется нажатие пользователя "
+                    "или разрешение автовоспроизведения для сайта."
+                )
+            if action == "fullscreen":
+                if after.get("fullscreen") is True:
+                    return {**after, "fullscreen_confirmed": True}
+                if after.get("fullscreen_error"):
+                    raise ToolError(
+                        "Safari не разрешил fullscreen без действия пользователя "
+                        "или плеер его не поддерживает."
+                    )
             if action == "pause" and after.get("paused") is True:
                 return {
                     **after,

@@ -150,3 +150,28 @@ test('permission center uses native actions, honest statuses, filters and rechec
     assert.equal(f.requests.some(r=>r.op==='listen_start'),false);
   }finally{await f.window.happyDOM.abort();}
 });
+
+test('startup permissions use the same center and leave optional permissions outside onboarding',async()=>{
+  const f=fixture();try{
+    const permissions={items:[{id:'microphone',name:'Микрофон',status:'denied',note:'',purpose:'Голосовые команды',url:'',can_request:false},{id:'location',name:'Геолокация',status:'denied',note:'',url:''}],scope:'Исполнитель теста'};
+    f.view.receive({...f.state,permissions,permission_onboarding:{visible:true,missing:['microphone'],fingerprint:'test'}});
+    const dialog=f.window.document.getElementById('permission-onboarding')!;
+    assert.ok(dialog);assert.match(dialog.textContent,/Микрофон/);assert.doesNotMatch(dialog.textContent,/Геолокация/);
+    assert.equal(f.requests.some(v=>v.action==='request'),false);
+    f.button('Продолжить без доступа');assert.equal(f.requests.at(-1)!.op,'permissions_dismiss');
+    f.view.receive({...f.state,permissions,permission_onboarding:{visible:false,missing:['microphone'],fingerprint:'test'}});
+    assert.equal(f.window.document.getElementById('permission-onboarding'),null);
+    f.window.dispatchEvent(new f.window.Event('focus'));assert.equal(f.requests.at(-1)!.op,'permissions');
+  }finally{await f.window.happyDOM.abort();}
+});
+
+test('YouTube Music settings expose persisted application and explicit browser fallback',async()=>{
+  const f=fixture();try{
+    f.view.receive({...f.state,music_application:{name:'YouTube Music',path:'/Applications/Music.app',kind:'safari_webapp',mode:'webapp',allow_browser:false}});
+    f.view.open('integrations');assert.match(f.window.document.getElementById('settings-content')!.textContent,/\/Applications\/Music.app/);
+    f.button('Проверить запуск');assert.deepEqual(f.requests.at(-1),{op:'music_application',action:'launch'});
+    const label=[...f.window.document.querySelectorAll('label')].find(n=>n.textContent?.includes('Разрешить Safari'))!;
+    const check=label.querySelector('input')!;assert.equal(check.checked,false);check.checked=true;check.dispatchEvent(new f.window.Event('change'));
+    assert.deepEqual(f.requests.at(-1),{op:'music_application',action:'browser',enabled:true});
+  }finally{await f.window.happyDOM.abort();}
+});

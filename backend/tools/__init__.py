@@ -157,6 +157,7 @@ def build_registry(
         else None,
     )
     registry.memory = profile
+    registry.media = media
     registry.mac_agent = agent
     registry.desktop = desktop
     desktop.memory = store

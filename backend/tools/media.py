@@ -411,20 +411,60 @@ class MediaService:
 
         load_provider(s, store)
         self.s = s
+        self.store = store
         self.youtube = None
+        self.music_application = {}
+        self.refresh_youtube()
+        self.spotify = spotify or Spotify(s)
+        self.video = video or SafariYouTube(s)
+        self._last_control_target: str | None = None
+        self.ducker = Ducker(self.spotify, s.media.duck_to, wake)
+
+    def refresh_youtube(self):
+        s, store = self.s, self.store
         if s.media.provider == "youtube_music" and s.media.youtube_music.enabled:
-            if s.media.youtube_music.transport == "safari":
+            from backend.media.safari import SafariMusic
+
+            config = s.media.youtube_music
+            saved = store.preference("media", "youtube_application") if store else None
+            mode = config.transport
+            if mode == "safari" and not config.allow_browser:
+                mode = "auto"
+            if not saved and (config.app_path or config.bundle_id):
+                mode = "auto"  # Migrate legacy forced-Safari config with an already selected app.
+            selected = SafariMusic(s)
+            try:
+                app, bundle = selected.discover()
+                self.music_application = SafariMusic.application(
+                    app, selected=bool(config.app_path)
+                )
+                if mode != "safari":
+                    mode = "webapp"
+                    config.app_path, config.bundle_id = app, bundle
+                    if store and store.memory_available:
+                        store.set_preference(
+                            "media",
+                            "youtube_application",
+                            {
+                                "transport": config.transport if saved else "auto",
+                                "app_path": str(app),
+                                "bundle_id": bundle,
+                                "allow_browser": config.allow_browser,
+                            },
+                        )
+            except ToolError:
+                self.music_application = {"kind": "not_found", "name": "Приложение не найдено"}
+                if mode == "auto":
+                    mode = "safari" if config.allow_browser else "webapp"
+            self.music_application.update(mode=mode, allow_browser=config.allow_browser)
+            if mode == "safari" and config.allow_browser:
                 from backend.media.music_safari import SafariYouTubeMusic
 
                 self.youtube = SafariYouTubeMusic(s, store)
             else:
                 from backend.media.youtube import YouTubeMusic
 
-                self.youtube = YouTubeMusic(s, store)
-        self.spotify = spotify or Spotify(s)
-        self.video = video or SafariYouTube(s)
-        self._last_control_target: str | None = None
-        self.ducker = Ducker(self.spotify, s.media.duck_to, wake)
+                self.youtube = YouTubeMusic(s, store, app=selected)
 
     def on_state(self, old: State | None, new: State) -> None:
         if self.s.media.provider == "spotify":
@@ -615,6 +655,26 @@ def media_tools(
 
 def _route_playback_tools(tools: list[Tool], media: MediaService) -> list[Tool]:
     for tool in tools:
+        if media.youtube and tool.name in {
+            "music_search",
+            "music_playlist",
+            "media_seek",
+            "media_volume",
+            "now_playing",
+        }:
+            method = {
+                "music_search": "search",
+                "music_playlist": "playlist",
+                "media_seek": "seek",
+                "media_volume": "volume",
+                "now_playing": "now_playing",
+            }[tool.name]
+
+            async def dispatch(_method=method, **arguments):
+                target = media.youtube.app if _method == "now_playing" else media.youtube
+                return await getattr(target, _method)(**arguments)
+
+            tool.handler = dispatch
         if tool.name == "play_music":
             tool.handler = media.play_music
             from backend.music import message

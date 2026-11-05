@@ -331,6 +331,28 @@ if ["permission_status", "permission_request"].contains(op) {
 }
 if op.hasPrefix("desktop_") { desktop(request, op) }
 let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundle)
+if op == "launch" {
+    guard let path = request["path"] as? String, path.hasSuffix(".app"),
+          Bundle(url: URL(fileURLWithPath: path))?.bundleIdentifier == bundle else { fail("invalid_request") }
+    if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.loginwindow" {
+        fail("user_session_locked")
+    }
+    // Launch Services reopens a closed window without creating a second instance.
+    let config = NSWorkspace.OpenConfiguration();config.activates = true
+    config.createsNewApplicationInstance = false
+    var finished = false, launchError = false
+    NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: path), configuration: config) { _, error in
+        launchError = error != nil;finished = true
+    }
+    let deadline = Date(timeIntervalSinceNow: 8)
+    while Date() < deadline {
+        if finished && (launchError || NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundle) { break }
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+    }
+    guard finished, !launchError,
+          NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundle else { fail("activation_not_verified") }
+    output(["ok": true,"activated": NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundle])
+}
 if op == "status" {
     output(["trusted": AXIsProcessTrusted(), "running": !running.isEmpty,
             "frontmost": NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundle,

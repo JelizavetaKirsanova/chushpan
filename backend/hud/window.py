@@ -100,6 +100,27 @@ class _Api:
         """The HUD's copy buttons: WebKit in a pywebview window may refuse the clipboard."""
         return copy_to_clipboard(text)
 
+    def choose_music_application(self) -> dict:
+        """An explicit settings click, using the system application picker."""
+        import webview
+
+        from backend.media.safari import SafariMusic
+
+        if self.window is None:
+            return {"ok": False, "message": "Окно приложения недоступно."}
+        try:
+            chosen = self.window.create_file_dialog(
+                webview.FileDialog.OPEN,
+                directory="/Applications",
+                allow_multiple=False,
+                file_types=("Приложения macOS (*.app)",),
+            )
+            if not chosen:
+                return {"ok": False, "cancelled": True}
+            return {"ok": True, "application": SafariMusic.application(chosen[0], selected=True)}
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "message": str(exc)}
+
     def save_cinema_library(self, document: dict) -> dict:
         """An explicit export click uses a native Save panel in WebKit windows."""
         import json

@@ -190,6 +190,8 @@ class TMDB:
     async def genres(self, kind):
         if kind not in self.genre_cache:
             data = await self.get(f"genre/{kind}/list")
+            if not isinstance(data.get("genres"), list):
+                raise ToolError("TMDB не вернул список жанров. Повтори загрузку каталога.")
             self.genre_cache[kind] = {g["id"]: g["name"] for g in data.get("genres", [])}
         return self.genre_cache[kind]
 

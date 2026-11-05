@@ -1685,7 +1685,8 @@ class Cinema:
                 "manual"
                 if series_page
                 else "html5"
-                if source["adapter"] == "direct" and prefs.open_in_safari
+                if source["adapter"] == "manual"
+                or (source["adapter"] == "direct" and prefs.open_in_safari)
                 else target["source"]["adapter"]
             )
             token = secrets.token_urlsafe(32)

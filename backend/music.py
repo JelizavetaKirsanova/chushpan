@@ -15,6 +15,14 @@ def load_provider(settings, store) -> None:
     if store is None:
         return
     try:
+        application = store.preference("media", "youtube_application")
+        if isinstance(application, dict):
+            from backend.config import YouTubeMusicConfig
+
+            config = YouTubeMusicConfig.model_validate(
+                {**settings.media.youtube_music.model_dump(), **application}
+            )
+            settings.media.youtube_music = config
         choice = store.preference("media", "provider")
         if (
             isinstance(choice, dict)
@@ -27,7 +35,7 @@ def load_provider(settings, store) -> None:
             }
         ):
             settings.media.provider = choice["provider"]
-    except sqlite3.Error:
+    except (sqlite3.Error, ValueError):
         pass  # keep the configured provider if SQLite cannot be read
 
 
@@ -397,11 +405,11 @@ class MusicCommands:
                 "message": playlist_reply(result),
             }
         if intent.action in {"diagnose", "request_access"}:
-            if provider != "youtube_music" or self.s.media.youtube_music.transport != "safari":
+            if provider != "youtube_music" or not hasattr(self.media.youtube.app, "diagnose"):
                 return {
                     "ok": False,
                     "code": "unsupported",
-                    "message": "Эта диагностика предназначена для YouTube Music во вкладке Safari.",
+                    "message": "Диагностика выбранного приложения недоступна.",
                 }
             app = self.media.youtube.app
             if intent.action == "request_access":
