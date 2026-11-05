@@ -182,7 +182,7 @@ def test_stats_use_local_day_boundary_and_missing_audio_is_not_zero(monkeypatch)
 
     monkeypatch.setattr(module, "datetime", Clock)
     store, dashboard, events = environment()
-    dashboard.s.location.timezone = "Europe/Tallinn"
+    dashboard.native_timezone({"timezone": "Europe/Tallinn"})
     for index, (when, first) in enumerate(
         [("2026-11-01T22:15:00+00:00", 3.0), ("2026-11-01T21:59:00+00:00", 50.0)]
     ):

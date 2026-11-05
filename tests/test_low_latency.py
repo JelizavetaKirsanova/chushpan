@@ -368,7 +368,7 @@ def test_statistics_separate_revision_kind_outcome_and_playback():
         assert stats["kinds"]["text"]["median_s"] == 0.1
         assert stats["comparison"]["voice"]["after"]["median_s"] == 1
         assert stats["comparison"]["voice"]["before"]["median_s"] == 9
-        assert stats["completion"]["voice"]["median_s"] == 55
+        assert stats["completion"]["voice"]["median_s"] == pytest.approx(55, rel=0, abs=1e-9)
         assert stats["kinds"]["voice"]["cancelled"] == 1
         assert stats["kinds"]["voice"]["rejected"] == 1
     finally:
