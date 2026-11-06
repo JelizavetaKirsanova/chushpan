@@ -475,8 +475,14 @@ class ToolRegistry:
                     log.warning("Task observer failed type=%s", type(exc).__name__)
 
         notify("running")
+        observer = getattr(self, "analytics", None)
+        collect = True
         try:
-            result = await self._call(name, arguments)
+            if observer is not None and hasattr(observer, "scope"):
+                with observer.scope(name) as collect:
+                    result = await self._call(name, arguments)
+            else:
+                result = await self._call(name, arguments)
         except asyncio.CancelledError:
             notify("cancelled")
             raise
@@ -500,7 +506,7 @@ class ToolRegistry:
                 profile.update(result_status=decoded["result_status"])
             result = _dump(decoded)
         notify("result", decoded)
-        if observer := getattr(self, "analytics", None):
+        if collect and (observer := getattr(self, "analytics", None)):
             if isinstance(decoded, dict):
                 observer.observe_tool(name, decoded)
         return result

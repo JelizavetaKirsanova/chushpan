@@ -23,3 +23,92 @@ test('memory details keep revision on deletion and projects navigate independent
 test('screen preview and OCR are never advertised as visual model understanding',()=>{const f=fixture();try{const view=f.views[1];view.connection(true);view.receive({type:'mac_center',busy:false,data:{apps:[],windows:[],permissions:{},preview:null,captured_at:null,analysis:null,actions:[],history:[],confirmation:null}});assert.match(f.window.document.getElementById('module-mac-control')!.textContent,/ещё не захватывался/);const button=[...f.window.document.querySelectorAll('#module-mac-control button')].find(b=>b.textContent==='Анализировать текст экрана')!;button.click();assert.equal(f.sent.at(-1).op,'capture');assert.equal(f.sent.at(-1).analyze,true);view.receive({type:'mac_center',busy:false,error:'Нет разрешения Screen Recording'});assert.match(f.window.document.querySelector('#module-mac-control .module-feedback')!.textContent,/Нет разрешения/);}finally{f.window.happyDOM.abort();}});
 test('unpaired devices display no invented phone, connection or active sync',()=>{const f=fixture();try{const view=f.views[2];view.connection(true);view.receive({type:'device_sync',busy:false,data:{running:false,url:'',fingerprint:'',invite:null,pending:[],peers:[],categories:{},capabilities:[],history:[],conflicts:[]}});const text=f.window.document.getElementById('module-my-devices')!.textContent!;assert.match(text,/Сервер выключен/);assert.match(text,/Рядом пока только Mac/);assert.doesNotMatch(text,/Онлайн/);}finally{f.window.happyDOM.abort();}});
 test('analytics has empty measurements, opt-in policy controls and accessible interactive bars',()=>{const f=fixture();try{const view=f.views[3];view.connection(true);view.receive({type:'analytics',busy:false,data:analytics()});const root=f.window.document.getElementById('module-analytics')!;assert.match(root.textContent,/Сбор данных выключен/);assert.match(root.textContent,/Нет измерений/);assert.doesNotMatch(root.textContent,/NaN|Infinity/);([...root.querySelectorAll('[role=tab]')].find(b=>b.textContent==='Сбор данных')!).click();const enabled=root.querySelector<HTMLInputElement>('input[name=enabled]')!;enabled.checked=true;([...root.querySelectorAll('button')].find(b=>b.textContent==='Сохранить настройки')!).click();assert.equal(f.sent.at(-1).op,'policy');assert.equal(f.sent.at(-1).value.enabled,true);const chart=f.sandbox.exports.barChart([{label:'Пн',value:2,detail:'2 обращения'}],'Обращения');chart.querySelector('button').click();assert.equal(chart.querySelector('button').getAttribute('aria-pressed'),'true');assert.match(chart.querySelector('.chart-detail').textContent,/2 обращения/);}finally{f.window.happyDOM.abort();}});
+
+function syncData(){return {running:false,url:'',fingerprint:'',invite:null,pending:[],peers:[],categories:{memory:'Память'},capabilities:['chat'],history:[],conflicts:[],endpoint:{host:'127.0.0.1',port:8766}};}
+function findButton(scope:ParentNode,label:string){const button=[...scope.querySelectorAll('button')].find(b=>b.textContent===label);assert.ok(button,label);return button;}
+
+test('module errors distinguish failed initial load and retry, and late responses cannot replace fresh state',()=>{
+  const f=fixture();try{
+    const view=f.views[3],root=f.window.document.getElementById('module-analytics')!;
+    view.connection(true);const first=f.sent.at(-1).request_id;
+    view.receive({type:'analytics',operation_id:first,busy:false,error:'Нет доступа к базе'});
+    assert.match(root.textContent!,/Не удалось загрузить данные/);
+    findButton(root,'Повторить загрузку').click();const second=f.sent.at(-1).request_id;
+    assert.notEqual(first,second);
+    view.receive({type:'analytics',operation_id:first,busy:false,data:{...analytics(),summary:{...analytics().summary,count:999}}});
+    assert.doesNotMatch(root.textContent!,/999/);
+    view.receive({type:'analytics',operation_id:second,busy:false,data:analytics()});
+    assert.match(root.textContent!,/За выбранный период данных пока нет/);
+    assert.doesNotMatch(root.textContent!,/Не удалось загрузить данные/);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('rapid analytics date and device filters merge into the latest queued query and custom dates retain device',()=>{
+  const f=fixture();try{
+    const view=f.views[3],root=f.window.document.getElementById('module-analytics')!;
+    const data={...analytics(),devices:['phone'],query:{period:'today',device:''}};
+    view.connection(true);view.receive({type:'analytics',busy:false,data});
+    const period=root.querySelector<HTMLSelectElement>('[aria-label="Период аналитики"]')!;
+    period.value='week';period.dispatchEvent(new f.window.Event('change'));const week=f.sent.at(-1);
+    const device=root.querySelector<HTMLSelectElement>('[aria-label="Устройство аналитики"]')!;
+    device.value='phone';device.dispatchEvent(new f.window.Event('change'));
+    assert.equal(f.sent.at(-1),week);
+    view.receive({type:'analytics',operation_id:week.request_id,busy:false,data:{...data,query:{period:'week'}}});
+    assert.equal(f.sent.at(-1).period,'week');assert.equal(f.sent.at(-1).device,'phone');
+    const filtered=f.sent.at(-1);view.receive({type:'analytics',operation_id:filtered.request_id,busy:false,data:{...data,query:{period:'week',device:'phone'}}});
+    const custom=root.querySelector<HTMLSelectElement>('[aria-label="Период аналитики"]')!;custom.value='custom';custom.dispatchEvent(new f.window.Event('change'));
+    const modal=f.window.document.querySelector('dialog')!;
+    modal.querySelector<HTMLInputElement>('[name=start]')!.value='2026-11-01';modal.querySelector<HTMLInputElement>('[name=end]')!.value='2026-11-06';
+    findButton(modal,'Выбрать').click();assert.equal(f.sent.at(-1).device,'phone');assert.equal(f.sent.at(-1).period,'custom');
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('module dialogs disable their fields and writes on disconnect and expose backend errors without false success',()=>{
+  const f=fixture();try{
+    const view=f.views[2],root=f.window.document.getElementById('module-my-devices')!;
+    view.connection(true);view.receive({type:'device_sync',busy:false,data:syncData()});
+    findButton(root,'Запустить сервер').click();const modal=f.window.document.querySelector('dialog')!;
+    view.connection(false);
+    assert.ok([...modal.querySelectorAll('input')].every(i=>i.disabled));
+    assert.ok([...modal.querySelectorAll<HTMLButtonElement>('button[data-write]')].every(b=>b.disabled));
+    assert.equal(findButton(modal,'Закрыть').disabled,false);
+    view.connection(true);const refresh=f.sent.at(-1);view.receive({type:'device_sync',operation_id:refresh.request_id,busy:false,data:syncData()});
+    const host=modal.querySelector<HTMLInputElement>('[name=host]')!;host.value='127.0.0.1';
+    findButton(modal,'Включить защищённое соединение').click();const start=f.sent.at(-1);
+    view.receive({type:'device_sync',operation_id:start.request_id,busy:false,error:'Порт занят'});
+    assert.match(modal.querySelector('.module-dialog-feedback')!.textContent!,/Порт занят/);
+    assert.equal(host.value,'127.0.0.1');assert.doesNotMatch(modal.textContent!,/Сервер запущен/);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('pairing wizard updates to show generated QR and stop preserves saved peers',()=>{
+  const f=fixture();try{
+    const view=f.views[2],root=f.window.document.getElementById('module-my-devices')!;
+    view.connection(true);view.receive({type:'device_sync',busy:false,data:syncData()});
+    findButton(root,'Запустить сервер').click();const modal=f.window.document.querySelector('dialog')!;
+    findButton(modal,'Включить защищённое соединение').click();const start=f.sent.at(-1);
+    const running={...syncData(),running:true,url:'https://127.0.0.1:8766',fingerprint:'test-fingerprint'};
+    view.receive({type:'device_sync',operation_id:start.request_id,busy:false,data:running});
+    findButton(modal,'Создать QR на 2 минуты').click();const invite=f.sent.at(-1);
+    const qr={url:'https://127.0.0.1:8766/#pair=fixture-only',qr:'data:image/png;base64,AA==',expires:Date.now()/1000+120};
+    view.receive({type:'device_sync',operation_id:invite.request_id,busy:false,data:{...running,invite:qr}});
+    assert.equal(modal.open,true);assert.ok(modal.querySelector('img.pair-qr'));
+    assert.match(modal.textContent!,/pair=fixture-only/);
+    findButton(modal,'Выключить сервер').click();const stop=f.sent.at(-1);
+    const peer={id:'phone',name:'Test phone',kind:'iphone',online:false,revoked_at:null,disconnected:0,last_seen:null,last_sync:null,categories:['memory'],capabilities:[]};
+    view.receive({type:'device_sync',operation_id:stop.request_id,busy:false,data:{...syncData(),peers:[peer]}});
+    assert.match(root.textContent!,/Test phone/);assert.match(root.textContent!,/Сервер выключен/);
+    assert.ok(modal.querySelector('[name=host]'));
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('capture stop remains enabled during work and offline server cannot show online peers',()=>{
+  const f=fixture();try{
+    const mac=f.views[1];mac.connection(true);mac.receive({type:'mac_center',busy:false,data:{apps:[],windows:[],permissions:{},preview:null,captured_at:null,analysis:null,actions:[],history:[],confirmation:null}});
+    const root=f.window.document.getElementById('module-mac-control')!;findButton(root,'Сделать скриншот').click();
+    assert.equal(findButton(root,'Остановить захват').disabled,false);findButton(root,'Остановить захват').click();
+    assert.equal(f.sent.at(-1).op,'cancel');
+    const sync=f.views[2];sync.connection(true);sync.receive({type:'device_sync',busy:false,data:{...syncData(),peers:[{id:'phone',name:'Fixture phone',kind:'ipad',online:true,revoked_at:null,disconnected:0,last_seen:Date.now()/1000,last_sync:null,categories:[],capabilities:[]}]}});
+    assert.doesNotMatch(f.window.document.getElementById('module-my-devices')!.textContent!,/iPad · На связи/);
+  }finally{f.window.happyDOM.abort();}
+});

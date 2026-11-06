@@ -8,6 +8,8 @@ import math
 import re
 import sqlite3
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from datetime import time as wall_time
 from uuid import uuid4
@@ -26,6 +28,8 @@ CATEGORIES = {
     "devices": "Устройства",
     "media": "Медиатека",
 }
+MAX_EVENTS = 100000
+_observing: ContextVar[frozenset[str]] = ContextVar("analytics_categories", default=frozenset())
 SCHEMA = """CREATE TABLE IF NOT EXISTS analytics_events (
 event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL, timestamp REAL NOT NULL,
 source TEXT NOT NULL, device_id TEXT NOT NULL, session_id TEXT, duration REAL,
@@ -89,6 +93,7 @@ class Analytics(Center):
         self.queue = asyncio.Queue(maxsize=256)
         self.dropped, self.failure, self.query = 0, policy_error, {"period": "today"}
         self.generation = 0
+        self.sampling_failure = None
         self.bind(bus)
         registry.analytics = self
         store.performance.analytics = self
@@ -167,11 +172,13 @@ class Analytics(Center):
     def observe_trace(self, row):
         if row["status"] == "running":
             return
+        created = datetime.fromisoformat(row["created_at"])
+        timestamp = (created if created.tzinfo else created.replace(tzinfo=UTC)).timestamp()
         if row["kind"] == "activation":
             self.record(
                 "assistant.recognition",
                 event_id="trace:" + row["request_id"],
-                at=datetime.fromisoformat(row["created_at"]).timestamp(),
+                at=timestamp,
                 metadata={"status": row["status"]},
                 device=row["metadata"].get("device_id", "local-mac"),
             )
@@ -179,7 +186,7 @@ class Analytics(Center):
         self.record(
             "assistant.request",
             event_id="trace:" + row["request_id"],
-            at=datetime.fromisoformat(row["created_at"]).timestamp(),
+            at=timestamp,
             duration=row.get("total_s"),
             device=row["metadata"].get("device_id", "local-mac"),
             metadata={
@@ -192,14 +199,29 @@ class Analytics(Center):
             },
         )
 
-    def observe_tool(self, name, result):
+    @staticmethod
+    def tool_category(name):
         if name == "run_scenario":
-            kind = "scenarios.run"
-        elif name in {"led_control", "device_command", "set_brightness", "set_external_brightness"}:
-            kind = "devices.command"
-        elif name.startswith("media_") or name in {"play_music", "music_command"}:
-            kind = "media.event"
-        else:
+            return "scenarios.run"
+        if name in {"led_control", "device_command", "set_brightness", "set_external_brightness"}:
+            return "devices.command"
+        if name.startswith("media_") or name in {"play_music", "music_command"}:
+            return "media.event"
+        return None
+
+    @contextmanager
+    def scope(self, name):
+        """Count a device command once even when it delegates to another device tool."""
+        category, parents = self.tool_category(name), _observing.get()
+        token = _observing.set(parents | {category} if category else parents)
+        try:
+            yield category not in parents
+        finally:
+            _observing.reset(token)
+
+    def observe_tool(self, name, result):
+        kind = self.tool_category(name)
+        if kind is None:
             return
         from backend.context import request_context
 
@@ -241,6 +263,11 @@ class Analytics(Center):
                         await asyncio.to_thread(self.write, events, generation)
                     else:
                         self.write(events, generation)
+                    if (
+                        self.failure
+                        == "Часть событий не сохранена: локальная база занята или недоступна."
+                    ):
+                        self.failure = None
             except sqlite3.Error:
                 self.failure = "Часть событий не сохранена: локальная база занята или недоступна."
                 self.dropped += len(batch)
@@ -254,6 +281,7 @@ class Analytics(Center):
             await asyncio.sleep(5)
             now = time.monotonic()
             if not self.policy.enabled or "mac" not in self.policy.categories:
+                self.sampling_failure = None
                 previous, sampled = None, now
                 continue
             try:
@@ -288,9 +316,10 @@ class Analytics(Center):
                 elif app and previous:
                     self.record("mac.switch", metadata={"bundle": app["bundle"]})
                 previous = app
+                self.sampling_failure = None
             except Exception:
                 previous = None
-                self.failure = (
+                self.sampling_failure = (
                     "Учёт приложений недоступен. Разрешения не запрашивались автоматически."
                 )
             sampled = now
@@ -300,14 +329,19 @@ class Analytics(Center):
             await self.queue.join()
 
     def events(self, start, end, device=""):
-        return [
+        result = [
             {**dict(r), "metadata": json.loads(r["metadata"])}
             for r in self.store.db.execute(
                 "SELECT * FROM analytics_events WHERE timestamp>=? AND timestamp<? "
-                "AND (?='' OR device_id=?) ORDER BY timestamp LIMIT 100000",
-                (start, end, device, device),
+                "AND (?='' OR device_id=?) ORDER BY timestamp LIMIT ?",
+                (start, end, device, device, MAX_EVENTS + 1),
             )
         ]
+        if len(result) > MAX_EVENTS:
+            raise ValueError(
+                "В периоде слишком много событий для отчёта. Сократи период или выбери устройство."
+            )
+        return result
 
     def aggregate(self, events):
         requests = [r for r in events if r["event_type"] == "assistant.request"]
@@ -343,9 +377,16 @@ class Analytics(Center):
                 category = meta.get("category", "other")
                 categories[category] = categories.get(category, 0) + duration
             if meta.get("tool"):
-                key = meta["tool"]
+                key = (row["event_type"], meta["tool"])
                 command = commands.setdefault(
-                    key, {"name": key, "count": 0, "failed": 0, "confirmed": 0}
+                    key,
+                    {
+                        "name": meta["tool"],
+                        "category": row["event_type"],
+                        "count": 0,
+                        "failed": 0,
+                        "confirmed": 0,
+                    },
                 )
                 command["count"] += 1
                 command["failed"] += meta.get("status") == "failed"
@@ -409,7 +450,7 @@ class Analytics(Center):
             "policy": self.policy.model_dump(),
             "insights": insights,
             "dropped": self.dropped,
-            "error": self.failure,
+            "error": self.failure or self.sampling_failure,
             "query": self.query,
             "timezone": self.s.location.tz_name,
             "devices": [
@@ -434,6 +475,8 @@ class Analytics(Center):
             self.store.set_preference("analytics", "policy", policy.model_dump())
             self.policy = policy
             self.failure = None
+            if not policy.enabled or "mac" not in policy.categories:
+                self.sampling_failure = None
             with self.store.memory_transaction():
                 self.store.db.execute(
                     "DELETE FROM analytics_events WHERE timestamp<?",
@@ -451,6 +494,8 @@ class Analytics(Center):
             with self.store.memory_transaction():
                 self.store.db.execute("DELETE FROM analytics_events")
         elif op == "export":
+            if value.get("format", "json") not in {"csv", "json"}:
+                raise ValueError("Доступен экспорт CSV или JSON.")
             start, end, _ = period_bounds(self.query, self.s.location.tz_name)
             events = self.events(start, end, self.query.get("device", ""))
             if value.get("format") == "csv":

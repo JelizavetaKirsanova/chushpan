@@ -75,8 +75,8 @@ export class SettingsCenterUI {
     }
     id('settings-back').onclick=()=>this.open('');
     document.addEventListener('settings:open',event=>this.open((event as CustomEvent<string>).detail));
-    for(const [title,description,view] of [['Управление Mac','Экран, действия и разрешения','mac-control'],['Синхронизация','Доверенные устройства и категории данных','my-devices'],['Личная аналитика','Сбор данных, исключения и хранение','analytics'],['Приватность','Память, экран, устройства и данные','privacy']]) {
-      const button=this.button('',()=>this.navigate(view));button.className='settings-category';const text=el('span');text.append(el('strong',title),el('small',description));button.append(text,el('span','›','settings-chevron'));id('settings-categories').append(button);
+    for(const [title,description,view,glyph] of [['Управление Mac','Экран, действия и разрешения','mac-control','monitor'],['Синхронизация','Доверенные устройства и категории данных','my-devices','link'],['Личная аналитика','Сбор данных, исключения и хранение','analytics','chart'],['Приватность','Память, экран, устройства и данные','privacy','shield']]) {
+      const button=this.button('',()=>this.navigate(view));button.className='settings-category';const symbol=el('span','','settings-category-icon');symbol.innerHTML=icon(glyph);const text=el('span');text.append(el('strong',title),el('small',description));button.append(symbol,text,el('span','›','settings-chevron'));id('settings-categories').append(button);
     }
     const recheck=()=>{if(this.online&&!document.hidden&&Date.now()-this.permissionCheckedAt>1500){this.permissionCheckedAt=Date.now();this.send({op:'permissions'});}};
     window.addEventListener('focus',recheck);document.addEventListener('visibilitychange',recheck);

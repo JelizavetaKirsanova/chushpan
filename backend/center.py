@@ -30,22 +30,37 @@ class Center:
         self.bus.publish({"type": self.channel, **value})
 
     async def run(self, value):
-        self.publish(busy=True)
+        operation = (
+            {"operation_id": value["request_id"]}
+            if isinstance(value.get("request_id"), str)
+            else {}
+        )
+        self.publish(busy=True, **operation)
         try:
             async with asyncio.timeout(self.timeout):
                 result = await self.handle(value)
-            self.publish(busy=False, **(result or {}))
+            self.publish(busy=False, **operation, **(result or {}))
         except asyncio.CancelledError:
-            self.publish(busy=False, error="Операция остановлена. Результат не подтверждён.")
+            self.publish(
+                busy=False, **operation, error="Операция остановлена. Результат не подтверждён."
+            )
         except TimeoutError:
-            self.publish(busy=False, error="Время ожидания истекло. Результат не подтверждён.")
+            self.publish(
+                busy=False, **operation, error="Время ожидания истекло. Результат не подтверждён."
+            )
         except (ValueError, ToolError) as exc:
-            self.publish(busy=False, error=str(exc))
+            self.publish(busy=False, **operation, error=str(exc))
         except sqlite3.Error:
-            self.publish(busy=False, error="Локальная база недоступна. Изменения не подтверждены.")
+            self.publish(
+                busy=False,
+                **operation,
+                error="Локальная база недоступна. Изменения не подтверждены.",
+            )
         except Exception as exc:
             # No raw native/network error or user content in diagnostics.
-            self.publish(busy=False, error="Операция недоступна: " + type(exc).__name__)
+            self.publish(
+                busy=False, **operation, error="Операция недоступна: " + type(exc).__name__
+            )
 
     async def close(self):
         if self.task and not self.task.done():

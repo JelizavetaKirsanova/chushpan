@@ -1,9 +1,9 @@
 import type {HudEvent} from './types';
 
 export type ModuleChannel = 'memory_library'|'mac_center'|'device_sync'|'analytics';
-export interface ModuleEvent {type:ModuleChannel;busy?:boolean;capturing?:boolean;error?:string;message?:string|null;data?:unknown;download?:{name:string;mime:string;content?:string;base64?:string};}
+export interface ModuleEvent {type:ModuleChannel;operation_id?:string;busy?:boolean;capturing?:boolean;error?:string;message?:string|null;data?:unknown;download?:{name:string;mime:string;content?:string;base64?:string};}
 export const el = <K extends keyof HTMLElementTagNameMap>(tag:K, value='', cls=''):HTMLElementTagNameMap[K] => {const node=document.createElement(tag);node.textContent=value;node.className=cls;return node;};
-export const date = (value:string|number|null|undefined):string => value ? new Date(typeof value==='number'?value*1000:value).toLocaleString('ru-RU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : 'Ещё нет данных';
+export const date = (value:string|number|null|undefined):string => {if(value==null||value==='')return 'Ещё нет данных';const normalized=typeof value==='string'&&/^\d{4}-\d\d-\d\d[T ]\d\d:\d\d/.test(value)&&!/(?:Z|[+-]\d\d:\d\d)$/.test(value)?value.replace(' ','T')+'Z':value;const parsed=new Date(typeof normalized==='number'?normalized*1000:normalized);return Number.isNaN(parsed.getTime())?'Дата недоступна':parsed.toLocaleString('ru-RU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});};
 export const duration = (value:number|null|undefined):string => value==null?'Нет данных':value<60?`${Math.round(value)} с`:`${Math.floor(value/3600)} ч ${Math.floor(value%3600/60)} м`;
 export const seconds = (value:number|null|undefined):string => value==null?'Нет данных':`${value.toFixed(2)} с`;
 export const card = (title:string, description=''):HTMLElement => {const node=el('article','','module-card');node.append(el('h2',title));if(description)node.append(el('p',description,'muted'));return node;};
@@ -24,12 +24,12 @@ export function formFields(fields:FormField[]):{form:HTMLFormElement;read:()=>Re
   }
   return {form,read:()=>{const result:Record<string,string|boolean>={};for(const field of fields){const input=form.elements.namedItem(field.name) as HTMLInputElement;result[field.name]=field.kind==='checkbox'?input.checked:input.value;}return result;}};
 }
-export function dialog(title:string, body:HTMLElement):HTMLDialogElement {const modal=el('dialog','','module-dialog');const close=el('button','Закрыть','module-close');close.type='button';close.onclick=()=>modal.close();modal.append(row(el('h2',title),close),body);modal.addEventListener('close',()=>modal.remove());document.body.append(modal);modal.showModal();return modal;}
+export function dialog(title:string, body:HTMLElement,owner?:string):HTMLDialogElement {const modal=el('dialog','','module-dialog');if(owner)modal.dataset.moduleOwner=owner;modal.setAttribute('aria-label',title);const close=el('button','Закрыть','module-close');close.type='button';close.onclick=()=>modal.close();modal.append(row(el('h2',title),close),body);modal.addEventListener('close',()=>modal.remove());document.body.append(modal);modal.showModal();return modal;}
 
 export abstract class ModulePage<T> {
   protected online=false;protected busy=false;protected state:T|null=null;protected tab='overview';
   protected content:HTMLElement;protected tabs:HTMLElement;protected feedback:HTMLElement;protected toolbar:HTMLElement;
-  private timer=0;
+  private timer=0;private pending='';private queuedRead:object|null=null;
   constructor(readonly channel:ModuleChannel,readonly view:string, title:string, description:string,
     private post:(channel:ModuleChannel,value:object)=>void, protected navigate:(view:string)=>void,
     tabs:[string,string][]) {
@@ -44,14 +44,35 @@ export abstract class ModulePage<T> {
     this.begin();
     document.addEventListener('workspace:navigate',event=>{if((event as CustomEvent<string>).detail===view&&this.online)this.refresh();});
   }
-  connection(online:boolean):void {this.online=online;clearTimeout(this.timer);this.busy=false;this.feedback.textContent=online?'Загружаю локальные данные…':'Нет соединения. Последние данные могут быть устаревшими.';if(online)this.refresh();this.controls();}
-  receive(event:HudEvent):void {if(event.type!==this.channel)return;const value=event as ModuleEvent;if(value.busy!==undefined){this.busy=value.busy;this.controls();if(value.busy)this.feedback.textContent='Выполняю…';else clearTimeout(this.timer);}if(value.error){this.feedback.textContent=value.error;this.feedback.dataset.error='true';}else if(value.message){this.feedback.textContent=value.message;delete this.feedback.dataset.error;}else if(value.busy===false){this.feedback.textContent='Данные обновлены.';delete this.feedback.dataset.error;}if(value.data){this.state=value.data as T;this.render();}if(value.download)download(value.download);}
-  protected send(value:object):void {if(!this.online){this.feedback.textContent='Нет связи с Чушпаном. Действие не отправлено.';return;}this.post(this.channel,value);clearTimeout(this.timer);this.timer=window.setTimeout(()=>{this.feedback.textContent='Ответ не получен вовремя. Обнови данные; результат не подтверждён.';this.busy=false;this.controls();},36000);}
-  protected controls():void {document.getElementById('module-'+this.view)?.querySelectorAll<HTMLButtonElement>('button[data-write]').forEach(button=>button.disabled=!this.online||this.busy);}
-  protected button(label:string,action:()=>void,primary=false):HTMLButtonElement {const button=el('button',label,primary?'primary':'');button.type='button';button.dataset.write='true';button.disabled=!this.online||this.busy;button.onclick=action;return button;}
+  connection(online:boolean):void {this.online=online;clearTimeout(this.timer);this.busy=false;this.pending='';this.queuedRead=null;delete this.feedback.dataset.error;this.feedback.textContent=online?'Загружаю локальные данные…':'Нет соединения. Последние данные могут быть устаревшими.';if(!this.state)this.begin();if(online)this.refresh();this.controls();}
+  receive(event:HudEvent):boolean {
+    if(event.type!==this.channel)return false;const value=event as ModuleEvent;
+    if(value.operation_id&&value.operation_id!==this.pending)return false;
+    if(value.busy!==undefined){this.busy=value.busy;if(value.busy)this.feedback.textContent='Выполняю…';else{clearTimeout(this.timer);this.pending='';}}
+    if(value.error){this.feedback.textContent=value.error;this.feedback.dataset.error='true';}
+    else if(value.message){this.feedback.textContent=value.message;delete this.feedback.dataset.error;}
+    else if(value.busy===false){this.feedback.textContent='Данные обновлены.';delete this.feedback.dataset.error;}
+    if(value.data){this.state=value.data as T;const focused=document.getElementById('module-'+this.view)?.contains(document.activeElement)&&document.activeElement?.matches('input,select,textarea');if(!focused||value.busy===false)this.render();}
+    else if(value.error&&!this.state)this.begin();
+    if(value.download)download(value.download);this.controls();
+    if(value.busy===false&&this.queuedRead){const next=this.queuedRead;this.queuedRead=null;this.send(next);}
+    return true;
+  }
+  protected send(value:object):void {
+    if(!this.online){this.feedback.textContent='Нет связи с Чушпаном. Действие не отправлено.';return;}
+    const op=(value as {op?:string}).op;
+    if(this.busy&&op!=='cancel'){if(['snapshot','query','list'].includes(op??''))this.queuedRead=value;return;}
+    if(op==='cancel'){this.post(this.channel,value);return;}
+    this.pending=window.crypto.randomUUID();this.busy=true;this.feedback.textContent='Выполняю…';delete this.feedback.dataset.error;this.controls();this.post(this.channel,{...value,request_id:this.pending});clearTimeout(this.timer);
+    this.timer=window.setTimeout(()=>{this.feedback.textContent='Ответ не получен вовремя. Обнови данные; результат не подтверждён.';this.feedback.dataset.error='true';this.busy=false;this.pending='';this.controls();if(!this.state)this.begin();},36000);
+  }
+  protected controls():void {this.content.setAttribute('aria-busy',String(this.busy));for(const root of [document.getElementById('module-'+this.view),...document.querySelectorAll<HTMLElement>(`.module-dialog[data-module-owner="${this.view}"]`)]){root?.querySelectorAll<HTMLButtonElement>('button[data-write]').forEach(button=>button.disabled=button.dataset.unavailable==='true'||!this.online||(this.busy&&button.dataset.allowBusy!=='true'));root?.querySelectorAll<HTMLInputElement>('input,select,textarea').forEach(input=>input.disabled=!this.online);const status=root?.querySelector<HTMLElement>('.module-dialog-feedback');if(status){status.textContent=this.feedback.textContent;status.dataset.error=this.feedback.dataset.error??'false';}}}
+  protected button(label:string,action:()=>void,primary=false,allowBusy=false):HTMLButtonElement {const button=el('button',label,primary?'primary':'');button.type='button';button.dataset.write='true';if(allowBusy)button.dataset.allowBusy='true';button.disabled=!this.online||(this.busy&&!allowBusy);button.onclick=action;return button;}
+  protected openDialog(title:string,body:HTMLElement):HTMLDialogElement {const modal=dialog(title,body,this.view);const status=el('p',this.feedback.textContent??'','module-feedback module-dialog-feedback');status.setAttribute('role','status');modal.append(status);return modal;}
   protected navigation(label:string,view:string):HTMLButtonElement {const button=el('button',label);button.type='button';button.onclick=()=>this.navigate(view);return button;}
   protected settings(category:string):void {this.navigate('settings');document.dispatchEvent(new CustomEvent('settings:open',{detail:category}));}
-  protected begin():boolean {this.tabs.querySelectorAll<HTMLButtonElement>('button').forEach(button=>{const active=button.dataset.tab===this.tab;button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;});this.content.setAttribute('aria-labelledby',`${this.view}-tab-${this.tab}`);this.content.replaceChildren();if(!this.state){this.content.append(empty(this.online?'Загружаю…':'Нет соединения','Раздел покажет сохранённые данные после подключения к Чушпану.'));return false;}return true;}
+  protected begin():boolean {this.tabs.querySelectorAll<HTMLButtonElement>('button').forEach(button=>{const active=button.dataset.tab===this.tab;button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;});this.content.setAttribute('aria-labelledby',`${this.view}-tab-${this.tab}`);this.content.replaceChildren();if(!this.state){const error=this.feedback.dataset.error==='true';this.content.append(empty(!this.online?'Нет соединения':error?'Не удалось загрузить данные':'Загружаю…',error?this.feedback.textContent??'Попробуй снова.':'Раздел покажет сохранённые данные после подключения к Чушпану.'));if(this.online&&error)this.content.append(this.button('Повторить загрузку',()=>this.refresh()));return false;}return true;}
   protected abstract refresh():void;
+  refreshIfIdle():void {if(this.online&&!this.busy)this.refresh();}
   protected abstract render():void;
 }

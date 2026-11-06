@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import contextlib
+import errno
 import hashlib
 import ipaddress
 import json
@@ -70,6 +71,9 @@ class DeviceSync(Center):
         self.server, self.server_task, self.bonjour, self.listener = None, None, None, None
         self.url, self.fingerprint, self.ca = "", "", None
         self.invite, self.pending = None, {}
+        self.failure = None
+        self.started_at = None
+        self.endpoint = memory.preference("sync", "endpoint") or {"host": "", "port": 8766}
         self.commands, self.rates = {}, defaultdict(deque)
         self.bind(bus)
         # A crashed command is uncertain and must never be replayed after restart.
@@ -82,18 +86,37 @@ class DeviceSync(Center):
         now = time.time()
         self.pending = {k: v for k, v in self.pending.items() if v["expires"] > now}
         invite = self.invite if self.invite and self.invite["expires"] > now else None
+        running = bool(
+            self.server and self.server.started and self.server_task and not self.server_task.done()
+        )
+        failure = self.failure or (
+            "TLS-сервер неожиданно остановился. Проверь адрес и запусти его снова."
+            if self.server_task
+            and self.server_task.done()
+            and self.server
+            and not self.server.should_exit
+            else None
+        )
         return {
-            "running": bool(
-                self.server
-                and self.server.started
-                and self.server_task
-                and not self.server_task.done()
-            ),
-            "url": self.url,
+            "running": running,
+            "error": failure,
+            "endpoint": self.endpoint,
+            "url": self.url if running else "",
             "fingerprint": self.fingerprint,
-            "invite": invite,
+            "invite": invite if running else None,
             "pending": [{k: v for k, v in p.items() if k != "key"} for p in self.pending.values()],
-            "peers": self.store.peers(),
+            "peers": [
+                {
+                    **p,
+                    "online": bool(
+                        running
+                        and self.started_at is not None
+                        and (p["last_seen"] or 0) >= self.started_at
+                        and p["online"]
+                    ),
+                }
+                for p in self.store.peers()
+            ],
             "categories": CATEGORIES,
             "capabilities": sorted(CAPABILITIES),
             "history": rows(
@@ -295,9 +318,9 @@ class DeviceSync(Center):
         devices = []
         if "devices" in peer["capabilities"] and self.tools.devices:
             devices = [
-                {"id": d.id, "name": d.name, "kind": d.kind}
-                for d in self.tools.devices.store.list()
-                if d.enabled
+                {k: d[k] for k in ("id", "name", "kind")}
+                for d in self.tools.devices.snapshot()["items"]
+                if d["usable"]
             ]
         return {
             "status": "online",
@@ -626,11 +649,13 @@ class DeviceSync(Center):
             config.load()  # SSLContext owns the key before the private temporary file is removed.
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind((host, port))
             listener.listen(16)
             listener.setblocking(False)
             self.listener = listener
             self.server = LocalServer(config)
+            self.started_at = time.time()
             self.server_task = asyncio.create_task(self.server.serve(sockets=[listener]))
             for _ in range(50):
                 if self.server_task.done():
@@ -653,8 +678,21 @@ class DeviceSync(Center):
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
                 )
-        except BaseException:
+            self.failure = None
+            self.endpoint = {"host": host, "port": port}
+            self.memory.set_preference("sync", "endpoint", self.endpoint)
+        except BaseException as exc:
+            listener.close()
             await self.stop()
+            self.failure = (
+                "Запуск сервера отменён."
+                if isinstance(exc, asyncio.CancelledError)
+                else "Этот порт уже занят. Останови другой сервер или выбери другой порт."
+                if isinstance(exc, OSError) and exc.errno == errno.EADDRINUSE
+                else "Этот IP-адрес не назначен Mac. Проверь адрес текущей локальной сети."
+                if isinstance(exc, OSError) and exc.errno == errno.EADDRNOTAVAIL
+                else "TLS-сервер не запущен. Проверь локальный IP, порт и доступность сети."
+            )
             raise
 
     async def stop(self):
@@ -672,21 +710,32 @@ class DeviceSync(Center):
                 await asyncio.wait_for(self.server_task, 3)
             except (TimeoutError, asyncio.CancelledError):
                 pass
+            except Exception:
+                self.failure = "TLS-сервер завершился с ошибкой."
         if self.listener:
             self.listener.close()
         self.server, self.server_task, self.listener, self.bonjour = None, None, None, None
+        self.url = ""
+        self.started_at = None
 
     async def handle(self, value):
         op = value.get("op", "snapshot")
         message = None
         if op == "start":
-            await self.start(value.get("host"), value.get("port", 8766))
-            message = "Локальный TLS-сервер запущен. Доверенные устройства пока не "
-            "получают разрешений автоматически."
+            try:
+                await self.start(value.get("host"), value.get("port", 8766))
+            except OSError:
+                raise ValueError(self.failure or "Не удалось открыть локальный TLS-сервер.") from None
+            message = (
+                "Локальный TLS-сервер запущен. Доверенные устройства пока не "
+                "получают разрешений автоматически."
+            )
         elif op == "stop":
             await self.stop()
+            self.failure = None
+            message = "Локальный TLS-сервер остановлен. Сопряжения и разрешения сохранены."
         elif op == "invite":
-            if not self.server or not self.server.started:
+            if not self.snapshot()["running"]:
                 raise ValueError("Сначала запусти локальный TLS-сервер.")
             nonce = secrets.token_urlsafe(24)
             url = self.url + "/#pair=" + nonce

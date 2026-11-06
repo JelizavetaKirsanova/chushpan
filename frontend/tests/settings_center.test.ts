@@ -175,3 +175,18 @@ test('YouTube Music settings expose persisted application and explicit browser f
     assert.deepEqual(f.requests.at(-1),{op:'music_application',action:'browser',enabled:true});
   }finally{await f.window.happyDOM.abort();}
 });
+
+test('all settings links keep the established icon text chevron grid structure',async()=>{
+  const f=fixture();try{
+    const links=[...f.window.document.querySelectorAll('#settings-categories .settings-category')];
+    assert.equal(links.length,14);
+    for(const link of links){
+      assert.equal(link.children.length,3,link.textContent!);
+      assert.ok(link.children[0].matches('.settings-category-icon'));
+      assert.ok(link.children[0].querySelector('svg'));
+      assert.ok(link.children[1].querySelector('strong'));
+      assert.ok(link.children[1].querySelector('small'));
+      assert.ok(link.children[2].matches('.settings-chevron'));
+    }
+  }finally{await f.window.happyDOM.close();}
+});
