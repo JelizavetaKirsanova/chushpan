@@ -27,13 +27,7 @@ def test_runtime_uses_shipped_manifest_and_real_backend_type(tmp_path, monkeypat
 
 
 def test_build_manifest_hashes_shipped_code_and_records_revision(tmp_path, monkeypatch):
-    for name in [
-        "backend/led.py",
-        "backend/ble_diagnostics.py",
-        "backend/devices/service.py",
-        "frontend/src/devices.ts",
-        "frontend/dist/index.html",
-    ]:
+    for name in build_macos.MANIFEST_SOURCES:
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("fixture source")
@@ -52,12 +46,18 @@ def test_build_manifest_hashes_shipped_code_and_records_revision(tmp_path, monke
     assert result["source_commit"] == "abcdef"
     assert result["contains_ba705ed"] and not result["source_dirty"]
     assert len(result["sources"]["backend/led.py"]) == 64
-    assert set(result["sources"]) == {
+    assert set(result["sources"]) >= {
         "backend/led.py",
         "backend/ble_diagnostics.py",
         "backend/devices/service.py",
         "frontend/src/devices.ts",
         "frontend/dist/index.html",
+        "backend/memory/store.py",
+        "backend/memory/intelligence.py",
+        "backend/devices/colors.py",
+        "frontend/src/color_editor.ts",
+        "frontend/src/memory_library.ts",
+        "frontend/src/module_ui.ts",
     }
     spec = (Path(__file__).resolve().parents[1] / "packaging/macos/Chushpan.spec").read_text()
     assert "build-info.json" in spec

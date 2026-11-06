@@ -156,8 +156,8 @@ class Devices(DeviceCenter):
         if tool is None:
             tool = self.strip(devices[0]).tool()
             tool.agent = self.tools.mac_agent
-            tool.settings_store = self.memory
             self.tools.add(tool)
+        tool.settings_store = self.memory
         tool.handler = self.led_command
         from backend.mac_agent import LocalMacAgent
 
@@ -245,6 +245,8 @@ class Devices(DeviceCenter):
     def guard(self, name):
         device = self.resolve(name)
         if device:
+            if name == "led_control":
+                self.require_adapter()
             self.check_location(device)
         return device
 

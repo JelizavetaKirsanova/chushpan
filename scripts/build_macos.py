@@ -14,6 +14,23 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+MANIFEST_SOURCES = (
+    "backend/led.py",
+    "backend/ble_diagnostics.py",
+    "backend/devices/service.py",
+    "backend/devices/colors.py",
+    "backend/memory/store.py",
+    "backend/memory/intelligence.py",
+    "backend/memory/library.py",
+    "backend/settings_center.py",
+    "backend/hud/server.py",
+    "backend/sync/service.py",
+    "frontend/src/devices.ts",
+    "frontend/src/color_editor.ts",
+    "frontend/src/memory_library.ts",
+    "frontend/src/module_ui.ts",
+    "frontend/dist/index.html",
+)
 
 
 def run(*args):
@@ -27,13 +44,6 @@ def build_manifest() -> Path:
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=ROOT).decode().strip()
 
-    files = [
-        "backend/led.py",
-        "backend/ble_diagnostics.py",
-        "backend/devices/service.py",
-        "frontend/src/devices.ts",
-        "frontend/dist/index.html",
-    ]
     path = ROOT / "build/macos/metadata/build-info.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -48,7 +58,8 @@ def build_manifest() -> Path:
                 ).returncode
                 == 0,
                 "sources": {
-                    name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in files
+                    name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+                    for name in MANIFEST_SOURCES
                 },
             },
             indent=2,

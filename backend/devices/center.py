@@ -230,6 +230,7 @@ class DeviceCenter:
         context = request_context.get()
         if context is None or not context.device.authenticated:
             raise ToolError("Нужен авторизованный локальный запрос.")
+        self.require_adapter()
         groups = {g.id: g for g in self.store.collections("group")}
         identifiers = groups[target].device_ids if target in groups else [target]
         if action == "save_color" and target in groups:
