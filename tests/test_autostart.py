@@ -83,6 +83,19 @@ def test_app_bundle_is_named_after_the_assistant():
     assert app_bundle.executable(s).parts[-4:] == ("Friday.app", "Contents", "MacOS", "Friday")
 
 
+def test_development_bundle_stays_out_of_dock_and_launch_services(tmp_path, monkeypatch):
+    s = Settings(data_dir=str(tmp_path / "data"))
+    commands = []
+    monkeypatch.setattr(app_bundle, "write_icon", lambda path: path.write_bytes(b"test icon"))
+    monkeypatch.setattr(
+        app_bundle.subprocess, "run", lambda command, **kw: commands.append(command)
+    )
+    app = app_bundle.build(s)
+    assert ".legacy-apps.noindex" in app.parts
+    assert plistlib.loads((app / "Contents/Info.plist").read_bytes())["LSUIElement"] is True
+    assert commands and all(command[0] != app_bundle.LSREGISTER for command in commands)
+
+
 def test_python_env_points_at_this_environment(monkeypatch):
     monkeypatch.delenv("PYTHONHOME", raising=False)
     env = app_bundle.python_env()

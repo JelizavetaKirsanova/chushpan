@@ -200,6 +200,28 @@ def test_backups_skip_symlinks_and_unchanged_snapshots(repo, tmp_path):
     assert not (Path(first) / "private/alias").exists()
 
 
+def test_backups_skip_renamed_app_bundles_and_never_prune_existing_snapshots(repo):
+    sync, _ = repo
+    artifact = sync.root / "private/release/Чушпан-0.3.4-17.app/Contents/MacOS/Chushpan"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"app artifact")
+    note = sync.root / "private/release/notes.txt"
+    note.write_text("keep private diagnostics")
+    base = Path(sync.cfg["backups"])
+    base.mkdir()
+    protected = []
+    for i in range(50):
+        p = base / f"snapshot-20260101T{i:06d}Z"
+        p.mkdir()
+        (p / "keep.txt").write_text("backup")
+        protected.append(p)
+    snapshot = Path(sync.backup())
+    assert (snapshot / "private/release/notes.txt").read_text() == "keep private diagnostics"
+    assert not (snapshot / "private/release/Чушпан-0.3.4-17.app").exists()
+    assert all((p / "keep.txt").read_text() == "backup" for p in protected)
+    assert json.loads((sync.state / "backup-retention-candidates.json").read_text())["candidates"]
+
+
 def test_checkpoint_keeps_index_and_worktree_unchanged_and_is_local(repo):
     sync, remote = repo
     (sync.root / "new.py").write_text("pass\n")

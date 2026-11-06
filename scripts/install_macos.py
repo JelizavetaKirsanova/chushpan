@@ -3,30 +3,35 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
-import shutil
-import subprocess
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+from scripts.macos_release import BUILD_RECEIPT, install, recover_interrupted, rollback_last
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--applications", type=Path, default=Path("/Applications"))
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--app", type=Path, help="проверенная сборка; по умолчанию last-build.json")
+    source.add_argument("--rollback", action="store_true", help="явный откат к сохранённой копии")
+    source.add_argument("--recover", action="store_true", help="восстановить прерванную установку")
     parser.add_argument("--migrate-from", type=Path)
+    parser.add_argument(
+        "--trash-build", action="store_true", help="после успеха перенести эту сборку в Корзину"
+    )
     args = parser.parse_args()
-    app = ROOT / "dist/Чушпан.app"
-    if not (app / "Contents/MacOS/Chushpan").exists():
-        raise SystemExit("Сначала собери приложение: .venv/bin/python -m scripts.build_macos")
-    subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
-    destination = args.applications / app.name
-    backup = args.applications / "Чушпан.previous.app"
-    staging = args.applications / ".Чушпан.installing.app"
-    if staging.exists() or backup.exists():
-        raise SystemExit(
-            "Осталась предыдущая установка. Проверь .Чушпан.installing.app / Чушпан.previous.app."
-        )
+    if args.rollback or args.recover:
+        if args.migrate_from or args.trash_build:
+            parser.error("Откат не совмещается с переносом данных или очисткой.")
+        result = recover_interrupted() if args.recover else rollback_last()
+        print(f"Восстановлено: {result['app']} — {result['version']} ({result['build']})")
+        return 0
+    app = args.app
+    if app is None:
+        if not BUILD_RECEIPT.is_file():
+            raise SystemExit("Сначала: .venv/bin/python -m scripts.build_macos")
+        app = Path(json.loads(BUILD_RECEIPT.read_text())["app"])
     if args.migrate_from:
         from backend.desktop.storage import migrate
 
@@ -34,27 +39,12 @@ def main():
         if (target / "data/jarvis.db").exists():
             raise SystemExit("База приложения уже существует. Перенос не заменяет историю.")
         print(f"Скопировано файлов: {len(migrate(args.migrate_from, target))}")
-    # ditto preserves framework symlinks and bundle signatures.
-    subprocess.run(["/usr/bin/ditto", str(app), str(staging)], check=True)
-    subprocess.run(["codesign", "--verify", "--deep", "--strict", str(staging)], check=True)
-    try:
-        if destination.exists():
-            destination.rename(backup)
-        staging.rename(destination)
-    except OSError:
-        if backup.exists() and not destination.exists():
-            backup.rename(destination)
-        raise
-    if backup.exists():
-        shutil.rmtree(backup)
-    register = (
-        "/System/Library/Frameworks/CoreServices.framework/Frameworks/"
-        "LaunchServices.framework/Support/lsregister"
-    )
-    subprocess.run([register, "-f", str(destination)], check=True)
-    print(
-        f"Установлено: {destination}. Открой двойным нажатием. Автозапуск включается в настройках."
-    )
+    result = install(app, cleanup=args.trash_build)
+    print(f"Обновлено: {result['app']} — {result['version']} ({result['build']})")
+    if result["previous"]:
+        print(f"Предыдущая рабочая копия сохранена: {result['previous']}")
+    if not args.trash_build:
+        print(f"Кандидат на очистку (пока сохранён): {app}")
     return 0
 
 

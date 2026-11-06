@@ -258,7 +258,15 @@ class Sync:
         }
         for label, source in self.cfg.get("extra_backups", {}).items():
             sources["external/" + label] = Path(source).expanduser()
-        skip_dirs = {"native", "Чушпан.app", "__pycache__", "node_modules"}
+        skip_dirs = {
+            "native",
+            "native.noindex",
+            ".legacy-apps.noindex",
+            ".retired-apps.noindex",
+            "Чушпан.app",
+            "__pycache__",
+            "node_modules",
+        }
         with tempfile.TemporaryDirectory(prefix=".pending-", dir=base) as directory:
             staging = Path(directory)
             manifest = {}
@@ -268,7 +276,12 @@ class Sync:
                 paths = source.rglob("*") if source.is_dir() else [source]
                 for path in paths:
                     relative = path.relative_to(source) if source.is_dir() else Path()
-                    if set(relative.parts) & skip_dirs or path.is_symlink() or not path.is_file():
+                    if (
+                        set(relative.parts) & skip_dirs
+                        or any(part.endswith(".app") for part in relative.parts)
+                        or path.is_symlink()
+                        or not path.is_file()
+                    ):
                         continue
                     if path.name.endswith(("-wal", "-shm", ".lock")):
                         continue
@@ -305,15 +318,17 @@ class Sync:
             final = base / ("snapshot-" + stamp)
             staging.rename(final)
             write_json(previous, {"digest": digest, "path": str(final)})
-        # Keep 48 recent snapshots plus one per day for 30 days. Initial backup stays.
+        # Retention is a review list, never an automatic deletion of private backups.
         snapshots = sorted(base.glob("snapshot-*"), reverse=True)
         days = set()
+        candidates = []
         for index, path in enumerate(snapshots):
             day = path.name[9:17]
             keep = index < 48 or (day not in days and len(days) < 30)
             days.add(day)
             if not keep:
-                shutil.rmtree(path)
+                candidates.append(str(path))
+        write_json(self.state / "backup-retention-candidates.json", {"candidates": candidates})
         return str(final)
 
     def checkpoint(self) -> str:

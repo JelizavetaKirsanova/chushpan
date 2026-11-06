@@ -39,7 +39,7 @@ LSREGISTER = (
 
 
 def app_path(s: Settings) -> Path:
-    return s.data_path / f"{s.assistant_name}.app"
+    return s.data_path / ".legacy-apps.noindex" / f"{s.assistant_name}.app"
 
 
 def executable(s: Settings) -> Path:
@@ -86,6 +86,7 @@ def info_plist(s: Settings) -> dict:
         "CFBundleVersion": "1",
         "LSMinimumSystemVersion": "13.0",
         "NSHighResolutionCapable": True,
+        "LSUIElement": True,
         "NSBluetoothAlwaysUsageDescription": (
             f"{s.assistant_name} управляет вашей LED-лентой локально по Bluetooth."
         ),
@@ -124,9 +125,7 @@ def build(s: Settings) -> Path:
         check=True,
         capture_output=True,
     )
-    # So Login Items and the permission prompts find the name and icon.
-    if Path(LSREGISTER).exists():
-        subprocess.run([LSREGISTER, "-f", str(app)], capture_output=True)
+    # Development launchers must never be registered as a second installed application.
     return app
 
 

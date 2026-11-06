@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import platform
 import plistlib
 import shutil
@@ -12,6 +13,8 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+
+from scripts.macos_release import BUILD_RECEIPT, new_build_directory, verify_bundle, write_receipt
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_SOURCES = (
@@ -36,18 +39,18 @@ MANIFEST_SOURCES = (
 )
 
 
-def run(*args):
-    subprocess.run(args, cwd=ROOT, check=True)
+def run(*args, env=None):
+    subprocess.run(args, cwd=ROOT, check=True, env=env)
 
 
-def build_manifest() -> Path:
+def build_manifest(build_root: Path | None = None) -> Path:
     """Stamp shipped sources, rather than trusting a manually incremented version."""
     from backend.desktop import VERSION
 
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=ROOT).decode().strip()
 
-    path = ROOT / "build/macos/metadata/build-info.json"
+    path = (build_root or ROOT / "build/macos") / "metadata/build-info.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
@@ -72,7 +75,7 @@ def build_manifest() -> Path:
     return path
 
 
-def main():
+def build() -> Path:
     if sys.platform != "darwin" or platform.machine() != "arm64":
         raise SystemExit("Сборка требует macOS на Apple Silicon и arm64 Python.")
     for module in ("PyInstaller", "ServiceManagement", "AVFoundation", "CoreLocation"):
@@ -84,8 +87,9 @@ def main():
     run(sys.executable, "-m", "scripts.prepare_macos_icon")
     run("npm", "--prefix", "frontend", "ci")
     run("npm", "--prefix", "frontend", "run", "build")
-    build_manifest()
-    native = ROOT / "build/macos/native"
+    build_root = new_build_directory()
+    build_manifest(build_root)
+    native = build_root / "native"
     native.mkdir(parents=True, exist_ok=True)
     for name, source in [
         ("permissions", "backend/permissions.swift"),
@@ -176,10 +180,13 @@ def main():
         "--noconfirm",
         "--clean",
         "--workpath",
-        str(ROOT / "build/macos/pyinstaller"),
+        str(build_root / "pyinstaller"),
+        "--distpath",
+        str(build_root / "dist"),
         str(ROOT / "packaging/macos/Chushpan.spec"),
+        env={**os.environ, "CHUSHPAN_BUILD_ROOT": str(build_root)},
     )
-    app = ROOT / "dist/Чушпан.app"
+    app = build_root / "dist/Чушпан.app"
     helpers = app / "Contents/Helpers"
     helpers.mkdir(exist_ok=True)
     shutil.copytree(helper.parent, helpers / helper.parent.name, dirs_exist_ok=True)
@@ -202,14 +209,13 @@ def main():
         )
     run("codesign", "--force", "--sign", "-", "--identifier", "ee.chushpan.desktop", str(app))
     run("codesign", "--verify", "--deep", "--strict", str(app))
-    forbidden = {".env", "config.local.yaml", "jarvis.db", "application.json"}
-    for path in app.rglob("*"):
-        public_ca = path.name == "cacert.pem" and "certifi" in path.parts
-        if path.name in forbidden or (
-            path.suffix in {".db", ".sqlite", ".key", ".pem"} and not public_ca
-        ):
-            raise SystemExit(f"Проверка приватности не пройдена: {path.name}")
-    print(f"Готово: {app}")
+    write_receipt(BUILD_RECEIPT, verify_bundle(app))
+    print(f"Сборка проверена: {app}. Для обновления: python -m scripts.install_macos")
+    return app
+
+
+def main():
+    build()
     return 0
 
 

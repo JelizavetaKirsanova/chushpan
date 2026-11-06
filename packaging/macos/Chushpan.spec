@@ -1,5 +1,9 @@
 # Build from the locked Apple Silicon development environment.
+# PyInstaller supplies SPECPATH, Analysis, PYZ, EXE, COLLECT and BUNDLE.
+# ruff: noqa: F821
+import os
 from pathlib import Path
+
 from PyInstaller.utils.hooks import (
     collect_all,
     collect_data_files,
@@ -8,17 +12,27 @@ from PyInstaller.utils.hooks import (
 )
 
 root = Path(SPECPATH).parents[1]
-native = root / "build/macos/native"
+build_root = Path(os.environ["CHUSHPAN_BUILD_ROOT"])
+if not any(part.endswith(".noindex") for part in build_root.parts):
+    raise SystemExit("Build staging must be inside a .noindex directory")
+native = build_root / "native"
 datas = [
     (str(root / "config.yaml"), "."),
     (str(root / "personality.md"), "."),
     (str(root / "frontend/dist"), "frontend/dist"),
-    (str(root / "build/macos/metadata/build-info.json"), "."),
+    (str(build_root / "metadata/build-info.json"), "."),
 ]
 datas += collect_data_files("backend", include_py_files=True)
 binaries = [
     (str(native / name), "native")
-    for name in ("permissions", "devices", "music_safari", "ytmusic_ax", "youtube_safari", "cinema_player")
+    for name in (
+        "permissions",
+        "devices",
+        "music_safari",
+        "ytmusic_ax",
+        "youtube_safari",
+        "cinema_player",
+    )
 ]
 hiddenimports = collect_submodules("backend") + [
     "webview.platforms.cocoa",
@@ -103,12 +117,18 @@ app = BUNDLE(
         "CFBundleVersion": "19",
         "LSMinimumSystemVersion": "26.2",
         "NSHighResolutionCapable": True,
-        "NSMicrophoneUsageDescription": "Чушпан распознаёт ваши голосовые команды локально на этом Mac.",
+        "NSMicrophoneUsageDescription": (
+            "Чушпан распознаёт ваши голосовые команды локально на этом Mac."
+        ),
         "NSBluetoothAlwaysUsageDescription": "Чушпан управляет LED-лентой по вашей команде.",
-        "NSAppleEventsUsageDescription": "Чушпан управляет приложениями и Командами по вашей просьбе.",
+        "NSAppleEventsUsageDescription": (
+            "Чушпан управляет приложениями и Командами по вашей просьбе."
+        ),
         "NSLocationUsageDescription": "Чушпан определяет город только после вашего согласия.",
         "NSCalendarsFullAccessUsageDescription": "Чушпан читает события для утренней сводки.",
-        "NSLocalNetworkUsageDescription": "Чушпан подключает доверенные iPhone и iPad только после вашего подтверждения.",
+        "NSLocalNetworkUsageDescription": (
+            "Чушпан подключает доверенные iPhone и iPad только после вашего подтверждения."
+        ),
         "NSBonjourServices": ["_chushpan._tcp"],
     },
 )

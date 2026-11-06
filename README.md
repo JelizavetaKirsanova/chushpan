@@ -22,9 +22,11 @@ Silicon: запуск из Finder/Dock, строка меню, работа по
 
 ```bash
 uv sync --locked --group macos-build
-.venv/bin/python -m scripts.build_macos
-.venv/bin/python -m scripts.install_macos --migrate-from "$PWD"
+.venv/bin/python -m scripts.update_macos
 ```
+
+Единственная установка — `/Applications/Чушпан.app`; временные сборки и резервы
+хранятся вне поиска. [Безопасное обновление, очистка и откат](docs/MACOS_UPDATES.md).
 
 [Установка, безопасный перенос, разрешения, ограничения подписи и проверки](docs/MACOS_APP.md).
 Для запуска из исходников прежние команды ниже сохранены.

@@ -27,11 +27,13 @@ Torch, Piper, VAD, BLE и интерфейс поставляются внутр
 
 ```bash
 uv sync --locked --group macos-build
-.venv/bin/python -m scripts.build_macos
-.venv/bin/python -m scripts.install_macos --migrate-from "$PWD"
+.venv/bin/python -m scripts.update_macos
 ```
 
-Результат: `dist/Чушпан.app`, установка: `/Applications/Чушпан.app`.
+Временная сборка: `~/Library/Caches/Chushpan/Builds.noindex/`; единственная установка:
+`/Applications/Чушпан.app`. [Проверки, сохранение резерва, очистка и откат](MACOS_UPDATES.md).
+Первый перенос личных данных выполняется отдельно через явный `--migrate-from`;
+для обычного обновления он не нужен.
 Можно также скопировать `.app` в Applications через Finder. Установщик проверяет
 подпись до замены, использует временную копию и не запускает приложение или микрофон.
 Не обновляй открытую копию: сначала выбери «Завершить Чушпана» в её меню.
@@ -112,9 +114,9 @@ ID, подпись вложенных исполняемых файлов, harde
 npm --prefix frontend test
 npm --prefix frontend run build
 # Импорт упакованных библиотек, без загрузки моделей и аудиопотоков:
-dist/Чушпан.app/Contents/MacOS/Chushpan --self-test /tmp/chushpan-imports.json
+/Applications/Чушпан.app/Contents/MacOS/Chushpan --self-test /tmp/chushpan-imports.json
 # Отдельная тестовая копия данных, без микрофона/моделей/сценариев:
-CHUSHPAN_APP_DATA=/tmp/chushpan-smoke dist/Чушпан.app/Contents/MacOS/Chushpan --smoke
+CHUSHPAN_APP_DATA=/tmp/chushpan-smoke /Applications/Чушпан.app/Contents/MacOS/Chushpan --smoke
 ```
 
 В `--smoke` включение микрофона, миграция и изменение автозапуска запрещены.
