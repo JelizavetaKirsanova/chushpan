@@ -14,7 +14,7 @@ export interface MemoryData {
   evidence?:{memory_id:number;conversation_id:number;message_id:number}[];
   versions?:{memory_id:number;content:string;revision:number;changed_at:string}[];
   summaries?:{conversation_id:number;content:string;updated_at:string}[];
-  selected_conversation?:number|null;messages?:{id:number;role:string;content:string;created_at:string}[];
+  selected_conversation?:number|null;message_offset?:number;messages?:{id:number;role:string;content:string;created_at:string}[];
   history_matches?:{id:number;conversation_id:number;content:string;created_at:string}[];
   actions?:{id:number;conversation_id:number;intent:string;tool:string;state:string;error:string|null;correction:string|null;created_at:string}[];
   import_preview?:{token:string;count:number;sensitive:number;items:{content:string;category:string}[]}|null;
@@ -101,6 +101,7 @@ export class MemoryLibraryView extends ModulePage<MemoryData> {
       const cid=data.selected_conversation;const heading=card(`Разговор ${cid}`);heading.append(this.button('Не учиться на разговоре',()=>{if(confirm('Отключить сохранение новых реплик и обучение для этого разговора?'))this.send({op:'conversation_private',id:cid});}));this.content.append(heading);
       const summary=data.summaries?.find(s=>s.conversation_id===cid);if(summary)this.content.append(card('Краткое резюме · выдержки из твоих реплик',summary.content));
       for(const message of data.messages??[])this.content.append(card(`${message.role==='user'?'Ты':'Чушпан'} · ${date(message.created_at)}`,message.content));
+      const offset=data.message_offset??0;const older=this.button('Более ранние сообщения',()=>this.send({op:'conversation_open',id:cid,offset:offset+200}));older.disabled=(data.messages?.length??0)<200;const newer=this.button('Более поздние сообщения',()=>this.send({op:'conversation_open',id:cid,offset:Math.max(0,offset-200)}));newer.disabled=offset===0;this.content.append(row(older,newer));
       const ids=new Set(data.evidence?.filter(e=>e.conversation_id===cid).map(e=>e.memory_id));const facts=data.items.filter(i=>ids.has(i.id));if(facts.length){this.content.append(el('h2','Связанные факты'));this.items(facts);}
       const {form,read}=formFields([{name:'delete_facts',label:'Также удалить извлечённые из разговора факты',kind:'checkbox'}]);form.append(this.button('Удалить разговор',()=>{if(confirm('Удалить этот разговор навсегда?'))this.send({op:'conversation_delete',id:cid,delete_facts:read().delete_facts,confirmed:true});},true));this.content.append(form);
     }

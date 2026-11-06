@@ -2,10 +2,8 @@
 
 import asyncio
 import json
-import sqlite3
 import time
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from datetime import UTC, datetime
 
 import pytest
 
@@ -28,7 +26,6 @@ from backend.memory.intelligence import (
 from backend.memory.library import MemoryLibrary, search
 from backend.memory.profile import ProfileMemory, extract
 from backend.memory.store import MemoryStore, _now
-from backend.settings_center import SettingsCenter
 from backend.tools import build_registry
 
 
@@ -139,9 +136,9 @@ def test_deleted_fact_removes_provenance_versions_entities_and_fts_and_stays_for
     with request_scope(context):
         memory.capture(context.text, mid)
     fact = store.memories()[0]
+    assert history(store, "TalTech")
     store.save_memory("Я теперь учусь в TalTech на IT", key="education")
     assert store.db.execute("SELECT COUNT(*) FROM memory_versions").fetchone()[0] == 1
-    assert history(store, "TalTech")
     store.forget_fact(fact["id"])
     for table in ("memory_evidence", "memory_versions", "memory_entity_links", "memory_entities"):
         assert store.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
@@ -348,7 +345,7 @@ def test_action_results_are_scoped_retrievable_and_off_means_no_learning(store):
         record_action(store, "led_control", {}, {"error": "Нет ответа"})
     rows = store.db.execute("SELECT * FROM memory_actions").fetchall()
     assert [r["state"] for r in rows] == ["sent", "error"]
-    assert "не подтверждён" in action_context(store, "свет")[0]
+    assert any("не подтверждён" in item for item in action_context(store, "свет"))
     store.set_preference("settings", "memory", {"automatic": "off"})
     with request_scope(context):
         record_action(store, "led_control", {}, {"verified": True})

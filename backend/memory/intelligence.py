@@ -69,6 +69,7 @@ def migrate(store):
             "CREATE INDEX IF NOT EXISTS memory_content ON facts(project_id,casefold(content))"
         )
         db.execute("CREATE INDEX IF NOT EXISTS memory_slot ON facts(semantic_key,project_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS memory_fact_source ON facts(source)")
         for statement in SCHEMA:
             db.execute(statement)
         db.execute(

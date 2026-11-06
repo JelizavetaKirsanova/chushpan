@@ -197,6 +197,15 @@ class ProfileMemory:
         self.last_actions = []
 
     def observe(self, name: str, args: dict, result: dict) -> str | None:
+        c = request_context.get()
+        if c:
+            row = self.store.db.execute(
+                "SELECT c.memory_disabled FROM conversations c JOIN "
+                "dialogue_sessions s ON s.conversation_id=c.id WHERE s.session_id=?",
+                (c.device.session_id,),
+            ).fetchone()
+            if not c.device.authenticated or (row and row[0]):
+                return None
         if name not in {"open_app", "night_mode"} or result.get("error"):
             return None
         if not self.store.preference("memory", "habits_opt_in"):
@@ -441,7 +450,7 @@ class ProfileMemory:
             dict(r)
             for r in self.store.db.execute(
                 "SELECT * FROM facts WHERE project_id IS NULL AND status='active' AND "
-                "semantic_key IN ('response_style','chushpan:mobile') LIMIT 8"
+                "(semantic_key IN ('response_style','chushpan:mobile','name','address','language') OR semantic_key LIKE 'address:%') LIMIT 8"
             )
         ]
         if re.search(r"продолжим|вчера делали|активн.{0,8}проект", text, re.I):
@@ -470,7 +479,10 @@ class ProfileMemory:
             and r["category"] != "personality"
         ]
         resume = bool(re.search(r"продолжим|вчера делали|активн.{0,8}проект", text, re.I))
-        global_keys = {"response_style", "chushpan:mobile"}
+        global_keys = {"response_style", "chushpan:mobile", "name", "address", "language"}
+        global_keys.update(
+            r["semantic_key"] for r in globals_ if r["semantic_key"].startswith("address:")
+        )
         ranked = sorted(
             rows,
             key=lambda r: (
@@ -542,7 +554,7 @@ class ProfileMemory:
             )
         if t in {"не запоминай этот разговор", "не сохраняй этот разговор"}:
             return {"action": "private"}
-        if t in {"исправь это в своей памяти", "исправь это в памяти"}:
+        if t in {"исправь это в своей памяти", "исправь это в памяти", "не называй меня так"}:
             return {"action": "clarify"}
         if re.match(r"помнишь,? мы обсуждали|что мы решили (?:вчера|сегодня)", t):
             return {"action": "recall", "value": text[:300]}
@@ -661,10 +673,8 @@ class ProfileMemory:
         if action == "remember_text":
             if not safe_memory(value) or _SENSITIVE.search(value):
                 raise ToolError(
-                    
-                        "Секреты запрещены; чувствительные сведения требуют отдельного "
-                        "согласия в разделе Память."
-                    
+                    "Секреты запрещены; чувствительные сведения требуют отдельного "
+                    "согласия в разделе Память."
                 )
             extracted = extract(value)
             category, key, content = extracted[0] if extracted else ("profile", "", value)

@@ -371,7 +371,7 @@ class MemoryStore:
             ).fetchall()
         ]
 
-    def conversation_page(self, conversation_id: int) -> list[dict]:
+    def conversation_page(self, conversation_id: int, offset: int = 0) -> list[dict]:
         return [
             dict(row)
             for row in self.db.execute(
@@ -380,9 +380,9 @@ class MemoryStore:
                 "AS has_trace FROM ("
                 "SELECT id, role, content, created_at, request_id "
                 "FROM messages WHERE conversation_id=? AND role IN ('user','assistant') "
-                "AND tool_calls IS NULL AND content != '' ORDER BY id DESC LIMIT 200) "
+                "AND tool_calls IS NULL AND content != '' ORDER BY id DESC LIMIT 200 OFFSET ?) "
                 "AS page ORDER BY id",
-                (conversation_id,),
+                (conversation_id, max(0, min(1000000, int(offset)))),
             ).fetchall()
         ]
 
@@ -486,6 +486,9 @@ class MemoryStore:
                 forget_derivatives(self, row)
                 self._suppress(row["content"], row["semantic_key"])
             cur = self.db.execute("DELETE FROM facts")
+            self.db.execute("DELETE FROM memory_actions")
+            self.db.execute("DELETE FROM memory_entities")
+            self.clear_preference("memory", "pending")
             self.invalidate_memory_context()
         return cur.rowcount
 

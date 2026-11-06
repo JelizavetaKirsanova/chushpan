@@ -217,6 +217,7 @@ class MemoryLibrary(Center):
         self.page = 0
         self.entity = None
         self.selected_conversation = None
+        self.message_offset = 0
         self.pending_import = None
         self.bind(bus)
 
@@ -271,7 +272,10 @@ class MemoryLibrary(Center):
             "summaries": rows(db, "SELECT * FROM conversation_summaries LIMIT 100"),
             "history_matches": self.history_matches(),
             "selected_conversation": self.selected_conversation,
-            "messages": self.store.conversation_page(self.selected_conversation)
+            "message_offset": self.message_offset,
+            "messages": self.store.conversation_page(
+                self.selected_conversation, self.message_offset
+            )
             if self.selected_conversation
             else [],
             "evidence": rows(
@@ -358,6 +362,7 @@ class MemoryLibrary(Center):
             ).fetchone():
                 raise ValueError("Разговор не найден.")
             self.selected_conversation = cid
+            self.message_offset = max(0, min(1000000, int(value.get("offset", 0))))
         elif op == "conversation_delete":
             from backend.memory.intelligence import delete_conversation
 
@@ -397,6 +402,7 @@ class MemoryLibrary(Center):
                     "INSERT OR IGNORE INTO memory_relations VALUES(?,?,?)", (item, other, kind)
                 )
         elif op in {"import_preview", "backup_preview"}:
+            self.pending_import = None
             if op == "backup_preview":
                 from backend.memory.backup import read
 
@@ -422,7 +428,7 @@ class MemoryLibrary(Center):
                     "count": len(candidate["items"]),
                     "items": [
                         {"content": r["content"], "category": r.get("category", "profile")}
-                        for r in candidate["items"][:100]
+                        for r in candidate["items"]
                     ],
                 }
             finally:
@@ -513,7 +519,7 @@ class MemoryLibrary(Center):
                         store._suppress(row["content"])
                         store.db.execute(
                             "UPDATE facts SET "
-                            "content=?,category=?,sensitive=?,revision=revision+1,updated_at=?,confirmed_at=?"
+                            "content=?,category=?,sensitive=?,revision=revision+1,updated_at=?,confirmed_at=?,confirmed=1,confidence=1,source='desktop_library'"
                             " WHERE id=?",
                             (
                                 content,
@@ -688,6 +694,10 @@ class MemoryLibrary(Center):
                 for row in targets:
                     store.forget_fact(row["id"])
                 store.clear_preference("memory", "pending")
+                if not category:
+                    store.db.execute("DELETE FROM memory_actions")
+                    store.db.execute("DELETE FROM memory_entities")
+                    store.db.execute("DELETE FROM conversation_summaries")
             message = (
                 "Записи исключены из поиска и контекста. Старые резервные копии удаляются отдельно."
             )
