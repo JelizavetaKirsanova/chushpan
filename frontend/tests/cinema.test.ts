@@ -518,3 +518,14 @@ test('detail backdrop, Escape and inner clicks preserve focus and workspace scro
     assert.equal(f.window.document.querySelector('dialog'),null);
   }finally{f.window.happyDOM.abort();}
 });
+
+test('automatic dialog close on prepared playback keeps the fallback request alive',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const item=movie('Фильм','watching');const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);view.receive(snapshot([item]));
+    f.window.document.querySelector('.cinema-quick-play').click();assert.equal(sent.at(-1).op,'watch');
+    const before=sent.length;
+    view.receive({...snapshot([item]),session:{title_id:item.id,episode_id:item.current.id,mode:'embedded'},embedded_player:{token:'pending',title:item.title,title_id:item.id,episode_id:item.current.id,position:0,url:'https://video.example/full.mp4',autoplay:false}});
+    assert.equal(f.window.document.querySelector('dialog'),null);
+    assert.ok(!sent.slice(before).some(v=>v.op==='watch_cancel'));
+  }finally{f.window.happyDOM.abort();}
+});

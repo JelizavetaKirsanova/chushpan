@@ -126,8 +126,8 @@ export class CinemaView {
   connection(online:boolean):void {this.online=online;this.catalogueView.connection(online);this.personalView.connection(online);this.viewer.connection(online);if(!online)this.feedback.textContent='Нет соединения с Чушпаном. Последние данные могут устареть.';else this.request({op:'refresh'});this.root.querySelectorAll<HTMLInputElement|HTMLSelectElement|HTMLButtonElement>('input,select,button').forEach(n=>n.disabled=!online);this.sourceDiagnostics.connection(online);this.render();}
   receive(event:HudEvent):void {
     if(event.type!=='cinema')return;
-    this.data=event;this.catalogueView.receive(event);this.personalView.receive(event);if(event.embedded_player)this.closeDialog();this.embeddedPlayer.receive(event);this.viewer.receive(event);this.sourceDiagnostics.receive(event);
-    if(event.playback&&['PLAYING','PAUSED'].includes(event.playback.state)&&event.playback.token!==this.viewerToken){this.viewerToken=event.playback.token;this.closeDialog();}
+    this.data=event;this.catalogueView.receive(event);this.personalView.receive(event);if(event.embedded_player)this.closeDialog(false);this.embeddedPlayer.receive(event);this.viewer.receive(event);this.sourceDiagnostics.receive(event);
+    if(event.playback&&['PLAYING','PAUSED'].includes(event.playback.state)&&event.playback.token!==this.viewerToken){this.viewerToken=event.playback.token;this.closeDialog(false);}
     if(this.first){this.tab=event.preferences.startup==='library'?'planned':'watching';this.first=false;}
     this.feedback.textContent=event.error??event.message??'';this.feedback.dataset.error=String(!!event.error);
     if(event.error){this.pendingWatch=null;this.ratingReturn=null;}
@@ -359,7 +359,7 @@ export class CinemaView {
     dialog.addEventListener('close',()=>{dialog.remove();if(this.dialog===dialog)this.dialog=null;if(focused?.isConnected)focused.focus({preventScroll:true});if(scroll)scroll.scrollTop=position;});
     this.root.append(dialog);this.dialog=dialog;dialog.showModal();return dialog;
   }
-  private closeDialog():void {if(this.sourceRequest.startsWith('watch-'))this.request({op:'watch_cancel'});this.pendingDetailKey='';if(this.dialog?.dataset.rich==='true'||this.dialog?.dataset.rating==='true')this.request({op:'clear_focus'});this.sourceRequest='';this.dialog?.close();this.dialog?.remove();this.dialog=null;}
+  private closeDialog(cancelSearch=true):void {if(cancelSearch&&this.sourceRequest.startsWith('watch-'))this.request({op:'watch_cancel'});this.pendingDetailKey='';if(this.dialog?.dataset.rich==='true'||this.dialog?.dataset.rating==='true')this.request({op:'clear_focus'});this.sourceRequest='';this.dialog?.close();this.dialog?.remove();this.dialog=null;}
   private detail(id:string,episodeId?:string,linkId?:string):void {
     const item=this.data?.items.find(v=>v.id===id);if(!item)return;
     const ep=item.episodes.find(v=>v.id===episodeId)??item.current;if(!ep)return;
