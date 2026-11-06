@@ -180,6 +180,8 @@ class Catalogue:
             data = await self.tmdb.get(endpoint, **params)
             rows = []
             for raw in data.get("results", []):
+                if f"tmdb:{kind}:{raw.get('id')}" in excluded:
+                    continue
                 if raw.get("adult") or raw.get("media_type", kind) != kind:
                     continue
                 row = raw

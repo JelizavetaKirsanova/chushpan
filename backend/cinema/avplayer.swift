@@ -12,6 +12,7 @@ final class CinemaPlayer: NSObject, NSWindowDelegate {
     var loading = false
     var failure = ""
     var loadGeneration = 0
+    var seekGeneration = 0
     var audioGroup: AVMediaSelectionGroup?
 
     func reply(_ id: String, _ extra: [String: Any] = [:]) {
@@ -137,12 +138,24 @@ final class CinemaPlayer: NSObject, NSWindowDelegate {
                 reply(id, ["error": "invalid_position"]); return
             }
             seeking = true
+            seekGeneration += 1
+            let generation = seekGeneration
+            // Exact-frame seeks can stall on remote MP4 range I/O. The Python
+            // controller still verifies the observed position within two seconds.
+            let tolerance = CMTime(seconds: 0.5, preferredTimescale: 600)
             player.seek(to: CMTime(seconds: position, preferredTimescale: 600),
-                        toleranceBefore: .zero, toleranceAfter: .zero) { finished in
+                        toleranceBefore: tolerance, toleranceAfter: tolerance) { finished in
                 DispatchQueue.main.async {
+                    guard self.seeking && generation == self.seekGeneration else { return }
                     self.seeking = false
                     self.reply(id, finished ? [:] : ["error": "seek_interrupted"])
                 }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+                guard self.seeking && generation == self.seekGeneration else { return }
+                self.seeking = false
+                player.currentItem?.cancelPendingSeeks()
+                self.reply(id, ["error": "seek_timeout"])
             }
         case "fullscreen":
             if window?.styleMask.contains(.fullScreen) != true { window?.toggleFullScreen(nil) }

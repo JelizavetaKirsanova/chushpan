@@ -19,6 +19,8 @@ ERRORS = {
     "media_error": "AVPlayer не смог загрузить видео. Проверь источник или выбери Safari.",
     "voice_unavailable": "Эта звуковая дорожка отсутствует в плеере.",
     "seek_interrupted": "Перемотка не завершена; прежний прогресс сохранён.",
+    "seek_timeout": "Источник не завершил перемотку за 20 секунд. Прогресс сохранён; "
+    "можно продолжить вручную в плеере.",
 }
 
 
@@ -88,7 +90,9 @@ class AVPlayerAdapter:
                         self.proc.kill()
                 await self.proc.wait()
                 raise playback_error(
-                    "native_unavailable", "AVPlayer не подтвердил действие."
+                    "native_unavailable",
+                    f"AVPlayer не подтвердил команду {action}: "
+                    f"{type(exc).__name__}. Прежний прогресс сохранён.",
                 ) from exc
             if result.get("error"):
                 code = result["error"]

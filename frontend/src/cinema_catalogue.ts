@@ -125,7 +125,8 @@ export class CinemaCatalogueView {
     }
     if(!previous||previous.tmdb?.configured!==data.tmdb?.configured){this.previews.clear();this.window.reset();this.configRequested=false;if(this.root.isConnected){this.render();this.start();}if(!previous&&data.matches?.length)this.legacy(data.matches);}
     const signature=JSON.stringify(data.items.map(i=>[i.id,i.status,i.watchlist,i.favorite,i.user_rating]));
-    if(signature!==this.librarySignature){const changed=!!this.librarySignature;this.librarySignature=signature;if(changed){this.previews.clear();this.window.reset();}if(this.root.isConnected){this.renderPreviews();this.renderList();if(changed)this.start();}}
+    if(signature!==this.librarySignature){const changed=!!this.librarySignature;this.librarySignature=signature;const filtered=!!(this.filters.hide_watched||this.filters.hide_watchlist||this.filters.hide_saved);if(changed){if(filtered)this.previews.clear();else this.previews.delete('recommended');if((filtered||this.filters.feed==='recommended')&&!page)this.window.reset();}if(this.root.isConnected){this.renderPreviews();this.renderList();if(changed)this.start();}}
+    if(data.recommendation_dismissed){this.previews.delete('recommended');if(this.filters.feed==='recommended'){this.window.reset();if(this.root.isConnected)this.loadPage(1);}this.renderPreviews();}
     if(previous&&previous.preferences.recommendations_show_watched!==data.preferences.recommendations_show_watched){this.previews.delete('recommended');if(this.filters.feed==='recommended'){this.window.reset();this.loadPage(1);}this.renderPreviews();this.observe();}
   }
   mount(parent:HTMLElement):void {
@@ -241,11 +242,13 @@ export class CinemaCatalogueView {
     this.observe();
   }
   private recommendationFilter(items:CatalogueTitle[],feed=this.filters.feed):CatalogueTitle[] {
-    if(feed!=='recommended')return items;
-    const watched=this.data?.items.filter(i=>i.status==='watched')??[];
-    const normalized=(value:string)=>value.toLocaleLowerCase('ru').trim().replace(/\s+/g,' ');
-    return items.filter(item=>!watched.some(seen=>seen.catalogue_key===item.catalogue_key||
-      (seen.kind===item.kind&&(!seen.year||seen.year===item.year)&&normalized(seen.title)===normalized(item.title))));
+    const library=this.data?.items??[];
+    return items.filter(item=>!library.some(saved=>{
+      if(saved.catalogue_key!==item.catalogue_key)return false;
+      return feed==='recommended'||(this.filters.hide_watched&&saved.status==='watched')||
+        (this.filters.hide_watchlist&&(saved.watchlist??saved.status==='planned'))||
+        (this.filters.hide_saved&&saved.status!=='watched'&&!(saved.watchlist??saved.status==='planned'));
+    }));
   }
   private renderList():void {
     if(this.mode!=='list'||!this.root.contains(this.results))return;

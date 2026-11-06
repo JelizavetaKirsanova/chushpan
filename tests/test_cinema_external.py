@@ -377,3 +377,87 @@ def test_refused_existing_tab_is_not_sampled_paused_or_detached_during_cleanup(t
             store.close()
 
     asyncio.run(run())
+
+
+def test_resolver_falls_back_after_embedded_error_and_never_repeats_source(tmp_path):
+    async def run():
+        memory = MemoryStore(tmp_path / "resolver.sqlite")
+        tools = ToolRegistry()
+        tools.mac_agent = LocalMacAgent()
+        cinema = Cinema(tools, Settings(data_dir=tmp_path), memory)
+        cinema.sources.http = HTTP()
+        cinema.bind(HudBus(), SimpleNamespace(device=DeviceContext.local_mac()))
+        try:
+            item = await cinema.db("add", {"title": "Синтел", "year": 2010, "kind": "movie"})
+            for number in range(4):
+                source = await cinema.db(
+                    "save_source",
+                    {
+                        **SOURCE,
+                        "name": f"Archive {number}",
+                        "access_status": "FREE",
+                        "priority": number,
+                    },
+                )
+                await cinema.db("source_health", source["id"], "available", playback=True)
+            choices = await cinema.resolver.search(item["id"])
+            result = await cinema.source_result(
+                choices["selected_id"], open_result=True, player="embedded"
+            )
+            assert not result["playback_confirmed"]
+            visited = set()
+            for _ in range(3):
+                token = cinema.session["token"]
+                visited.add(cinema.session["target"]["source"]["id"])
+                await cinema.embedded_event(
+                    {"token": token, "sequence": 1, "event": "error", "position": 0, "duration": 0}
+                )
+            assert len(visited) == 3  # A fourth source is deliberately never attempted.
+            assert cinema.playback.code == "sources_exhausted"
+            detail = await cinema.db("detail", item["id"])
+            assert detail["current"]["position"] == 0 and not detail["current"]["watched"]
+            assert (
+                len(
+                    [
+                        r
+                        for r in await cinema.db("diagnostics")
+                        if r["stage"] == "SOURCE_ATTEMPT" and r["status"] == "running"
+                    ]
+                )
+                == 3
+            )
+        finally:
+            await cinema.close()
+            memory.close()
+
+    asyncio.run(run())
+
+
+def test_resolver_cache_separates_episode_region_and_configuration(monkeypatch):
+    from backend.cinema.playback import SourceResolver
+
+    async def run():
+        clock = [100.0]
+        monkeypatch.setattr("backend.cinema.playback.time.monotonic", lambda: clock[0])
+        adapter = SimpleNamespace(
+            resolve=AsyncMock(return_value={"availability": "available", "embedded": True})
+        )
+        resolver = SourceResolver(SimpleNamespace(adapter=lambda _: adapter))
+        target = {
+            "source": {"id": "a"},
+            "item": {"id": "work"},
+            "episode": {"id": "s1e1", "season": 1, "episode": 1},
+            "link": {"url": "https://example.org/full.mp4"},
+        }
+        result = await resolver.resolve(target, "EE")
+        result["embedded"] = False
+        assert (await resolver.resolve(target, "EE"))["embedded"]
+        assert adapter.resolve.await_count == 1
+        await resolver.resolve(target, "FI")
+        target["episode"] = {"id": "s2e1", "season": 2, "episode": 1}
+        await resolver.resolve(target, "EE")
+        clock[0] += 301
+        await resolver.resolve(target, "EE")
+        assert adapter.resolve.await_count == 4
+
+    asyncio.run(run())

@@ -117,6 +117,9 @@ MIGRATIONS = [
     UPDATE cinema_library SET watchlist=(status='planned'),
       manual_watched=CASE WHEN status='watched' THEN 1 END;
     """,
+    """
+    ALTER TABLE cinema_source_health ADD COLUMN failures INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 
@@ -315,18 +318,19 @@ class CinemaStore:
             self.db.execute("DELETE FROM cinema_links WHERE source_id=?", (identifier,))
             self.db.execute("DELETE FROM cinema_sources WHERE id=?", (identifier,))
 
-    def source_health(self, identifier, status, reason="", *, playback=False):
+    def source_health(self, identifier, status, reason="", *, playback=False, failure=False):
         self.source(identifier)
         if status not in {"available", "unavailable", "restricted", "unknown"}:
             raise ValueError("Неверный статус источника.")
         with self.transaction():
             self.db.execute(
                 "INSERT INTO cinema_source_health"
-                "(source_id,status,checked_at,last_success,reason,successes) "
-                "VALUES (?,?,?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
+                "(source_id,status,checked_at,last_success,reason,successes,failures) "
+                "VALUES (?,?,?,?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
                 "status=excluded.status,checked_at=excluded.checked_at,reason=excluded.reason,"
                 "last_success=COALESCE(excluded.last_success,cinema_source_health.last_success),"
-                "successes=cinema_source_health.successes+excluded.successes",
+                "successes=cinema_source_health.successes+excluded.successes,"
+                "failures=cinema_source_health.failures+excluded.failures",
                 (
                     identifier,
                     status,
@@ -334,6 +338,7 @@ class CinemaStore:
                     now() if status == "available" else None,
                     reason,
                     int(playback),
+                    int(failure),
                 ),
             )
 
@@ -409,6 +414,10 @@ class CinemaStore:
 
     def diagnostic(self, stage, status, message, title_id="", episode_id="", session=""):
         if stage not in {
+            "SOURCE_ATTEMPT",
+            "CHECKING_REGION",
+            "CHECKING_PLAYER",
+            "READY",
             "SEARCH",
             "VERIFY",
             "OPEN_SAFARI",
@@ -802,6 +811,7 @@ class CinemaStore:
         excluded_titles = [
             (r["kind"], " ".join(r["title"].casefold().split()), r["year"])
             for r in rows
+            if not r["catalogue_key"]
         ]
         return {"seeds": seeds, "excluded": excluded, "excluded_titles": excluded_titles}
 

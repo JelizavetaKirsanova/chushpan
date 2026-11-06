@@ -58,16 +58,16 @@ export class CinemaPersonalView {
     const changed=signature!==this.librarySignature;this.librarySignature=signature;
     if(event.personal_result?.request_id===this.pending){
       this.pending='';this.error=event.personal_result.error??'';
-      if(event.personal_result.profile&&this.requestedSignature!==signature){this.profile=null;this.render();if(this.mode==='profile')this.load();return;}
+      if((event.personal_result.profile||event.personal_result.recommendations)&&this.requestedSignature!==signature){this.profile=null;this.recommendations=null;this.render();if(this.mode)this.load();return;}
       if(event.personal_result.profile)this.profile=event.personal_result.profile;
       if(event.personal_result.recommendations)this.recommendations=event.personal_result.recommendations;
       this.render();
     }else if(changed&&this.mode){
       this.profile=null;
       if(!event.personal_recommendations)this.recommendations=null;
-      // Remove watched titles immediately; refresh the algorithm on explicit demand.
+      // Recompute after every rating/list change; stale responses cannot restore saved titles.
       this.render();
-      if(this.mode==='profile'&&!this.pending)this.load();
+      if(!this.pending)this.load();
     }
     if(event.recommendation_dismissed&&this.recommendations){for(const shelf of this.recommendations.shelves)shelf.items=shelf.items.filter(i=>i.catalogue_key!==event.recommendation_dismissed);this.render();}
     if(event.recommendations_reset){this.recommendations=null;this.pending='';this.render();if(this.mode==='personal')this.load();}
@@ -116,8 +116,8 @@ export class CinemaPersonalView {
     const data=this.recommendations;if(!data)return;this.root.append(make('p',data.message,'cinema-muted'));
     for(const error of data.errors)this.root.append(make('p',error,'cinema-form-error'));
     for(const shelf of data.shelves){const section=make('section','','cinema-shelf');section.append(make('h3',shelf.name));const row=make('div','','cinema-carousel');
-      const watched=new Set(this.items.filter(i=>i.status==='watched').map(i=>i.catalogue_key));
-      for(const item of shelf.items.filter(i=>shelf.id==='rewatch'||!watched.has(i.catalogue_key))){const card=make('article','','cinema-card cinema-personal-card');const body=make('div','','cinema-card-body');body.append(make('strong',item.title),make('p',`${item.year||'—'} · ★ ${item.metadata.rating.toFixed(1)}`),make('p',item.reason,'cinema-recommendation-reason'));
+      const saved=new Set(this.items.map(i=>i.catalogue_key));
+      for(const item of shelf.items.filter(i=>!saved.has(i.catalogue_key))){const card=make('article','','cinema-card cinema-personal-card');const body=make('div','','cinema-card-body');body.append(make('strong',item.title),make('p',`${item.year||'—'} · ★ ${item.metadata.rating.toFixed(1)}`),make('p',item.reason,'cinema-recommendation-reason'));
         const actions=make('div','','cinema-personal-actions');actions.append(this.button('Не интересно',()=>{this.callbacks.send({op:'recommendation_dismiss',key:item.catalogue_key});}));body.append(actions);card.append(this.artwork(item),body);row.append(card);}
       if(!row.children.length)section.append(make('p',shelf.id==='now'?'Пока нет сохранённых источников с недавней успешной проверкой. Найди источник в карточке и сохрани его.':'Пока недостаточно данных для этой подборки. Оценки и избранное помогут её наполнить.','cinema-muted'));else section.append(row);this.root.append(section);
     }

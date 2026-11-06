@@ -496,3 +496,25 @@ test('embedded preview duration is rejected before autoplay',()=>{
     assert.equal(plays,0);assert.equal(sent.at(-1).event,'error');assert.equal(sent.at(-1).duration,30);assert.equal(video.getAttribute('src'),null);assert.match(f.window.document.body.textContent!,/превью/);
   }finally{f.window.happyDOM.abort();}
 });
+
+test('detail backdrop, Escape and inner clicks preserve focus and workspace scroll',()=>{
+  const f=fixture();try{
+    const page=f.window.document.createElement('main');page.className='workspace-page';
+    const root=f.window.document.querySelector('#cinema-root')!;root.replaceWith(page);page.append(root);
+    const view=new f.CinemaView(()=>{},()=>{},()=>{},()=>{});view.connection(true);view.receive(snapshot([movie('Карточка','watching')]));
+    const opener=button(f,'Карточка');opener.focus();page.scrollTop=330;
+    opener.click();let dialog=f.window.document.querySelector('dialog')!;
+    Object.defineProperty(dialog,'getBoundingClientRect',{value:()=>({left:100,top:100,right:500,bottom:500})});
+    let bubbled=0;page.addEventListener('click',()=>bubbled++);
+    dialog.querySelector('h2')!.dispatchEvent(new f.window.MouseEvent('click',{bubbles:true,clientX:150,clientY:150}));
+    assert.ok(dialog.open);assert.equal(bubbled,0);
+    dialog.dispatchEvent(new f.window.PointerEvent('pointerdown',{bubbles:true,clientX:150,clientY:150}));
+    dialog.dispatchEvent(new f.window.MouseEvent('click',{bubbles:true,clientX:10,clientY:10}));assert.ok(dialog.open);
+    page.scrollTop=800;
+    dialog.dispatchEvent(new f.window.PointerEvent('pointerdown',{bubbles:true,clientX:10,clientY:10}));
+    dialog.dispatchEvent(new f.window.MouseEvent('click',{bubbles:true,clientX:10,clientY:10}));
+    assert.equal(f.window.document.querySelector('dialog'),null);assert.equal(page.scrollTop,330);assert.equal(f.window.document.activeElement,opener);
+    opener.click();dialog=f.window.document.querySelector('dialog')!;dialog.dispatchEvent(new f.window.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+    assert.equal(f.window.document.querySelector('dialog'),null);
+  }finally{f.window.happyDOM.abort();}
+});

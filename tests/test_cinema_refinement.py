@@ -368,7 +368,7 @@ def test_recommendation_factors_are_independent_and_new_pools_obey_policy():
             [item], {"reset_at": "", "dismissed": []}, Preferences()
         )
         assert all(not shelf["items"] for shelf in result["shelves"] if shelf["id"] != "rewatch")
-        assert result["shelves"][-1]["name"] == "Пересмотреть любимое"
+        assert all(shelf["id"] != "rewatch" for shelf in result["shelves"])
 
     asyncio.run(run())
 

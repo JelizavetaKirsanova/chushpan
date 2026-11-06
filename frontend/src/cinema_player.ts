@@ -13,6 +13,8 @@ export class CinemaEmbeddedPlayer {
   private previous=0;
   private confirmed=false;
   private commandId='';
+  private startupTimer:number|undefined;
+  private errorCode='';
   private feedback=document.createElement('p');
   constructor(private send:(value:object)=>void,private container:HTMLElement){this.root.className='cinema-embedded';}
   prepareSwitch():void {if(this.video&&this.current){this.video.pause();this.report('pause');}}
@@ -20,9 +22,9 @@ export class CinemaEmbeddedPlayer {
     if(this.current&&event.session?.mode!=='embedded'){this.clear();}
     const state=event.embedded_player;
     if(state&&state.token!==this.current?.token){
-      this.clear();this.current=state;this.sequence=0;this.sentAt=0;this.confirmed=false;this.previous=state.position;
+      this.clear();this.current=state;this.sequence=0;this.sentAt=0;this.confirmed=false;this.previous=state.position;this.errorCode='';
       const title=document.createElement('h3');title.textContent=state.title;
-      const video=document.createElement('video');this.video=video;video.controls=true;video.playsInline=true;video.preload='metadata';video.src=state.url;video.setAttribute('aria-label',`Видео: ${state.title}`);
+      const video=document.createElement('video');this.video=video;video.controls=true;video.playsInline=true;video.preload='metadata';video.src=state.url;if(state.autoplay!==false)this.startupTimer=window.setTimeout(()=>{if(this.current?.token===state.token&&!this.confirmed){this.errorCode='startup_timeout';this.feedback.textContent='Видео не начало воспроизведение. Проверяем резервный источник.';this.report('error');}},45000);video.setAttribute('aria-label',`Видео: ${state.title}`);
       this.feedback.textContent='Ожидаю запуска видео. Если оно не началось, нажми ▶.';this.feedback.setAttribute('role','status');
       const close=document.createElement('button');close.type='button';close.textContent='Сохранить и закрыть плеер';close.onclick=()=>{this.report('close');this.clear();};
       const fullscreen=document.createElement('button');fullscreen.type='button';fullscreen.textContent='Полный экран';fullscreen.onclick=()=>{void(async()=>{
@@ -43,9 +45,9 @@ export class CinemaEmbeddedPlayer {
         const open=document.createElement('button');open.type='button';open.textContent='Открыть серию';open.onclick=()=>{video.pause();this.report('pause');this.send({op:'open',title_id:item.id,episode_id:episode.value});};series.append(season,episode,open);
       }
       this.root.replaceChildren(title,video,this.feedback,series,fullscreen,close);this.container.append(this.root);
-      video.onloadedmetadata=()=>{if(state.expected_duration&&(!Number.isFinite(video.duration)||Math.abs(video.duration-state.expected_duration)>Math.max(2,state.expected_duration*.02))){video.pause();this.feedback.textContent='Длительность не совпала с полным произведением. Источник мог вернуть превью.';this.report('error');video.removeAttribute('src');video.load();return;}if(state.position&&Number.isFinite(video.duration))video.currentTime=Math.min(state.position,Math.max(0,video.duration-.1));if(state.autoplay!==false)void video.play().catch(()=>{this.feedback.textContent='Нажми ▶ в плеере, чтобы начать просмотр.';this.report('blocked');});};
-      video.ontimeupdate=()=>{const advanced=!video.paused&&!video.seeking&&video.currentTime>this.previous+.05&&video.currentTime-this.previous<5;this.previous=video.currentTime;if(advanced&&!this.confirmed){this.confirmed=true;this.feedback.textContent='Воспроизведение подтверждено.';this.report('playing');}else if(advanced&&Date.now()-this.sentAt>=(event.preferences.poll_seconds??5)*1000)this.report('periodic');};
-      video.onpause=()=>this.report('pause');video.onseeked=()=>{this.previous=video.currentTime;this.report('seek');};video.onended=()=>this.report('ended');video.onerror=()=>{this.feedback.textContent='Не удалось воспроизвести видео. Проверь источник или выбери другой.';this.report('error');};
+      video.onloadedmetadata=()=>{if(state.expected_duration&&(!Number.isFinite(video.duration)||Math.abs(video.duration-state.expected_duration)>Math.max(2,state.expected_duration*.02))){video.pause();this.errorCode='duration_mismatch';this.feedback.textContent='Длительность не совпала с полным произведением. Источник мог вернуть превью.';this.report('error');video.removeAttribute('src');video.load();return;}if(state.position&&Number.isFinite(video.duration))video.currentTime=Math.min(state.position,Math.max(0,video.duration-.1));if(state.autoplay!==false)void video.play().catch(()=>{window.clearTimeout(this.startupTimer);this.feedback.textContent='Нажми ▶ в плеере, чтобы начать просмотр.';this.report('blocked');});};
+      video.ontimeupdate=()=>{const advanced=!video.paused&&!video.seeking&&video.currentTime>this.previous+.05&&video.currentTime-this.previous<5;this.previous=video.currentTime;if(advanced&&!this.confirmed){window.clearTimeout(this.startupTimer);this.confirmed=true;this.feedback.textContent='Воспроизведение подтверждено.';this.report('playing');}else if(advanced&&Date.now()-this.sentAt>=(event.preferences.poll_seconds??5)*1000)this.report('periodic');};
+      video.onpause=()=>this.report('pause');video.onseeked=()=>{this.previous=video.currentTime;this.report('seek');};video.onended=()=>this.report('ended');video.onerror=()=>{window.clearTimeout(this.startupTimer);this.errorCode=`media_error_${video.error?.code??0}`;this.feedback.textContent='Не удалось воспроизвести видео. Проверь источник или выбери другой.';this.report('error');};
     }
     if(event.embedded_control&&this.current?.token===event.embedded_control.token)this.control(event.embedded_control);
   }
@@ -59,10 +61,11 @@ export class CinemaEmbeddedPlayer {
     if(!this.video||!this.current)return;
     const duration=Number.isFinite(this.video.duration)?this.video.duration:0;
     const position=duration?Math.min(duration,Math.max(0,this.video.currentTime)):0;
-    this.send({op:'embedded_event',token:this.current.token,sequence:++this.sequence,event,position,duration,paused:this.video.paused,seeking:this.video.seeking,ended:this.video.ended,ready:this.video.readyState,command_id:this.commandId});this.sentAt=Date.now();
+    this.send({op:'embedded_event',token:this.current.token,sequence:++this.sequence,event,position,duration,paused:this.video.paused,seeking:this.video.seeking,ended:this.video.ended,ready:this.video.readyState,command_id:this.commandId,error_code:this.errorCode});this.sentAt=Date.now();
     if(['playing','pause','seek','error','blocked'].includes(event))this.commandId='';
   }
   private clear():void {
+    window.clearTimeout(this.startupTimer);this.startupTimer=undefined;
     if(this.root.classList.contains('cinema-video-fullscreen')){this.root.classList.remove('cinema-video-fullscreen');const api=(window as unknown as {pywebview?:{api?:{toggle_fullscreen?:()=>Promise<void>}}}).pywebview?.api;void api?.toggle_fullscreen?.();}
     if(this.video){this.video.onpause=null;this.video.ontimeupdate=null;this.video.onseeked=null;this.video.onended=null;this.video.onerror=null;this.video.onloadedmetadata=null;this.video.pause();this.video.removeAttribute('src');this.video.load();}
     this.video=null;this.current=null;this.root.remove();

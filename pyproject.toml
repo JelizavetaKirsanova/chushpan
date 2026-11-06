@@ -1,6 +1,6 @@
 [project]
 name = "my-jarvis"
-version = "0.3.6"
+version = "0.3.7"
 description = "A Russian voice assistant for macOS with Gemini and local Ollama fallback"
 readme = "README.md"
 license = "MIT"

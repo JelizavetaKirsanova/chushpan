@@ -507,3 +507,87 @@ def test_embedded_open_waits_for_real_progress_and_validates_session_events(tmp_
         reopened.close()
 
     asyncio.run(run())
+
+
+def test_hls_mime_is_case_insensitive_and_protected_manifests_are_rejected():
+    from backend.cinema.sources import WebsiteAdapter
+
+    class HLS:
+        def __init__(self, status=200, protected=False):
+            self.status, self.protected = status, protected
+
+        async def request(self, url, **kwargs):
+            return httpx.Response(
+                self.status,
+                headers={"content-type": "application/x-mpegURL"},
+                text="#EXTM3U\n"
+                + (
+                    '#EXT-X-KEY:METHOD=SAMPLE-AES,KEYFORMAT="com.apple.streamingkeydelivery"\n'
+                    if self.protected
+                    else "#EXTINF:10\nsegment.ts\n"
+                ),
+            )
+
+    async def run():
+        source = {"adapter": "direct", "base_url": "https://video.example", "embed_allowed": True}
+        for status, protected, expected in [
+            (200, False, True),
+            (200, True, False),
+            (451, False, False),
+            (401, False, False),
+        ]:
+            row = await WebsiteAdapter(source, HLS(status, protected)).resolve(
+                {"url": "https://video.example/full.m3u8"}
+            )
+            assert row["embedded"] is expected
+            if status == 451:
+                assert row["region_access"] == "blocked" and row["error_code"] == "region_blocked"
+            if protected:
+                assert row["error_code"] == "protected_player"
+
+    asyncio.run(run())
+
+
+def test_region_metadata_is_preserved_and_ee_is_passed_to_verifier():
+    from backend.cinema.sources import WebsiteAdapter
+
+    class Page:
+        async def request(self, url, **kwargs):
+            if url.endswith("robots.txt"):
+                return httpx.Response(200, text="User-agent: *\nAllow: /")
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text='<script type="application/ld+json">'
+                + json.dumps(
+                    {
+                        "@type": "Movie",
+                        "name": "Фильм",
+                        "datePublished": "2024",
+                        "regionsAllowed": ["EE"],
+                        "associatedMedia": {
+                            "@type": "VideoObject",
+                            "contentUrl": "https://page.example/full.mp4",
+                        },
+                    }
+                )
+                + "</script>",
+            )
+
+    async def run():
+        adapter = WebsiteAdapter({"adapter": "html5", "base_url": "https://page.example"}, Page())
+        for region, expected in [("EE", "allowed"), ("FI", "blocked")]:
+            result = await adapter.resolve(
+                {
+                    "url": "https://page.example/film",
+                    "_expected": {
+                        "title": "Фильм",
+                        "kind": "movie",
+                        "year": 2024,
+                        "region": region,
+                    },
+                }
+            )
+            assert result["region_access"] == expected
+
+    asyncio.run(run())

@@ -659,3 +659,61 @@ def test_unavailable_genre_is_explained_and_network_error_is_not_empty(tmp_path)
         await tmdb.close()
 
     asyncio.run(run())
+
+
+def test_personal_filters_use_stable_ids_before_pagination_and_survive_restart(tmp_path):
+    from backend.cinema.filters import excluded_library_keys, with_preferences
+    from backend.cinema.models import Preferences
+    from backend.cinema.store import CinemaStore
+
+    store = CinemaStore(tmp_path / "personal.sqlite")
+    library = []
+    for key, status, watchlist in [
+        (1, "watched", False),
+        (2, "planned", True),
+        (3, "watching", False),
+    ]:
+        item = store.add(
+            {
+                "title": f"Старое название {key}",
+                "kind": "movie",
+                "year": 2025,
+                "catalogue_key": f"tmdb:movie:{key}",
+            }
+        )
+        store.update_title(item["id"], {"status": status, "watchlist": watchlist})
+    library = store.library()
+    for field, key in [("hide_watched", 1), ("hide_watchlist", 2), ("hide_saved", 3)]:
+        rules = Preferences(**{field: True})
+        assert excluded_library_keys(library, rules) == {f"tmdb:movie:{key}"}
+    store.configure({"hide_watched": True, "hide_watchlist": True, "hide_saved": True})
+    store.close()
+    store = CinemaStore(tmp_path / "personal.sqlite")
+    prefs = store.preferences()
+    assert prefs.hide_watched and prefs.hide_watchlist and prefs.hide_saved
+    assert len(store.library()) == 3  # Catalogue policy never deletes personal titles.
+    store.close()
+
+    def handler(request):
+        if "/genre/" in request.url.path:
+            return httpx.Response(200, json={"genres": []})
+        page = int(request.url.params["page"])
+        return httpx.Response(
+            200,
+            json={
+                "total_pages": 2,
+                "results": [
+                    movie(i, title=f"Новое название {i}") for i in ([1, 2, 3] if page == 1 else [4])
+                ],
+            },
+        )
+
+    async def run():
+        tmdb = api(tmp_path, handler)
+        query = with_preferences(CatalogueQuery(kind="movie", russian_titles=False), prefs)
+        result = await Catalogue(tmdb).page(query, excluded=excluded_library_keys(library, query))
+        assert [i["catalogue_key"] for i in result["items"]] == ["tmdb:movie:4"]
+        assert result["scanned_through"] == 2 and result["next_page"] is None
+        await tmdb.close()
+
+    asyncio.run(run())

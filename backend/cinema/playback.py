@@ -4,8 +4,8 @@ Catalogue availability and configured capabilities are deliberately separate fro
 the evidence returned by a concrete player. No state transition opens a URL.
 """
 
-import math
 import json
+import math
 import time
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
@@ -158,22 +158,41 @@ class SourceResolver:
     async def resolve(self, target, region):
         """Cache exact work/episode/configuration checks, never a PLAYING result."""
         source, item, ep = target["source"], target["item"], target["episode"]
-        key = (json.dumps(source, sort_keys=True), target["link"]["url"], item["id"], ep["id"], region)
+        key = (
+            json.dumps(source, sort_keys=True),
+            target["link"]["url"],
+            item["id"],
+            ep["id"],
+            region,
+        )
         cached = self.checks.get(key)
         if cached and cached[0] > time.monotonic():
             return dict(cached[1])
-        result = await self.sources.adapter(source).resolve({
-            "url": target["link"]["url"],
-            "_expected": {**item, "season": ep["season"], "episode": ep["episode"]},
-        })
-        self.checks[key] = (time.monotonic() + (300 if result.get("availability") == "available" else 30), dict(result))
+        result = await self.sources.adapter(source).resolve(
+            {
+                "url": target["link"]["url"],
+                "_expected": {
+                    **item,
+                    "season": ep["season"],
+                    "episode": ep["episode"],
+                    "region": region,
+                },
+            }
+        )
+        self.checks[key] = (
+            time.monotonic() + (300 if result.get("availability") == "available" else 30),
+            dict(result),
+        )
         while len(self.checks) > 128:
             self.checks.popitem(last=False)
         return result
 
     def record(self, source_id, success):
         old = self.reliability.get(source_id, (0, 0))
-        self.reliability[source_id] = (min(20, old[0] + int(success)), min(20, old[1] + int(not success)))
+        self.reliability[source_id] = (
+            min(20, old[0] + int(success)),
+            min(20, old[1] + int(not success)),
+        )
         self.reliability.move_to_end(source_id)
         while len(self.reliability) > 64:
             self.reliability.popitem(last=False)
@@ -182,13 +201,26 @@ class SourceResolver:
         def reliability(row):
             good, bad = self.reliability.get(row["source_id"], (0, 0))
             return row.get("score", 0) + 20 * (good + 1) / (good + bad + 2)
-        return sorted((r for r in rows if (
-            r.get("auto_eligible") and r.get("allowed")
-            and not r.get("requires_confirmation") and not r.get("new_source")
-            and r.get("content_verified") and r.get("video_type") in {"full_movie", "episode"}
-            and r.get("availability") == "available" and r.get("region_access") != "blocked"
-            and r.get("scope") in {"movie", "episode"}
-        )), key=reliability, reverse=True)
+
+        return sorted(
+            (
+                r
+                for r in rows
+                if (
+                    r.get("auto_eligible")
+                    and r.get("allowed")
+                    and not r.get("requires_confirmation")
+                    and not r.get("new_source")
+                    and r.get("content_verified")
+                    and r.get("video_type") in {"full_movie", "episode"}
+                    and r.get("availability") == "available"
+                    and r.get("region_access") != "blocked"
+                    and r.get("scope") in {"movie", "episode"}
+                )
+            ),
+            key=reliability,
+            reverse=True,
+        )
 
     async def search(self, *args, **kwargs):
         return await self.sources.search(*args, **kwargs)
@@ -291,8 +323,14 @@ class PlaybackManager:
         if (
             state != self.state
             and state
-            not in {PlaybackState.IDLE, PlaybackState.SEARCHING, PlaybackState.VALIDATING_SOURCE,
-                    PlaybackState.CHECKING_REGION, PlaybackState.CHECKING_PLAYER, PlaybackState.READY}
+            not in {
+                PlaybackState.IDLE,
+                PlaybackState.SEARCHING,
+                PlaybackState.VALIDATING_SOURCE,
+                PlaybackState.CHECKING_REGION,
+                PlaybackState.CHECKING_PLAYER,
+                PlaybackState.READY,
+            }
             and state not in self.transitions[self.state]
         ):
             raise ValueError(f"Invalid playback transition: {self.state} → {state}")
@@ -402,6 +440,9 @@ class PlaybackManager:
                 "page_changed",
                 "tab_changed",
                 "player_changed",
+                "region_blocked",
+                "authorization_required",
+                "access_restricted",
             }
             else PlaybackState.FAILED,
             str(error),

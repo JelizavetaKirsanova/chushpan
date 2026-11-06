@@ -902,24 +902,38 @@ class Cinema:
         if open_result:
             self.require_playback()
         row = self.sources.result(identifier)
+        if row.get("video_type") in PROMO_TYPES:
+            raise ToolError("Источник для просмотра не найден: это трейлер, тизер или фрагмент.")
         if open_result and not _resolving:
             prefs = await self.db("preferences")
-            alternatives = self.resolver.fallback_order([
-                value[1] for value in self.sources.results.values()
-                if value[0] > self.sources.clock()
-                and value[1].get("title_id") == row["title_id"]
-                and value[1].get("episode_id") == row["episode_id"]
-            ]) if prefs.autoplay and prefs.auto_select_source else []
+            alternatives = (
+                self.resolver.fallback_order(
+                    [
+                        value[1]
+                        for value in self.sources.results.values()
+                        if value[0] > self.sources.clock()
+                        and value[1].get("title_id") == row["title_id"]
+                        and value[1].get("episode_id") == row["episode_id"]
+                    ]
+                )
+                if prefs.autoplay and prefs.auto_select_source
+                else []
+            )
             self.resolution = {
-                "id": secrets.token_hex(12), "rows": [row, *alternatives],
-                "attempted": set(), "player": player,
+                "id": secrets.token_hex(12),
+                "rows": [row, *alternatives],
+                "attempted": set(),
+                "player": player,
                 "initial": {"pin": pin, "manual_choice": manual_choice, "approved": approved},
-                "token": "", "sequence": self.watch_sequence,
+                "token": "",
+                "sequence": self.watch_sequence,
             }
             return await self.try_resolution()
         await self.trace_source(row)
         if row.get("region_access") == "blocked":
-            raise playback_error("region_blocked", "Источник недоступен в выбранном регионе. Обход не выполняется.")
+            raise playback_error(
+                "region_blocked", "Источник недоступен в выбранном регионе. Обход не выполняется."
+            )
         if row.get("video_type") in PROMO_TYPES:
             raise ToolError("Источник для просмотра не найден: это трейлер, тизер или фрагмент.")
         try:
@@ -1112,17 +1126,30 @@ class Cinema:
                     continue
                 first = not attempt["attempted"]
                 attempt["attempted"].add(identity)
-                await self.trace("SOURCE_ATTEMPT", "running",
-                                 f"Проверяем вариант {len(attempt['attempted'])} из 3: {row.get('source_name', 'источник')}.",
-                                 row["title_id"], row["episode_id"])
+                await self.trace(
+                    "SOURCE_ATTEMPT",
+                    "running",
+                    f"Проверяем вариант {len(attempt['attempted'])} из 3: "
+                    f"{row.get('source_name', 'источник')}.",
+                    row["title_id"],
+                    row["episode_id"],
+                )
                 try:
                     result = await self.source_result(
-                        row["id"], open_result=True, player=attempt["player"], _resolving=True,
+                        row["id"],
+                        open_result=True,
+                        player=attempt["player"],
+                        _resolving=True,
                         **(attempt["initial"] if first else {}),
                     )
                 except (ToolError, OSError, TimeoutError, ValueError) as exc:
-                    result = {"playback_confirmed": False, "message": str(exc),
-                              "error_code": getattr(exc, "code", "source_unavailable")}
+                    if first and not attempt["rows"]:
+                        raise
+                    result = {
+                        "playback_confirmed": False,
+                        "message": str(exc),
+                        "error_code": getattr(exc, "code", "source_unavailable"),
+                    }
                     self.playback.failure(exc)
                 if self.resolution is not attempt:
                     return result
@@ -1133,15 +1160,38 @@ class Cinema:
                     return result
                 # Embedded video is pending until its own media events arrive. User
                 # gestures, permission and payment decisions never trigger retries.
-                if (not result.get("error_code") and not result.get("page_opened")) or result.get("error_code") in {
-                    "gesture_required", "automation_denied", "automation_unknown", "permission_denied",
-                    "javascript_denied", "javascript_disabled", "protected_player",
+                if (not result.get("error_code") and not result.get("page_opened")) or result.get(
+                    "error_code"
+                ) in {
+                    "gesture_required",
+                    "automation_denied",
+                    "automation_unknown",
+                    "permission_denied",
+                    "javascript_denied",
+                    "javascript_disabled",
                 }:
                     return result
                 self.resolver.record(row["source_id"], False)
-                await self.trace("SOURCE_ATTEMPT", "failed", result["message"], row["title_id"], row["episode_id"])
-            self.message = result["message"] + " Проверенные резервные варианты исчерпаны; автоматический повтор остановлен."
+                await self.db(
+                    "source_health",
+                    row["source_id"],
+                    "unavailable",
+                    result["message"],
+                    failure=True,
+                )
+                await self.trace(
+                    "SOURCE_ATTEMPT",
+                    "failed",
+                    result["message"],
+                    row["title_id"],
+                    row["episode_id"],
+                )
+            self.message = (
+                result["message"]
+                + " Проверенные резервные варианты исчерпаны; автоматический повтор остановлен."
+            )
             self.playback.failure(playback_error("sources_exhausted", self.message))
+            self.resolution = None
             await self.publish()
             return {**result, "message": self.message, "error_code": "sources_exhausted"}
 
@@ -1181,16 +1231,11 @@ class Cinema:
                 "blocked",
             }:
                 raise ValueError("Неверное событие плеера.")
-            if value["duration"] > 0 and not duration_matches(
+            duration_mismatch = value["duration"] > 0 and not duration_matches(
                 session.get("expected_duration", 0), value["duration"]
-            ):
-                self.message = (
-                    "Длительность видео не совпала с проверенным полным произведением. "
-                    "Источник мог вернуть превью; прогресс не изменён."
-                )
-                self.playback.failure(playback_error("duration_mismatch", self.message))
-                await self.publish()
-                return
+            )
+            if duration_mismatch:
+                event = "error"
             if event == "playing" and (
                 value.get("paused") is not False
                 or value["position"] <= session.get("last_position", 0) + 0.05
@@ -1209,11 +1254,29 @@ class Cinema:
                 )
                 if event == "blocked":
                     self.message = "Браузер запретил автозапуск. Нажми ▶ во встроенном плеере."
+                elif duration_mismatch:
+                    self.message = (
+                        "Длительность видео не совпала с полным произведением. "
+                        "Источник мог вернуть превью; прогресс не изменён."
+                    )
+                elif value.get("error_code") == "startup_timeout":
+                    self.message = "Плеер за 45 секунд не подтвердил движение времени видео."
                 self.playback.failure(
                     playback_error(
-                        "gesture_required" if event == "blocked" else "embedded_unavailable",
+                        "gesture_required"
+                        if event == "blocked"
+                        else "duration_mismatch"
+                        if duration_mismatch
+                        else "embedded_unavailable",
                         self.message,
                     )
+                )
+                await self.trace(
+                    "PLAY",
+                    "failed",
+                    self.message,
+                    session["target"]["item"]["id"],
+                    session["target"]["episode"]["id"],
                 )
             else:
                 if event == "playing" or session.get("counted"):
@@ -1261,6 +1324,13 @@ class Cinema:
             await self.finished(target, (await self.db("preferences")).auto_next)
         elif event == "error" and self.resolution and self.resolution["token"] == session["token"]:
             self.resolver.record(target["source"]["id"], False)
+            await self.db(
+                "source_health",
+                target["source"]["id"],
+                "unavailable",
+                "Встроенный плеер сообщил об ошибке видео.",
+                failure=True,
+            )
             await self.try_resolution()
         elif event == "playing":
             self.resolver.record(target["source"]["id"], True)
@@ -1976,20 +2046,47 @@ class Cinema:
             target = await self.db("target", title_id, episode_id, link_id)
             source = target["source"]
             link_verification = await self.db("verify_link", target["link"]["id"])
-            provider_result = None
-            if source.get("search_mode") == "archive":
-                provider_result = await self.sources.adapter(source).resolve(
-                    {
-                        "url": target["link"]["url"],
-                        "_expected": {
-                            **target["item"],
-                            "season": target["episode"]["season"],
-                            "episode": target["episode"]["episode"],
-                        },
-                    }
+            self.playback.transition(
+                PlaybackState.CHECKING_REGION,
+                f"Проверяем доступ из текущей сети; регион {prefs.watch_region}.",
+            )
+            await self.trace(
+                "CHECKING_REGION",
+                "running",
+                self.playback.message,
+                title_id,
+                target["episode"]["id"],
+            )
+            if (
+                link_verification.get("region_access") == "blocked"
+                and link_verification.get("region_checked") == prefs.watch_region
+            ):
+                raise playback_error(
+                    "region_blocked",
+                    "Источник сообщает о региональном ограничении. Обход не выполняется.",
                 )
+            provider_result = None
+            if source.get("search_mode") == "archive" or source["adapter"] == "direct":
+                provider_result = await self.resolver.resolve(target, prefs.watch_region)
+                if provider_result.get("availability") in {"restricted", "unavailable"}:
+                    raise playback_error(
+                        provider_result.get("error_code", "source_unavailable"),
+                        provider_result.get("reason", "Видео недоступно из текущей сети."),
+                    )
+                if provider_result.get("region_access") == "blocked":
+                    raise playback_error("region_blocked", "Видео недоступно в выбранном регионе.")
                 if provider_result.get("provider") == "archive_open":
                     link_verification = {**link_verification, **provider_result}
+            self.playback.transition(
+                PlaybackState.CHECKING_PLAYER, "Проверяем тип видео и совместимость плеера."
+            )
+            await self.trace(
+                "CHECKING_PLAYER",
+                "running",
+                self.playback.message,
+                title_id,
+                target["episode"]["id"],
+            )
             playback_source = self.validator.validate(target, link_verification)
             approval = self.open_approvals.pop(target["link"]["id"], None)
             approved = bool(approval and approval[0] > time.monotonic() and approval[1] == source)
@@ -2070,6 +2167,9 @@ class Cinema:
                     "Открытие браузера отключено. Для этого источника встроенное видео недоступно."
                 )
             await self.stop_tracking()
+            self.playback.transition(
+                PlaybackState.READY, "Источник подготовлен; видео ещё не запущено."
+            )
             # The final sample may advance the position saved by a previous poll.
             target = await self.db("target", title_id, episode_id, link_id)
             verification = await self.db("verify_link", target["link"]["id"])

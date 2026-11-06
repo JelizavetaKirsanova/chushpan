@@ -258,3 +258,30 @@ def test_all_new_voice_examples_route_through_conversation_without_llm_or_browse
         memory.close()
 
     asyncio.run(run())
+
+
+def test_recommendations_exclude_all_saved_states_and_alternate_names():
+    async def run():
+        saved = [
+            title("Просмотрено", status="watched"),
+            title("Хочу посмотреть"),
+            title("Избранное", favorite=True),
+            title("Начатое", status="watching"),
+        ]
+        new = title("Новое из каталога")
+        candidates = [
+            {**item, "title": f"Другое название {number}"} for number, item in enumerate(saved)
+        ] + [new, {**new, "title": "Альтернативное название"}]
+
+        class Catalogue:
+            async def page(self, query, **kwargs):
+                return {"items": candidates}
+
+        result = await Recommender(None, Catalogue()).recommendations(
+            saved, {"reset_at": "", "dismissed": []}, Preferences()
+        )
+        all_items = [i for shelf in result["shelves"] for i in shelf["items"]]
+        assert all_items and {i["catalogue_key"] for i in all_items} == {new["catalogue_key"]}
+        assert all(i["reason"] for i in all_items)
+
+    asyncio.run(run())

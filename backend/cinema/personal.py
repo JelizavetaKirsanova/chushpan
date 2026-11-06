@@ -227,6 +227,7 @@ class Recommender:
         excluded_names = {
             (i["kind"], normalized(i["title"]), i["year"])
             for i in library
+            if not i.get("catalogue_key")
         }
         dismissed = set(state["dismissed"])
         candidates = [
@@ -324,9 +325,7 @@ class Recommender:
                     "items": [
                         {
                             **i,
-                            "reason": "Ты уже смотрела эту историю и высоко её оценила."
-                            if key == "rewatch"
-                            else "Другой жанр и хороший рейтинг TMDB — для знакомства с новым."
+                            "reason": "Другой жанр и хороший рейтинг TMDB — для знакомства с новым."
                             if key == "explore"
                             else "Сохранённый источник недавно прошёл проверку; "
                             "запуск проверим отдельно."

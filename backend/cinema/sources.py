@@ -195,7 +195,7 @@ class WebsiteAdapter:
                 "availability": "available"
                 if available
                 else "restricted"
-                if status in {401, 403, 429}
+                if status in {401, 403, 429, 451}
                 else "unknown"
                 if status == 405
                 else "unavailable",
@@ -205,7 +205,17 @@ class WebsiteAdapter:
                 if status in {401, 403, 405, 429}
                 else f"HTTP {status}: страница недоступна.",
                 "http_status": status,
-                "content_type": response.headers.get("content-type", "").split(";")[0],
+                "region_access": "blocked" if status == 451 else "unknown",
+                "error_code": "region_blocked"
+                if status == 451
+                else "authorization_required"
+                if status == 401
+                else "access_restricted"
+                if status == 403
+                else "source_unavailable"
+                if not available
+                else "",
+                "content_type": response.headers.get("content-type", "").split(";")[0].lower(),
             }
         except (ToolError, httpx.HTTPError, OSError, TimeoutError, ValueError) as exc:
             return {
@@ -279,7 +289,37 @@ class WebsiteAdapter:
                 "application/x-mpegurl",
             }
         )
-        return {**content, **check, "embedded": bool(compatible)}
+        if compatible and check.get("content_type", "").lower() in {
+            "application/vnd.apple.mpegurl",
+            "application/x-mpegurl",
+        }:
+            manifest = await self.http.request(content["url"], max_bytes=256_000)
+            if manifest.status_code != 200 or not manifest.text.lstrip().startswith("#EXTM3U"):
+                return {
+                    **content,
+                    **check,
+                    "embedded": False,
+                    "availability": "unavailable",
+                    "error_code": "invalid_manifest",
+                    "reason": "Источник не вернул HLS-манифест.",
+                }
+            if re.search(r'METHOD=SAMPLE-AES|KEYFORMAT="(?!identity")', manifest.text, re.I):
+                return {
+                    **content,
+                    **check,
+                    "embedded": False,
+                    "availability": "restricted",
+                    "error_code": "protected_player",
+                    "reason": "HLS использует защиту. Нужен официальный плеер и авторизация.",
+                }
+        return {
+            **content,
+            **check,
+            "embedded": bool(compatible),
+            "region_access": check.get("region_access")
+            if check.get("region_access") == "blocked"
+            else content.get("region_access", "unknown"),
+        }
 
     async def getEpisodes(self, series):
         return []  # Never fabricate episode URLs on an arbitrary website.
@@ -604,6 +644,7 @@ class SourceManager:
                                         **item,
                                         "season": ep["season"],
                                         "episode": ep["episode"],
+                                        "region": prefs.watch_region,
                                     },
                                 }
                             )
@@ -620,7 +661,12 @@ class SourceManager:
                         ):
                             rows.extend(
                                 await adapter.search(
-                                    {**item, "season": ep["season"], "episode": ep["episode"]}
+                                    {
+                                        **item,
+                                        "season": ep["season"],
+                                        "episode": ep["episode"],
+                                        "region": prefs.watch_region,
+                                    }
                                 )
                             )
                 except (
@@ -688,6 +734,7 @@ class SourceManager:
                         + (8 if source["preferred"] else 0)
                         - min(source["priority"], 100) / 10
                         + min(4, math.log1p(source.get("health", {}).get("successes", 0)))
+                        - min(20, 4 * math.log1p(source.get("health", {}).get("failures", 0)))
                         + (4 if row.get("language") == prefs.preferred_language else 0)
                     )
                 return rows

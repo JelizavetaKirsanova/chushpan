@@ -5,7 +5,7 @@ export interface PlaybackSnapshot {
   state:string;code:string;message:string;revision:number;token:string;last_successful_at:number|null;pending_command?:string;
   source:{url:string;title_id:string;episode_id:string;source_id:string;link_id:string;adapter_id:string;content_type:string;voice:string;capabilities:Record<string,unknown>;validation:{content_verified?:boolean;live_player_verified?:boolean}}|null;
 }
-const labels:Record<string,string>={IDLE:'Просмотр закрыт',SEARCHING:'Ищу источник',VALIDATING_SOURCE:'Проверяю видео',OPENING:'Открываю источник',WAITING_FOR_PLAYER:'Ожидаю плеер',STARTING:'Проверяю запуск',PLAYING:'Видео воспроизводится',PAUSED:'На паузе',BLOCKED:'Нужно действие',FAILED:'Не удалось подключиться'};
+const labels:Record<string,string>={IDLE:'Просмотр закрыт',SEARCHING:'Ищу источник',VALIDATING_SOURCE:'Проверяю видео',CHECKING_REGION:'Проверяю доступность',CHECKING_PLAYER:'Проверяю плеер',READY:'Источник подготовлен',OPENING:'Открываю источник',WAITING_FOR_PLAYER:'Ожидаю плеер',STARTING:'Проверяю запуск',PLAYING:'Видео воспроизводится',PAUSED:'На паузе',BLOCKED:'Нужно действие',FAILED:'Не удалось подключиться'};
 function el<K extends keyof HTMLElementTagNameMap>(tag:K,text=''):HTMLElementTagNameMap[K]{const n=document.createElement(tag);n.textContent=text;return n;}
 
 /** Compact session screen outside poster cards. Updates never recreate the video. */
