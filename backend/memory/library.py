@@ -238,7 +238,8 @@ class MemoryLibrary(Center):
                 elif op == "confirm":
                     with store.memory_transaction():
                         store.db.execute(
-                            "UPDATE facts SET confirmed=1,revision=revision+1,updated_at=? "
+                            "UPDATE facts SET confirmed=1,confidence=1,"
+                            "revision=revision+1,updated_at=? "
                             "WHERE id=?",
                             (_now(), item),
                         )

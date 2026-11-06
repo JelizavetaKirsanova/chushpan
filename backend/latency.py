@@ -311,13 +311,22 @@ class Profile:
         def first(stage):
             return next((row["seconds"] for row in self.stages if row["stage"] == stage), None)
 
+        model_start = next(
+            (row["start_s"] for row in self.stages if row["stage"] == "model_total"), None
+        )
+        first_token = self.marks.get("first_llm_token")
         return {
             "wake_s": totals.get("wake_detection"),
+            "wake_activation_s": max(0, self.marks["wake_accepted"] - self.marks["vad_end"])
+            if "wake_accepted" in self.marks and "vad_end" in self.marks
+            else None,
             "vad_onset_s": first("vad_onset"),
             "vad_endpoint_s": totals.get("vad_wait"),
             "routing_s": totals.get("local_routing"),
             "stt_s": totals.get("stt"),
-            "llm_first_token_s": first("model_first_chunk"),
+            "llm_first_token_s": max(0, first_token - model_start)
+            if model_start is not None and first_token is not None
+            else first("model_first_chunk"),
             "llm_first_text_s": first("model_first_text"),
             "llm_total_s": sum(
                 row.get("active_s", row["seconds"])
@@ -328,7 +337,10 @@ class Profile:
             else None,
             "tool_execution_s": totals.get("tool_execution"),
             "tts_first_audio_s": first("tts_first_audio"),
-            "total_response_s": totals.get("response_total"),
+            "tts_first_pcm_s": first("tts_first_pcm"),
+            "total_response_s": totals.get(
+                "response_total", self.elapsed() if self.ended is not None else None
+            ),
         }
 
 

@@ -53,7 +53,11 @@ class Microphone:
         try:
             stream.start()
         except Exception:
-            stream.close()
+            self._stream_generation += 1
+            try:
+                stream.close()
+            finally:
+                self.flush()
             raise
         self._stream = stream
 
@@ -102,15 +106,15 @@ class Microphone:
                 self.flush()
                 # Device removal can outlast one retry. Keep the watchdog alive;
                 # cancellation still interrupts the backoff immediately.
-                for attempt in range(3):
+                attempt = 0
+                while True:
                     try:
                         self.start()
                         break
                     except Exception:
-                        log.error("ERROR microphone_restart attempt=%d", attempt + 1)
-                        if attempt == 2:
-                            raise
-                        await asyncio.sleep(0.5 * (attempt + 1))
+                        attempt += 1
+                        log.error("ERROR microphone_restart attempt=%d", attempt)
+                        await asyncio.sleep(min(5, 0.5 * attempt))
                 log.info("LISTENING_RESUMED microphone_stream")
                 continue
             if generation == self._generation:
@@ -119,6 +123,7 @@ class Microphone:
     def stop(self) -> None:
         stream, self._stream = self._stream, None
         self._stream_generation += 1
+        self.flush()
         if stream is not None:
             try:
                 stream.stop()

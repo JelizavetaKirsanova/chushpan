@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -11,10 +12,10 @@ import pytest
 
 from backend.audio.capture import Microphone
 from backend.audio.sentences import SentenceSplitter
-from backend.audio.tts import speech_text
+from backend.audio.tts import PiperSpeaker, SaySpeaker, speech_text
 from backend.audio.vad import FRAME_MS, SegmentEvent, UtteranceSegmenter
 from backend.config import VADConfig
-from backend.latency import Profile
+from backend.latency import Profile, current
 from tests.test_voice_loop import FRAME, FakeConversation, FakeSpeaker, Harness
 
 
@@ -82,11 +83,106 @@ def test_callbacks_already_queued_before_restart_cannot_enter_new_stream(monkeyp
         mic = Microphone()
         mic.start()
         callbacks[0](FRAME[:, None], 512, None, None)
+        await asyncio.sleep(0)  # frames already enqueued must be discarded as well
+        callbacks[0](FRAME[:, None], 512, None, None)
         mic.stop()
         mic.start()
         await asyncio.sleep(0)
         assert mic._queue.empty()
         mic.stop()
+
+    asyncio.run(run())
+
+
+def test_pcm_readiness_never_counts_as_audio_output():
+    async def run():
+        from backend.bench_response import drain_pcm
+
+        speaker = PiperSpeaker(Path("unused-model.onnx"))
+        speaker._voice = SimpleNamespace(config=SimpleNamespace(sample_rate=16000))
+        speaker._synth = lambda text: FRAME.copy()
+        speaker._play = drain_pcm
+        profile = Profile()
+        token = current.set(profile)
+
+        async def parts():
+            yield "Тестовый ответ."
+
+        try:
+            assert await speaker.speak(parts())
+            assert profile.summary()["tts_first_pcm_s"] is not None
+            assert profile.summary()["tts_first_audio_s"] is None
+            assert "first_content_audio" not in profile.marks
+        finally:
+            current.reset(token)
+            speaker._synth_pool.shutdown(wait=True)
+
+    asyncio.run(run())
+
+
+def test_system_voice_cancellation_terminates_and_reaps_process(monkeypatch):
+    async def run():
+        running, terminated = asyncio.Event(), asyncio.Event()
+        proc = SimpleNamespace(returncode=None)
+
+        async def wait():
+            await terminated.wait()
+            proc.returncode = -15
+
+        def terminate():
+            terminated.set()
+
+        async def create(*args):
+            running.set()
+            return proc
+
+        proc.wait, proc.terminate = wait, terminate
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+        speaker = SaySpeaker()
+
+        async def parts():
+            yield "Только поддельный процесс, без звука."
+
+        task = asyncio.create_task(speaker.speak(parts()))
+        await running.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert terminated.is_set() and proc.returncode == -15
+        assert speaker.interrupted and not speaker.speaking and speaker._proc is None
+
+    asyncio.run(run())
+
+
+def test_microphone_recovers_after_more_than_three_restart_failures(monkeypatch):
+    async def run():
+        mic, attempts = Microphone(), []
+        original_wait = asyncio.wait_for
+
+        async def wait(operation, timeout):
+            if not attempts:
+                operation.close()
+                raise TimeoutError
+            return await original_wait(operation, timeout)
+
+        def start():
+            attempts.append(True)
+            if len(attempts) <= 4:
+                raise OSError("simulated unplugged microphone")
+            mic._put(FRAME)
+
+        async def backoff(seconds):
+            assert 0 < seconds <= 5
+
+        mic.start = start
+        monkeypatch.setattr(asyncio, "wait_for", wait)
+        monkeypatch.setattr(asyncio, "sleep", backoff)
+        frames = mic.frames()
+        try:
+            assert await anext(frames) is FRAME
+            assert len(attempts) == 5
+        finally:
+            await frames.aclose()
 
     asyncio.run(run())
 

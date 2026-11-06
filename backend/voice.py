@@ -1632,6 +1632,7 @@ class VoiceLoop:
                 log.info("ACTIVATION_REJECT reason=%s", reason)
                 return
             profile.update(reason="explicit_address")
+            profile.mark("wake_accepted")
             status = "activated"
             elapsed = stt_completed_at - start
             self.wake_detection_s = time.perf_counter() - start
@@ -1951,9 +1952,6 @@ class VoiceLoop:
             if first_audio is None and not isinstance(self.speaker, SaySpeaker):
                 first_audio = time.perf_counter()
             queued = getattr(self.speaker, "audio_enqueued_at", None)
-            sentence_ready = getattr(self.speaker, "first_sentence_at", None)
-            if queued is not None and sentence_ready is not None:
-                profile.add("tts_first_audio", queued - sentence_ready)
             playback = getattr(self.speaker, "playback_started_at", None)
             if queued is not None and playback is not None:
                 profile.add("playback_queue", playback - queued)

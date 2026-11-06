@@ -41,6 +41,25 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Shared by execution and the local planner, so parallel validation cannot drift
+# from the actual lock domains. Unknown tools are never parallelized implicitly.
+TOOL_RESOURCES = {
+    "set_brightness": "mac",
+    "set_volume": "mac",
+    "open_app": "mac",
+    "manage_app": "mac",
+    "open_website": "mac",
+    "mac_power": "mac",
+    "set_external_brightness": "tv",
+    "led_control": "led",
+    "run_shortcut": "shortcuts",
+    "music_command": "music",
+    "play_music": "music",
+    "media_control": "music",
+    "media_volume": "music",
+    "media_seek": "music",
+}
+
 
 def result_status(name, arguments, result, risk=None):
     """Shared factual outcome; delivery and physical verification remain separate."""
@@ -66,14 +85,6 @@ def result_status(name, arguments, result, risk=None):
         or result.get("status") in {"not_found", "failed", "blocked"}
     ):
         return "failed"
-    if (
-        result.get("physical_confirmed") is True
-        or result.get("device_state_confirmed") is True
-        or result.get("playback_confirmed") is True
-    ):
-        return "success"
-    if result.get("written") or result.get("submitted") or result.get("state") == "playing":
-        return "unverified"
     if name == "set_brightness" and type(result.get("level")) is int:
         return "success" if result["level"] == arguments.get("level") else "failed"
     if (
@@ -89,6 +100,14 @@ def result_status(name, arguments, result, risk=None):
         )
     if name == "music_command" and result.get("ok") and result.get("state") == "paused":
         return "success"
+    if (
+        result.get("physical_confirmed") is True
+        or result.get("device_state_confirmed") is True
+        or result.get("playback_confirmed") is True
+    ):
+        return "success"
+    if result.get("written") or result.get("submitted") or result.get("state") == "playing":
+        return "unverified"
     return "success" if (risk or risk_for(name, arguments)) == Risk.READ else "unverified"
 
 
@@ -487,23 +506,7 @@ class ToolRegistry:
         return result
 
     async def _call(self, name: str, arguments: dict[str, Any] | str | None) -> str:
-        resources = {
-            "set_brightness": "mac",
-            "set_volume": "mac",
-            "open_app": "mac",
-            "manage_app": "mac",
-            "open_website": "mac",
-            "mac_power": "mac",
-            "set_external_brightness": "tv",
-            "led_control": "led",
-            "run_shortcut": "shortcuts",
-            "music_command": "music",
-            "play_music": "music",
-            "media_control": "music",
-            "media_volume": "music",
-            "media_seek": "music",
-        }
-        resource = resources.get(name) if isinstance(name, str) else None
+        resource = TOOL_RESOURCES.get(name) if isinstance(name, str) else None
         context = request_context.get()
         grant = scenario_operation.get()
         owned = (

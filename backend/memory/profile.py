@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from datetime import UTC, datetime, timedelta
 
 from backend.brain.privacy import contains_secret, redact
 from backend.context import request_context
@@ -79,6 +80,15 @@ def extract(text: str) -> list[tuple[str, str, str]]:
         return []
     if not safe_memory(t):
         return []
+    if re.fullmatch(
+        r"(?:(?:сегодня|вчера) я|я (?:сегодня|вчера)) "
+        r"(?:закончил[а]?|завершил[а]?|начал[а]?|посетил[а]?|сдал[а]?) .{3,160}",
+        t,
+    ):
+        # A report of an event, never verification that it actually happened.
+        key = "episode:" + datetime.now(UTC).date().isoformat() + ":"
+        key += MemoryStore.memory_digest(t)
+        return [("episode", key, t)]
     if re.fullmatch(
         r"я (?:обычно |вечером )?(?:предпочитаю|включаю|люблю) .{0,50}(?:свет|освещени[ея]).{0,40}",
         t,
@@ -264,15 +274,23 @@ class ProfileMemory:
             ):
                 self.propose(value, category, key, project=project)
                 continue
-            self.store.save_memory(
+            identifier, _ = self.store.save_memory(
                 value,
                 category=category,
                 key=key,
                 automatic=True,
                 source=self.source("current_user_statement"),
-                confidence=1,
+                confidence=0.9 if category == "episode" else 1,
                 project_id=project,
             )
+            if identifier and category == "episode":
+                # Expiry changes eligibility for retrieval, never erases user history.
+                expires = datetime.now(UTC) + timedelta(days=policy.temporary_days)
+                with self.store.memory_transaction():
+                    self.store.db.execute(
+                        "UPDATE facts SET expires_at=? WHERE id=?",
+                        (expires.isoformat(timespec="seconds"), identifier),
+                    )
 
     def propose(self, value, category, key, *, project=None):
         from uuid import uuid4
@@ -299,8 +317,6 @@ class ProfileMemory:
             self.store.set_preference("memory", "pending", pending[-30:])
 
     def relevant(self, text: str, limit: int = 6, budget: int = 1600) -> list[dict]:
-        from datetime import UTC, datetime, timedelta
-
         from backend.settings_models import MemoryPolicy
 
         policy = MemoryPolicy.model_validate(self.store.preference("settings", "memory") or {})
@@ -341,6 +357,7 @@ class ProfileMemory:
             for r in {r["id"]: r for r in candidates + globals_}.values()
             if r["status"] == "active"
             and r["confirmed"]
+            and r["confidence"] >= 0.75
             and (r["expires_at"] is None or r["expires_at"] > _now())
             and r["category"] not in policy.excluded
             and (r["category"] not in {"episode", "habit"} or r["updated_at"] >= cutoff)

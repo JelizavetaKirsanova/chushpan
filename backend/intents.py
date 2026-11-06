@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
 from collections import OrderedDict
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from backend.context import (
     planned_operation,
@@ -180,6 +181,7 @@ Action = Annotated[
 
 class ControlPlan(StrictModel):
     intent: Literal["compound_control"] = "compound_control"
+    mode: Literal["sequence", "parallel"] = "sequence"
     actions: list[Action] = Field(default_factory=list, max_length=8)
     clarification: str | None = None
     clarification_kind: Literal["led_brightness", "brightness_target"] | None = None
@@ -190,6 +192,21 @@ class ControlPlan(StrictModel):
             raise ValueError("Нужен исполнимый план либо уточнение, а не оба сразу.")
         if self.clarification_kind and not self.clarification:
             raise ValueError("Тип уточнения допустим только для вопроса, без действий.")
+        if self.mode == "parallel":
+            from backend.tools.registry import TOOL_RESOURCES
+
+            resources = []
+            for action in self.actions:
+                name, _ = action.call()
+                resource = TOOL_RESOURCES.get(name)
+                # Browser and music can both operate Safari even with different
+                # legacy registry locks. Keep these branches sequential as well.
+                domains = {resource} if resource else set()
+                if action.device in {"browser", "application", "music"}:
+                    domains.add("safari")
+                if not domains or any(domains & previous for previous in resources):
+                    raise ValueError("Параллельные действия конфликтуют. Уточни порядок.")
+                resources.append(domains)
         return self
 
 
@@ -268,6 +285,44 @@ def compile_plan(text, *, comfortable_brightness=None, brightness_target=None):
     if not isinstance(text, str) or len(text) > 1000:
         return None
     command = control_text(text)
+    if re.search(r"\bодновременно\b", command):
+        if re.search(r"\b(?:затем|потом)\b", command):
+            return ControlPlan(
+                clarification="Для смешанного порядка создай сценарий с группами действий."
+            )
+        base = compile_plan(
+            re.sub(r"\bодновременно\b\s*", "", text, flags=re.I),
+            comfortable_brightness=comfortable_brightness,
+            brightness_target=brightness_target,
+        )
+        if base is None or base.clarification:
+            return base
+        try:
+            return ControlPlan.model_validate({**base.model_dump(), "mode": "parallel"})
+        except ValidationError:
+            return ControlPlan(
+                clarification="Параллельные действия могут управлять одним ресурсом. "
+                "Назови их последовательность; ничего не отправлял."
+            )
+    ordered = re.split(r"\s*,?\s+(?:а )?(?:затем|потом)\s+", command)
+    if len(ordered) > 1:
+        children = [
+            compile_plan(
+                part.rstrip(","),
+                comfortable_brightness=comfortable_brightness,
+                brightness_target=brightness_target,
+            )
+            for part in ordered
+        ]
+        if not any(children):
+            return None
+        if (
+            any(child is None or child.clarification for child in children)
+            or sum(len(child.actions) for child in children if child) > 8
+            or re.search(r'[«»"“”`\n;]', text)
+        ):
+            return ControlPlan(clarification="Уточни все действия последовательности и устройства.")
+        return ControlPlan(actions=[action for child in children for action in child.actions])
     if not re.match(
         r"^(?:" + "|".join(_VERBS) + rf"|открой|запусти|яркост[ьи]|громкость|{_TARGET})\b", command
     ):
@@ -568,6 +623,91 @@ class ControlSession:
             self.previous_confirmed.clear()
             self.last_action = None
 
+    async def _run_actions(self, plan, conv, context, key):
+        """Own every started branch until it settles, including during cancellation."""
+        started, finished, tasks = {}, {}, []
+
+        async def invoke(index, action):
+            with measure("tool_routing"):
+                name, arguments = action.call()
+            started[index] = (action, name, arguments)
+            if profile := current.get():
+                profile.update(intent="device_control", target=action.device, tool=name)
+            if name is None or name not in conv.tools:
+                result = {
+                    "error": "Управление громкостью телевизора не подключено."
+                    if action.device == "tv"
+                    else "Управление подсветкой отключено в настройках."
+                    if action.device == "led_strip"
+                    else "Инструмент устройства отключён или недоступен."
+                }
+            else:
+                if conv.on_tool:
+                    conv.on_tool(name)
+                grant = planned_operation.set(
+                    (context.request_id, name, json.dumps(arguments, sort_keys=True))
+                )
+                try:
+                    result = json.loads(await conv.tools.call(name, arguments))
+                finally:
+                    planned_operation.reset(grant)
+            if not isinstance(result, dict):
+                result = {"error": "Инструмент не вернул структурированный результат."}
+            finished[index] = result
+            return action, name, arguments, result
+
+        try:
+            if plan.mode == "parallel":
+                tasks = [
+                    asyncio.create_task(invoke(index, action))
+                    for index, action in enumerate(plan.actions)
+                ]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                failure = next((r for r in results if isinstance(r, BaseException)), None)
+                if failure is not None:
+                    raise failure
+                for result in results:
+                    yield result
+            else:
+                for index, action in enumerate(plan.actions):
+                    yield await invoke(index, action)
+        except BaseException:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            from backend.tools.registry import result_status
+
+            observed = []
+            for index, (action, name, arguments) in sorted(started.items()):
+                result = finished.get(index, {"status": "interrupted"})
+                canonical = (
+                    result_status(name, arguments, result) if index in finished else "unverified"
+                )
+                observed.append(
+                    {
+                        "device": action.device,
+                        "tool": name,
+                        "arguments": arguments,
+                        "result": result,
+                        "status": {"success": "confirmed", "failed": "failed"}.get(
+                            canonical, "unverified"
+                        ),
+                        "result_status": canonical,
+                    }
+                )
+            self.clear()
+            self.completed[key] = {
+                "message": "Ожидание команды отменено или прервано. "
+                "Уже отправленные действия не отменяются; автоповтора нет.",
+                "steps": observed,
+                "status": "unverified",
+                "result_status": "unverified",
+                "plan": plan.model_dump(mode="json", exclude_none=True),
+            }
+            raise
+
     async def execute(self, plan, conv):
         context = request_context.get()
         binding = (context.binding, conv.id) if context else None
@@ -624,44 +764,9 @@ class ControlSession:
         while len(self.completed) > 64:
             self.completed.popitem(last=False)
         steps, replies = [], []
-        # Sequential by default: several operations may share Safari or the Mac agent.
-        # An error stops only dependent writes inside one device's own transaction.
-        for action in plan.actions:
-            with measure("tool_routing"):
-                name, arguments = action.call()
-            if profile := current.get():
-                profile.update(intent="device_control", target=action.device, tool=name)
-            if name is None or name not in conv.tools:
-                result = {
-                    "error": "Управление громкостью телевизора не подключено."
-                    if action.device == "tv"
-                    else "Управление подсветкой отключено в настройках."
-                    if action.device == "led_strip"
-                    else "Инструмент устройства отключён или недоступен."
-                }
-            else:
-                if conv.on_tool:
-                    conv.on_tool(name)
-                grant = planned_operation.set(
-                    (context.request_id, name, json.dumps(arguments, sort_keys=True))
-                )
-                try:
-                    try:
-                        result = json.loads(await conv.tools.call(name, arguments))
-                    except BaseException:
-                        self.clear()
-                        self.completed[key] = {
-                            "message": "Ожидание команды отменено или прервано. "
-                            "Фактический результат не подтверждён; автоповтора нет.",
-                            "steps": steps,
-                            "status": "unverified",
-                            "plan": plan.model_dump(mode="json", exclude_none=True),
-                        }
-                        raise
-                finally:
-                    planned_operation.reset(grant)
-            if not isinstance(result, dict):
-                result = {"error": "Инструмент не вернул структурированный результат."}
+        # Only an explicit parallel plan can overlap handlers. Results and history
+        # retain the user's order even if the independent branches finish out of order.
+        async for action, name, arguments, result in self._run_actions(plan, conv, context, key):
             status = (
                 "partial"
                 if result.get("delivery_state") == "partial"

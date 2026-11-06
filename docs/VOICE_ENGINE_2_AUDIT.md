@@ -95,7 +95,8 @@ flowchart LR
 ## Исходные проверки и границы измерений
 
 - 425 целевых тестов: **passed**, 6.89 с.
-- Запущен полный набор pytest; итог будет включён в отчёт после завершения.
+- Исходный полный pytest: 2442 passed, один тест Unix-сокета запрещён sandbox.
+  Этот тест отдельно прошёл вне sandbox (1 passed).
 - `backend.bench_response --routing-only --label before --runs 10`:
   100 проходов настоящих Conversation и маршрутизации; LLM и транспорт
   инструментов заменены. Сырой JSON остаётся в `data/latency-benchmarks/`.

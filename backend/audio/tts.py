@@ -326,6 +326,9 @@ class PiperSpeaker:
 
             if profile:
                 waiting = is_waiting_only(text)
+                first_content = not waiting and "first_content_audio" not in profile.marks
+                if first_content and self.first_sentence_at is not None:
+                    profile.interval("tts_first_audio", self.first_sentence_at, at)
                 profile.mark("first_audio", at=at)
                 profile.mark("waiting_audio" if waiting else "first_content_audio", at=at)
                 if playback_interval is None:
@@ -410,6 +413,10 @@ class PiperSpeaker:
                             if is_waiting_only(sentence)
                             else "tts_audio_enqueued"
                         )
+                        if not is_waiting_only(sentence) and self.first_sentence_at is not None:
+                            profile.interval(
+                                "tts_first_pcm", self.first_sentence_at, self.audio_enqueued_at
+                            )
                 if self.volume != 1.0:
                     audio = np.clip(audio.astype(np.float32) * self.volume, -32768, 32767).astype(
                         np.int16
@@ -560,6 +567,7 @@ class SaySpeaker:
         self.pronunciations = pronunciations or {}
         self._proc: asyncio.subprocess.Process | None = None
         self._stop = asyncio.Event()
+        self._playback_lock = asyncio.Lock()
         self._speaking = False
         self.on_sentence: OnSentence | None = None
 
@@ -578,6 +586,10 @@ class SaySpeaker:
         return None  # `say` cannot synthesize ahead
 
     async def speak(self, sentences: AsyncIterator[str], on_start: OnStart | None = None) -> bool:
+        async with self._playback_lock:
+            return await self._speak(sentences, on_start)
+
+    async def _speak(self, sentences, on_start):
         self._stop.clear()
         self._speaking = True
         voice_args = ["-v", self.voice] if self.voice else []
@@ -593,6 +605,13 @@ class SaySpeaker:
                 spoken = speech_text(sentence, self.pronunciations, self.speech_language)
                 self._proc = await asyncio.create_subprocess_exec("say", *voice_args, spoken)
                 await self._proc.wait()
+                if self._proc.returncode != 0 and not self._stop.is_set():
+                    raise SynthesisError("Системная озвучка завершилась ошибкой.")
+        except asyncio.CancelledError:
+            self.interrupt()
+            if self._proc is not None:
+                await self._proc.wait()
+            raise
         finally:
             self._proc = None
             self._speaking = False
@@ -601,4 +620,7 @@ class SaySpeaker:
     def interrupt(self) -> None:
         self._stop.set()
         if self._proc and self._proc.returncode is None:
-            self._proc.terminate()
+            try:
+                self._proc.terminate()
+            except ProcessLookupError:
+                pass
