@@ -101,6 +101,8 @@ def verify_bundle(app: Path) -> dict:
 
 def self_test(app: Path, directory: Path) -> None:
     """Import-only check: no UI, microphone, device scan or real user data."""
+    if app != INSTALLED_APP:
+        raise ValueError("Проверочный запуск разрешён только из /Applications/Чушпан.app.")
     directory.mkdir(parents=True, exist_ok=False, mode=0o700)
     report = directory / "imports.json"
     env = {**os.environ, "CHUSHPAN_APP_DATA": str(directory / "data")}
@@ -217,6 +219,12 @@ def trash_build(app: Path, installed_receipt: dict) -> str:
     )
     if not ok:
         raise OSError(f"Сборка сохранена: перенос в Корзину не удался ({error}).")
+    # macOS can register a trashed bundle itself. Remove only these verified origins.
+    trashed = Path(url.path())
+    read_info(trashed)
+    for origin in (app, trashed):
+        subprocess.run([str(LSREGISTER), "-u", str(origin)], capture_output=True)
+    register_installed(INSTALLED_APP)
     return str(url.path())
 
 
@@ -244,6 +252,12 @@ def _install(app: Path, *, cleanup: bool = False, allow_downgrade: bool = False)
     app = app.absolute()
     if app.resolve() == destination.resolve():
         raise ValueError("Основное приложение нельзя использовать как каталог сборки.")
+    if cleanup and (
+        app.is_symlink()
+        or app.name != APP_NAME
+        or not app.resolve().is_relative_to(build_cache().resolve())
+    ):
+        raise ValueError("Очистка разрешена только для сборки из Builds.noindex.")
     checked = verify_bundle(app)
     if destination.exists():
         old = read_info(destination)
@@ -260,11 +274,9 @@ def _install(app: Path, *, cleanup: bool = False, allow_downgrade: bool = False)
     previous = record / APP_NAME
     if record.stat().st_dev != destination.parent.stat().st_dev:
         raise ValueError("Резерв и /Applications должны находиться на одном файловом томе.")
-    self_test(app, record / "source-check")
     subprocess.run(["/usr/bin/ditto", str(app), str(staged)], check=True, capture_output=True)
     if verify_bundle(staged)["executable_sha256"] != checked["executable_sha256"]:
         raise ValueError("Копия сборки не прошла проверку.")
-    self_test(staged, record / "staging-check")
     assert_not_running()
     had_previous = destination.exists()
     if had_previous:
@@ -339,7 +351,6 @@ def recover_interrupted() -> dict:
             raise ValueError("Резерв не принадлежит этой транзакции.")
         if previous.exists():
             verify_bundle(previous)
-            self_test(previous, receipt_path.parent / ("recovery-check-" + uuid.uuid4().hex[:8]))
             assert_not_running()
             if INSTALLED_APP.exists():
                 read_info(INSTALLED_APP)
@@ -348,6 +359,7 @@ def recover_interrupted() -> dict:
         elif not INSTALLED_APP.exists():
             raise ValueError("Не найдено установленное приложение или резерв; файлы сохранены.")
         restored = verify_bundle(INSTALLED_APP)
+        self_test(INSTALLED_APP, receipt_path.parent / ("recovery-check-" + uuid.uuid4().hex[:8]))
         register_installed(INSTALLED_APP)
         refresh_dock()
         result = {**restored, "status": "recovered"}
