@@ -103,6 +103,14 @@ def create_app(bus: HudBus, origins: set[str], dist: Path = DIST_DIR, native=Non
                 await ws.send_text(json.dumps(event, ensure_ascii=False))
             while True:
                 event = await queue.get()
+                if event.get("type") == "devices" and "candidates" in event:
+                    from backend.ble_diagnostics import trace
+
+                    trace(
+                        "ws_send",
+                        event.get("operation_id", "unknown"),
+                        count=len(event["candidates"]),
+                    )
                 await ws.send_text(json.dumps(event, ensure_ascii=False))
 
         async def receive() -> None:
@@ -117,6 +125,14 @@ def create_app(bus: HudBus, origins: set[str], dist: Path = DIST_DIR, native=Non
                 if kind in COMMANDS:
                     bus.command(kind)
                 elif kind in REQUESTS and type(msg.get("value")) is REQUESTS[kind]:
+                    if kind == "devices" and msg["value"].get("op") == "discover":
+                        from backend.ble_diagnostics import trace
+
+                        trace(
+                            "ws_received",
+                            str(msg["value"].get("request_id", ""))[:80],
+                            operation="discover",
+                        )
                     bus.request(kind, msg.get("value"))
 
         tasks = [asyncio.create_task(send()), asyncio.create_task(receive())]

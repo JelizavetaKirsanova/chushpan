@@ -60,9 +60,10 @@ class Bridge(_Api):
 
 
 class Application(_Api):
-    def __init__(self, *, smoke=False):
+    def __init__(self, *, smoke=False, no_auto_listen=False):
         super().__init__()
         self.smoke = smoke
+        self.no_auto_listen = no_auto_listen
         self.root = USER_ROOT
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.runtime = self.root / "runtime"
@@ -233,6 +234,7 @@ class Application(_Api):
                 "permissions": macos.permissions(),
                 "worker": self.worker_state,
                 "smoke": self.smoke,
+                "auto_listen_suppressed": self.no_auto_listen,
             }
 
     def desktop_preferences(self, value):
@@ -374,6 +376,7 @@ class Application(_Api):
                     self.worker_state = self.control({"op": "status"})
                     if (
                         self.prefs.auto_listen
+                        and not self.no_auto_listen
                         and self.worker_state.get("state") == "paused"
                         and not getattr(self, "_auto_attempted", False)
                     ):

@@ -228,7 +228,7 @@ def test_concurrent_discovery_is_serialized_and_failure_in_auto_search_is_visibl
     async def run():
         active, maximum = 0, 0
 
-        async def scan(self):
+        async def scan(self, **kwargs):
             nonlocal active, maximum
             active += 1
             maximum = max(maximum, active)
@@ -374,5 +374,61 @@ def test_generic_colour_followup_retains_existing_authenticated_strip_selection(
         assert "отправ" in (await ask(r.conv, "Сделай ленту фиолетовой")).casefold()
         assert r.service.store.get(old.id).sent["color"] == "#FF00C8"
         assert all(call.args[0] == old.endpoint for call in r.factory.call_args_list)
+
+    asyncio.run(run())
+
+
+def test_diagnostic_mode_does_not_classify_or_filter_names_services_or_signal(rig, monkeypatch):
+    async def run():
+        found = {
+            "target": advertisement("ELK-BLEDDM 39", rssi=-62),
+            "unknown": advertisement("Anything", rssi=-95),
+        }
+        scan = AsyncMock(return_value=found)
+        monkeypatch.setattr(led, "BleakScanner", SimpleNamespace(discover=scan))
+        result = await rig.strip.discover(scan_id="diagnostic-scan", show_all_ble=True)
+        assert result["scanner_count"] == len(result["candidates"]) == 2
+        assert all(c["compatibility"] == "unknown" for c in result["candidates"])
+        assert all("не определялась" in c["compatibility_reason"] for c in result["candidates"])
+        assert scan.call_args.kwargs == {"timeout": 4, "return_adv": True}
+        rig.factory.assert_not_called()
+
+    asyncio.run(run())
+
+
+def test_discovery_counts_each_stage_and_excludes_only_invalid_macos_uuid(
+    devices, monkeypatch, caplog
+):
+    import logging
+
+    async def run():
+        caplog.set_level(logging.INFO)
+        scanner = AsyncMock(
+            return_value={
+                "scanner_count": 2,
+                "candidates": [
+                    {"name": "ELK-BLEDDM 39", "address": str(uuid4()), "rssi": -58},
+                    {"name": "Bad address", "address": "not-a-macos-uuid"},
+                ],
+            }
+        )
+        monkeypatch.setattr(LEDStrip, "discover", scanner)
+        event = await request(devices, op="discover", kind="led_strip", show_all_ble=True)
+        report = event["discovery"]
+        assert report["scanner_count"] == 2
+        assert report["candidate_count"] == report["ble_candidate_count"] == 1
+        assert report["excluded_count"] == 1 and report["show_all_ble"]
+        assert report["started_at"] <= report["finished_at"]
+        assert event["candidates"][0]["name"] == "ELK-BLEDDM 39"
+        assert scanner.call_args.kwargs == {"scan_id": report["scan_id"], "show_all_ble": True}
+        assert '"reason": "invalid_macos_uuid"' in caplog.text
+        assert '"stage": "backend_publish"' in caplog.text
+        await request(
+            devices, op="scan_trace", scan_id=report["scan_id"], stage="frontend_rendered", count=1
+        )
+        assert '"stage": "frontend_rendered"' in caplog.text
+        await request(devices, op="discover", kind="led_strip", show_all_ble=True)
+        assert scanner.await_count == 2  # A second request really invokes the scanner again.
+        devices.factory.assert_not_called()
 
     asyncio.run(run())

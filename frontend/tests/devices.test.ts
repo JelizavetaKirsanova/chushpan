@@ -234,3 +234,26 @@ test('control diagnostic only sends one chosen frame after explicit consent',asy
     assert.equal(f.requests.filter(r=>r.op==='probe_led').length,1);
   }finally{await f.close();}
 });
+
+test('all BLE diagnostic mode renders every candidate across place and text filters with fresh scan IDs',async()=>{
+  const f=fixture();try{
+    const filter=f.window.document.getElementById('devices-place-filter') as unknown as HTMLSelectElement;filter.value='home';filter.dispatchEvent(new f.window.Event('change'));
+    const search=f.window.document.querySelector<HTMLInputElement>('[aria-label="Поиск устройств"]')!;search.value='unrelated';search.dispatchEvent(new f.window.Event('input'));
+    f.button('Найти устройства');const first=f.requests.at(-1)!;const dialog=f.window.document.querySelector('dialog')!;
+    f.view.receive({...f.state,operation_id:first.request_id as string,candidates:[]});
+    const all=dialog.querySelector<HTMLInputElement>('input[type=checkbox]')!;assert.equal(all.disabled,false);all.checked=true;all.dispatchEvent(new f.window.Event('change'));
+    f.button('Найти устройства',dialog);const next=f.requests.at(-1)!;
+    assert.equal(next.show_all_ble,true);assert.notEqual(first.request_id,next.request_id);
+    assert.equal(next.kind,'led_strip');
+    const discovery={scan_id:next.request_id as string,started_at:'2026-11-06T19:00:00Z',finished_at:'2026-11-06T19:00:04Z',show_all_ble:true,scanner_count:2,candidate_count:2,excluded_count:0};
+    f.view.receive({...f.state,operation_id:next.request_id as string,discovery,candidates:[{token:'elk',name:'ELK-BLEDDM 39',compatibility:'unknown',rssi:-62},{token:'sensor',name:'Sensor',compatibility:'unknown',rssi:-95}]});
+    assert.equal(dialog.querySelectorAll('.device-discovery-row').length,2);
+    assert.match(dialog.textContent!,/Все Bluetooth LE устройства.*ELK-BLEDDM 39.*Sensor/s);
+    assert.match(dialog.textContent!,/BLE: 2 → передано: 2 · исключено: 0/);
+    assert.deepEqual(f.requests.slice(-2).map(r=>[r.op,r.stage,r.count]),[['scan_trace','frontend_received',2],['scan_trace','frontend_rendered',2]]);
+    f.button('Повторить поиск',dialog);const repeat=f.requests.at(-1)!;assert.notEqual(repeat.request_id,next.request_id);
+    assert.equal(dialog.querySelectorAll('.device-discovery-row').length,0);
+    f.view.receive({...f.state,operation_id:next.request_id as string,discovery,candidates:[{token:'late',name:'Stale result'}]});
+    assert.equal(f.requests.at(-1)!.stage,'frontend_ignored');assert.doesNotMatch(dialog.textContent!,/Stale result/);
+  }finally{await f.close();}
+});

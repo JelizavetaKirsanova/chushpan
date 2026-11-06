@@ -20,6 +20,7 @@ from bleak.exc import (
 )
 from pydantic import BaseModel, Field, ValidationError
 
+from backend.ble_diagnostics import device_key, runtime_info, trace
 from backend.config import LEDConfig, Settings
 from backend.latency import measure
 from backend.security import Risk, command_text, control_text
@@ -816,22 +817,35 @@ class LEDStrip:
                 if client is not None:
                     await self._disconnect(client)
 
-    async def discover(self, timeout_s: float = 4) -> dict:
+    async def discover(
+        self, timeout_s: float = 4, *, scan_id: str | None = None, show_all_ble: bool = False
+    ) -> dict:
         """Explicit bounded discovery, never automatic rebinding or control packets."""
         if not self.cfg.enabled or not 0 < timeout_s <= 8:
             raise ToolError("LED отключена или время поиска вне 0–8 секунд.")
+        scan_id = scan_id or uuid4().hex
         async with self._exclusive():
             try:
+                trace(
+                    "scanner_start",
+                    scan_id,
+                    timeout_s=timeout_s,
+                    service_filter=None,
+                    name_filter=None,
+                    show_all_ble=show_all_ble,
+                    runtime=runtime_info(),
+                )
                 async with asyncio.timeout(timeout_s + 2):
                     found = await BleakScanner.discover(timeout=timeout_s, return_adv=True)
+                trace("scanner_complete", scan_id, count=len(found))
                 candidates = []
                 for device, adv in found.values():
                     # Advertising a service is optional; absence is not incompatibility.
                     name = (adv.local_name or device.name or "Без имени").strip()
                     name = "".join(c for c in name if ord(c) >= 32)[:80] or "Без имени"
                     services = [str(s).lower() for s in getattr(adv, "service_uuids", [])]
-                    family = bool(re.match(r"^ELK-BLE", name, re.IGNORECASE))
-                    service_match = str(self.cfg.service).lower() in services
+                    family = not show_all_ble and bool(re.match(r"^ELK-BLE", name, re.IGNORECASE))
+                    service_match = not show_all_ble and str(self.cfg.service).lower() in services
                     candidates.append(
                         {
                             "name": name,
@@ -841,13 +855,26 @@ class LEDStrip:
                             "connection": "not_checked",
                             "compatibility": "candidate" if family or service_match else "unknown",
                             "compatibility_reason": (
-                                "Семейство ELK BLE; требуется проверка GATT и протокола."
+                                "Диагностический режим: совместимость не определялась."
+                                if show_all_ble
+                                else "Семейство ELK BLE; требуется проверка GATT и протокола."
                                 if family
                                 else "Рекламируется FFF0; протокол ещё не проверен."
                                 if service_match
                                 else "Профиль неизвестен; совместимость не определена."
                             ),
                         }
+                    )
+                    trace(
+                        "scanner_device",
+                        scan_id,
+                        device=device_key(device.address),
+                        name=name,
+                        rssi=getattr(adv, "rssi", None),
+                        services=services,
+                        included=True,
+                        reason="no_filters",
+                        compatibility=candidates[-1]["compatibility"],
                     )
                 candidates.sort(
                     key=lambda c: (
@@ -859,16 +886,22 @@ class LEDStrip:
                 )
                 return {
                     "candidates": candidates,
+                    "scanner_count": len(found),
                     "message": "Найденные BLE-устройства доступны в разделе «Устройства». "
                     "Имя и UUID сервиса не доказывают совместимость протокола. "
                     "Настройки не изменял; команды не отправлял.",
                 }
             except BleakBluetoothNotAvailableError as exc:
+                trace("scanner_error", scan_id, error=type(exc).__name__, reason=str(exc.reason))
                 raise ToolError(bluetooth_error(exc)) from None
             except (BleakError, OSError, TimeoutError):
+                trace("scanner_error", scan_id, reason="bluetooth_or_timeout")
                 raise ToolError(
                     "Поиск LED не завершён: Bluetooth недоступен или истёк тайм-аут."
                 ) from None
+            except asyncio.CancelledError:
+                trace("scanner_cancelled", scan_id)
+                raise
             except Exception as exc:
                 log.warning("BLE discovery failed type=%s", type(exc).__name__)
                 raise ToolError(

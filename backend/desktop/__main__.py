@@ -16,11 +16,22 @@ def main():
     parser.add_argument("--endpoint", type=Path)
     parser.add_argument("--parent", type=int, default=0)
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument(
+        "--no-auto-listen",
+        action="store_true",
+        help="suppress microphone auto-start for this launch; keep preferences",
+    )
     parser.add_argument("--self-test", type=Path)
     parser.add_argument("--permission-status", type=Path)
+    parser.add_argument("--ble-runtime", type=Path, help="read-only BLE runtime identity, no scan")
     args = parser.parse_args()
     os.environ["CHUSHPAN_DESKTOP"] = "1"
     os.umask(0o077)
+    if args.ble_runtime:
+        from backend.ble_diagnostics import runtime_info
+
+        args.ble_runtime.write_text(json.dumps(runtime_info(), ensure_ascii=False, indent=2))
+        return 0
     if args.permission_status:
         # Installed bundle identity + read-only native preflights. No UI, audio,
         # models, event scripts, location fixes, network probes or permission requests.
@@ -89,7 +100,7 @@ def main():
         )
     from backend.desktop.app import Application
 
-    return Application(smoke=args.smoke).run()
+    return Application(smoke=args.smoke, no_auto_listen=args.no_auto_listen).run()
 
 
 if __name__ == "__main__":

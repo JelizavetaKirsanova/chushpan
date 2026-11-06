@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 import platform
 import plistlib
 import shutil
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +18,44 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def run(*args):
     subprocess.run(args, cwd=ROOT, check=True)
+
+
+def build_manifest() -> Path:
+    """Stamp shipped sources, rather than trusting a manually incremented version."""
+    from backend.desktop import VERSION
+
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=ROOT).decode().strip()
+
+    files = [
+        "backend/led.py",
+        "backend/ble_diagnostics.py",
+        "backend/devices/service.py",
+        "frontend/src/devices.ts",
+        "frontend/dist/index.html",
+    ]
+    path = ROOT / "build/macos/metadata/build-info.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "version": VERSION,
+                "source_commit": git("rev-parse", "HEAD"),
+                "source_dirty": bool(git("status", "--porcelain", "--untracked-files=no")),
+                "built_at": datetime.now(UTC).isoformat(),
+                "contains_ba705ed": subprocess.run(
+                    ["git", "merge-base", "--is-ancestor", "ba705ed", "HEAD"], cwd=ROOT
+                ).returncode
+                == 0,
+                "sources": {
+                    name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in files
+                },
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    return path
 
 
 def main():
@@ -29,6 +70,7 @@ def main():
     run(sys.executable, "-m", "scripts.prepare_macos_icon")
     run("npm", "--prefix", "frontend", "ci")
     run("npm", "--prefix", "frontend", "run", "build")
+    build_manifest()
     native = ROOT / "build/macos/native"
     native.mkdir(parents=True, exist_ok=True)
     for name, source in [

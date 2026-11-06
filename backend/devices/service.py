@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 import httpx
 
+from backend.ble_diagnostics import device_key, runtime_info, trace
 from backend.context import (
     RequestContext,
     device_selection,
@@ -76,6 +77,7 @@ class Devices(DeviceCenter):
         self.completed = OrderedDict()
         self.scans = {}
         self.discovery_lock = asyncio.Lock()
+        self.scan_reports = OrderedDict()
         self.probes = {}
         self.strips = {}
         self.preferred = None
@@ -478,11 +480,14 @@ class Devices(DeviceCenter):
         ):
             raise ActionDenied("Для локального оборудования нужен разрешённый Mac Agent.")
 
-    async def discover(self, kind):
+    async def discover(self, kind, *, scan_id=None, show_all_ble=False):
         if kind == "auto":
             # Each protocol is bounded; unavailable adapters do not fabricate results.
             results = await asyncio.gather(
-                *(self.discover(k) for k in ("led_strip", "airplay", "audio_output")),
+                *(
+                    self.discover(k, scan_id=scan_id, show_all_ble=show_all_ble)
+                    for k in ("led_strip", "airplay", "audio_output")
+                ),
                 return_exceptions=True,
             )
             for kind_name, result in zip(("LED", "AirPlay", "Аудиовыходы"), results, strict=True):
@@ -495,19 +500,54 @@ class Devices(DeviceCenter):
             strip = LEDStrip(self.s.model_copy(deep=True))
             strip.cfg = strip.cfg.model_copy(update={"enabled": True})
             async with self.discovery_lock:
-                items = (await strip.discover())["candidates"]
-            items = [
-                {
-                    **{
-                        k: v[k]
-                        for k in ("rssi", "compatibility", "compatibility_reason", "connection")
-                        if k in v
-                    },
-                    "name": v.get("name") or "Без имени",
-                    "endpoint": str(UUID(v["address"])),
-                }
-                for v in items
-            ]
+                result = await strip.discover(scan_id=scan_id, show_all_ble=show_all_ble)
+            raw = result["candidates"]
+            items = []
+            excluded = 0
+            for v in raw:
+                try:
+                    endpoint = str(UUID(v["address"]))
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    excluded += 1
+                    trace(
+                        "backend_device",
+                        scan_id or "direct",
+                        included=False,
+                        device=device_key(str(v.get("address", ""))),
+                        reason="invalid_macos_uuid",
+                    )
+                    continue
+                items.append(
+                    {
+                        **{
+                            k: v[k]
+                            for k in ("rssi", "compatibility", "compatibility_reason", "connection")
+                            if k in v
+                        },
+                        "name": v.get("name") or "Без имени",
+                        "endpoint": endpoint,
+                    }
+                )
+                trace(
+                    "backend_device",
+                    scan_id or "direct",
+                    device=device_key(endpoint),
+                    included=True,
+                    reason="no_location_category_or_connection_filter",
+                )
+            if scan_id in self.scan_reports:
+                self.scan_reports[scan_id].update(
+                    scanner_count=result.get("scanner_count", len(raw)),
+                    ble_candidate_count=len(items),
+                    excluded_count=excluded,
+                )
+            trace(
+                "backend_candidates",
+                scan_id or "direct",
+                received=len(raw),
+                count=len(items),
+                excluded_count=excluded,
+            )
         elif kind == "airplay":
             result = await self.native.run("browse")
             items = [
@@ -538,6 +578,14 @@ class Devices(DeviceCenter):
         for item in items if kind == "led_strip" else items[:30]:
             token = uuid4().hex
             self.scans[token] = {**item, "kind": kind, "expires": time.monotonic() + 300}
+            if kind == "led_strip":
+                trace(
+                    "backend_token",
+                    scan_id or "direct",
+                    device=device_key(item["endpoint"]),
+                    token=token[:8],
+                    included=True,
+                )
             candidates.append(
                 {
                     "token": token,
@@ -758,10 +806,64 @@ class Devices(DeviceCenter):
                 return
             if op == "discover":
                 self.require_adapter()
+                if not isinstance(request_id, str) or not re.fullmatch(
+                    r"[a-zA-Z0-9-]{8,80}", request_id
+                ):
+                    raise ValueError("Для поиска нужен уникальный идентификатор запроса.")
+                if type(value.get("show_all_ble", False)) is not bool:
+                    raise ValueError("Диагностический режим должен быть true/false.")
+                self.scan_reports[request_id] = {
+                    "scan_id": request_id,
+                    "started_at": stamp(),
+                    "show_all_ble": value.get("show_all_ble", False),
+                    "runtime": runtime_info(),
+                }
+                while len(self.scan_reports) > 32:
+                    self.scan_reports.popitem(last=False)
+                trace(
+                    "backend_requested",
+                    request_id,
+                    kind=value.get("kind"),
+                    show_all_ble=value.get("show_all_ble", False),
+                    cached=False,
+                )
                 with measure("device_discovery"):
                     async with asyncio.timeout(25):
-                        candidates = await self.discover(value.get("kind"))
-                self.publish(candidates=candidates, request_id=request_id)
+                        candidates = await self.discover(
+                            value.get("kind"),
+                            scan_id=request_id,
+                            show_all_ble=value.get("show_all_ble", False),
+                        )
+                report = self.scan_reports[request_id]
+                report.update(finished_at=stamp(), candidate_count=len(candidates))
+                trace(
+                    "backend_publish",
+                    request_id,
+                    count=len(candidates),
+                    clients=self.bus.clients if self.bus else 0,
+                )
+                self.publish(candidates=candidates, discovery=report, request_id=request_id)
+                return
+            if op == "scan_trace":
+                report = self.scan_reports.get(value.get("scan_id"))
+                stage = value.get("stage")
+                if (
+                    not report
+                    or stage not in {"frontend_received", "frontend_rendered", "frontend_ignored"}
+                    or type(value.get("count")) is not int
+                    or not 0 <= value["count"] <= 10000
+                ):
+                    return
+                trace(
+                    stage,
+                    report["scan_id"],
+                    count=value["count"],
+                    reason="matching_active_scan"
+                    if stage != "frontend_ignored"
+                    else "stale_or_closed",
+                    location_filter_applied=False,
+                    category_filter_applied=False,
+                )
                 return
             if op == "check":
                 self.require_adapter()

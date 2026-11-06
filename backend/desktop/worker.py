@@ -183,8 +183,10 @@ class DesktopEngine:
 
 
 async def run_worker(token: str, endpoint: Path, *, smoke=False, parent=0):
+    from backend.ble_diagnostics import runtime_info, trace
     from backend.instance import InstanceLock
 
+    trace("worker_runtime", "startup", runtime=runtime_info())
     settings = Settings()
     settings.server.host, settings.server.port = "127.0.0.1", 0
     settings.hud.window = settings.hud.open_on_start = False

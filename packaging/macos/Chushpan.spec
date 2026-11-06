@@ -13,6 +13,7 @@ datas = [
     (str(root / "config.yaml"), "."),
     (str(root / "personality.md"), "."),
     (str(root / "frontend/dist"), "frontend/dist"),
+    (str(root / "build/macos/metadata/build-info.json"), "."),
 ]
 datas += collect_data_files("backend", include_py_files=True)
 binaries = [
@@ -98,8 +99,8 @@ app = BUNDLE(
         "CFBundleDisplayName": "Чушпан",
         "CFBundleName": "Чушпан",
         "CFBundleIconFile": "icon.icns",
-        "CFBundleShortVersionString": "0.3.2",
-        "CFBundleVersion": "15",
+        "CFBundleShortVersionString": "0.3.3",
+        "CFBundleVersion": "16",
         "LSMinimumSystemVersion": "26.2",
         "NSHighResolutionCapable": True,
         "NSMicrophoneUsageDescription": "Чушпан распознаёт ваши голосовые команды локально на этом Mac.",
