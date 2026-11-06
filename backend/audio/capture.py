@@ -21,6 +21,7 @@ class Microphone:
         self.dropped_frames = 0
         self.input_overflows = 0
         self._generation = 0
+        self._stream_generation = 0
 
     def start(self) -> None:
         if self._stream is not None:
@@ -28,14 +29,20 @@ class Microphone:
         import sounddevice as sd
 
         loop = asyncio.get_running_loop()
+        self._stream_generation += 1
+        stream_generation = self._stream_generation
 
         def callback(indata, frames, time_info, status) -> None:  # audio thread
+            if stream_generation != self._stream_generation:
+                return
             if status:
                 log.debug("input status: %s", status)
                 if status.input_overflow:
                     self.input_overflows += 1
             generation = self._generation
-            loop.call_soon_threadsafe(self._put, indata[:, 0].copy(), generation)
+            loop.call_soon_threadsafe(
+                self._put, indata[:, 0].copy(), generation, stream_generation
+            )
 
         stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
@@ -67,8 +74,15 @@ class Microphone:
                 self.start()
                 raise
 
-    def _put(self, frame: np.ndarray, generation: int | None = None) -> None:
+    def _put(
+        self,
+        frame: np.ndarray,
+        generation: int | None = None,
+        stream_generation: int | None = None,
+    ) -> None:
         if generation is not None and generation != self._generation:
+            return
+        if stream_generation is not None and stream_generation != self._stream_generation:
             return
         if self._queue.full():
             self.dropped_frames += 1
@@ -105,10 +119,18 @@ class Microphone:
                 yield frame
 
     def stop(self) -> None:
-        if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+        stream, self._stream = self._stream, None
+        self._stream_generation += 1
+        if stream is not None:
+            try:
+                stream.stop()
+            except Exception as exc:
+                log.warning("MIC_STOP_FAILED type=%s", type(exc).__name__)
+            finally:
+                try:
+                    stream.close()
+                except Exception as exc:
+                    log.warning("MIC_CLOSE_FAILED type=%s", type(exc).__name__)
 
 
 class SilenceWatch:

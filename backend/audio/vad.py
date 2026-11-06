@@ -66,7 +66,8 @@ class UtteranceSegmenter:
         return max(
             self.silence_frames,
             min(
-                frames_for(1100), max(self.silence_frames + extra, round(self._longest_pause * 1.5))
+                max(frames_for(1100), self.silence_frames + frames_for(600)),
+                max(self.silence_frames + extra, round(self._longest_pause * 1.5)),
             ),
         )
 

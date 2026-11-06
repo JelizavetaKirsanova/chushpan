@@ -1356,6 +1356,7 @@ class VoiceLoop:
                 event = self.segmenter.process(frame, self.vad(frame))
                 if event.started:
                     self.vad_started_at = time.perf_counter() - event.speech_ms / 1000
+                    self.vad_onset_s = event.speech_ms / 1000
                     log.info("RECORDING wake_check")
                 if event.utterance is not None:
                     self._last_segment = event
@@ -1393,6 +1394,7 @@ class VoiceLoop:
         event = self.segmenter.process(frame, self.vad(frame))
         if event.started:
             self.vad_started_at = time.perf_counter() - event.speech_ms / 1000
+            self.vad_onset_s = event.speech_ms / 1000
             self._session_recording = self.session_active
             self._pause_session("recording")
             log.info(
@@ -1571,6 +1573,8 @@ class VoiceLoop:
                 profile.mark("vad_start", self.vad_started_at, allow_before_origin=True)
             profile.mark("vad_end", speech_end)
             profile.interval("vad_wait", speech_end, speech_end + self.vad_wait_s)
+            if onset := getattr(self, "vad_onset_s", None):
+                profile.add("vad_onset", onset)
             with measure("wake_detection", wake_source="whisper"):
                 text = await asyncio.wait_for(self.stt.transcribe(audio), STT_TIMEOUT_S)
             stt_completed_at = time.perf_counter()
@@ -1621,6 +1625,8 @@ class VoiceLoop:
                 )
                 status = "completed"
                 return
+            if self._last_segment and self._last_segment.end_reason == "max_duration":
+                request, reason = None, "truncated_utterance"
             if request is None or self.state.state is not State.SLEEPING:
                 profile.update(reason=reason)
                 log.info("ACTIVATION_REJECT reason=%s", reason)
@@ -1716,7 +1722,17 @@ class VoiceLoop:
         if store is not None:
             store.performance.attach(profile, self.conv.id)
         profile.interval("vad_wait", speech_end, speech_end + self.vad_wait_s)
-        profile.add("wake_detection", self.wake_detection_s)
+        if onset := getattr(self, "vad_onset_s", None):
+            profile.add("vad_onset", onset)
+        if self.wake_detection_s:
+            profile.add("wake_detection", self.wake_detection_s)
+            self.wake_detection_s = 0
+        if self._last_segment and self._last_segment.end_reason == "max_duration":
+            profile.result_status = "rejected"
+            profile.update(reason="truncated_utterance")
+            message = "Достигнут предел длины записи. Раздели команду на несколько фраз."
+            self.bus.publish({"type": "error", "message": message})
+            return
         t0 = time.perf_counter()
         stt_interval = profile.begin("stt") if transcript is None else None
         self.bus.publish({"type": "activity", "phase": "recognizing"})

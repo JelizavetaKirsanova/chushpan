@@ -98,9 +98,11 @@ class SentenceSplitter:
         first_clause_chars: int = 30,
         *,
         protect_literals: bool = False,
+        max_chars: int = 240,
     ) -> None:
         self.min_chars = min_chars
         self.protect_literals = protect_literals
+        self.max_chars = max(80, max_chars)
         # A long first sentence may be cut at its first comma so the voice starts sooner.
         self.first_clause_chars = first_clause_chars
         # The first sentence goes out as soon as possible: it sets the perceived latency.
@@ -137,7 +139,27 @@ class SentenceSplitter:
                     self._buf = self._buf[m.end() :]
                     self._emitted = True
                     break
+        # A model can stream an entire paragraph without punctuation. Bound the
+        # wait at a word boundary; don't split a number, URL, abbreviation or name.
+        while len(self._buf) > self.max_chars:
+            candidates = [
+                match.start()
+                for match in re.finditer(r"\s+", self._buf[: self.max_chars + 1])
+                if match.start() >= self.first_min_chars
+                and not self._protected(match.start())
+                and not self._abbreviation_before(match.start())
+            ]
+            if not candidates:
+                break  # A single long protected literal stays whole.
+            cut = candidates[-1]
+            out.append(self._buf[:cut].strip())
+            self._buf = self._buf[cut:].lstrip()
+            self._emitted = True
         return out
+
+    def _abbreviation_before(self, position: int) -> bool:
+        word = self._buf[:position].split()[-1].rstrip(".")
+        return word.casefold() in _ABBREVIATIONS or (len(word) == 1 and word.isupper())
 
     def _protected(self, position: int) -> bool:
         if not self.protect_literals:

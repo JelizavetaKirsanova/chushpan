@@ -14,7 +14,7 @@ from uuid import uuid4
 from backend.brain.privacy import contains_secret
 
 _SAFE = re.compile(r"^[A-Za-z0-9_.:/-]{1,120}$")
-PIPELINE_REVISION = "2026-11-03-intent-context-reliability"
+PIPELINE_REVISION = "2026-11-06-voice-intelligence-2"
 _META = {
     "pipeline_revision",
     "error_component",
@@ -280,11 +280,14 @@ class Profile:
             ),
             "marks": dict(self.marks),
             "metrics": {
+                **self.summary(),
                 "speech_end_to_stt_s": between("user_speech_end", "stt_completed"),
                 "stt_to_first_token_s": between("stt_completed", "first_llm_token"),
                 "first_token_to_audio_s": between("first_llm_token", "first_content_audio"),
                 "speech_end_to_audio_s": between("user_speech_end", "first_content_audio"),
-                "speech_end_to_completed_s": self.elapsed()
+                "speech_end_to_completed_s": max(
+                    0, self.elapsed() - self.marks["user_speech_end"]
+                )
                 if self.ended is not None and "user_speech_end" in self.marks
                 else None,
             },
@@ -311,6 +314,10 @@ class Profile:
             return next((row["seconds"] for row in self.stages if row["stage"] == stage), None)
 
         return {
+            "wake_s": totals.get("wake_detection"),
+            "vad_onset_s": first("vad_onset"),
+            "vad_endpoint_s": totals.get("vad_wait"),
+            "routing_s": totals.get("local_routing"),
             "stt_s": totals.get("stt"),
             "llm_first_token_s": first("model_first_chunk"),
             "llm_first_text_s": first("model_first_text"),
