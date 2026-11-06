@@ -1731,7 +1731,7 @@ class VoiceLoop:
             profile.result_status = "rejected"
             profile.update(reason="truncated_utterance")
             message = "Достигнут предел длины записи. Раздели команду на несколько фраз."
-            self.bus.publish({"type": "error", "message": message})
+            self.bus.publish({"type": "notice", "error": True, "message": message})
             return
         t0 = time.perf_counter()
         stt_interval = profile.begin("stt") if transcript is None else None

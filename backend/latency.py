@@ -279,15 +279,13 @@ class Profile:
                 default=None,
             ),
             "marks": dict(self.marks),
+            "pipeline_metrics": self.summary(),
             "metrics": {
-                **self.summary(),
                 "speech_end_to_stt_s": between("user_speech_end", "stt_completed"),
                 "stt_to_first_token_s": between("stt_completed", "first_llm_token"),
                 "first_token_to_audio_s": between("first_llm_token", "first_content_audio"),
                 "speech_end_to_audio_s": between("user_speech_end", "first_content_audio"),
-                "speech_end_to_completed_s": max(
-                    0, self.elapsed() - self.marks["user_speech_end"]
-                )
+                "speech_end_to_completed_s": max(0, self.elapsed() - self.marks["user_speech_end"])
                 if self.ended is not None and "user_speech_end" in self.marks
                 else None,
             },

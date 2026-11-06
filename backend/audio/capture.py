@@ -40,9 +40,7 @@ class Microphone:
                 if status.input_overflow:
                     self.input_overflows += 1
             generation = self._generation
-            loop.call_soon_threadsafe(
-                self._put, indata[:, 0].copy(), generation, stream_generation
-            )
+            loop.call_soon_threadsafe(self._put, indata[:, 0].copy(), generation, stream_generation)
 
         stream = sd.InputStream(
             samplerate=SAMPLE_RATE,

@@ -531,6 +531,8 @@ class Conversation:
                         first_text = False
                     if first and (chunk.content or chunk.tool_calls):
                         record("model_first_chunk", time.perf_counter() - started)
+                        if profile:
+                            profile.mark("first_llm_token")
                         first = False
                     if profile:
                         profile.update(
@@ -696,11 +698,12 @@ class Conversation:
                 ):
                     self.store.clear_preference("dialogue_pending", str(self.id))
                 devices = getattr(self.tools, "devices", None)
-                device_plan = (
-                    devices.voice_plan(user_text)
-                    if devices and self.s.locale.lang == "ru"
-                    else None
-                )
+                with measure("local_routing"):
+                    device_plan = (
+                        devices.voice_plan(user_text)
+                        if devices and self.s.locale.lang == "ru"
+                        else None
+                    )
                 if device_plan is not None:
                     started = time.perf_counter()
                     answer = await devices.voice_execute(device_plan)
