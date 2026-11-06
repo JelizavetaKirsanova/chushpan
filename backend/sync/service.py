@@ -725,7 +725,9 @@ class DeviceSync(Center):
             try:
                 await self.start(value.get("host"), value.get("port", 8766))
             except OSError:
-                raise ValueError(self.failure or "Не удалось открыть локальный TLS-сервер.") from None
+                raise ValueError(
+                    self.failure or "Не удалось открыть локальный TLS-сервер."
+                ) from None
             message = (
                 "Локальный TLS-сервер запущен. Доверенные устройства пока не "
                 "получают разрешений автоматически."

@@ -35,6 +35,15 @@ test('devices render independently with filters and no raw identifiers on cards'
   } finally {await f.close();}
 });
 
+test('absent operation timing is never rendered as undefined milliseconds',async()=>{
+  const f=fixture();try{
+    f.view.receive({...f.state,metrics:{}});f.open('Свет у стола');
+    assert.doesNotMatch(f.window.document.querySelector('.device-panel')!.textContent!,/undefined|NaN/);
+    f.view.receive({...f.state,metrics:{total_ms:0}});
+    assert.match(f.window.document.querySelector('.device-panel')!.textContent!,/0 мс/);
+  }finally{await f.close();}
+});
+
 test('LED colour and power are direct typed operations without chat or scenarios',async()=>{
   const f=fixture();try {
     f.open('Свет у стола');const panel=f.window.document.querySelector('.device-panel')!;

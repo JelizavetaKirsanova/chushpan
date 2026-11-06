@@ -24,6 +24,7 @@ from backend.context import (
     voice_addressed,
 )
 from backend.devices.center import DeviceCenter
+from backend.devices.colors import ColorLibrary
 from backend.devices.models import Device
 from backend.devices.store import DeviceStore
 from backend.intents import LEDAction, LEDParameters
@@ -65,6 +66,7 @@ class Devices(DeviceCenter):
     def __init__(self, tools, settings, memory):
         self.tools, self.s, self.memory = tools, settings, memory
         self.store = DeviceStore(memory)
+        self.colors = ColorLibrary(memory)
         from backend.automation.locations import Locations
 
         self.locations = (
@@ -365,15 +367,20 @@ class Devices(DeviceCenter):
                 strip = self.strip(device)
                 confirmed = strip._load().confirmed
                 driver = strip.driver()
+                color_reason = strip.rgb_block_reason()
             except ToolError:
                 confirmed = set()
                 driver = None
+                color_reason = "Профиль LED недоступен. Проверь локальный журнал и настройки."
             return {
                 "power_on": enabled("led_control") and "on" in confirmed,
                 "power_off": enabled("led_control") and "off" in confirmed,
                 "brightness": enabled("led_control") and "brightness" in confirmed,
                 "color": enabled("led_control") and "rgb" in confirmed,
                 "colors": sorted(confirmed),
+                "color_block_reason": color_reason
+                if enabled("led_control")
+                else "Управление LED отключено в настройках доступа.",
                 "probe": enabled("led_control") and driver is not None,
                 "warm_white": "rgb_approximation",
                 "physical_feedback": False,
@@ -430,6 +437,11 @@ class Devices(DeviceCenter):
                     **d.model_dump(),
                     "features": self.features(d),
                     **({"ble": self.ble_status(d)} if d.kind == "led_strip" else {}),
+                    **(
+                        {"preview_color": self.colors.preview(d.id)}
+                        if d.kind in {"led_strip", "wled"}
+                        else {}
+                    ),
                     "connection": self.connections.get(d.id, "unknown"),
                     "usable": usable,
                     "reason": reason,
@@ -803,6 +815,36 @@ class Devices(DeviceCenter):
                     "Устройства доступны только авторизованному локальному приложению."
                 )
             op = value.get("op")
+            if op in {"color_save", "color_delete", "color_preview"}:
+                self.require_adapter()
+                if not self.tools.enabled("device_command"):
+                    raise ActionDenied("Управление устройствами отключено в настройках доступа.")
+                if op == "color_save":
+                    saved = self.colors.save(
+                        value.get("value"),
+                        identifier=value.get("color_id"),
+                        revision=value.get("revision", 0),
+                    )
+                    result = {
+                        "message": "Цвет сохранён в палитре без отправки ленте.",
+                        "saved_color_id": saved.id,
+                    }
+                elif op == "color_delete":
+                    self.colors.delete(
+                        value.get("color_id"),
+                        value.get("revision"),
+                        confirmed=value.get("confirmed"),
+                    )
+                    result = {"message": "Пользовательский цвет удалён."}
+                else:
+                    device = self.store.get(identifier)
+                    if device.kind not in {"led_strip", "wled"}:
+                        raise ValueError("Выбери RGB-ленту.")
+                    self.colors.set_preview(device.id, value.get("color"))
+                    self.remember_color_target(device)
+                    result = {"message": "Предпросмотр цвета. Ленте ничего не отправлено."}
+                self.publish(result={**result, "result_status": "success"}, request_id=request_id)
+                return
             if await self.center_handle(value):
                 return
             if op == "refresh":
@@ -1057,9 +1099,10 @@ class Devices(DeviceCenter):
                     if value.get("driver") not in choices:
                         raise ValueError("Неизвестный BLE-драйвер.")
                     profile = choices[value["driver"]]
-                await strip.select_profile(profile)
+                changed = await strip.select_profile(profile)
                 self.probes.pop(identifier, None)
-                device.sent, device.state = {}, {}
+                if changed:
+                    device.sent, device.state = {}, {}
                 device.result_status = "unverified"
                 self.store.observe(device)
                 self.update_catalogue()
@@ -1191,13 +1234,12 @@ class Devices(DeviceCenter):
                 if (
                     device.kind != "led_strip"
                     or type(value.get("observed")) is not bool
-                    or not self.probes.get(identifier)
-                    or value.get("probe_id") != self.probes[identifier]
+                    or not self.strip(device)._load().pending_probe
+                    or value.get("probe_id") != self.strip(device)._load().pending_probe["id"]
                 ):
                     raise ValueError("Тест функции устарел. Повтори проверку.")
-                await self.strip(device).confirm_probe(
-                    self.probes.pop(identifier), value["observed"]
-                )
+                await self.strip(device).confirm_probe(value["probe_id"], value["observed"])
+                self.probes.pop(identifier, None)
                 self.update_catalogue()
                 result = {
                     "message": "Наблюдение сохранено. "

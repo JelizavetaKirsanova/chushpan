@@ -69,6 +69,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8878)
     parser.add_argument(
+        "--workspace", action="store_true", help="Bind all pages to the temporary QA workspace"
+    )
+    parser.add_argument(
         "--mobile", action="store_true", help="Loopback TLS, ephemeral test key, no Bonjour"
     )
     args = parser.parse_args()
@@ -94,6 +97,39 @@ def main():
         async def lifespan(app):
             nonlocal modules
             modules = PersonalModules(settings, store, tools, bus)
+            workspace_services = []
+            if args.workspace:
+                from types import SimpleNamespace
+
+                from backend.brain.conversation import Conversation
+                from backend.brain.llm import ChatChunk
+                from backend.cinema.service import Cinema
+                from backend.hud.dashboard import Dashboard
+                from backend.hud.workspace import bind_workspace
+                from backend.settings_center import SettingsCenter
+
+                class WorkspaceModel:
+                    cloud_context = False
+
+                    async def chat_stream(self, messages, tools=None):
+                        yield ChatChunk(content="Изолированный ответ для проверки UI.", done=True)
+
+                    async def prime(self, *args):
+                        pass
+
+                conv = Conversation(settings, WorkspaceModel(), store, tools=tools)
+                bind_workspace(bus, settings, store)
+                tools.automations.bind(bus, conv)
+                tools.devices.bind(bus, conv)
+                cinema = tools.cinema = Cinema(tools, settings, store)
+                # Never read the user's real Keychain in this isolated fixture.
+                cinema.tavily_credentials = SimpleNamespace(
+                    status=lambda: {"configured": False, "storage": "isolated_qa"}
+                )
+                cinema.bind(bus, conv)
+                center = SettingsCenter(settings, store, conv, bus, startup_permissions=False)
+                dashboard = Dashboard(bus, settings, store, conv, None)
+                workspace_services = [dashboard, center, cinema, tools.devices, tools.automations]
             if args.mobile:
                 # Generate the CA through an injected in-memory Security API. No real
                 # Keychain read/write and no local-network advertisement in this test.
@@ -161,6 +197,8 @@ def main():
                 yield
             finally:
                 await modules.close()
+                for service in workspace_services:
+                    await service.close()
                 store.close()
 
         app = create_app(bus, {f"http://127.0.0.1:{args.port}"})

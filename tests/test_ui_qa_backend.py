@@ -232,17 +232,24 @@ def test_sync_real_loopback_tls_start_stop_restart_preserves_pairing(tmp_path, m
         try:
             probe.bind(("127.0.0.1", 0))
         except PermissionError:
+            probe.close()
+            await service.close()
+            memory.close()
             pytest.skip("Loopback socket is sandboxed; run this case with socket access")
         port = probe.getsockname()[1]
-        probe.close()
         material = ephemeral_material(monkeypatch)
         service.identity = SimpleNamespace(read=lambda: material)
         key, jwk, device = identity()
         trust(service, jwk, device, capabilities=["chat"], categories=["memory"])
-        context = ssl.create_default_context(
-            cadata=certificates(material, "127.0.0.1")["ca"]
-        )
+        context = ssl.create_default_context(cadata=certificates(material, "127.0.0.1")["ca"])
         try:
+            try:
+                with pytest.raises(ValueError, match="порт уже занят"):
+                    await service.handle({"op": "start", "host": "127.0.0.1", "port": port})
+                assert not service.snapshot()["running"] and service.url == ""
+                assert service.store.peer(device)["capabilities"] == ["chat"]
+            finally:
+                probe.close()
             for _iteration in range(2):
                 await service.start("127.0.0.1", port, advertise=False)
                 assert service.snapshot()["running"]
@@ -258,6 +265,31 @@ def test_sync_real_loopback_tls_start_stop_restart_preserves_pairing(tmp_path, m
                 assert service.snapshot()["peers"][0]["online"] is False
                 assert service.store.peer(device)["capabilities"] == ["chat"]
             assert memory.preference("sync", "endpoint") == {"host": "127.0.0.1", "port": port}
+        finally:
+            await service.close()
+            memory.close()
+
+    asyncio.run(run())
+
+
+def test_sync_crashed_task_does_not_prevent_cleanup_or_remove_pairings(tmp_path):
+    async def run():
+        memory, _, service = sync_setup(tmp_path)
+        _, jwk, device = identity()
+        trust(service, jwk, device, capabilities=["chat"], categories=[])
+
+        async def crashed():
+            raise RuntimeError("fixture server failure")
+
+        service.server = SimpleNamespace(started=True, should_exit=False)
+        service.server_task = asyncio.create_task(crashed())
+        service.url = "https://127.0.0.1:8766"
+        try:
+            await service.stop()
+            assert service.server_task is None and service.url == ""
+            assert not service.snapshot()["running"]
+            assert "ошибкой" in service.snapshot()["error"]
+            assert service.store.peer(device)["capabilities"] == ["chat"]
         finally:
             await service.close()
             memory.close()
@@ -283,5 +315,36 @@ def test_center_echoes_operation_ids_for_success_and_errors():
         assert events[-1]["operation_id"] == "qa-success" and events[-1]["busy"] is False
         await service.run({"request_id": "qa-error", "fail": True})
         assert events[-1]["operation_id"] == "qa-error" and events[-1]["error"] == "fixture failure"
+
+    asyncio.run(run())
+
+
+def test_center_rejects_second_client_request_without_releasing_first_operation():
+    async def run():
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        class Example(Center):
+            channel = "test"
+
+            async def handle(self, value):
+                entered.set()
+                await release.wait()
+
+        bus, events = HudBus(), []
+        bus.publish = events.append
+        service = Example()
+        service.bind(bus)
+        try:
+            service.request({"request_id": "first"})
+            await entered.wait()
+            service.request({"request_id": "second"})
+            assert events[-1]["operation_id"] == "second"
+            assert events[-1]["busy"] is False and events[-1]["error"]
+            assert not service.task.done()
+            release.set()
+            await service.task
+            assert events[-1]["operation_id"] == "first" and not events[-1]["busy"]
+        finally:
+            await service.close()
 
     asyncio.run(run())

@@ -9,6 +9,7 @@ import httpx
 
 from backend.context import request_context, voice_addressed
 from backend.devices.adapters import MacDevicesAdapter, WLEDAdapter
+from backend.devices.colors import ColorInput, hex_rgb
 from backend.security import Risk
 from backend.tools.registry import Tool, ToolError
 
@@ -25,6 +26,7 @@ COMMAND_FIELDS = {
             "airplay_audio",
             "airplay_video",
             "inspect",
+            "save_color",
         ],
     },
     "power": {"type": "boolean"},
@@ -33,6 +35,7 @@ COMMAND_FIELDS = {
     "level": {"type": "integer", "minimum": 0, "maximum": 100},
     "mute": {"type": "boolean"},
     "playback": {"type": "string", "enum": ["pause", "resume", "stop", "next", "previous"]},
+    "name": {"type": "string", "minLength": 1, "maxLength": 80},
 }
 
 
@@ -92,7 +95,18 @@ class DeviceCenter:
             "profiles": [p.model_dump() for p in self.locations.list()],
             "outputs": self.outputs,
             "metrics": self.metrics,
+            "user_colors": [c.model_dump() for c in self.colors.list()],
         }
+
+    def remember_color_target(self, device):
+        """An explicit HUD preview chooses context, but authorizes no hardware action."""
+        if not self.conv or device.kind != "led_strip":
+            return
+        controls = self.conv.controls
+        self.preferred = (device.id, (self.conv.device.device_id, self.conv.device.session_id))
+        controls.device = "led_strip"
+        controls.binding = ((self.conv.device.device_id, self.conv.device.session_id), self.conv.id)
+        controls.expires = controls.clock() + controls.ttl_s
 
     async def center_handle(self, value):
         op = value.get("op")
@@ -218,6 +232,8 @@ class DeviceCenter:
             raise ToolError("Нужен авторизованный локальный запрос.")
         groups = {g.id: g for g in self.store.collections("group")}
         identifiers = groups[target].device_ids if target in groups else [target]
+        if action == "save_color" and target in groups:
+            raise ToolError("Для сохранения цвета выбери одну RGB-ленту.")
         if not identifiers:
             raise ToolError("В группе пока нет устройств.")
         if "playback" in parameters:
@@ -232,7 +248,26 @@ class DeviceCenter:
                 if lock.locked():
                     raise ToolError("Устройство занято другой командой.")
                 async with lock, asyncio.timeout(45):
-                    if action == "inspect":
+                    if action == "save_color":
+                        if device.kind not in {"led_strip", "wled"} or set(parameters) != {"name"}:
+                            raise ToolError("Выбери одну RGB-ленту и название цвета.")
+                        value = (
+                            self.colors.preview(device.id)
+                            or device.sent.get("color")
+                            or device.state.get("color")
+                        )
+                        if value is None:
+                            raise ToolError(
+                                "Сначала выбери цвет в RGB-редакторе или задай его ленте."
+                            )
+                        saved = self.colors.save(
+                            {"name": parameters["name"], "rgb": hex_rgb(value)}
+                        )
+                        result = {
+                            "message": f"Цвет «{saved.name}» сохранён. Ленте ничего не отправлено.",
+                            "result_status": "success",
+                        }
+                    elif action == "inspect":
                         result = await self.refresh(device)
                     elif device.kind == "wled":
                         result = await self.network.execute(device, action, parameters)
@@ -334,6 +369,19 @@ class DeviceCenter:
         from backend.security import command_text
 
         value = command_text(text).replace("ё", "е").rstrip(".!? ")
+        save_name = None
+        if match := re.fullmatch(r"сохрани этот цвет как (.{1,80})", value):
+            try:
+                save_name = ColorInput(name=match[1], rgb=[0, 0, 0]).name
+            except ValueError:
+                return {"error": "Укажи обычное название пользовательского цвета."}
+            value = "сделай ленту rgb 0 0 0"
+        elif match := re.fullmatch(r"(?:поставь|сделай|установи|включи) мой цвет (.{1,80})", value):
+            try:
+                color = self.colors.named(match[1])
+            except ValueError as exc:
+                return {"error": str(exc)}
+            value = "сделай ленту rgb " + " ".join(map(str, color.rgb))
         if not re.search(
             r"\b(включи|выключи|сделай|поставь|установи|переключи|верни|подключи|проверь|пауза|продолжи)\b",
             value,
@@ -365,6 +413,13 @@ class DeviceCenter:
                 without_place(command), comfortable_brightness=self.s.led.comfortable_brightness
             )
             if plan and plan.actions and all(a.device == "led_strip" for a in plan.actions):
+                if save_name:
+                    return {
+                        "commands": [
+                            {"target": d.id, "action": "save_color", "name": save_name}
+                            for d in targets
+                        ]
+                    }
                 return {
                     "commands": [
                         {

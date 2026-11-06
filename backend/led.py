@@ -283,6 +283,13 @@ def parse(text: str, *, comfortable_brightness: int | None = None) -> dict | Non
     """Resolve the complete request before executing any same-device sequence."""
     if not isinstance(text, str) or len(text) > 1000 or re.search(r'[«»"“”`\n;]', text):
         return None
+    explicit = re.fullmatch(
+        r"(?:установи|сделай|поставь) красный (\d{1,3})[, ]+зел[её]ный (\d{1,3})[, ]+синий (\d{1,3})[.!? ]*",
+        control_text(text),
+    )
+    if explicit:
+        values = list(map(int, explicit.groups()))
+        return {"action": "color", "rgb": values} if max(values) <= 255 else None
     single = _parse_single(text)
     if single is not None or not isinstance(text, str):
         return single
@@ -441,13 +448,27 @@ class LEDStrip:
             state = LEDState(identity=self.identity, confirmed=set())
         driver = state.profile or candidate_profile(self.cfg)
         fingerprint = driver.fingerprint if driver else "unsupported"
-        if state.driver_fingerprint != fingerprint:
+        compatible = driver and state.driver_fingerprint in {
+            fingerprint,
+            driver.previous_fingerprint,
+        }
+        if not compatible:
             # Existing observations belong to the old BLEDOB serializer only.
             if state.driver_fingerprint or not driver or driver.id != "elk-bledob-legacy":
                 state.confirmed.clear()
                 state.pending_probe = state.last_write = state.last_transaction = None
                 state.brightness = state.gatt_fingerprint = state.last_diagnostic = None
             state.driver_fingerprint = fingerprint
+        else:
+            state.driver_fingerprint = fingerprint
+            # Earlier releases stored one explicitly observed RGB value but required
+            # three primary colours to enable the same serializer. Never promote
+            # the legacy default-red seed or an unobserved write.
+            last = state.last_write or {}
+            requested = last.get("requested", {})
+            if requested.get("action") == "color" and last.get("physical_confirmed") is True:
+                if _key(requested) in state.confirmed:
+                    state.confirmed.add("rgb")
         return state
 
     def _save(self, state: LEDState) -> None:
@@ -488,19 +509,24 @@ class LEDStrip:
             "confirmed_functions": sorted(state.confirmed),
             "last_command": state.last_write,
             "diagnostic": report,
+            "pending_probe": state.pending_probe,
         }
 
     async def select_profile(self, profile: BLEProfile | None):
         """Local explicit import/selection is not evidence of physical compatibility."""
         async with self._exclusive():
             state = self._load()
+            previous = self.driver(state)
             state.profile = profile
             selected = self.driver(state)
             state.driver_fingerprint = selected.fingerprint if selected else "unsupported"
-            state.confirmed.clear()
-            state.pending_probe = state.last_write = state.last_transaction = None
-            state.brightness = state.gatt_fingerprint = state.last_diagnostic = None
+            changed = not previous or not selected or previous.fingerprint != selected.fingerprint
+            if changed:
+                state.confirmed.clear()
+                state.pending_probe = state.last_write = state.last_transaction = None
+                state.brightness = state.gatt_fingerprint = state.last_diagnostic = None
             self._save(state)
+            return changed
 
     def serialize(self, state, action, *, rgb=None, level=None):
         profile = self.driver(state)
@@ -745,10 +771,7 @@ class LEDStrip:
             key = _key(probe["requested"])
             if observed:
                 state.confirmed.add(key)
-                if (
-                    probe["requested"]["action"] == "color"
-                    and {"color:255,0,0", "color:0,255,0", "color:0,0,255"} <= state.confirmed
-                ):
+                if probe["requested"]["action"] == "color":
                     state.confirmed.add("rgb")
             else:
                 state.confirmed.discard(key)
@@ -759,6 +782,17 @@ class LEDStrip:
             state.last_write["physical_confirmed"] = observed
             state.pending_probe = None
             self._save(state)
+
+    def rgb_block_reason(self, state=None):
+        state = state if state is not None else self._load()
+        driver = self.driver(state)
+        if not driver or "color" not in driver.commands:
+            return "Выбранный драйвер не поддерживает RGB. Выбери подтверждённый профиль."
+        if "rgb" in state.confirmed:
+            return ""
+        if state.pending_probe and state.pending_probe["requested"]["action"] == "color":
+            return "Тест RGB отправлен. Подтверди, что лента действительно изменила цвет."
+        return "RGB ещё не проверен. Нажми «Проверить RGB» и подтверди видимое изменение цвета."
 
     async def command(self, command: str) -> dict:
         args = parse(command, comfortable_brightness=self.cfg.comfortable_brightness)

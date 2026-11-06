@@ -22,7 +22,12 @@ class Center:
             if value.get("op") == "cancel":
                 self.task.cancel()
             else:
-                self.publish(error="Дождись текущей операции или останови её.")
+                rejected = (
+                    {"operation_id": value["request_id"], "busy": False}
+                    if isinstance(value.get("request_id"), str)
+                    else {}
+                )
+                self.publish(error="Дождись текущей операции или останови её.", **rejected)
             return
         self.task = asyncio.create_task(self.run(value))
 

@@ -27,6 +27,24 @@ test('analytics has empty measurements, opt-in policy controls and accessible in
 function syncData(){return {running:false,url:'',fingerprint:'',invite:null,pending:[],peers:[],categories:{memory:'Память'},capabilities:['chat'],history:[],conflicts:[],endpoint:{host:'127.0.0.1',port:8766}};}
 function findButton(scope:ParentNode,label:string){const button=[...scope.querySelectorAll('button')].find(b=>b.textContent===label);assert.ok(button,label);return button;}
 
+test('cancelled and invalid custom periods never replace the confirmed analytics filter',()=>{
+  const f=fixture();try{
+    const view=f.views[3],root=f.window.document.getElementById('module-analytics')!;
+    view.connection(true);view.receive({type:'analytics',busy:false,data:analytics()});
+    const select=root.querySelector<HTMLSelectElement>('[aria-label="Период аналитики"]')!;
+    select.value='custom';select.dispatchEvent(new f.window.Event('change'));
+    findButton(f.window.document.querySelector('dialog')!,'Отмена').click();
+    assert.equal(select.value,'today');
+    select.value='custom';select.dispatchEvent(new f.window.Event('change'));
+    const modal=f.window.document.querySelector('dialog')!;
+    modal.querySelector<HTMLInputElement>('[name=start]')!.value='2026-11-06';
+    modal.querySelector<HTMLInputElement>('[name=end]')!.value='2026-11-01';
+    const count=f.sent.length;findButton(modal,'Выбрать').click();
+    assert.equal(f.sent.length,count);assert.equal(modal.open,true);
+    assert.equal(modal.querySelector<HTMLInputElement>('[name=end]')!.validity.customError,true);
+  }finally{f.window.happyDOM.abort();}
+});
+
 test('module errors distinguish failed initial load and retry, and late responses cannot replace fresh state',()=>{
   const f=fixture();try{
     const view=f.views[3],root=f.window.document.getElementById('module-analytics')!;

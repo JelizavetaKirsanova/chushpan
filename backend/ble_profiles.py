@@ -52,6 +52,14 @@ class BLEProfile(BaseModel):
 
     @property
     def fingerprint(self):
+        payload = self.model_dump(
+            include={"service", "write_characteristic", "write_mode", "commands"}
+        )
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+    @property
+    def previous_fingerprint(self):
+        """Recognize the identical pre-RGB-editor profile without transferring evidence."""
         return hashlib.sha256(self.model_dump_json().encode()).hexdigest()
 
     def serialize(self, action, *, rgb=None, level=None):

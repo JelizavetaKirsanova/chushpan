@@ -75,3 +75,17 @@ test('global periods include validated custom dates and reset stale visible numb
     f.view.connection(false);assert.ok([...f.window.document.querySelectorAll<HTMLButtonElement>('.statistics-periods button')].every(b=>b.disabled));
   }finally{f.window.happyDOM.abort();}
 });
+
+test('KPI mini charts only show their measured series and errors clear loading',()=>{
+  const f=fixture();try{
+    const snapshot=data();snapshot.buckets.unshift({...snapshot.buckets[0],requests:0});
+    f.view.receive(snapshot);
+    const charts=[...f.window.document.querySelectorAll('.statistics-mini')];
+    assert.equal(charts[0].children.length,2);
+    assert.equal((charts[0].firstElementChild as HTMLElement).style.height,'0px');
+    assert.ok(charts.slice(1).every(c=>c.children.length===0));
+    f.view.loading();f.view.error('Сервис недоступен');
+    assert.equal(f.window.document.querySelectorAll('#statistics-root [aria-busy=true]').length,0);
+    assert.match(f.window.document.querySelector('.statistics-status')!.textContent!,/Сервис недоступен/);
+  }finally{f.window.happyDOM.abort();}
+});
