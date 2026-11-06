@@ -52,9 +52,21 @@ class MemoryPolicy(Strict):
             "correction",
             "goal",
             "instruction",
+            "people",
+            "study",
+            "work",
+            "device",
+            "home",
+            "entertainment",
+            "conversation",
+            "temporary",
         ]
     ] = Field(default_factory=list)
     temporary_days: int = Field(default=30, ge=1, le=3650)
+    action_learning: bool = True
+    action_retention_days: int = Field(default=90, ge=1, le=3650)
+    context_chars: int = Field(default=1600, ge=300, le=6000)
+    sensitive_context: bool = False
 
 
 class DialogueExtras(Strict):

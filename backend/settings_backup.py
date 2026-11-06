@@ -54,10 +54,9 @@ class Backup(Strict):
             raise ValueError("Версия или категории резервной копии не поддерживаются.")
         for key, value in self.settings.items():
             self.settings[key] = CATEGORIES[key].model_validate(value).model_dump()
-        if any(
-            m.category not in {"profile", "preference", "habit", "project", "episode", "correction"}
-            for m in self.memories
-        ):
+        from backend.memory.profile import CATEGORY_LABELS
+
+        if any(m.category not in CATEGORY_LABELS for m in self.memories):
             raise ValueError("Неизвестная категория памяти.")
         inspected = self.model_dump(mode="json")
         for place in inspected["places"]:

@@ -271,6 +271,7 @@ class Devices(DeviceCenter):
             values["brightness"] = requested["level"]
         elif action == "color":
             values["color"] = "#" + "".join(f"{v:02X}" for v in requested["rgb"])
+            self.colors.set_preview(identifier, values["color"])
         device.sent.update(values, written_at=last["time"])
         for key in values:
             device.state.pop(key, None)
@@ -1108,7 +1109,9 @@ class Devices(DeviceCenter):
                 self.update_catalogue()
                 result = {
                     "message": "Профиль сохранён. Допуски сброшены; "
-                    "выполни диагностику и ручную проверку.",
+                    "выполни диагностику и ручную проверку."
+                    if changed
+                    else "Профиль совместим с прежним. Подтверждённые функции сохранены.",
                     "result_status": "unverified",
                 }
             elif op == "diagnose_ble":
@@ -1231,8 +1234,10 @@ class Devices(DeviceCenter):
                     "Физический результат пока не подтверждён."
                 )
             elif op == "confirm_probe":
+                self.require_adapter()
                 if (
                     device.kind != "led_strip"
+                    or not self.tools.enabled("led_control")
                     or type(value.get("observed")) is not bool
                     or not self.strip(device)._load().pending_probe
                     or value.get("probe_id") != self.strip(device)._load().pending_probe["id"]

@@ -9,11 +9,12 @@ import {DeviceWriter} from '../src/devices_state.ts';
 import type {DevicesEvent} from '../src/devices.ts';
 
 const html=readFileSync(new URL('../index.html',import.meta.url),'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'').replace(/<link\b[^>]*>/gi,'');
+const editorCode=stripTypeScriptTypes(readFileSync(new URL('../src/color_editor.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/\bexport (?=(?:class|function|const))/g,'');
 const code=stripTypeScriptTypes(readFileSync(new URL('../src/devices.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace('export class DevicesView','class DevicesView')+'\nexports.View=DevicesView;';
 function fixture() {
   const window=new Window({settings:{disableJavaScriptEvaluation:true,disableCSSFileLoading:true,disableJavaScriptFileLoading:true}});window.document.write(html);window.confirm=()=>true;
   const requests:Record<string,unknown>[]=[];
-  const sandbox={exports:{} as Record<string,unknown>,document:window.document,window,crypto,DeviceWriter,setTimeout,clearTimeout,icon:()=>'<svg></svg>'};vm.runInNewContext(code,sandbox);
+  const sandbox={exports:{} as Record<string,unknown>,document:window.document,window,crypto,DeviceWriter,setTimeout,clearTimeout,icon:()=>'<svg></svg>'};vm.runInNewContext('const {ColorEditor,colorDraft}=(()=>{'+editorCode+';return {ColorEditor,colorDraft};})();'+code,sandbox);
   const View=sandbox.exports.View as new(...args:unknown[])=>{connection:(v:boolean)=>void;receive:(v:unknown)=>void};
   const view=new View((v:Record<string,unknown>)=>requests.push(structuredClone(v)));
   const state:DevicesEvent={type:'devices',places:[{id:'general',name:'Общие устройства'},{id:'dorm',name:'Общага'},{id:'home',name:'Дом'}],location:{place_id:'dorm',name:'Общага',mode:'manual',status:'ready'},kinds:[{id:'led_strip',name:'LED-лента',protocol:'ble'},{id:'mac',name:'MacBook',protocol:'local'},{id:'external_display',name:'Внешний дисплей',protocol:'betterdisplay'}],items:[{id:'led-test',revision:1,name:'Свет у стола',kind:'led_strip',protocol:'ble',endpoint:'11111111-1111-4111-8111-111111111111',place_id:'dorm',room:'Спальня',state:{},sent:{},last_contact:null,state_at:null,result_status:null,favorites:[],features:{power_on:true,power_off:true,brightness:true,color:true,colors:['rgb','on','off','brightness'],warm_white:'rgb_approximation',probe:true},connection:'unknown',usable:true,reason:'',busy:false},{id:'mac-local',revision:1,name:'MacBook',kind:'mac',protocol:'local',endpoint:'local-mac',place_id:'general',room:'',state:{brightness:55,volume_percent:30,muted:false,battery:{percent:80,on_power_adapter:true}},sent:{},last_contact:null,state_at:null,result_status:null,favorites:[],features:{volume:true,mute:true,brightness:true,playback:true,battery:true,lock:true},connection:'unknown',usable:true,reason:'',busy:false}]};
@@ -47,7 +48,7 @@ test('absent operation timing is never rendered as undefined milliseconds',async
 test('LED colour and power are direct typed operations without chat or scenarios',async()=>{
   const f=fixture();try {
     f.open('Свет у стола');const panel=f.window.document.querySelector('.device-panel')!;
-    const pink=[...panel.querySelectorAll('button')].find(b=>b.textContent==='Розовый')!;pink.focus();pink.click();const request=f.requests.at(-1)!;
+    const pink=[...panel.querySelectorAll('button')].find(b=>b.textContent==='Розовый')!;pink.focus();pink.click();assert.equal(f.requests.some(r=>r.op==='act'),false);f.button('Применить',panel);const request=f.requests.at(-1)!;
     assert.equal(request.op,'act');assert.equal(request.id,'led-test');assert.equal(request.action,'led');assert.deepEqual(request.parameters,{color:'#FF0020'});
     assert.equal(f.requests.some(r=>'text' in r||r.op==='run'||r.op==='save'),false);
     f.view.receive({...f.state,operation_id:request.request_id as string,result:{result_status:'unverified',message:'Команда отправлена. Физическое состояние неизвестно.'},items:[{...f.state.items[0],sent:{color:'#FF0020'},result_status:'unverified'},f.state.items[1]]});
@@ -93,10 +94,10 @@ test('wizard scans only by explicit click and allows honest manual addition',asy
 test('unknown physical states, unavailable functions and disconnect remain honest',async()=>{
   const f=fixture();try {
     f.view.receive({...f.state,items:[{...f.state.items[0],features:{power_on:false,power_off:false,brightness:false,color:false,colors:[],probe:true},usable:false,reason:'Устройство в другом городе'}]});f.open('Свет у стола');
-    assert.equal(f.window.document.querySelector<HTMLInputElement>('[aria-label="Выбрать цвет ленты"]')!.disabled,true);
+    assert.equal(f.window.document.querySelector<HTMLButtonElement>('.device-color-actions .primary')!.disabled,true);
     assert.equal(f.window.document.querySelector('[aria-label="Яркость ленты"]'),null);
     assert.match(f.window.document.querySelector('.device-panel')!.textContent!,/другом городе/);
-    f.view.connection(false);assert.ok([...f.window.document.querySelectorAll('button')].filter(b=>b.closest('#devices-root')).every(b=>b.disabled));
+    f.view.connection(false);assert.ok([...f.window.document.querySelectorAll('button')].filter(b=>b.closest('#devices-root')&&!b.classList.contains('device-swatch')).every(b=>b.disabled));
   } finally {await f.close();}
 });
 
@@ -235,7 +236,7 @@ test('control diagnostic only sends one chosen frame after explicit consent',asy
   const f=fixture();try{
     f.view.receive({...f.state,items:[{...f.state.items[0],features:{probe:true,colors:[],color:false,power_on:false,power_off:false,brightness:false}}]});
     f.open('Свет у стола');f.button('Проверить управление');assert.equal(f.requests.some(r=>r.op==='probe_led'),false);
-    assert.equal(f.window.document.querySelector<HTMLInputElement>('[aria-label="Выбрать цвет ленты"]')!.disabled,true);
+    assert.equal(f.window.document.querySelector<HTMLButtonElement>('.device-color-actions .primary')!.disabled,true);
     f.button('Тест: Красный');const request=f.requests.at(-1)!;
     assert.equal(request.op,'probe_led');assert.deepEqual(request.parameters,{color:'#FF0000'});assert.equal(request.consent,true);
     f.view.receive({...f.state,operation_id:request.request_id as string,result:{probe_id:'observation',device_id:'led-test',message:'Проверь ленту.'}});
@@ -285,4 +286,23 @@ test('a probe response stays bound to its device when selection changes',async()
     assert.equal([...f.window.document.querySelectorAll('.device-panel button')].some(b=>b.textContent==='Да, вижу результат'),false);
     f.open('Свет у стола');f.button('Да, вижу результат');assert.equal(f.requests.at(-1)!.id,'led-test');assert.equal(f.requests.at(-1)!.probe_id,'old-led-probe');
   } finally {await f.close();}
+});
+
+test('RGB preview drafts survive device switches without control packets and BLE details stay folded',async()=>{
+  const f=fixture();try{
+    f.state.items.push({...f.state.items[0],id:'led-two',name:'Новая лента',endpoint:'22222222-2222-4222-8222-222222222222',preview_color:'#123456',features:{...f.state.items[0].features,color:false,colors:[],power_on:false,power_off:false,brightness:false,color_block_reason:'RGB ещё не подтверждён.'}});f.view.receive(f.state);f.open('Свет у стола');f.button('Розовый');assert.equal(f.requests.some(r=>r.op==='act'||r.op==='probe_led'),false);
+    assert.equal(f.window.document.querySelector<HTMLDetailsElement>('.device-ble-details')!.open,false);
+    f.open('Новая лента');assert.equal(f.window.document.querySelector<HTMLInputElement>('[aria-label="HEX цвета"]')!.value,'#123456');assert.equal(f.window.document.querySelector<HTMLButtonElement>('.device-color-actions .primary')!.disabled,true);assert.match(f.window.document.querySelector('.device-color-reason')!.textContent!,/не подтверждён/);
+    f.open('Свет у стола');assert.equal(f.window.document.querySelector<HTMLInputElement>('[aria-label="HEX цвета"]')!.value,'#FF0020');
+    f.view.receive({...f.state,items:f.state.items.map(d=>d.id==='led-test'?{...d,ble:{driver:'ELK-BLEDDM',compatibility:'gatt_match',pending_probe:{id:'persisted-probe',requested:{action:'color'}}}}:d)});f.button('Да, вижу результат');assert.equal(f.requests.at(-1)!.probe_id,'persisted-probe');assert.equal(f.requests.at(-1)!.id,'led-test');
+  }finally{await f.close();}
+});
+
+test('repeated RGB Apply never queues a replay while the first delivery is uncertain',async()=>{
+  const f=fixture();try{
+    f.open('Свет у стола');f.button('Розовый');f.button('Применить',f.window.document.querySelector('.device-panel')!);const first=f.requests.find(r=>r.op==='act')!;
+    const apply=f.window.document.querySelector<HTMLButtonElement>('.device-color-actions .primary')!;assert.equal(apply.disabled,true);apply.click();assert.equal(f.requests.filter(r=>r.op==='act').length,1);
+    f.view.receive({...f.state,operation_id:first.request_id as string,result:{result_status:'unverified',message:'Исход неизвестен.'}});
+    assert.equal(f.requests.filter(r=>r.op==='act').length,1);assert.equal(f.window.document.querySelector<HTMLButtonElement>('.device-color-actions .primary')!.disabled,false);
+  }finally{await f.close();}
 });

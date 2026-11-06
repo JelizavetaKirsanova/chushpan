@@ -38,7 +38,7 @@ export abstract class ModulePage<T> {
     this.toolbar=el('div','','page-toolbar');this.tabs=el('div','','module-tabs');this.tabs.setAttribute('role','tablist');this.tabs.setAttribute('aria-label',title);
     this.content=el('div','','module-content');this.content.id=view+'-panel';this.content.setAttribute('role','tabpanel');
     this.feedback=el('p','Нет связи с Чушпаном.','module-feedback');this.feedback.setAttribute('role','status');
-    for(const [key,label]of tabs){const button=el('button',label);button.type='button';button.dataset.tab=key;button.setAttribute('role','tab');button.setAttribute('aria-controls',this.content.id);button.id=`${view}-tab-${key}`;button.onclick=()=>{this.tab=key;this.render();};this.tabs.append(button);}
+    for(const [key,label]of tabs){const button=el('button',label);button.type='button';button.dataset.tab=key;button.setAttribute('role','tab');button.setAttribute('aria-controls',this.content.id);button.id=`${view}-tab-${key}`;button.onclick=()=>{this.tab=key;this.render();this.controls();};this.tabs.append(button);}
     this.tabs.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const buttons=[...this.tabs.querySelectorAll('button')];const current=buttons.indexOf(document.activeElement as HTMLButtonElement);const next=event.key==='Home'?0:event.key==='End'?buttons.length-1:(current+(event.key==='ArrowRight'?1:-1)+buttons.length)%buttons.length;buttons[next]?.focus();buttons[next]?.click();});
     root.append(heading,this.toolbar,this.tabs,this.feedback,this.content);
     this.begin();

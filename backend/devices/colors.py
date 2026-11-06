@@ -70,7 +70,8 @@ class ColorLibrary:
                 "CREATE TABLE IF NOT EXISTS user_colors (id TEXT PRIMARY KEY, data TEXT NOT NULL)"
             )
             self.db.execute(
-                "CREATE TABLE IF NOT EXISTS device_color_preview (device_id TEXT PRIMARY KEY, hex TEXT NOT NULL)"
+                "CREATE TABLE IF NOT EXISTS device_color_preview "
+                "(device_id TEXT PRIMARY KEY, hex TEXT NOT NULL)"
             )
 
     def list(self):
@@ -108,7 +109,8 @@ class ColorLibrary:
                 updated_at=now,
             )
             self.db.execute(
-                "INSERT INTO user_colors VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+                "INSERT INTO user_colors VALUES (?,?) "
+                "ON CONFLICT(id) DO UPDATE SET data=excluded.data",
                 (saved.id, saved.model_dump_json(exclude={"hex"})),
             )
             return saved
@@ -134,7 +136,8 @@ class ColorLibrary:
         canonical = rgb_hex(hex_rgb(value))
         with self.memory.memory_transaction():
             self.db.execute(
-                "INSERT INTO device_color_preview VALUES (?,?) ON CONFLICT(device_id) DO UPDATE SET hex=excluded.hex",
+                "INSERT INTO device_color_preview VALUES (?,?) "
+                "ON CONFLICT(device_id) DO UPDATE SET hex=excluded.hex",
                 (device_id, canonical),
             )
         return canonical

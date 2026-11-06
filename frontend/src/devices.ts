@@ -1,16 +1,18 @@
 import type {HudEvent} from './types';
 import {icon} from './dashboard';
 import {DeviceWriter} from './devices_state';
+import {ColorEditor,colorDraft} from './color_editor';
+import type {ColorDraft,UserColor} from './color_editor';
 
 type Values=Record<string,unknown>;
 interface BleDiagnostic {report_id?:string;at?:string;connection?:string;compatibility?:string;errors?:{stage:string;type:string;uuid?:string}[];services?:{uuid:string;characteristics:{uuid:string;properties:string[];write_modes:string[];read?:{byte_count?:number;error?:string}}[]}[];notifications?:{uuid:string;byte_count:number}[];}
-interface BleStatus {driver:string;driver_id?:string;compatibility:string;confirmed_functions?:string[];diagnostic?:BleDiagnostic;last_command?:{status:string;physical_confirmed?:boolean}|null;}
-export interface DeviceRecord {id:string;revision:number;name:string;kind:'led_strip'|'mac'|'external_display'|'airplay'|'audio_output'|'wled';protocol:string;endpoint:string;place_id:string;room:string;state:Values;sent:Values;last_contact:string|null;state_at:string|null;result_status:string|null;favorites:string[];favorite?:boolean;aliases?:string[];auto_connect?:boolean;features:Record<string,boolean|string|string[]>;connection:string;usable:boolean;reason:string;busy:boolean;ble?:BleStatus;}
+interface BleStatus {driver:string;driver_id?:string;compatibility:string;confirmed_functions?:string[];diagnostic?:BleDiagnostic;last_command?:{status:string;physical_confirmed?:boolean}|null;pending_probe?:{id:string;requested:{action:string}}|null;}
+export interface DeviceRecord {id:string;revision:number;name:string;kind:'led_strip'|'mac'|'external_display'|'airplay'|'audio_output'|'wled';protocol:string;endpoint:string;place_id:string;room:string;state:Values;sent:Values;last_contact:string|null;state_at:string|null;result_status:string|null;favorites:string[];favorite?:boolean;aliases?:string[];auto_connect?:boolean;features:Record<string,boolean|string|string[]>;connection:string;usable:boolean;reason:string;busy:boolean;ble?:BleStatus;preview_color?:string|null;}
 interface Collection {id:string;revision:number;name:string;place_id:string;device_ids?:string[];}
 interface Output {uid:string;name:string;active:boolean;transport:string;}
 interface Candidate {token:string;name:string;kind?:string;protocol?:string;rssi?:number|null;connection?:string;compatibility?:string;compatibility_reason?:string;}
 interface Discovery {scan_id:string;started_at:string;finished_at:string;show_all_ble:boolean;scanner_count?:number;candidate_count:number;ble_candidate_count?:number;excluded_count?:number;runtime?:{version:string;python:string;bleak:string;scanner_backend:string;executable:string;bluetooth_authorization:string;build?:{source_commit?:string;built_at?:string;contains_ba705ed?:boolean}};}
-export interface DevicesEvent {groups?:Collection[];rooms?:Collection[];profiles?:{id:string;revision:number;name:string;cities:string[]}[];outputs?:Output[];history?:{id:string;items:{at:string;action:string;result_status:string;elapsed_ms:number}[]};metrics?:{total_ms:number;action:string};type:'devices';items:DeviceRecord[];places:{id:string;name:string}[];location:{place_id:string|null;name:string|null;status:string;mode:string};kinds:{id:string;name:string;protocol:string}[];operation_id?:string;running?:boolean;saved?:string;message?:string;error?:string;candidates?:Candidate[];discovery?:Discovery;checked?:{message:string;compatibility?:string;connection?:string};result?:{message?:string;error?:string;result_status?:string;probe_id?:string;device_id?:string;status?:string}}
+export interface DevicesEvent {user_colors?:UserColor[];groups?:Collection[];rooms?:Collection[];profiles?:{id:string;revision:number;name:string;cities:string[]}[];outputs?:Output[];history?:{id:string;items:{at:string;action:string;result_status:string;elapsed_ms:number}[]};metrics?:{total_ms:number;action:string};type:'devices';items:DeviceRecord[];places:{id:string;name:string}[];location:{place_id:string|null;name:string|null;status:string;mode:string};kinds:{id:string;name:string;protocol:string}[];operation_id?:string;running?:boolean;saved?:string;message?:string;error?:string;candidates?:Candidate[];discovery?:Discovery;checked?:{message:string;compatibility?:string;connection?:string};result?:{message?:string;error?:string;result_status?:string;probe_id?:string;device_id?:string;status?:string;saved_color_id?:string}}
 const el=<T extends keyof HTMLElementTagNameMap>(tag:T,text='',cls=''):HTMLElementTagNameMap[T]=>{const n=document.createElement(tag);n.textContent=text;n.className=cls;return n;};
 const protocolNames:Record<string,string>={ble:'Bluetooth (BLE)',local:'Этот Mac',betterdisplay:'BetterDisplay',bonjour:'AirPlay · Bonjour',coreaudio:'CoreAudio',http:'Wi-Fi · WLED'};
 const deviceIcon=(d:DeviceRecord)=>d.kind==='led_strip'||d.kind==='wled'?'led':d.kind==='airplay'?'airplay':d.kind==='audio_output'?'volume':d.kind==='mac'?'cpu':'monitor';
@@ -38,6 +40,9 @@ export class DevicesView {
   private checked='';
   private wizardBusy=false;
   private pendingProbes=new Map<string,string>();
+  private colorDrafts=new Map<string,ColorDraft>();
+  private colorEditor:ColorEditor|null=null;
+  private previewTimers=new Map<string,ReturnType<typeof setTimeout>>();
   private confirmation='';
   private tab:'control'|'settings'|'history'='control';
   private auxiliary:HTMLDialogElement|null=null;
@@ -53,7 +58,7 @@ export class DevicesView {
   private narrow=window.matchMedia('(max-width: 1190px)');
   private previousFocus:HTMLElement|null=null;
   constructor(private send:(value:object)=>void,private chat?:(text:string)=>void,private wake?:()=>void,private navigate?:(view:string)=>void) {
-    this.writer=new DeviceWriter(value=>{if(this.online)this.send(value);},()=>this.renderList());
+    this.writer=new DeviceWriter(value=>{if(this.online)this.send(value);},()=>{this.renderList();this.updateColorEditor();});
     const top=el('div','','devices-topbar');
     const command=el('form','','device-command-bar');const search=el('input');search.type='search';search.placeholder='Найди устройство или напиши команду…';search.setAttribute('aria-label','Поиск устройств');search.oninput=()=>{this.search=search.value;this.renderList();};
     const searchIcon=el('span');searchIcon.innerHTML=icon('search');const mic=this.button('',()=>this.wake?.(),'device-mic');mic.innerHTML=icon('mic');mic.setAttribute('aria-label','Голосовая команда');
@@ -77,10 +82,12 @@ export class DevicesView {
   private label(title:string,input:HTMLElement):HTMLLabelElement {const n=el('label','','device-field');n.append(el('span',title),input);return n;}
   private select(items:[string,string][],value:string):HTMLSelectElement {const s=el('select');for(const [id,name]of items){const o=el('option',name);o.value=id;s.append(o);}s.value=value;return s;}
   private request(value:object):string {const request_id=crypto.randomUUID();if(this.online)this.send({...value,request_id});return request_id;}
-  connection(online:boolean):void {this.online=online;if(!online){this.writer.disconnect();this.autoChecked.clear();this.autoRequest='';this.scanRequest='';this.checkRequest='';this.wizardBusy=false;this.feedback.textContent='Нет соединения. Изменения не отправляются; последнее состояние может устареть.';}this.root.querySelectorAll<HTMLInputElement|HTMLSelectElement|HTMLButtonElement>('input,select,button').forEach(n=>n.disabled=!online);if(online)this.request({op:'refresh'});this.renderList();this.renderPanel();this.renderWizard();}
+  connection(online:boolean):void {this.online=online;if(!online){for(const timer of this.previewTimers.values())clearTimeout(timer);this.previewTimers.clear();this.writer.disconnect();this.autoChecked.clear();this.autoRequest='';this.scanRequest='';this.checkRequest='';this.wizardBusy=false;this.feedback.textContent='Нет соединения. Изменения не отправляются; последнее состояние может устареть.';}this.root.querySelectorAll<HTMLInputElement|HTMLSelectElement|HTMLButtonElement>('input,select,button').forEach(n=>n.disabled=!online);if(online)this.request({op:'refresh'});this.renderList();this.renderPanel();this.renderWizard();}
   receive(event:HudEvent):void {
     if(event.type!=='devices')return;
     this.data=event;
+    for(const d of event.items){if(d.ble?.pending_probe)this.pendingProbes.set(d.id,d.ble.pending_probe.id);else if(d.ble)this.pendingProbes.delete(d.id);}
+    if(event.result?.saved_color_id){const saved=event.user_colors?.find(c=>c.id===event.result?.saved_color_id);if(saved){for(const draft of this.colorDrafts.values()){if(draft.editingId===saved.id)draft.editingRevision=saved.revision;}}}
     if(event.operation_id===this.autoRequest&&!event.running&&(event.result||event.error))this.autoRequest='';
     if(event.operation_id&&!event.running&&(event.result||event.error))this.writer.complete(event.operation_id,!event.error&&event.result?.result_status!=='failed');
     if(event.error||event.message||event.result){this.feedback.textContent=event.error??event.message??event.result?.error??event.result?.message??outcomes[event.result?.result_status??'']??'';this.feedback.dataset.error=String(!!event.error||!!event.result?.error);}
@@ -103,6 +110,7 @@ export class DevicesView {
     this.renderTopOutput();if(this.auxiliaryKind==='audio')this.renderAudio();
     this.renderList();const active=document.activeElement;const editing=this.panel.contains(active)&&['INPUT','SELECT','TEXTAREA'].includes(active?.tagName??'');
     if(!editing)this.renderPanel();else {const current=this.data.items.find(d=>d.id===this.selected);if(current){const status=this.panel.querySelector('.device-connection');const state=this.panel.querySelector('.device-last-state');if(status)status.textContent=this.statusText(current);if(state)state.textContent=this.stateText(current);}}
+    this.updateColorEditor();
     this.autoReconnect();
   }
   private autoReconnect():void {
@@ -166,7 +174,7 @@ export class DevicesView {
     box.append(this.label(label,input),output);return box;
   }
   private renderPanel():void {
-    const d=this.data?.items.find(d=>d.id===this.selected);if(!d)this.selected='';this.panel.replaceChildren();this.panel.hidden=!d;this.placePanel();if(!d)return;
+    const d=this.data?.items.find(d=>d.id===this.selected);if(!d)this.selected='';this.panel.replaceChildren();this.colorEditor=null;this.panel.hidden=!d;this.placePanel();if(!d)return;
     const heading=el('div','','device-panel-heading');heading.append(el('h2',d.name),this.button('×',()=>{this.selected='';this.renderList();this.renderPanel();},'device-close'));const hero=el('div','','device-hero');hero.dataset.kind=d.kind;const symbol=el('span','','device-hero-symbol');symbol.innerHTML=icon(deviceIcon(d));hero.append(symbol,heading,el('p',[this.placeName(d.place_id),d.room].filter(Boolean).join(' · '),'device-hero-location'));this.panel.append(hero,el('p',this.statusText(d)+' · '+(protocolNames[d.protocol]??d.protocol),'device-connection'),el('p',this.stateText(d),'device-last-state'));
     const tabs=el('div','','device-panel-tabs');for(const [key,label]of [['control','Управление'],['settings','Настройки'],['history','История']] as const){const b=this.button(label,()=>{this.tab=key;if(key==='history')this.request({op:'history',id:d.id});this.renderPanel();});b.setAttribute('aria-pressed',String(this.tab===key));tabs.append(b);}this.panel.append(tabs);
     if(this.tab==='settings'){this.metadata(d);const details=this.panel.querySelector<HTMLDetailsElement>('.device-advanced');if(details)details.open=true;return;}
@@ -196,32 +204,42 @@ export class DevicesView {
     if(typeof d.state.power==='boolean'){const row=el('div','','device-power-row');row.append(el('strong','Питание'),this.powerSwitch(d));this.panel.append(row);}
     const power=el('div','','device-quick');for(const [feature,value,label]of [['power_on',true,'Включить'],['power_off',false,'Выключить']] as const){const b=this.button(label,()=>this.act(d,'led',{power:value},true));b.disabled=!this.canAct(d)||d.features[feature]!==true;power.append(b);}this.panel.append(power);
     if(d.features.brightness)this.panel.append(this.slider(d,'Яркость ленты','brightness','led',d.state.brightness,d.sent.brightness));
-    const picker=el('input');picker.type='color';picker.value=String(d.sent.color??d.state.color??'#FFFFFF');picker.setAttribute('aria-label','Выбрать цвет ленты');picker.disabled=!this.online||!d.usable||d.features.color!==true;picker.oninput=()=>this.act(d,'led',{color:picker.value.toUpperCase()});picker.onchange=()=>this.act(d,'led',{color:picker.value.toUpperCase()},true);
-    const colorRow=el('div','','device-color-picker');const favorite=this.button('В любимые',()=>this.request({op:'favorites',id:d.id,revision:d.revision,colors:[...new Set([...d.favorites,picker.value.toUpperCase()])]}));colorRow.append(this.label('Выбранный RGB-цвет',picker),favorite);this.panel.append(colorRow);
-    const swatches=el('div','','device-swatches');for(const [name,color]of colors){const b=this.button(name,()=>this.act(d,'led',{color},true),'device-swatch');b.style.setProperty('--color',color);b.disabled=!this.canAct(d)||!swatchAllowed(d,color);swatches.append(b);}this.panel.append(el('h3','Пресеты цвета · RGB'),swatches);if(d.kind==='led_strip')this.panel.append(el('p','Тёплый белый — RGB-имитация. Отдельный белый канал не поддерживается.','device-hint'));
+    let draft=this.colorDrafts.get(d.id);if(!draft){draft=colorDraft(d.preview_color??String(d.sent.color??d.state.color??'#FFFFFF'));this.colorDrafts.set(d.id,draft);}
+    this.colorEditor=new ColorEditor({device:{...d,busy:d.busy||this.writer.busy(d.id)},online:this.online,draft,colors:this.data?.user_colors??[],presets:colors,
+      preview:color=>this.previewColor(d.id,color),apply:color=>{if(!this.canAct(d))return;this.flushPreview(d.id,color);this.act(d,'led',{color},true);},
+      save:(value,existing)=>this.request({op:'color_save',value,...(existing?{color_id:existing.id,revision:existing.revision}:{})}),
+      remove:color=>this.request({op:'color_delete',color_id:color.id,revision:color.revision,confirmed:true}),
+      favorite:color=>this.request({op:'favorites',id:d.id,revision:d.revision,colors:[...new Set([...d.favorites,color])]}),
+      verify:()=>this.panel.querySelector<HTMLDetailsElement>('.device-control-test')?.setAttribute('open','')});
+    this.panel.append(this.colorEditor.root);if(d.kind==='led_strip')this.panel.append(el('p','Тёплый белый — RGB-имитация. Отдельный белый канал не поддерживается.','device-hint'));
     if(d.sent.color){const b=this.button('Повторить последний выбранный цвет',()=>this.act(d,'led',{color:d.sent.color},true));b.disabled=!this.canAct(d)||!swatchAllowed(d,String(d.sent.color));this.panel.append(b);}
-    if(d.favorites.length){const favorites=el('div','','device-favorites');favorites.append(el('h3','Любимые цвета'));for(const color of d.favorites){const b=this.button(color,()=>this.act(d,'led',{color},true),'device-swatch');b.style.setProperty('--color',color);b.disabled=!this.canAct(d)||!swatchAllowed(d,color);const remove=this.button('×',()=>this.request({op:'favorites',id:d.id,revision:d.revision,colors:d.favorites.filter(c=>c!==color)}));remove.setAttribute('aria-label','Удалить любимый цвет '+color);favorites.append(b,remove);}this.panel.append(favorites);}
+    if(d.favorites.length){const favorites=el('div','','device-favorites');for(const color of d.favorites){const remove=this.button('Убрать '+color,()=>this.request({op:'favorites',id:d.id,revision:d.revision,colors:d.favorites.filter(c=>c!==color)}));remove.setAttribute('aria-label','Удалить любимый цвет '+color);favorites.append(remove);}this.panel.append(favorites);}
     if(d.kind!=='led_strip')return;
-    const test=el('details','','device-advanced');const toggle=this.button('Проверить управление',()=>{test.open=!test.open;});test.append(el('summary','Проверка функций контроллера'),el('p','Непроверенные функции заблокированы. Имя и GATT UUID не доказывают совместимость протокола. Каждый тест отправляет ровно одну выбранную команду; затем подтверди наблюдение. Для полного RGB проверь красный, зелёный и синий. Тёплый белый доступен как RGB после проверки цвета.'));
+    const test=el('details','','device-advanced device-control-test');const toggle=this.button('Проверить управление',()=>{test.open=!test.open;});test.append(el('summary','Проверка функций контроллера'),el('p','Непроверенные функции заблокированы. Имя и GATT UUID не доказывают совместимость протокола. Каждый тест отправляет ровно одну выбранную команду; затем подтверди наблюдение. После теста одного цвета подтверди, что лента показала ожидаемый цвет: это разрешит RGB этого драйвера. Питание и яркость проверяются отдельно.'));
     for(const [label,parameters]of [['Включение',{power:true}],['Выключение',{power:false}],['Яркость 50%',{brightness:50}],...colors.slice(4,7).map(([name,color])=>[name,{color}])] as [string,Values][]){const b=this.button('Тест: '+label,()=>{if(window.confirm(`Отправить тестовую команду «${label}» этой ленте?`))this.request({op:'probe_led',id:d.id,parameters,consent:true});});b.disabled=!this.canAct(d)||!d.features.probe;test.append(b);}
     if(this.pendingProbes.has(d.id)){const probe_id=this.pendingProbes.get(d.id)!;test.open=true;test.append(el('p','Функция сработала так, как указано?'));for(const [value,label]of [[true,'Да, вижу результат'],[false,'Нет, не сработало']] as const)test.append(this.button(label,()=>{this.pendingProbes.delete(d.id);this.request({op:'confirm_probe',id:d.id,probe_id,observed:value});}));}
     this.panel.append(toggle,test);
   }
   private blePanel(d:DeviceRecord):void {
+    const advanced=el('details','','device-advanced device-ble-details');advanced.append(el('summary','Расширенная BLE-диагностика'));
     const ble=d.ble;const compatibility:Record<string,string>={unsupported:'Протокол неизвестен',unverified:'GATT ещё не проверен',gatt_match:'GATT совпал; функции требуют наблюдения',gatt_mismatch:'GATT не соответствует драйверу'};
-    this.panel.append(el('p','Драйвер: '+(ble?.driver??'Не выбран'),'device-hint'),el('p','Протокол: '+(compatibility[ble?.compatibility??'unverified']??'Не подтверждён'),'device-hint'));
-    if(ble?.confirmed_functions?.length)this.panel.append(el('p','Проверено наблюдением: '+ble.confirmed_functions.join(', '),'device-hint'));
-    const last=ble?.last_command;this.panel.append(el('p','Последняя команда: '+(last?.status==='unknown'?'исход записи неизвестен; проверь ленту':d.result_status==='failed'?'не подтверждена':last?.status==='written'?(last.physical_confirmed?'подтверждена наблюдением':'байты отправлены; физическое выполнение не подтверждено'):'команд в журнале пока нет'),'device-hint'));
-    const diagnose=this.button('Диагностика',()=>this.request({op:'diagnose_ble',id:d.id}));diagnose.disabled=!this.canAct(d);this.panel.append(diagnose);
+    advanced.append(el('p','Драйвер: '+(ble?.driver??'Не выбран'),'device-hint'),el('p','Протокол: '+(compatibility[ble?.compatibility??'unverified']??'Не подтверждён'),'device-hint'));
+    if(ble?.confirmed_functions?.length)advanced.append(el('p','Проверено наблюдением: '+ble.confirmed_functions.join(', '),'device-hint'));
+    const last=ble?.last_command;advanced.append(el('p','Последняя команда: '+(last?.status==='unknown'?'исход записи неизвестен; проверь ленту':d.result_status==='failed'?'не подтверждена':last?.status==='written'?(last.physical_confirmed?'подтверждена наблюдением':'байты отправлены; физическое выполнение не подтверждено'):'команд в журнале пока нет'),'device-hint'));
+    const diagnose=this.button('Диагностика',()=>this.request({op:'diagnose_ble',id:d.id}));diagnose.disabled=!this.canAct(d);advanced.append(diagnose);
     const report=ble?.diagnostic;
     if(report?.report_id){const details=el('details','','device-advanced');details.append(el('summary','Последний GATT-отчёт'),el('p','BLE: '+(report.connection==='disconnected'?'соединение закрыто':'закрытие не подтверждено')+'. Управляющие команды не отправлялись. Значения чтений и уведомлений скрыты.'));
       for(const service of report.services??[]){details.append(el('p','Сервис '+service.uuid));for(const char of service.characteristics){details.append(el('code',char.uuid),el('p',char.properties.join(', ')+' · запись: '+(char.write_modes.join(', ')||'нет')+(char.read?' · чтение: '+(char.read.error??`${char.read.byte_count} байт`):'')));}}
       for(const error of report.errors??[])details.append(el('p',`${error.stage}: ${error.type}`,'device-warning'));
-      details.append(el('p',`Уведомлений: ${report.notifications?.length??0}. Уведомление не подтверждает выполнение команды.`),this.button('Скачать GATT-отчёт',()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:'application/json'}));const a=el('a');a.href=url;a.download='ble-diagnostic-'+report.report_id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}));this.panel.append(details);}
-    const profiles=el('details','','device-advanced');profiles.append(el('summary','BLE-профиль'),el('p','Смена профиля сбрасывает подтверждённые функции. Импорт не подтверждает совместимость этой ленты. После выбора выполни диагностику и проверь одну функцию.'));
-    const driver=this.select([['auto','Авто · кандидат по модели'],['elk-bledob-legacy','ELK-BLEDOB · существующий'],['elk-bleddm-candidate','ELK-BLEDDM · кандидат']],ble?.driver_id??'auto');driver.disabled=!this.canAct(d);const select=this.button('Выбрать профиль',()=>{if(window.confirm('Сменить профиль этой ленты и сбросить подтверждения?'))this.request({op:'ble_profile',id:d.id,driver:driver.value,consent:true});});select.disabled=!this.canAct(d);
-    const file=el('input');file.type='file';file.accept='.json,application/json';file.setAttribute('aria-label','Импорт BLE-профиля');file.disabled=!this.canAct(d);file.onchange=async()=>{const selected=file.files?.[0];if(!selected)return;try{if(selected.size>32768)throw new Error('Профиль больше 32 КБ');const profile=JSON.parse(await selected.text());if(window.confirm('Импортировать профиль и сбросить подтверждения этой ленты?'))this.request({op:'ble_profile',id:d.id,profile,consent:true});}catch{this.feedback.textContent='Не удалось прочитать JSON-профиль размером до 32 КБ.';this.feedback.dataset.error='true';}};profiles.append(driver,select,this.label('Импорт подтверждённого профиля JSON',file));this.panel.append(profiles);
+      details.append(el('p',`Уведомлений: ${report.notifications?.length??0}. Уведомление не подтверждает выполнение команды.`),this.button('Скачать GATT-отчёт',()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:'application/json'}));const a=el('a');a.href=url;a.download='ble-diagnostic-'+report.report_id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}));advanced.append(details);}
+    const profiles=el('details','','device-advanced');profiles.append(el('summary','BLE-профиль'),el('p','Несовместимая смена профиля сбрасывает подтверждённые функции. Импорт не подтверждает совместимость этой ленты. После выбора выполни диагностику и проверь одну функцию.'));
+    const driver=this.select([['auto','Авто · кандидат по модели'],['elk-bledob-legacy','ELK-BLEDOB · существующий'],['elk-bleddm-candidate','ELK-BLEDDM · кандидат']],ble?.driver_id??'auto');driver.disabled=!this.canAct(d);const select=this.button('Выбрать профиль',()=>{if(window.confirm('Сменить профиль этой ленты? Для несовместимого драйвера подтверждения будут сброшены.'))this.request({op:'ble_profile',id:d.id,driver:driver.value,consent:true});});select.disabled=!this.canAct(d);
+    const file=el('input');file.type='file';file.accept='.json,application/json';file.setAttribute('aria-label','Импорт BLE-профиля');file.disabled=!this.canAct(d);file.onchange=async()=>{const selected=file.files?.[0];if(!selected)return;try{if(selected.size>32768)throw new Error('Профиль больше 32 КБ');const profile=JSON.parse(await selected.text());if(window.confirm('Импортировать профиль и сбросить подтверждения этой ленты?'))this.request({op:'ble_profile',id:d.id,profile,consent:true});}catch{this.feedback.textContent='Не удалось прочитать JSON-профиль размером до 32 КБ.';this.feedback.dataset.error='true';}};profiles.append(driver,select,this.label('Импорт подтверждённого профиля JSON',file));advanced.append(profiles);
+    this.panel.append(advanced);
   }
+  private updateColorEditor():void {const d=this.data?.items.find(d=>d.id===this.selected);if(d)this.colorEditor?.updateDevice({...d,busy:d.busy||this.writer.busy(d.id)},this.online,this.data?.user_colors??[]);}
+  private previewColor(id:string,color:string):void {const timer=this.previewTimers.get(id);if(timer)clearTimeout(timer);if(this.online)this.previewTimers.set(id,setTimeout(()=>{this.previewTimers.delete(id);this.request({op:'color_preview',id,color});},180));}
+  private flushPreview(id:string,color:string):void {const timer=this.previewTimers.get(id);if(timer)clearTimeout(timer);this.previewTimers.delete(id);this.request({op:'color_preview',id,color});}
   private metadata(d:DeviceRecord):void {
     const detail=el('details','','device-advanced');detail.append(el('summary','Настройки устройства'));
     const form=el('form');const name=el('input');name.value=d.name;name.required=true;name.maxLength=80;

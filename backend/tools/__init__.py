@@ -144,6 +144,8 @@ def build_registry(
             tool.parameters["seconds"]["minimum"] = -86400
     profile = ProfileMemory(store) if "memory" in enabled and store is not None else None
     if profile:
+        profile.timezone = s.location.tz_name
+    if profile:
         tools.append(profile.tool())
     if store is not None:
         from backend.personality import personality_tool

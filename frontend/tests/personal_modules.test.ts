@@ -45,6 +45,17 @@ test('cancelled and invalid custom periods never replace the confirmed analytics
   }finally{f.window.happyDOM.abort();}
 });
 
+test('switching tabs after disconnect keeps newly rendered settings fields disabled',()=>{
+  const f=fixture();try{
+    const view=f.views[3],root=f.window.document.getElementById('module-analytics')!;
+    view.connection(true);view.receive({type:'analytics',busy:false,data:analytics()});view.connection(false);
+    findButton(root,'Сбор данных').click();
+    const inputs=[...root.querySelectorAll<HTMLInputElement>('input,textarea,select')];
+    assert.ok(inputs.length>0);assert.ok(inputs.every(i=>i.disabled));
+    assert.equal(findButton(root,'Сохранить настройки').disabled,true);
+  }finally{f.window.happyDOM.abort();}
+});
+
 test('module errors distinguish failed initial load and retry, and late responses cannot replace fresh state',()=>{
   const f=fixture();try{
     const view=f.views[3],root=f.window.document.getElementById('module-analytics')!;

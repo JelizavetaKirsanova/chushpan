@@ -276,7 +276,7 @@ def risk_for(name: str, arguments: dict) -> Risk:
         return (
             Risk.READ
             if arguments.get("action")
-            in {"list", "recall", "last_saved", "explain", "character_list", "clarify"}
+            in {"list", "recall", "last_saved", "explain", "character_list", "clarify", "private"}
             else Risk.DANGEROUS
         )
     if (

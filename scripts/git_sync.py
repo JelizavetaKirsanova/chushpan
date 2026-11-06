@@ -130,6 +130,29 @@ class Sync:
             )
         )
 
+    def guard_unrelated(self, paths: list[str] | None) -> None:
+        """Honor an explicit request to publish only after concurrent work settles."""
+        if not paths:
+            raise Blocked("Clean-unrelated check requires explicit --path selections")
+        changed = self.git("diff", "HEAD", "--name-only", "-z") + self.git(
+            "ls-files", "--others", "--exclude-standard", "-z"
+        )
+        unrelated = sorted(
+            {
+                os.fsdecode(name)
+                for name in changed.split(b"\0")
+                if name
+                and not any(
+                    os.fsdecode(name) == p or os.fsdecode(name).startswith(p.rstrip("/") + "/")
+                    for p in paths
+                )
+            }
+        )
+        if unrelated:
+            raise Blocked(
+                "Uncommitted changes outside the selected task: " + ", ".join(unrelated[:8])
+            )
+
     def guard_paths(self, paths: list[str]) -> None:
         denied = [p for p in paths if private_path(p)]
         if denied:
@@ -460,6 +483,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("-m", "--message")
     parser.add_argument(
+        "--require-clean-unrelated",
+        action="store_true",
+        help="Refuse commit and push while paths outside this task have uncommitted changes",
+    )
+    parser.add_argument(
         "--path",
         action="append",
         dest="paths",
@@ -521,6 +549,8 @@ def main(argv: list[str] | None = None) -> int:
                 sync.backup()
                 result = sync.push()
             else:
+                if args.require_clean_unrelated:
+                    sync.guard_unrelated(args.paths)
                 if args.command == "complete":
                     (sync.state / "active-turn").unlink(missing_ok=True)
                 result = sync.sync(

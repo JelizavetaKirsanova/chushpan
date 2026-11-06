@@ -146,9 +146,9 @@ def test_unconfirmed_modes_never_connect(rig, led_request):
 
 def test_persistence_human_verification_and_firmware_scope(rig):
     async def go():
-        for rgb in ([0, 255, 0], [0, 0, 255]):
+        for index, rgb in enumerate(([0, 255, 0], [0, 0, 255])):
             result = await rig.strip.execute(action="color", rgb=rgb, experiment=True)
-            assert "rgb" not in rig.strip._load().confirmed
+            assert ("rgb" in rig.strip._load().confirmed) is bool(index)
             await rig.strip.confirm_probe(result["probe_id"], True)
         restarted = LEDStrip(rig.settings)
         restarted.cfg = rig.strip.cfg

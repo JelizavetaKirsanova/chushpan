@@ -74,6 +74,9 @@ class MemoryStore:
         from backend.memory.library import migrate
 
         migrate(self)
+        from backend.memory.intelligence import migrate as migrate_intelligence
+
+        migrate_intelligence(self)
         from backend.performance import PerformanceHistory
 
         self.performance = PerformanceHistory(self)
@@ -288,6 +291,11 @@ class MemoryStore:
         from backend.latency import current
 
         profile = current.get()
+        disabled = self.db.execute(
+            "SELECT memory_disabled FROM conversations WHERE id=?", (conversation_id,)
+        ).fetchone()
+        if disabled and disabled[0]:
+            return
         with self.memory_transaction():
             self.db.execute(
                 "INSERT INTO messages "
@@ -316,7 +324,7 @@ class MemoryStore:
         floor = self.preference("memory", "context_floor") or 0
         rows = self.db.execute(
             "SELECT role, content, tool_calls, tool_name FROM messages "
-            "WHERE conversation_id = ? AND id > ? ORDER BY id DESC LIMIT ?",
+            "WHERE conversation_id = ? AND id > ? AND memory_blocked=0 ORDER BY id DESC LIMIT ?",
             (conversation_id, floor, limit),
         ).fetchall()
         messages: list[dict[str, Any]] = []
@@ -346,7 +354,7 @@ class MemoryStore:
         return [
             dict(row)
             for row in self.db.execute(
-                "SELECT c.id, c.started_at, c.title, c.pinned, c.deleted_at, "
+                "SELECT c.id, c.started_at, c.title, c.pinned, c.deleted_at, c.memory_disabled, "
                 "COALESCE((SELECT substr(x.content,1,100) FROM messages x "
                 "WHERE x.conversation_id=c.id "
                 "AND x.role='user' ORDER BY x.id LIMIT 1),'') AS preview, "
@@ -411,6 +419,9 @@ class MemoryStore:
             if row and expected_revision is not None and row["revision"] != expected_revision:
                 return False
             if row:
+                from backend.memory.intelligence import forget_derivatives
+
+                forget_derivatives(self, row)
                 self._suppress(row["content"], row["semantic_key"])
             cur = self.db.execute(
                 "DELETE FROM facts WHERE id=? AND revision=?",
@@ -418,6 +429,10 @@ class MemoryStore:
             )
             if row:
                 self.invalidate_memory_context()
+            self.db.execute(
+                "DELETE FROM memory_entities WHERE id NOT IN "
+                "(SELECT entity_id FROM memory_entity_links)"
+            )
             return cur.rowcount > 0
 
     def replace_fact(self, fact_id: int, content: str) -> tuple[int, bool]:
@@ -431,6 +446,9 @@ class MemoryStore:
                 raise ValueError("no memory with id")
             old = self.db.execute("SELECT * FROM facts WHERE id=?", (fact_id,)).fetchone()
             self._suppress(old["content"])
+            from backend.memory.intelligence import forget_derivatives
+
+            forget_derivatives(self, old)
             self.db.execute("DELETE FROM facts WHERE id=?", (fact_id,))
             self.invalidate_memory_context()
             for row in self.db.execute(
@@ -463,6 +481,9 @@ class MemoryStore:
         self._require_memory()
         with self.db:
             for row in self.db.execute("SELECT * FROM facts").fetchall():
+                from backend.memory.intelligence import forget_derivatives
+
+                forget_derivatives(self, row)
                 self._suppress(row["content"], row["semantic_key"])
             cur = self.db.execute("DELETE FROM facts")
             self.invalidate_memory_context()
@@ -507,11 +528,22 @@ class MemoryStore:
             "personality",
             "goal",
             "instruction",
+            "people",
+            "study",
+            "work",
+            "device",
+            "home",
+            "entertainment",
+            "conversation",
+            "temporary",
         }:
             raise ValueError("Неизвестная категория памяти.")
         content = " ".join(content.split())
         if not content or len(content) > 300 or contains_secret(content):
             raise ValueError("Пустая, слишком длинная запись или секрет: память не изменена.")
+        from backend.memory.profile import _SENSITIVE
+
+        sensitive = sensitive or bool(_SENSITIVE.search(content))
         if not 0 <= confidence <= 1 or (sensitive and automatic):
             raise ValueError("Недопустимая уверенность или автоматическая чувствительная запись.")
         with self.memory_transaction():
@@ -548,12 +580,19 @@ class MemoryStore:
                     "WHERE id=?",
                     (content, category, source, _now(), confidence, int(sensitive), old["id"]),
                 )
+                self.db.execute(
+                    "UPDATE facts SET confirmed=1,confirmed_at=? WHERE id=?", (_now(), old["id"])
+                )
                 return old["id"], False
             duplicate = next(
                 (
                     r
                     for r in self.db.execute(
-                        "SELECT id, content FROM facts WHERE project_id IS ?", (project_id,)
+                        (
+                            "SELECT id, content FROM facts WHERE project_id IS ? AND "
+                            "casefold(content)=? LIMIT 1"
+                        ),
+                        (project_id, content.casefold()),
                     )
                     if r["content"].casefold() == content.casefold()
                 ),
@@ -568,6 +607,12 @@ class MemoryStore:
                     "VALUES (?, ?, ?, ?)",
                     (content, _now(), _now(), project_id),
                 ).lastrowid
+            self.db.execute(
+                "UPDATE facts SET confirmed_at=COALESCE(confirmed_at,?) WHERE id=?",
+                (_now(), fact_id),
+            )
+            if not automatic:
+                self.db.execute("UPDATE facts SET confirmed=1 WHERE id=?", (fact_id,))
             if new or key:
                 self.db.execute(
                     "UPDATE facts SET category=?, source=?, confidence=?, sensitive=?, "

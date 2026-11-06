@@ -942,7 +942,7 @@ class SettingsCenter:
                 raise ValueError(
                     "Воспоминание изменилось после предложения. Проверь текущую версию."
                 )
-            self.store.save_memory(
+            fact_id, _ = self.store.save_memory(
                 item["content"],
                 category=item["category"],
                 key=item["key"],
@@ -950,6 +950,12 @@ class SettingsCenter:
                 project_id=item.get("project_id"),
                 expected_revision=item.get("base_revision"),
             )
+            from backend.memory.intelligence import evidence
+
+            evidence(self.store, fact_id, item.get("message_id"))
+        else:
+            with self.store.memory_transaction():
+                self.store._suppress(item["content"], item["key"])
         self.store.set_preference(
             "memory", "pending", [r for r in pending if r["id"] != item["id"]]
         )

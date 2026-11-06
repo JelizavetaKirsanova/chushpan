@@ -284,7 +284,8 @@ def parse(text: str, *, comfortable_brightness: int | None = None) -> dict | Non
     if not isinstance(text, str) or len(text) > 1000 or re.search(r'[«»"“”`\n;]', text):
         return None
     explicit = re.fullmatch(
-        r"(?:установи|сделай|поставь) красный (\d{1,3})[, ]+зел[её]ный (\d{1,3})[, ]+синий (\d{1,3})[.!? ]*",
+        r"(?:установи|сделай|поставь) красный (\d{1,3})[, ]+"
+        r"зел[её]ный (\d{1,3})[, ]+синий (\d{1,3})[.!? ]*",
         control_text(text),
     )
     if explicit:

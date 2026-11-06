@@ -355,6 +355,8 @@ class DeviceCenter:
         from backend.devices.service import stamp
 
         device.state = result.get("state", {})
+        if device.state.get("color"):
+            self.colors.set_preview(device.id, device.state["color"])
         device.state_at = stamp()
         if device.state or result.get("written"):
             device.last_contact = device.state_at
@@ -372,7 +374,12 @@ class DeviceCenter:
         save_name = None
         if match := re.fullmatch(r"сохрани этот цвет как (.{1,80})", value):
             try:
-                save_name = ColorInput(name=match[1], rgb=[0, 0, 0]).name
+                raw_name = re.search(
+                    r"сохрани этот цвет как (.{1,80})$", " ".join(text.split()).rstrip(".!? "), re.I
+                )
+                save_name = ColorInput(
+                    name=raw_name[1] if raw_name else match[1], rgb=[0, 0, 0]
+                ).name
             except ValueError:
                 return {"error": "Укажи обычное название пользовательского цвета."}
             value = "сделай ленту rgb 0 0 0"

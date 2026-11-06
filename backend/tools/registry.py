@@ -502,6 +502,16 @@ class ToolRegistry:
                     self.devices.observe(name, args if isinstance(args, dict) else {}, decoded)
                 except (ValueError, TypeError, sqlite3.Error, OSError) as exc:
                     log.warning("Device observation unavailable type=%s", type(exc).__name__)
+            if self.memory:
+                try:
+                    from backend.memory.intelligence import record_action
+
+                    args = json.loads(arguments) if isinstance(arguments, str) else arguments
+                    record_action(
+                        self.memory.store, name, args if isinstance(args, dict) else {}, decoded
+                    )
+                except (ValueError, TypeError, sqlite3.Error):
+                    log.warning("Action memory unavailable; tool result preserved")
             if profile := current.get():
                 profile.update(result_status=decoded["result_status"])
             result = _dump(decoded)

@@ -6,9 +6,11 @@ import json
 import re
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from time import perf_counter
 
 from backend.brain.privacy import contains_secret, redact
 from backend.context import request_context
+from backend.memory.intelligence import CATEGORIES
 from backend.memory.store import MemoryStore, _now
 from backend.security import command_text
 from backend.tools.registry import Tool, ToolError
@@ -34,11 +36,15 @@ CATEGORY_LABELS = {
     "personality": "Характер",
     "goal": "Цель",
     "instruction": "Инструкция",
+    **CATEGORIES,
 }
 _SENSITIVE = re.compile(
     r"диагноз|болезн|здоровь|беремен|религи|политическ|паспорт|"
-    r"адрес|телефон|банков|кредит|сексу|интим|зарплат|доход|аллерг|"
+    r"адрес|номер телефона|мой номер|банков|кредит|сексу|интим|зарплат|доход|аллерг|"
     r"депресс|аутиз|инвалид|лечен|психи|онкол|лекарств|медицин|\bвич\b|\bспид\b|"
+    r"отношени|развод|расстал|партн[её]р|мой муж|моя жена|мой парень|моя девушка|"
+    r"координат|широт|долгот|живу (?:в|на)|нахожусь|мой дом|[0-9]{1,3}\.[0-9]{4,}|"
+    r"сч[её]т в банк|сбережен|вклад|плат[её]ж|лекарств|астм|инсулин|"
     r"этнич|вероиспов|ориентац|национальн|\biban\b|\+?\d[\d ()-]{8,}\d",
     re.I,
 )
@@ -80,6 +86,10 @@ def extract(text: str) -> list[tuple[str, str, str]]:
         return []
     if not safe_memory(t):
         return []
+    from backend.memory.extraction import extract_statement
+
+    if extended := extract_statement(t):
+        return extended
     if re.fullmatch(
         r"(?:(?:сегодня|вчера) я|я (?:сегодня|вчера)) "
         r"(?:закончил[а]?|завершил[а]?|начал[а]?|посетил[а]?|сдал[а]?) .{3,160}",
@@ -160,7 +170,20 @@ def tokens(text: str) -> set[str]:
         "продолжим",
         "воспоминания",
     }
-    result = {w[:6] for w in re.findall(r"[\w]+", text.casefold()) if len(w) >= 3 and w not in skip}
+    words = [w for w in re.findall(r"[\w]+", text.casefold()) if len(w) >= 3 and w not in skip]
+    result = set()
+    for word in words:
+        stem = (
+            re.sub(r"(?:ами|ями|ого|ему|ому|ая|ую|ой|ом|ам|ях|ах|ы|и|а|у|е|ю|я)$", "", word)
+            if len(word) > 4
+            else word
+        )
+        if len(stem) < 3:
+            stem = word
+        result.add(stem[:6])
+        result.add(stem.replace("ё", "е")[:6])
+        if "е" in stem:
+            result.add(stem.replace("е", "ё", 1)[:6])
     if re.search(r"уч[её]б|учусь|учится|университет|\bвуз|taltech", text, re.I):
         result.add("education")
     return result
@@ -170,6 +193,8 @@ class ProfileMemory:
     def __init__(self, store: MemoryStore):
         self.store = store
         self.selected: dict[tuple[str, str], list[int]] = {}
+        self.timezone = "Europe/Tallinn"
+        self.last_actions = []
 
     def observe(self, name: str, args: dict, result: dict) -> str | None:
         if name not in {"open_app", "night_mode"} or result.get("error"):
@@ -242,7 +267,7 @@ class ProfileMemory:
                     pass
         return values
 
-    def capture(self, text: str) -> None:
+    def capture(self, text: str, message_id: int | None = None) -> None:
         c = request_context.get()
         if c is None or not c.device.authenticated:
             return
@@ -251,6 +276,21 @@ class ProfileMemory:
         policy = MemoryPolicy.model_validate(self.store.preference("settings", "memory") or {})
         if policy.automatic == "off":
             return
+        cid = self.store.session_conversation(c.device.session_id)
+        disabled = self.store.db.execute(
+            "SELECT memory_disabled,deleted_at FROM conversations WHERE id=?", (cid,)
+        ).fetchone()
+        if not disabled or disabled[0] or disabled[1]:
+            return
+        if (
+            message_id
+            and not self.store.db.execute(
+                "SELECT 1 FROM messages WHERE id=? AND conversation_id=? AND role='user' "
+                "AND memory_blocked=0",
+                (message_id, cid),
+            ).fetchone()
+        ):
+            return
         bound = self.store.db.execute(
             "SELECT p.project_id FROM memory_project_conversations p JOIN dialogue_sessions s "
             "ON s.conversation_id=p.conversation_id WHERE s.session_id=?",
@@ -258,10 +298,12 @@ class ProfileMemory:
         ).fetchone()
         project = bound[0] if bound else None
         for category, key, value in extract(text):
-            if category in policy.excluded:
+            from backend.memory.intelligence import suppressed
+
+            if category in policy.excluded or suppressed(self.store, value, key):
                 continue
             if policy.automatic == "ask":
-                self.propose(value, category, key, project=project)
+                self.propose(value, category, key, project=project, message_id=message_id)
                 continue
             previous = self.store.db.execute(
                 "SELECT content FROM facts WHERE semantic_key=? AND project_id IS ?",
@@ -272,7 +314,7 @@ class ProfileMemory:
                 and previous["content"].casefold() != value.casefold()
                 and not re.search(r"\bтеперь\b|\bбольше\b|^нет[, ]|на самом деле", text, re.I)
             ):
-                self.propose(value, category, key, project=project)
+                self.propose(value, category, key, project=project, message_id=message_id)
                 continue
             identifier, _ = self.store.save_memory(
                 value,
@@ -283,18 +325,69 @@ class ProfileMemory:
                 confidence=0.9 if category == "episode" else 1,
                 project_id=project,
             )
-            if identifier and category == "episode":
+            if identifier:
+                from backend.memory.intelligence import evidence
+
+                evidence(self.store, identifier, message_id)
+            if identifier and category in {"episode", "temporary"}:
                 # Expiry changes eligibility for retrieval, never erases user history.
-                expires = datetime.now(UTC) + timedelta(days=policy.temporary_days)
+                from backend.memory.extraction import expiration
+
+                expires = expiration(value, policy.temporary_days, self.timezone)
                 with self.store.memory_transaction():
                     self.store.db.execute(
                         "UPDATE facts SET expires_at=? WHERE id=?",
-                        (expires.isoformat(timespec="seconds"), identifier),
+                        (expires, identifier),
                     )
 
-    def propose(self, value, category, key, *, project=None):
+    async def after_response(self, conversation_id: int, context) -> None:
+        import asyncio
+
+        from backend.context import request_scope
+        from backend.memory.intelligence import evidence, metric, summary
+
+        # Yield control after the spoken response; never hold the first model token.
+        await asyncio.sleep(0)
+        started = perf_counter()
+        try:
+            row = self.store.db.execute(
+                "SELECT id,content FROM messages WHERE conversation_id=? AND request_id=? "
+                "AND role='user' AND memory_blocked=0 ORDER BY id DESC LIMIT 1",
+                (conversation_id, context.request_id),
+            ).fetchone()
+            if not row:
+                return
+            before = self.store.db.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
+            with request_scope(context):
+                if self.route(context.text) is None:
+                    self.capture(row["content"], row["id"])
+                for fact in self.store.db.execute(
+                    "SELECT id FROM facts WHERE source=? AND category!='personality'",
+                    (self.source("explicit_user"),),
+                ).fetchall():
+                    evidence(self.store, fact[0], row["id"])
+            with self.store.memory_transaction():
+                self.store.db.execute(
+                    "UPDATE memory_actions SET message_id=? WHERE request_id=? "
+                    "AND conversation_id=?",
+                    (row["id"], context.request_id, conversation_id),
+                )
+            summary(self.store, conversation_id)
+            count = self.store.db.execute("SELECT COUNT(*) FROM facts").fetchone()[0] - before
+            metric(self.store, "extraction", started, max(0, count))
+        except (sqlite3.Error, ValueError):
+            # A reply has already been delivered. Memory failures must not replace it.
+            import logging
+
+            logging.getLogger(__name__).warning("Post-response memory unavailable")
+
+    def propose(self, value, category, key, *, project=None, message_id=None):
         from uuid import uuid4
 
+        from backend.memory.intelligence import suppressed
+
+        if suppressed(self.store, value, key):
+            return
         pending = self.store.preference("memory", "pending") or []
         if not any(
             row["key"] == key and row["content"] == value and row.get("project_id") == project
@@ -312,6 +405,12 @@ class ProfileMemory:
                     "key": key,
                     "project_id": project,
                     "base_revision": previous[0] if previous else None,
+                    "message_id": message_id,
+                    "conversation_id": self.store.session_conversation(
+                        request_context.get().device.session_id
+                    )
+                    if request_context.get()
+                    else None,
                 }
             )
             self.store.set_preference("memory", "pending", pending[-30:])
@@ -320,6 +419,8 @@ class ProfileMemory:
         from backend.settings_models import MemoryPolicy
 
         policy = MemoryPolicy.model_validate(self.store.preference("settings", "memory") or {})
+        started = perf_counter()
+        budget = min(budget, policy.context_chars)
         cutoff = (datetime.now(UTC) - timedelta(days=policy.temporary_days)).isoformat()
         query = tokens(text)
         from backend.memory.library import log_access, search
@@ -361,8 +462,10 @@ class ProfileMemory:
             and (r["expires_at"] is None or r["expires_at"] > _now())
             and r["category"] not in policy.excluded
             and (r["category"] not in {"episode", "habit"} or r["updated_at"] >= cutoff)
-            and not r["sensitive"]
-            and not _SENSITIVE.search(r["content"])
+            and (
+                policy.sensitive_context
+                or (not r["sensitive"] and not _SENSITIVE.search(r["content"]))
+            )
             and safe_memory(r["content"])
             and r["category"] != "personality"
         ]
@@ -372,26 +475,39 @@ class ProfileMemory:
             rows,
             key=lambda r: (
                 len(query & tokens(r["content"]))
+                + int(r.get("_fuzzy", False))
                 + (3 if resume and r["category"] == "project" else 0)
                 + (2 if r["semantic_key"] in global_keys else 0),
-                r["updated_at"],
+                r["confidence"],
+                r["confirmed_at"] or r["updated_at"],
             ),
             reverse=True,
         )
         result, used = [], 0
         for r in ranked:
-            if not (query & tokens(r["content"])) and not (
-                (resume and r["category"] == "project") or r["semantic_key"] in global_keys
+            if (
+                not r.get("_fuzzy")
+                and not (query & tokens(r["content"]))
+                and not (
+                    (resume and r["category"] == "project") or r["semantic_key"] in global_keys
+                )
             ):
                 continue
             if len(result) >= limit or used + len(r["content"]) > budget:
-                break
+                continue
             result.append(r)
             used += len(r["content"])
+        self.last_actions = []
+        if c and policy.action_learning:
+            from backend.memory.intelligence import action_context
+
+            self.last_actions = action_context(self.store, text, project, c.device.device_id)
         selected = [
             r["id"]
             for r in result
-            if query & tokens(r["content"]) or (resume and r["category"] == "project")
+            if r.get("_fuzzy")
+            or query & tokens(r["content"])
+            or (resume and r["category"] == "project")
         ]
         if selected:
             self.selected[self.binding()] = selected
@@ -400,10 +516,36 @@ class ProfileMemory:
         else:
             self.selected.pop(self.binding(), None)
         log_access(self.store, result)
+        from backend.memory.intelligence import metric
+
+        metric(self.store, "context", started, len(result))
         return result
 
     def route(self, text: str) -> dict | None:
         t = command_text(text).rstrip(".!? ")
+        match = re.fullmatch(r"запомни,? (?:что )?(.{2,300})", t)
+        if match:
+            return {"action": "remember_text", "value": match[1]}
+        match = re.fullmatch(r"забудь,? (?:что )?(.{2,300})", t)
+        if match and match[1] != "это":
+            from backend.memory.library import search
+
+            found = [
+                r
+                for r in search(self.store, match[1], context=True)
+                if match[1] in r["content"].casefold()
+            ]
+            return (
+                {"action": "delete", "id": found[0]["id"]}
+                if len(found) == 1
+                else {"action": "clarify"}
+            )
+        if t in {"не запоминай этот разговор", "не сохраняй этот разговор"}:
+            return {"action": "private"}
+        if t in {"исправь это в своей памяти", "исправь это в памяти"}:
+            return {"action": "clarify"}
+        if re.match(r"помнишь,? мы обсуждали|что мы решили (?:вчера|сегодня)", t):
+            return {"action": "recall", "value": text[:300]}
         if t in {
             "что ты только что запомнил",
             "что только что запомнил",
@@ -430,14 +572,14 @@ class ProfileMemory:
         if match:
             return {"action": "correct", "id": int(match[1]), "value": match[2]}
         match = re.fullmatch(
-            r"(?:почему ты так решил|почему ты это помнишь|забудь это|"
+            r"(?:почему ты так решил|почему ты это помнишь|откуда ты это знаешь|забудь это|"
             r"это уже неактуально)(?:\s+(?:факт\s+)?(\d+))?",
             t,
         )
         if match:
             action = (
                 "explain"
-                if t.startswith("почему")
+                if t.startswith(("почему", "откуда"))
                 else ("delete" if t.startswith("забудь") else "stale")
             )
             ids = self.selected.get(self.binding(), [])
@@ -459,7 +601,7 @@ class ProfileMemory:
             if args.get("revision", rows[0]["revision"]) != rows[0]["revision"]:
                 raise ToolError("Воспоминание изменилось. Повтори просьбу.")
             args = {**args, "revision": rows[0]["revision"]}
-        if args["action"] == "correct" and (
+        if args["action"] in {"correct", "remember_text"} and (
             not safe_memory(args.get("value", "")) or _SENSITIVE.search(args.get("value", ""))
         ):
             raise ToolError("Для чувствительного факта нужно явное согласие; секреты запрещены.")
@@ -467,6 +609,10 @@ class ProfileMemory:
 
     def summary(self, args: dict) -> str:
         action = args["action"]
+        if action == "remember_text":
+            return "сохранить факт: «" + args["value"] + "»"
+        if action == "private":
+            return "отключить сохранение этого разговора и извлечение фактов из него"
         if action == "last_saved":
             return "показать последний действительно сохранённый факт текущего разговора"
         if action == "character":
@@ -478,6 +624,8 @@ class ProfileMemory:
             )
         if action == "clear":
             return f"удалить все воспоминания ({len(self.store.memories())}); историю не стирать"
+        if not args.get("id"):
+            return "память: " + args.get("value", action)
         if args.get("id"):
             row = next(r for r in self.store.memories() if r["id"] == args["id"])
         label = {
@@ -489,7 +637,6 @@ class ProfileMemory:
         return f"{label} факт №{row['id']} «{redact(row['content'])}»" + (
             " → «" + args["value"] + "»" if action == "correct" else ""
         )
-        return "настройка наблюдения привычек: " + args.get("value", action)
 
     def version(self, args: dict) -> str:
         if args["action"] in {"clear", "character"}:
@@ -511,6 +658,32 @@ class ProfileMemory:
     def _execute(self, action: str, id: int | None, value: str, revision: int | None) -> dict:
         if not self.store.memory_available:
             raise ToolError("Долговременная память недоступна; изменения не сохранены.")
+        if action == "remember_text":
+            if not safe_memory(value) or _SENSITIVE.search(value):
+                raise ToolError(
+                    
+                        "Секреты запрещены; чувствительные сведения требуют отдельного "
+                        "согласия в разделе Память."
+                    
+                )
+            extracted = extract(value)
+            category, key, content = extracted[0] if extracted else ("profile", "", value)
+            idx, _ = self.store.save_memory(
+                content, category=category, key=key, source=self.source("explicit_user")
+            )
+            self.selected[self.binding()] = [idx]
+            return {"id": idx, "message": "Запомнил: «" + content + "»."}
+        if action == "private":
+            from backend.memory.intelligence import disable_conversation
+
+            context = request_context.get()
+            disable_conversation(
+                self.store, self.store.session_conversation(context.device.session_id)
+            )
+            return {
+                "message": "Не буду сохранять новые реплики и учиться на этом разговоре. "
+                "Уже записанную историю можно удалить в разделе Память → История."
+            }
         if action == "last_saved":
             context = request_context.get()
             conversation = self.store.session_conversation(context.device.session_id)
@@ -584,7 +757,11 @@ class ProfileMemory:
             query = tokens(value)
             selected = [
                 r
-                for r in self.relevant(value)
+                for r in (
+                    []
+                    if re.search(r"что мы решили (?:вчера|сегодня)", value, re.I)
+                    else self.relevant(value)
+                )
                 if r["semantic_key"] not in {"response_style", "chushpan:mobile"}
                 or query & tokens(r["content"])
             ]
@@ -599,39 +776,54 @@ class ProfileMemory:
                         f"[{r['id']}] {r['content']} ({r['updated_at']})" for r in selected
                     )
                 }
-            terms = sorted(tokens(value))[:4]
-            history = []
-            if terms:
-                floor = self.store.preference("memory", "context_floor") or 0
-                context = request_context.get()
-                bound = (
-                    self.store.db.execute(
-                        "SELECT p.project_id FROM memory_project_conversations p JOIN "
-                        "dialogue_sessions s ON s.conversation_id=p.conversation_id "
-                        "WHERE s.session_id=?",
-                        (context.device.session_id,),
-                    ).fetchone()
-                    if context
-                    else None
-                )
-                project = bound[0] if bound else None
-                q = " OR ".join("casefold(m.content) LIKE ?" for _ in terms)
-                history = self.store.db.execute(
-                    "SELECT m.content,m.created_at FROM messages m JOIN conversations c "
-                    "ON c.id=m.conversation_id LEFT JOIN memory_project_conversations p "
-                    "ON p.conversation_id=c.id WHERE c.deleted_at IS NULL AND p.project_id IS ? "
-                    "AND m.role='user' AND m.id>? AND (" + q + ") "
-                    "AND (?='local-mac' OR m.device_id=?) ORDER BY m.id DESC LIMIT 3",
+            from zoneinfo import ZoneInfo
+
+            from backend.memory.intelligence import history as search_history
+
+            context = request_context.get()
+            bound = (
+                self.store.db.execute(
                     (
-                        project,
-                        floor,
-                        *("%" + w + "%" for w in terms),
-                        context.device.device_id if context else "local-mac",
-                        context.device.device_id if context else "local-mac",
+                        "SELECT p.project_id FROM memory_project_conversations p JOIN "
+                        "dialogue_sessions s "
+                        "ON s.conversation_id=p.conversation_id WHERE s.session_id=?"
                     ),
-                ).fetchall()
+                    (context.device.session_id,),
+                ).fetchone()
+                if context
+                else None
+            )
+            day = None
+            if re.search(r"вчера|сегодня", value, re.I):
+                now = datetime.now(ZoneInfo(self.timezone))
+                start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                if "вчера" in value.casefold():
+                    start -= timedelta(days=1)
+                day = (
+                    start.astimezone(UTC).isoformat(),
+                    (start + timedelta(days=1)).astimezone(UTC).isoformat(),
+                )
+            query_text = "" if day else value
+            history = (
+                search_history(
+                    self.store,
+                    query_text,
+                    project=bound[0] if bound else None,
+                    device=context.device.device_id if context else "local-mac",
+                    day=day,
+                    limit=6,
+                )
+                if (tokens(value) or day)
+                else []
+            )
             lines = [
-                f"{r['created_at']}: {redact(r['content'])[:300]}"
+                f"{r['created_at']} "
+                + (
+                    "(ты сказала): "
+                    if r["role"] == "user"
+                    else "(ассистент ответил, это не подтверждение): "
+                )
+                + redact(r["content"])[:300]
                 for r in history
                 if safe_memory(r["content"]) and not _SENSITIVE.search(r["content"])
             ]
@@ -710,6 +902,8 @@ class ProfileMemory:
                         "character_list",
                         "clarify",
                         "habits",
+                        "private",
+                        "remember_text",
                     ],
                 },
                 "id": {"type": "integer", "minimum": 1},

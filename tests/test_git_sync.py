@@ -420,6 +420,26 @@ def test_scoped_sync_refuses_unrelated_staged_work(repo):
     assert git(sync.root, "diff", "--cached", "--name-only") == "other.py"
 
 
+def test_complete_refuses_foreign_changes_and_preserves_active_turn(repo, monkeypatch):
+    from scripts import git_sync
+
+    sync, remote = repo
+    before = git(sync.root, "rev-parse", "HEAD")
+    (sync.root / "app.py").write_text("print('QA fix')\n")
+    (sync.root / "parallel.py").write_text("print('unfinished')\n")
+    (sync.state / "active-turn").write_text("checkpoint")
+    monkeypatch.setattr(git_sync, "Sync", lambda: sync)
+    result = git_sync.main(
+        ["complete", "-m", "fix: QA", "--path", "app.py", "--require-clean-unrelated"]
+    )
+    assert result == 1
+    assert git(sync.root, "rev-parse", "HEAD") == before
+    assert git(remote, "rev-parse", "main") == before
+    assert not git(sync.root, "diff", "--cached", "--name-only")
+    assert (sync.state / "active-turn").exists()
+    assert json.loads((sync.state / "status.json").read_text())["status"] == "blocked"
+
+
 @pytest.mark.parametrize("path", ["../outside", "/tmp/outside", "-A", ".env"])
 def test_scoped_sync_cannot_escape_or_publish_private_paths(repo, path):
     sync, _ = repo
