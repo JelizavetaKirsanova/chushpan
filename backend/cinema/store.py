@@ -798,11 +798,10 @@ class CinemaStore:
             )
             and (r["user_rating"] is None or r["user_rating"] >= 7)
         ][:2]
-        excluded = [r["catalogue_key"] for r in rows if r["status"] == "watched"]
+        excluded = [r["catalogue_key"] for r in rows if r["catalogue_key"]]
         excluded_titles = [
             (r["kind"], " ".join(r["title"].casefold().split()), r["year"])
             for r in rows
-            if r["status"] == "watched"
         ]
         return {"seeds": seeds, "excluded": excluded, "excluded_titles": excluded_titles}
 

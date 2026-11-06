@@ -25,7 +25,7 @@ from backend.cinema.catalogue import Catalogue
 from backend.cinema.classification import FULL_TYPES, PROMO_TYPES
 from backend.cinema.commands import command
 from backend.cinema.diagnostics import DiagnosticSafariBridge, SourceDiagnostics, fingerprint
-from backend.cinema.filters import with_preferences
+from backend.cinema.filters import excluded_library_keys, with_preferences
 from backend.cinema.internet import InternetSearch, SearchCredentials, SearchProviders
 from backend.cinema.keychain import TavilyCredentials
 from backend.cinema.models import CatalogueQuery, Source, origin
@@ -118,6 +118,8 @@ class Cinema:
         )
         self.watch_confirmations = {}
         self.open_approvals = {}
+        self.resolution = None
+        self.resolution_lock = asyncio.Lock()
         self.watch_sequence = 0
         self.next_episode = None
         self.personal = Recommender(self.tmdb, self.catalogue)
@@ -895,11 +897,29 @@ class Cinema:
         manual_choice=False,
         approved=False,
         player=None,
+        _resolving=False,
     ):
         if open_result:
             self.require_playback()
         row = self.sources.result(identifier)
+        if open_result and not _resolving:
+            prefs = await self.db("preferences")
+            alternatives = self.resolver.fallback_order([
+                value[1] for value in self.sources.results.values()
+                if value[0] > self.sources.clock()
+                and value[1].get("title_id") == row["title_id"]
+                and value[1].get("episode_id") == row["episode_id"]
+            ]) if prefs.autoplay and prefs.auto_select_source else []
+            self.resolution = {
+                "id": secrets.token_hex(12), "rows": [row, *alternatives],
+                "attempted": set(), "player": player,
+                "initial": {"pin": pin, "manual_choice": manual_choice, "approved": approved},
+                "token": "", "sequence": self.watch_sequence,
+            }
+            return await self.try_resolution()
         await self.trace_source(row)
+        if row.get("region_access") == "blocked":
+            raise playback_error("region_blocked", "Источник недоступен в выбранном регионе. Обход не выполняется.")
         if row.get("video_type") in PROMO_TYPES:
             raise ToolError("Источник для просмотра не найден: это трейлер, тизер или фрагмент.")
         try:
@@ -1076,6 +1096,55 @@ class Cinema:
             )
         return {"message": "Источник и точная страница сохранены."}
 
+    async def try_resolution(self):
+        """At most three distinct sources per request, including asynchronous failures."""
+        async with self.resolution_lock:
+            attempt = self.resolution
+            if not attempt:
+                return {"playback_confirmed": False, "message": "Запрос просмотра завершён."}
+            result = {"playback_confirmed": False, "message": self.message}
+            while attempt["rows"] and len(attempt["attempted"]) < 3:
+                if self.resolution is not attempt or attempt["sequence"] != self.watch_sequence:
+                    return {"playback_confirmed": False, "message": "Поиск заменён новым запросом."}
+                row = attempt["rows"].pop(0)
+                identity = (row["source_id"], row["url"])
+                if identity in attempt["attempted"]:
+                    continue
+                first = not attempt["attempted"]
+                attempt["attempted"].add(identity)
+                await self.trace("SOURCE_ATTEMPT", "running",
+                                 f"Проверяем вариант {len(attempt['attempted'])} из 3: {row.get('source_name', 'источник')}.",
+                                 row["title_id"], row["episode_id"])
+                try:
+                    result = await self.source_result(
+                        row["id"], open_result=True, player=attempt["player"], _resolving=True,
+                        **(attempt["initial"] if first else {}),
+                    )
+                except (ToolError, OSError, TimeoutError, ValueError) as exc:
+                    result = {"playback_confirmed": False, "message": str(exc),
+                              "error_code": getattr(exc, "code", "source_unavailable")}
+                    self.playback.failure(exc)
+                if self.resolution is not attempt:
+                    return result
+                if self.session and self.session["target"]["item"]["id"] == row["title_id"]:
+                    attempt["token"] = self.session["token"]
+                if result.get("playback_confirmed"):
+                    self.resolver.record(row["source_id"], True)
+                    return result
+                # Embedded video is pending until its own media events arrive. User
+                # gestures, permission and payment decisions never trigger retries.
+                if (not result.get("error_code") and not result.get("page_opened")) or result.get("error_code") in {
+                    "gesture_required", "automation_denied", "automation_unknown", "permission_denied",
+                    "javascript_denied", "javascript_disabled", "protected_player",
+                }:
+                    return result
+                self.resolver.record(row["source_id"], False)
+                await self.trace("SOURCE_ATTEMPT", "failed", result["message"], row["title_id"], row["episode_id"])
+            self.message = result["message"] + " Проверенные резервные варианты исчерпаны; автоматический повтор остановлен."
+            self.playback.failure(playback_error("sources_exhausted", self.message))
+            await self.publish()
+            return {**result, "message": self.message, "error_code": "sources_exhausted"}
+
     async def embedded_event(self, value):
         self.require_playback()
         async with self.lock:
@@ -1190,6 +1259,13 @@ class Cinema:
             await self.publish()
         if event == "ended":
             await self.finished(target, (await self.db("preferences")).auto_next)
+        elif event == "error" and self.resolution and self.resolution["token"] == session["token"]:
+            self.resolver.record(target["source"]["id"], False)
+            await self.try_resolution()
+        elif event == "playing":
+            self.resolver.record(target["source"]["id"], True)
+        elif event == "close":
+            self.resolution = None
 
     async def catalogue_page(self, value):
         request_id = str(value.get("request_id", ""))[:100]
@@ -1206,7 +1282,7 @@ class Cinema:
             prefs = await self.db("preferences")
             state = await self.db("recommendation_data") if query.feed == "recommended" else {}
             query = with_preferences(query, prefs)
-            library = await self.db("library") if query.feed == "recommended" else []
+            library = await self.db("library")
             if query.feed == "recommended":
                 context["seeds"] = [
                     item["catalogue_key"]
@@ -1222,7 +1298,9 @@ class Cinema:
             result = await self.catalogue.page(
                 query,
                 seeds=context.get("seeds", []),
-                excluded=set(context.get("excluded", [])),
+                excluded=set(context.get("excluded", []))
+                | excluded_library_keys(library, query, recommendations=query.feed == "recommended")
+                | set(state.get("dismissed", [])),
                 excluded_titles=context.get("excluded_titles", []),
             )
             if query.feed == "recommended":
@@ -1664,6 +1742,7 @@ class Cinema:
 
         self.require_playback()
         self.watch_sequence += 1
+        self.resolution = None
         sequence = self.watch_sequence
         prefs = await self.db("preferences")
         item = await self.db("detail", title_id)

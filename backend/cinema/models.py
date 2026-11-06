@@ -220,6 +220,9 @@ class Preferences(BaseModel):
     hide_animation: bool = True
     hide_anime: bool = True
     hide_documentary: bool = False
+    hide_watched: bool = False
+    hide_watchlist: bool = False
+    hide_saved: bool = False
     default_sort: Literal["popularity", "rating", "date", "title"] = "popularity"
     cards_per_row: int = Field(default=0, ge=0, le=8)
     resume_position: bool = True
@@ -281,6 +284,9 @@ class CatalogueQuery(BaseModel):
     hide_animation: bool | None = None
     hide_anime: bool | None = None
     hide_documentary: bool | None = None
+    hide_watched: bool | None = None
+    hide_watchlist: bool | None = None
+    hide_saved: bool | None = None
     relax_restrictions: bool = False
     rating: float = Field(default=0, ge=0, le=10, allow_inf_nan=False)
     country: str = Field(default="", pattern=r"^(?:[A-Z]{2})?$")

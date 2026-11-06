@@ -223,14 +223,10 @@ class Recommender:
                 continue
             for item in page["items"]:
                 candidates.setdefault(item["catalogue_key"], item)
-        for item in library:
-            key = item.get("catalogue_key") or f"local:{item['id']}"
-            candidates.setdefault(key, {**item, "catalogue_key": key, "library_id": item["id"]})
-        excluded_keys = {i.get("catalogue_key") for i in library if i["status"] == "watched"}
+        excluded_keys = {i.get("catalogue_key") for i in library}
         excluded_names = {
             (i["kind"], normalized(i["title"]), i["year"])
             for i in library
-            if i["status"] == "watched"
         }
         dismissed = set(state["dismissed"])
         candidates = [
@@ -311,22 +307,6 @@ class Recommender:
             "now": [i for i in ranked if i["catalogue_key"] in ready],
         }
         shelves = list(SHELVES)
-        pools["rewatch"] = sorted(
-            [
-                {**i, "library_id": i["id"]}
-                for i in library
-                if i["status"] == "watched"
-                and allowed(i, prefs)
-                and (
-                    i.get("favorite")
-                    or (i.get("user_rating") or 0)
-                    >= (7 if prefs.recommendations_show_watched else 8)
-                )
-            ],
-            key=lambda i: i.get("user_rating") or 0,
-            reverse=True,
-        )
-        shelves.append(("rewatch", "Пересмотреть любимое"))
         return {
             "samples": samples,
             "personalized": bool(samples),

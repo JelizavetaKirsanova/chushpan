@@ -2,7 +2,7 @@ import type {CatalogueConfig,CatalogueFilters} from './cinema_catalogue';
 
 const node=<K extends keyof HTMLElementTagNameMap>(tag:K,text='',cls=''):HTMLElementTagNameMap[K]=>{const n=document.createElement(tag);n.textContent=text;n.className=cls;return n;};
 export function activeFilterCount(f:CatalogueFilters):number {
-  return f.genres.length+Number(!!(f.year||f.year_min||f.year_max))+Number(!!f.rating)+Number(!!f.country)+Number(!!f.original_language)+Number(f.kind!=='all')+[f.russian_titles,f.hide_animation,f.hide_anime,f.hide_documentary].filter(Boolean).length;
+  return f.genres.length+Number(!!(f.year||f.year_min||f.year_max))+Number(!!f.rating)+Number(!!f.country)+Number(!!f.original_language)+Number(f.kind!=='all')+[f.russian_titles,f.hide_animation,f.hide_anime,f.hide_documentary,f.hide_watched,f.hide_watchlist,f.hide_saved].filter(Boolean).length;
 }
 
 /** Draft controls do not issue requests until Apply. Native dialog traps focus. */
@@ -39,7 +39,7 @@ export class CinemaFilterDrawer {
         select('Тип контента',[['all','Всё'],['movie','Фильмы'],['series','Сериалы']],draft.kind,v=>{draft.kind=v;render();}),
         select('Страна производства',[['','Любая страна'],...(config?.countries??[{id:'EE',name:'Эстония'},{id:'US',name:'США'},{id:'RU',name:'Россия'},{id:'JP',name:'Япония'}]).map(c=>[c.id,c.name] as [string,string])],draft.country,v=>draft.country=v),
         select('Язык оригинала',[['','Любой язык'],...(config?.languages??[{id:'ru',name:'Русский'},{id:'en',name:'Английский'}]).map(c=>[c.id,c.name] as [string,string])],draft.original_language,v=>draft.original_language=v));
-      const extra=node('fieldset');extra.append(node('legend','Дополнительно'),checkbox('Только названия с русскими буквами',draft.russian_titles!==false,v=>draft.russian_titles=v),checkbox('Скрывать мультфильмы',draft.hide_animation!==false,v=>draft.hide_animation=v),checkbox('Скрывать аниме',draft.hide_anime!==false,v=>draft.hide_anime=v),checkbox('Скрывать документальные фильмы',!!draft.hide_documentary,v=>draft.hide_documentary=v));
+      const extra=node('fieldset');extra.append(node('legend','Дополнительно'),checkbox('Только названия с русскими буквами',draft.russian_titles!==false,v=>draft.russian_titles=v),checkbox('Скрывать мультфильмы',draft.hide_animation!==false,v=>draft.hide_animation=v),checkbox('Скрывать аниме',draft.hide_anime!==false,v=>draft.hide_anime=v),checkbox('Скрывать документальные фильмы',!!draft.hide_documentary,v=>draft.hide_documentary=v),checkbox('Скрывать просмотренное',!!draft.hide_watched,v=>draft.hide_watched=v),checkbox('Скрывать «Хочу посмотреть»',!!draft.hide_watchlist,v=>draft.hide_watchlist=v),checkbox('Скрывать другие сохранённые',!!draft.hide_saved,v=>draft.hide_saved=v));
       if(draft.query)extra.append(checkbox('Искать без ограничений · только этот поиск',draft.relax_restrictions,v=>draft.relax_restrictions=v));form.append(extra);
       error=node('p','','cinema-form-error');error.setAttribute('role','alert');form.append(error);
       const footer=node('footer');submit=button('Применить',()=>{});submit.type='submit';submit.className='primary';footer.append(button('Сбросить фильтры',()=>{if(window.confirm('Сбросить выбранные фильтры к твоим настройкам по умолчанию?')){draft={...defaults(),query:initial.query};render();}}),submit);count();form.append(footer);

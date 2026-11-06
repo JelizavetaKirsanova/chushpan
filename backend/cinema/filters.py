@@ -4,9 +4,28 @@ import re
 
 from backend.cinema.models import CatalogueQuery
 
-POLICY_FIELDS = ("russian_titles", "hide_animation", "hide_anime", "hide_documentary")
+POLICY_FIELDS = (
+    "russian_titles", "hide_animation", "hide_anime", "hide_documentary",
+    "hide_watched", "hide_watchlist", "hide_saved",
+)
 ANIMATION = {"animation", "мультфильм", "мультфильмы", "анимация"}
 DOCUMENTARY = {"documentary", "документальный", "документальный фильм"}
+
+
+def excluded_library_keys(library, rules, *, recommendations=False):
+    """Personal lists remain intact; only stable catalogue identities are hidden."""
+    return {
+        item["catalogue_key"]
+        for item in library
+        if item.get("catalogue_key")
+        and (
+            recommendations
+            or (rules.hide_watched and item.get("status") == "watched")
+            or (rules.hide_watchlist and item.get("watchlist", item.get("status") == "planned"))
+            or (rules.hide_saved and item.get("status") != "watched"
+                and not item.get("watchlist", item.get("status") == "planned"))
+        )
+    }
 
 
 def with_preferences(query, prefs):

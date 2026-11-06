@@ -104,7 +104,7 @@ def test_recommendations_exclude_watched_dismissals_and_offer_six_explained_shel
             Preferences(),
             ready={available["catalogue_key"]},
         )
-        assert len(result["shelves"]) == 7
+        assert len(result["shelves"]) == 6
         keys = {
             i["catalogue_key"]
             for shelf in result["shelves"]
