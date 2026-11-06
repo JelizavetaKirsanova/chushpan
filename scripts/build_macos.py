@@ -17,6 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_SOURCES = (
     "backend/led.py",
     "backend/ble_diagnostics.py",
+    "backend/ble_profiles.py",
+    "backend/devices/center.py",
     "backend/devices/service.py",
     "backend/devices/colors.py",
     "backend/memory/store.py",
@@ -27,6 +29,7 @@ MANIFEST_SOURCES = (
     "backend/sync/service.py",
     "frontend/src/devices.ts",
     "frontend/src/color_editor.ts",
+    "frontend/src/devices.css",
     "frontend/src/memory_library.ts",
     "frontend/src/module_ui.ts",
     "frontend/dist/index.html",

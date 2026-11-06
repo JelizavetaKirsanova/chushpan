@@ -306,3 +306,54 @@ test('repeated RGB Apply never queues a replay while the first delivery is uncer
     assert.equal(f.requests.filter(r=>r.op==='act').length,1);assert.equal(f.window.document.querySelector<HTMLButtonElement>('.device-color-actions .primary')!.disabled,false);
   }finally{await f.close();}
 });
+
+test('persisted DDM observation is visible next to RGB and confirmation targets only its probe',async()=>{
+  const f=fixture();try{
+    f.state.items[0]={...f.state.items[0],features:{color:false,colors:[],probe:true},ble:{driver:'ELK-BLEDDM',compatibility:'gatt_match',pending_probe:{id:'green-probe',requested:{action:'color',rgb:[0,255,0]}}}};
+    f.view.receive(f.state);f.open('Свет у стола');
+    const observation=f.window.document.querySelector<HTMLElement>('.device-color-observation')!;
+    assert.equal(observation.hidden,false);assert.match(observation.textContent!,/#00FF00.*ELK-BLEDDM/);
+    f.button('Да, тестовый цвет виден',observation);
+    assert.equal(f.requests.at(-1)!.op,'confirm_probe');assert.equal(f.requests.at(-1)!.id,'led-test');assert.equal(f.requests.at(-1)!.probe_id,'green-probe');assert.equal(f.requests.at(-1)!.observed,true);
+    assert.equal(f.requests.some(r=>r.op==='act'||r.op==='probe_led'),false);
+  }finally{await f.close();}
+});
+
+test('RGB verification tests the selected HEX and selected device only after consent',async()=>{
+  const f=fixture();try{
+    f.open('Свет у стола');const hex=f.window.document.querySelector<HTMLInputElement>('[aria-label="HEX цвета"]')!;hex.value='#B450FF';hex.dispatchEvent(new f.window.Event('input'));
+    f.window.confirm=()=>false;f.button('Проверить RGB');assert.equal(f.requests.some(r=>r.op==='probe_led'),false);
+    f.window.confirm=()=>true;f.button('Проверить RGB');const sent=f.requests.at(-1)!;assert.equal(sent.op,'probe_led');assert.equal(sent.id,'led-test');assert.deepEqual(sent.parameters,{color:'#B450FF'});assert.equal(sent.consent,true);
+  }finally{await f.close();}
+});
+
+test('late preview acknowledgement cannot hide Apply error from the device panel',async()=>{
+  const f=fixture();try{
+    f.open('Свет у стола');f.button('Розовый');f.button('Применить',f.window.document.querySelector('.device-panel')!);
+    const act=f.requests.find(r=>r.op==='act')!;const preview=f.requests.find(r=>r.op==='color_preview')!;
+    f.view.receive({...f.state,operation_id:act.request_id as string,result:{result_status:'failed',error:'Подтверди тест RGB этой ленты.'}});
+    f.view.receive({...f.state,operation_id:preview.request_id as string,result:{result_status:'success',message:'Предпросмотр сохранён'}});
+    assert.match(f.window.document.querySelector('.devices-feedback')!.textContent!,/Подтверди тест RGB/);
+    assert.match(f.window.document.querySelector('.device-panel [role=alert]')!.textContent!,/Подтверди тест RGB/);
+  }finally{await f.close();}
+});
+
+test('Apply uses current availability after an in-place busy update',async()=>{
+  const f=fixture();try{
+    f.state.items[0]={...f.state.items[0],busy:true};f.view.receive(f.state);f.open('Свет у стола');
+    const hex=f.window.document.querySelector<HTMLInputElement>('[aria-label="HEX цвета"]')!;hex.focus();hex.value='#B450FF';hex.dispatchEvent(new f.window.Event('input'));
+    f.view.receive({...f.state,items:[{...f.state.items[0],busy:false},f.state.items[1]]});
+    f.button('Применить',f.window.document.querySelector('.device-panel')!);
+    const act=f.requests.find(r=>r.op==='act')!;assert.ok(act);assert.deepEqual(act.parameters,{color:'#B450FF'});assert.equal(act.id,'led-test');
+  }finally{await f.close();}
+});
+
+for(const source of ['preset','hex','sliders','saved'])test(`${source} uses the same typed RGB Apply event`,async()=>{
+  const f=fixture();try{
+    f.state.user_colors=[{id:'pink',revision:1,name:'Мой розовый',rgb:[255,0,32],hex:'#FF0020',favorite:false,created_at:'2026-11-06T10:00:00Z',updated_at:'2026-11-06T10:00:00Z'}];f.view.receive(f.state);f.open('Свет у стола');
+    const input=(label:string,value:string)=>{const n=f.window.document.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;n.value=value;n.dispatchEvent(new f.window.Event('input'));};
+    if(source==='preset')f.button('Розовый');else if(source==='saved')f.button('Мой розовый');else if(source==='hex')input('HEX цвета','#ff0020');else {input('R, значение','255');input('G, значение','0');input('B, значение','32');}
+    assert.equal(f.requests.some(r=>r.op==='act'),false);f.button('Применить',f.window.document.querySelector('.device-panel')!);
+    const acts=f.requests.filter(r=>r.op==='act');assert.equal(acts.length,1);assert.equal(acts[0].id,'led-test');assert.equal(acts[0].action,'led');assert.deepEqual(acts[0].parameters,{color:'#FF0020'});
+  }finally{await f.close();}
+});

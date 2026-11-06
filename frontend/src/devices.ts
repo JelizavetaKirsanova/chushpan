@@ -6,7 +6,7 @@ import type {ColorDraft,UserColor} from './color_editor';
 
 type Values=Record<string,unknown>;
 interface BleDiagnostic {report_id?:string;at?:string;connection?:string;compatibility?:string;errors?:{stage:string;type:string;uuid?:string}[];services?:{uuid:string;characteristics:{uuid:string;properties:string[];write_modes:string[];read?:{byte_count?:number;error?:string}}[]}[];notifications?:{uuid:string;byte_count:number}[];}
-interface BleStatus {driver:string;driver_id?:string;compatibility:string;confirmed_functions?:string[];diagnostic?:BleDiagnostic;last_command?:{status:string;physical_confirmed?:boolean}|null;pending_probe?:{id:string;requested:{action:string}}|null;}
+interface BleStatus {driver:string;driver_id?:string;compatibility:string;confirmed_functions?:string[];diagnostic?:BleDiagnostic;last_command?:{status:string;physical_confirmed?:boolean}|null;pending_probe?:{id:string;requested:{action:string;rgb?:number[]}}|null;}
 export interface DeviceRecord {id:string;revision:number;name:string;kind:'led_strip'|'mac'|'external_display'|'airplay'|'audio_output'|'wled';protocol:string;endpoint:string;place_id:string;room:string;state:Values;sent:Values;last_contact:string|null;state_at:string|null;result_status:string|null;favorites:string[];favorite?:boolean;aliases?:string[];auto_connect?:boolean;features:Record<string,boolean|string|string[]>;connection:string;usable:boolean;reason:string;busy:boolean;ble?:BleStatus;preview_color?:string|null;}
 interface Collection {id:string;revision:number;name:string;place_id:string;device_ids?:string[];}
 interface Output {uid:string;name:string;active:boolean;transport:string;}
@@ -43,6 +43,9 @@ export class DevicesView {
   private colorDrafts=new Map<string,ColorDraft>();
   private colorEditor:ColorEditor|null=null;
   private previewTimers=new Map<string,ReturnType<typeof setTimeout>>();
+  private previewRequests=new Set<string>();
+  private actionTargets=new Map<string,string>();
+  private actionFeedback=new Map<string,{text:string;error:boolean}>();
   private confirmation='';
   private tab:'control'|'settings'|'history'='control';
   private auxiliary:HTMLDialogElement|null=null;
@@ -58,7 +61,7 @@ export class DevicesView {
   private narrow=window.matchMedia('(max-width: 1190px)');
   private previousFocus:HTMLElement|null=null;
   constructor(private send:(value:object)=>void,private chat?:(text:string)=>void,private wake?:()=>void,private navigate?:(view:string)=>void) {
-    this.writer=new DeviceWriter(value=>{if(this.online)this.send(value);},()=>{this.renderList();this.updateColorEditor();});
+    this.writer=new DeviceWriter(value=>{if(this.online){const v=value as {id:string;request_id:string};this.actionTargets.set(v.request_id,v.id);this.send(value);}},()=>{this.renderList();this.updateColorEditor();});
     const top=el('div','','devices-topbar');
     const command=el('form','','device-command-bar');const search=el('input');search.type='search';search.placeholder='Найди устройство или напиши команду…';search.setAttribute('aria-label','Поиск устройств');search.oninput=()=>{this.search=search.value;this.renderList();};
     const searchIcon=el('span');searchIcon.innerHTML=icon('search');const mic=this.button('',()=>this.wake?.(),'device-mic');mic.innerHTML=icon('mic');mic.setAttribute('aria-label','Голосовая команда');
@@ -81,16 +84,23 @@ export class DevicesView {
   private button(label:string,action:()=>void,cls=''):HTMLButtonElement {const b=el('button',label,cls);b.type='button';b.disabled=!this.online;b.onclick=action;return b;}
   private label(title:string,input:HTMLElement):HTMLLabelElement {const n=el('label','','device-field');n.append(el('span',title),input);return n;}
   private select(items:[string,string][],value:string):HTMLSelectElement {const s=el('select');for(const [id,name]of items){const o=el('option',name);o.value=id;s.append(o);}s.value=value;return s;}
-  private request(value:object):string {const request_id=crypto.randomUUID();if(this.online)this.send({...value,request_id});return request_id;}
-  connection(online:boolean):void {this.online=online;if(!online){for(const timer of this.previewTimers.values())clearTimeout(timer);this.previewTimers.clear();this.writer.disconnect();this.autoChecked.clear();this.autoRequest='';this.scanRequest='';this.checkRequest='';this.wizardBusy=false;this.feedback.textContent='Нет соединения. Изменения не отправляются; последнее состояние может устареть.';}this.root.querySelectorAll<HTMLInputElement|HTMLSelectElement|HTMLButtonElement>('input,select,button').forEach(n=>n.disabled=!online);if(online)this.request({op:'refresh'});this.renderList();this.renderPanel();this.renderWizard();}
+  private request(value:object):string {const request_id=crypto.randomUUID();const v=value as {op:string;id?:string};if(v.op==='color_preview')this.previewRequests.add(request_id);if(v.id&&['probe_led','confirm_probe'].includes(v.op))this.actionTargets.set(request_id,v.id);if(this.online)this.send({...value,request_id});return request_id;}
+  connection(online:boolean):void {this.online=online;if(!online){for(const timer of this.previewTimers.values())clearTimeout(timer);this.previewTimers.clear();this.previewRequests.clear();this.actionTargets.clear();this.writer.disconnect();this.autoChecked.clear();this.autoRequest='';this.scanRequest='';this.checkRequest='';this.wizardBusy=false;this.feedback.textContent='Нет соединения. Изменения не отправляются; последнее состояние может устареть.';}this.root.querySelectorAll<HTMLInputElement|HTMLSelectElement|HTMLButtonElement>('input,select,button').forEach(n=>n.disabled=!online);if(online)this.request({op:'refresh'});this.renderList();this.renderPanel();this.renderWizard();}
   receive(event:HudEvent):void {
     if(event.type!=='devices')return;
     this.data=event;
+    const previewAck=!!event.operation_id&&this.previewRequests.delete(event.operation_id);
+    const target=event.operation_id?this.actionTargets.get(event.operation_id):undefined;
+    if(target&&!event.running&&(event.result||event.error)){
+      const error=!!event.error||!!event.result?.error||event.result?.result_status==='failed';
+      this.actionFeedback.set(target,{text:event.error??event.result?.error??event.result?.message??event.message??outcomes[event.result?.result_status??'']??'',error});
+      this.actionTargets.delete(event.operation_id!);
+    }
     for(const d of event.items){if(d.ble?.pending_probe)this.pendingProbes.set(d.id,d.ble.pending_probe.id);else if(d.ble)this.pendingProbes.delete(d.id);}
     if(event.result?.saved_color_id){const saved=event.user_colors?.find(c=>c.id===event.result?.saved_color_id);if(saved){for(const draft of this.colorDrafts.values()){if(draft.editingId===saved.id)draft.editingRevision=saved.revision;}}}
     if(event.operation_id===this.autoRequest&&!event.running&&(event.result||event.error))this.autoRequest='';
     if(event.operation_id&&!event.running&&(event.result||event.error))this.writer.complete(event.operation_id,!event.error&&event.result?.result_status!=='failed');
-    if(event.error||event.message||event.result){this.feedback.textContent=event.error??event.message??event.result?.error??event.result?.message??outcomes[event.result?.result_status??'']??'';this.feedback.dataset.error=String(!!event.error||!!event.result?.error);}
+    if((event.error||event.message||event.result)&&(!previewAck||event.error)){this.feedback.textContent=event.error??event.result?.error??event.message??event.result?.message??outcomes[event.result?.result_status??'']??'';this.feedback.dataset.error=String(!!event.error||!!event.result?.error||event.result?.result_status==='failed');}
     else if(!this.feedback.dataset.error)this.feedback.textContent='Выбери устройство для управления. Подключение проверяется по твоему действию.';
     if(event.result?.probe_id&&event.result.device_id)this.pendingProbes.set(event.result.device_id,event.result.probe_id);
     if(event.result?.status==='confirmation_required')this.confirmation=this.selected;
@@ -177,6 +187,7 @@ export class DevicesView {
     const d=this.data?.items.find(d=>d.id===this.selected);if(!d)this.selected='';this.panel.replaceChildren();this.colorEditor=null;this.panel.hidden=!d;this.placePanel();if(!d)return;
     const heading=el('div','','device-panel-heading');heading.append(el('h2',d.name),this.button('×',()=>{this.selected='';this.renderList();this.renderPanel();},'device-close'));const hero=el('div','','device-hero');hero.dataset.kind=d.kind;const symbol=el('span','','device-hero-symbol');symbol.innerHTML=icon(deviceIcon(d));hero.append(symbol,heading,el('p',[this.placeName(d.place_id),d.room].filter(Boolean).join(' · '),'device-hero-location'));this.panel.append(hero,el('p',this.statusText(d)+' · '+(protocolNames[d.protocol]??d.protocol),'device-connection'),el('p',this.stateText(d),'device-last-state'));
     const tabs=el('div','','device-panel-tabs');for(const [key,label]of [['control','Управление'],['settings','Настройки'],['history','История']] as const){const b=this.button(label,()=>{this.tab=key;if(key==='history')this.request({op:'history',id:d.id});this.renderPanel();});b.setAttribute('aria-pressed',String(this.tab===key));tabs.append(b);}this.panel.append(tabs);
+    const feedback=this.actionFeedback.get(d.id);if(feedback){const status=el('p',feedback.text,'device-action-feedback'+(feedback.error?' device-warning':''));status.setAttribute('role',feedback.error?'alert':'status');this.panel.append(status);}
     if(this.tab==='settings'){this.metadata(d);const details=this.panel.querySelector<HTMLDetailsElement>('.device-advanced');if(details)details.open=true;return;}
     if(this.tab==='history'){const log=el('div','','device-history');if(this.history?.id===d.id&&this.history.items.length){for(const item of this.history.items){const row=el('article');row.append(el('strong',({led:'Свет',brightness:'Яркость',volume:'Громкость',inspect:'Проверка',audio_output:'Аудиовыход'} as Record<string,string>)[item.action]??item.action),el('p',outcomes[item.result_status]??'Не подтверждено'),el('small',new Date(item.at+'Z').toLocaleString('ru-RU')+' · '+item.elapsed_ms+' мс'));log.append(row);}}else log.append(el('p','История команд пока пуста.','device-hint'));this.panel.append(log);return;}
     if(!d.usable)this.panel.append(el('p',d.reason,'device-warning'));
@@ -206,11 +217,12 @@ export class DevicesView {
     if(d.features.brightness)this.panel.append(this.slider(d,'Яркость ленты','brightness','led',d.state.brightness,d.sent.brightness));
     let draft=this.colorDrafts.get(d.id);if(!draft){draft=colorDraft(d.preview_color??String(d.sent.color??d.state.color??'#FFFFFF'));this.colorDrafts.set(d.id,draft);}
     this.colorEditor=new ColorEditor({device:{...d,busy:d.busy||this.writer.busy(d.id)},online:this.online,draft,colors:this.data?.user_colors??[],presets:colors,
-      preview:color=>this.previewColor(d.id,color),apply:color=>{if(!this.canAct(d))return;this.flushPreview(d.id,color);this.act(d,'led',{color},true);},
+      preview:color=>this.previewColor(d.id,color),apply:color=>{const current=this.data?.items.find(item=>item.id===d.id);if(!current||!this.canAct(current))return;this.flushPreview(d.id,color);this.act(current,'led',{color},true);},
       save:(value,existing)=>this.request({op:'color_save',value,...(existing?{color_id:existing.id,revision:existing.revision}:{})}),
       remove:color=>this.request({op:'color_delete',color_id:color.id,revision:color.revision,confirmed:true}),
       favorite:color=>this.request({op:'favorites',id:d.id,revision:d.revision,colors:[...new Set([...d.favorites,color])]}),
-      verify:()=>this.panel.querySelector<HTMLDetailsElement>('.device-control-test')?.setAttribute('open','')});
+      verify:color=>{const current=this.data?.items.find(item=>item.id===d.id);if(current&&this.canAct(current)&&window.confirm(`Отправить один тест RGB ${color} выбранной ленте «${current.name}»? После отправки подтверди видимый цвет.`))this.request({op:'probe_led',id:d.id,parameters:{color},consent:true});},
+      confirm:(probe_id,observed)=>this.request({op:'confirm_probe',id:d.id,probe_id,observed})});
     this.panel.append(this.colorEditor.root);if(d.kind==='led_strip')this.panel.append(el('p','Тёплый белый — RGB-имитация. Отдельный белый канал не поддерживается.','device-hint'));
     if(d.sent.color){const b=this.button('Повторить последний выбранный цвет',()=>this.act(d,'led',{color:d.sent.color},true));b.disabled=!this.canAct(d)||!swatchAllowed(d,String(d.sent.color));this.panel.append(b);}
     if(d.favorites.length){const favorites=el('div','','device-favorites');for(const color of d.favorites){const remove=this.button('Убрать '+color,()=>this.request({op:'favorites',id:d.id,revision:d.revision,colors:d.favorites.filter(c=>c!==color)}));remove.setAttribute('aria-label','Удалить любимый цвет '+color);favorites.append(remove);}this.panel.append(favorites);}

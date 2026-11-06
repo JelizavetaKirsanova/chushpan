@@ -24,12 +24,13 @@ from backend.context import (
     voice_addressed,
 )
 from backend.devices.center import DeviceCenter
-from backend.devices.colors import ColorLibrary
+from backend.devices.colors import ColorLibrary, hex_rgb, rgb_hex
 from backend.devices.models import Device
 from backend.devices.store import DeviceStore
 from backend.intents import LEDAction, LEDParameters
 from backend.latency import measure
 from backend.led import LEDStrip
+from backend.led import parse as parse_led
 from backend.security import ActionDenied
 from backend.tools.registry import ToolError
 
@@ -252,7 +253,29 @@ class Devices(DeviceCenter):
 
     async def led_command(self, command):
         device = self.guard("led_control")
+        args = parse_led(command, comfortable_brightness=self.s.led.comfortable_brightness)
+        if args and args["action"] == "color":
+            return await self.apply_color(device, rgb_hex(args["rgb"]))
         return await self.strip(device).command(command)
+
+    async def apply_color(self, device, color, *, experiment=False):
+        """One selected-device RGB path for HUD, voice, saved colours and probes."""
+        self.require_adapter()
+        context = request_context.get()
+        caller = context.device if context else self.conv.device
+        if (
+            not caller.authenticated
+            or caller.target_agent_id != "local-mac"
+            or "mac.system" not in caller.capabilities
+        ):
+            raise ActionDenied("Для RGB нужен авторизованный запрос к локальному Mac Agent.")
+        if device.kind != "led_strip" or not self.tools.enabled("led_control"):
+            raise ToolError("Управление выбранной LED-лентой отключено или недоступно.")
+        self.check_location(device)
+        result = await self.strip(device).execute(
+            action="color", rgb=hex_rgb(color), experiment=experiment
+        )
+        return {**result, "device_id": device.id}
 
     def led_state(self, identifier, state):
         """The integration's persisted write journal is shared by all entry points."""
@@ -1228,7 +1251,11 @@ class Devices(DeviceCenter):
                 if lock.locked():
                     raise ValueError("Лента занята другой командой.")
                 async with lock:
-                    result = await self.strip(device).execute(**args, experiment=True)
+                    result = (
+                        await self.apply_color(device, params.color, experiment=True)
+                        if params.color
+                        else await self.strip(device).execute(**args, experiment=True)
+                    )
                 self.probes[identifier] = result["probe_id"]
                 result["device_id"] = identifier
                 result["message"] = (

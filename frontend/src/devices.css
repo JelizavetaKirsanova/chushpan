@@ -220,3 +220,6 @@
 .device-rgb-editor>.device-swatches {grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;padding-bottom:16px;}
 #devices-root .device-rgb-editor .device-swatch[data-blocked=true] {border-style:dashed;}
 #devices-root .device-user-color .device-swatch {padding-left:27px;}
+
+.device-color-observation:not([hidden]) {padding:14px;border:1px solid #c665f144;border-radius:14px;background:rgba(151,112,204,.08);}
+.device-color-observation p,.device-action-feedback {line-height:1.5;overflow-wrap:anywhere;}

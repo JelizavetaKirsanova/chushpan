@@ -273,6 +273,12 @@ class DeviceCenter:
                     elif device.kind == "wled":
                         result = await self.network.execute(device, action, parameters)
                         self.accept_network_state(device, result)
+                    elif (
+                        device.kind == "led_strip"
+                        and action == "led"
+                        and set(parameters) == {"color"}
+                    ):
+                        result = await self.apply_color(device, parameters["color"])
                     elif device.kind == "mac" and action == "audio_output" and not parameters:
                         self.outputs = (await self.native.run("outputs"))["outputs"]
                         builtin = [o for o in self.outputs if o.get("transport") == "builtin"]
@@ -315,10 +321,15 @@ class DeviceCenter:
                     else:
                         name, args, text = self.operation(device, action, parameters)
                         result = await self.call(device, name, args, text)
-            except (ValueError, ToolError, OSError, TimeoutError, httpx.HTTPError):
+            except (ValueError, ToolError, OSError, TimeoutError, httpx.HTTPError) as exc:
                 result = {
                     "result_status": "failed",
-                    "error": "Действие недоступно или не подтверждено. "
+                    "error": str(exc)
+                    if isinstance(exc, ToolError)
+                    and device.kind == "led_strip"
+                    and action == "led"
+                    and "color" in parameters
+                    else "Действие недоступно или не подтверждено. "
                     "Проверь возможности, место и подключение.",
                 }
             elapsed = round((time.monotonic() - started) * 1000)

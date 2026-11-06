@@ -730,6 +730,8 @@ class LEDStrip:
         elif action == "brightness":
             args["level"] = level
         if not experiment and not self._allowed(state, args):
+            if action == "color":
+                raise ToolError(self.rgb_block_reason(state) + " Команду не отправлял.")
             raise ToolError(
                 "Этот режим LED ещё не проверен на вашей прошивке. "
                 "Команду не отправлял. Нужна ручная проверка: python -m backend.led_cli probe."
@@ -746,7 +748,12 @@ class LEDStrip:
         if action == "brightness":
             state.brightness = level
         if experiment:
-            state.pending_probe = {"id": uuid4().hex, "requested": args}
+            state.pending_probe = {
+                "id": uuid4().hex,
+                "requested": args,
+                "driver_fingerprint": state.driver_fingerprint,
+                "gatt_fingerprint": state.gatt_fingerprint,
+            }
         self._save(state)
         diagnostic("result", "unverifiable", delivery_state="sent", physical_confirmed=False)
         return {
@@ -763,11 +770,21 @@ class LEDStrip:
         }
 
     async def confirm_probe(self, probe_id: str, observed: bool) -> None:
-        """Called only by the local experiment CLI, after a human observes the strip."""
+        """Persist explicit local observation for this device and its tested driver."""
         async with self._exclusive():
             state = self._load()
             probe = state.pending_probe
-            if not probe or probe["id"] != probe_id:
+            last = state.last_write or {}
+            if (
+                type(observed) is not bool
+                or not probe
+                or probe["id"] != probe_id
+                or last.get("status") != "written"
+                or last.get("requested") != probe["requested"]
+                or probe.get("driver_fingerprint", state.driver_fingerprint)
+                != state.driver_fingerprint
+                or probe.get("gatt_fingerprint", state.gatt_fingerprint) != state.gatt_fingerprint
+            ):
                 raise ToolError("Проверка устарела или запись не завершилась; режим не разрешён.")
             key = _key(probe["requested"])
             if observed:
