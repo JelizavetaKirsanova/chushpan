@@ -122,8 +122,8 @@ export class SettingsCenterUI {
       const link=document.createElement('a');link.href=url;link.download=event.filename;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);this.feedback('Локальная копия готова. API-ключи в неё не входят.');return;
     }
     if(event.type==='settings_import') {
-      const counts=Object.entries(event.counts).map(([k,n])=>`${({profiles:'Профили',scenarios:'Сценарии',memories:'Воспоминания',categories:'Категории'} as Record<string,string>)[k]??k}: ${n}`).join(' · ');
-      const box=document.getElementById('settings-backup-result');if(!box){this.feedback('Файл проверен. Вернись в резервное копирование, чтобы выбрать его снова.');return;}box.replaceChildren(el('p',counts),el('p',event.message),this.button('Восстановить из этой копии',()=>{if(window.confirm('Применить показанную копию? История разговоров сохранится.'))this.write({op:'import_apply',token:event.token,confirm:true});},true));return;
+      const counts=Object.entries(event.counts).map(([k,n])=>`${({profiles:'Профили',scenarios:'Сценарии',memories:'Воспоминания',categories:'Категории',sensitive:'Чувствительные записи'} as Record<string,string>)[k]??k}: ${n}`).join(' · ');
+      const box=document.getElementById('settings-backup-result');if(!box){this.feedback('Файл проверен. Вернись в резервное копирование, чтобы выбрать его снова.');return;}const consent=this.input(false,'checkbox');box.replaceChildren(el('p',counts),el('p',event.message),...(event.counts.sensitive?[this.label('Отдельно разрешаю импорт чувствительных воспоминаний',consent)]:[]),this.button('Восстановить из этой копии',()=>{if(window.confirm('Применить показанную копию? История разговоров сохранится.'))this.write({op:'import_apply',token:event.token,confirm:true,consent_sensitive:consent.checked});},true));return;
     }
     if(event.type==='dashboard' && this.page==='integrations' && this.online){this.send({op:'refresh'});return;}
     if(event.type==='automations' && this.state) {

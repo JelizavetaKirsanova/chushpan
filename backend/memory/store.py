@@ -105,6 +105,9 @@ class MemoryStore:
                 yield
 
     def invalidate_memory_context(self) -> None:
+        from backend.memory.profile import clear_token_cache
+
+        clear_token_cache()
         floor = self.db.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
         self.db.execute(
             "INSERT INTO preferences VALUES (?, ?, ?, ?) ON CONFLICT(namespace, key) "
@@ -445,6 +448,22 @@ class MemoryStore:
             if not self.db.execute("SELECT 1 FROM facts WHERE id=?", (fact_id,)).fetchone():
                 raise ValueError("no memory with id")
             old = self.db.execute("SELECT * FROM facts WHERE id=?", (fact_id,)).fetchone()
+            versions = [
+                dict(r)
+                for r in self.db.execute(
+                    "SELECT revision,content,source,changed_at FROM memory_versions "
+                    "WHERE memory_id=?",
+                    (fact_id,),
+                )
+            ]
+            versions.append(
+                {
+                    "revision": old["revision"],
+                    "content": old["content"],
+                    "source": old["source"],
+                    "changed_at": _now(),
+                }
+            )
             self._suppress(old["content"])
             from backend.memory.intelligence import forget_derivatives
 
@@ -455,6 +474,14 @@ class MemoryStore:
                 "SELECT id, content FROM facts WHERE project_id IS ?", (old["project_id"],)
             ):
                 if row["content"].casefold() == content.casefold():
+                    self.db.executemany(
+                        "INSERT INTO memory_versions(memory_id,revision,content,source,changed_at) "
+                        "VALUES(?,?,?,?,?)",
+                        [
+                            (row["id"], v["revision"], v["content"], v["source"], v["changed_at"])
+                            for v in versions
+                        ],
+                    )
                     return row["id"], False
             cursor = self.db.execute(
                 "INSERT INTO facts(content, created_at, updated_at, category, source, "
@@ -475,22 +502,55 @@ class MemoryStore:
                     old["confirmed"],
                 ),
             )
+            self.db.executemany(
+                "INSERT INTO memory_versions(memory_id,revision,content,source,changed_at) "
+                "VALUES(?,?,?,?,?)",
+                [
+                    (cursor.lastrowid, v["revision"], v["content"], v["source"], v["changed_at"])
+                    for v in versions
+                ],
+            )
             return int(cursor.lastrowid), True
 
     def forget_all_facts(self) -> int:
-        self._require_memory()
-        with self.db:
-            for row in self.db.execute("SELECT * FROM facts").fetchall():
-                from backend.memory.intelligence import forget_derivatives
+        return self.forget_memories()
 
-                forget_derivatives(self, row)
+    def forget_memories(self, category: str | None = None) -> int:
+        """Bulk deletion avoids scanning the transcript once per fact."""
+        self._require_memory()
+        where, args = (" WHERE category=?", (category,)) if category else ("", ())
+        with self.memory_transaction():
+            for row in self.db.execute(
+                "SELECT content,semantic_key FROM facts" + where, args
+            ).fetchall():
                 self._suppress(row["content"], row["semantic_key"])
-            cur = self.db.execute("DELETE FROM facts")
-            self.db.execute("DELETE FROM memory_actions")
-            self.db.execute("DELETE FROM memory_entities")
-            self.clear_preference("memory", "pending")
+            for row in self.preference("memory", "pending") or []:
+                if category is None or row["category"] == category:
+                    self._suppress(row["content"], row["key"])
+            # Conservative context invalidation also drops derived history search entries;
+            # the complete original transcript remains separately visible to the user.
+            self.db.execute("UPDATE messages SET memory_blocked=1 WHERE memory_blocked=0")
+            if category:
+                self.db.execute(
+                    "DELETE FROM memory_actions WHERE message_id IN (SELECT "
+                    "message_id FROM memory_evidence e JOIN facts f ON f.id=e.memory_id "
+                    "WHERE f.category=?)",
+                    (category,),
+                )
+            else:
+                self.db.execute("DELETE FROM memory_actions")
+            self.db.execute("DELETE FROM conversation_summaries")
+            cur = self.db.execute("DELETE FROM facts" + where, args)
+            self.db.execute(
+                "DELETE FROM memory_entities WHERE id NOT IN "
+                "(SELECT entity_id FROM memory_entity_links)"
+            )
+            pending = self.preference("memory", "pending") or []
+            self.set_preference(
+                "memory", "pending", [r for r in pending if category and r["category"] != category]
+            )
             self.invalidate_memory_context()
-        return cur.rowcount
+            return cur.rowcount
 
     @staticmethod
     def memory_digest(value: str) -> str:

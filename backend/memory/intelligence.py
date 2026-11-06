@@ -177,9 +177,32 @@ def link_entities(store, memory_id, names):
 
 def infer_entities(text):
     # Named tokens only. Relations are evidence of co-mention, not invented causality.
-    return re.findall(
+    names = re.findall(
         r"\b(?:[A-ZА-ЯЁ][a-zа-яё][\w.-]+|[A-Za-z][\w.-]*[A-Z][\w.-]*|BLE|LED|WLED)\b", text
-    )[:8]
+    )
+    return [
+        name
+        for name in names
+        if name.casefold()
+        not in {
+            "мой",
+            "моя",
+            "моё",
+            "мое",
+            "меня",
+            "теперь",
+            "завтра",
+            "сегодня",
+            "пользователь",
+            "изучаю",
+            "люблю",
+            "работаю",
+            "предпочитаю",
+            "решение",
+            "проект",
+            "сценарий",
+        }
+    ][:8]
 
 
 def evidence(store, fact_id, message_id):
@@ -188,7 +211,10 @@ def evidence(store, fact_id, message_id):
     with store.memory_transaction():
         store.db.execute("INSERT OR IGNORE INTO memory_evidence VALUES(?,?)", (fact_id, message_id))
         fact = store.db.execute("SELECT content FROM facts WHERE id=?", (fact_id,)).fetchone()
-        link_entities(store, fact_id, infer_entities(fact[0]))
+        origin = store.db.execute(
+            "SELECT content FROM messages WHERE id=?", (message_id,)
+        ).fetchone()
+        link_entities(store, fact_id, infer_entities(origin[0] if origin else fact[0]))
 
 
 def suppressed(store, content, key=""):

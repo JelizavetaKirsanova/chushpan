@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
+from collections import OrderedDict
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
 
@@ -41,6 +43,8 @@ CATEGORY_LABELS = {
 _SENSITIVE = re.compile(
     r"диагноз|болезн|здоровь|беремен|религи|политическ|паспорт|"
     r"адрес|номер телефона|мой номер|банков|кредит|сексу|интим|зарплат|доход|аллерг|"
+    r"похуд|ожирен|давлени|бессон|тревож|вес.{0,8}\d|"
+    r"финанс|накоп|сбереж|инвест|бюджет|расход|выплат|\bдолг\b|\bдолги\b|"
     r"депресс|аутиз|инвалид|лечен|психи|онкол|лекарств|медицин|\bвич\b|\bспид\b|"
     r"отношени|развод|расстал|партн[её]р|мой муж|моя жена|мой парень|моя девушка|"
     r"координат|широт|долгот|живу (?:в|на)|нахожусь|мой дом|[0-9]{1,3}\.[0-9]{4,}|"
@@ -125,7 +129,28 @@ def extract(text: str) -> list[tuple[str, str, str]]:
     return []
 
 
-def tokens(text: str) -> set[str]:
+_TOKEN_CACHE: OrderedDict[bytes, frozenset[str]] = OrderedDict()
+
+
+def clear_token_cache():
+    _TOKEN_CACHE.clear()
+
+
+def tokens(text: str) -> frozenset[str]:
+    # Hash keys avoid retaining source text. Sensitive inputs never populate the cache.
+    key = hashlib.sha256(text.encode()).digest()
+    if key in _TOKEN_CACHE:
+        _TOKEN_CACHE.move_to_end(key)
+        return _TOKEN_CACHE[key]
+    result = _tokens(text)
+    if safe_memory(text) and not _SENSITIVE.search(text):
+        _TOKEN_CACHE[key] = result
+        if len(_TOKEN_CACHE) > 256:
+            _TOKEN_CACHE.popitem(last=False)
+    return result
+
+
+def _tokens(text: str) -> frozenset[str]:
     skip = {
         "что",
         "как",
@@ -162,6 +187,9 @@ def tokens(text: str) -> set[str]:
         "вчера",
         "сегодня",
         "помнишь",
+        "обсуждали",
+        "разговаривали",
+        "вспомни",
         "напомни",
         "делали",
         "чушпан",
@@ -186,7 +214,7 @@ def tokens(text: str) -> set[str]:
             result.add(stem.replace("е", "ё", 1)[:6])
     if re.search(r"уч[её]б|учусь|учится|университет|\bвуз|taltech", text, re.I):
         result.add("education")
-    return result
+    return frozenset(result)
 
 
 class ProfileMemory:
@@ -249,6 +277,17 @@ class ProfileMemory:
     def binding(self) -> tuple[str, str]:
         c = request_context.get()
         return c.binding if c else ("local", "cli")
+
+    def project_scope(self):
+        c = request_context.get()
+        if not c:
+            return None
+        row = self.store.db.execute(
+            "SELECT p.project_id FROM memory_project_conversations p JOIN dialogue_sessions s "
+            "ON s.conversation_id=p.conversation_id WHERE s.session_id=?",
+            (c.device.session_id,),
+        ).fetchone()
+        return row[0] if row else None
 
     def source(self, kind: str) -> str:
         c = request_context.get()
@@ -375,6 +414,16 @@ class ProfileMemory:
                     (self.source("explicit_user"),),
                 ).fetchall():
                     evidence(self.store, fact[0], row["id"])
+                    saved = self.store.db.execute(
+                        "SELECT content FROM facts WHERE id=?", (fact[0],)
+                    ).fetchone()
+                    original = self.store.db.execute(
+                        "SELECT id FROM messages WHERE conversation_id=? AND role='user' "
+                        "AND instr(casefold(content),casefold(?))>0 ORDER BY id DESC LIMIT 1",
+                        (conversation_id, saved[0]),
+                    ).fetchone()
+                    if original:
+                        evidence(self.store, fact[0], original[0])
             with self.store.memory_transaction():
                 self.store.db.execute(
                     "UPDATE memory_actions SET message_id=? WHERE request_id=? "
@@ -424,12 +473,12 @@ class ProfileMemory:
             )
             self.store.set_preference("memory", "pending", pending[-30:])
 
-    def relevant(self, text: str, limit: int = 6, budget: int = 1600) -> list[dict]:
+    def relevant(self, text: str, limit: int = 6, budget: int | None = None) -> list[dict]:
         from backend.settings_models import MemoryPolicy
 
         policy = MemoryPolicy.model_validate(self.store.preference("settings", "memory") or {})
         started = perf_counter()
-        budget = min(budget, policy.context_chars)
+        budget = policy.context_chars if budget is None else min(budget, policy.context_chars)
         cutoff = (datetime.now(UTC) - timedelta(days=policy.temporary_days)).isoformat()
         query = tokens(text)
         from backend.memory.library import log_access, search
@@ -450,7 +499,8 @@ class ProfileMemory:
             dict(r)
             for r in self.store.db.execute(
                 "SELECT * FROM facts WHERE project_id IS NULL AND status='active' AND "
-                "(semantic_key IN ('response_style','chushpan:mobile','name','address','language') OR semantic_key LIKE 'address:%') LIMIT 8"
+                "(semantic_key IN ('response_style','chushpan:mobile','name','address','language') "
+                "OR semantic_key LIKE 'address:%') LIMIT 8"
             )
         ]
         if re.search(r"продолжим|вчера делали|активн.{0,8}проект", text, re.I):
@@ -535,23 +585,6 @@ class ProfileMemory:
 
     def route(self, text: str) -> dict | None:
         t = command_text(text).rstrip(".!? ")
-        match = re.fullmatch(r"запомни,? (?:что )?(.{2,300})", t)
-        if match:
-            return {"action": "remember_text", "value": match[1]}
-        match = re.fullmatch(r"забудь,? (?:что )?(.{2,300})", t)
-        if match and match[1] != "это":
-            from backend.memory.library import search
-
-            found = [
-                r
-                for r in search(self.store, match[1], context=True)
-                if match[1] in r["content"].casefold()
-            ]
-            return (
-                {"action": "delete", "id": found[0]["id"]}
-                if len(found) == 1
-                else {"action": "clarify"}
-            )
         if t in {"не запоминай этот разговор", "не сохраняй этот разговор"}:
             return {"action": "private"}
         if t in {"исправь это в своей памяти", "исправь это в памяти", "не называй меня так"}:
@@ -613,7 +646,7 @@ class ProfileMemory:
             if args.get("revision", rows[0]["revision"]) != rows[0]["revision"]:
                 raise ToolError("Воспоминание изменилось. Повтори просьбу.")
             args = {**args, "revision": rows[0]["revision"]}
-        if args["action"] in {"correct", "remember_text"} and (
+        if args["action"] == "correct" and (
             not safe_memory(args.get("value", "")) or _SENSITIVE.search(args.get("value", ""))
         ):
             raise ToolError("Для чувствительного факта нужно явное согласие; секреты запрещены.")
@@ -621,8 +654,6 @@ class ProfileMemory:
 
     def summary(self, args: dict) -> str:
         action = args["action"]
-        if action == "remember_text":
-            return "сохранить факт: «" + args["value"] + "»"
         if action == "private":
             return "отключить сохранение этого разговора и извлечение фактов из него"
         if action == "last_saved":
@@ -670,19 +701,6 @@ class ProfileMemory:
     def _execute(self, action: str, id: int | None, value: str, revision: int | None) -> dict:
         if not self.store.memory_available:
             raise ToolError("Долговременная память недоступна; изменения не сохранены.")
-        if action == "remember_text":
-            if not safe_memory(value) or _SENSITIVE.search(value):
-                raise ToolError(
-                    "Секреты запрещены; чувствительные сведения требуют отдельного "
-                    "согласия в разделе Память."
-                )
-            extracted = extract(value)
-            category, key, content = extracted[0] if extracted else ("profile", "", value)
-            idx, _ = self.store.save_memory(
-                content, category=category, key=key, source=self.source("explicit_user")
-            )
-            self.selected[self.binding()] = [idx]
-            return {"id": idx, "message": "Запомнил: «" + content + "»."}
         if action == "private":
             from backend.memory.intelligence import disable_conversation
 
@@ -813,7 +831,7 @@ class ProfileMemory:
                     start.astimezone(UTC).isoformat(),
                     (start + timedelta(days=1)).astimezone(UTC).isoformat(),
                 )
-            query_text = "" if day else value
+            query_text = "решили договорились" if day else value
             history = (
                 search_history(
                     self.store,
@@ -913,7 +931,6 @@ class ProfileMemory:
                         "clarify",
                         "habits",
                         "private",
-                        "remember_text",
                     ],
                 },
                 "id": {"type": "integer", "minimum": 1},

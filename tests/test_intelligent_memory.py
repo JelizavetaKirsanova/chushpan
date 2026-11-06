@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sqlite3
 import time
 from datetime import UTC, datetime
 
@@ -26,6 +27,7 @@ from backend.memory.intelligence import (
 from backend.memory.library import MemoryLibrary, search
 from backend.memory.profile import ProfileMemory, extract
 from backend.memory.store import MemoryStore, _now
+from backend.settings_center import SettingsCenter
 from backend.tools import build_registry
 
 
@@ -91,6 +93,8 @@ def test_categories_extract_only_user_statements(text, category):
         "Я живу в Таллине на улице Примерной 5",
         "Я предпочитаю лечение инсулином",
         "Мой доход 3000 евро",
+        "Моя цель похудеть на 10 кг",
+        "Моя цель накопить 1000 евро",
         "Мой компьютер находится по координатам 59.123456, 24.654321",
     ],
 )
@@ -418,7 +422,24 @@ def test_private_voice_command_is_immediate_without_confirmation(store):
 
 def test_explicit_voice_commands_and_source_explanation(store):
     settings = Settings(language="ru-RU", tools={"enabled": ["memory"]})
-    conv = Conversation(settings, Model(), store, tools=build_registry(settings, store=store))
+
+    class RememberModel(Model):
+        async def chat_stream(self, messages, tools=None):
+            yield ChatChunk(
+                tool_calls=[
+                    {
+                        "function": {
+                            "name": "remember",
+                            "arguments": {"fact": "Я не люблю аниме", "category": "entertainment"},
+                        }
+                    }
+                ],
+                done=True,
+            )
+
+    conv = Conversation(
+        settings, RememberModel(), store, tools=build_registry(settings, store=store)
+    )
 
     async def ask(text):
         return "".join([x async for x in conv.reply(text)])
@@ -455,3 +476,170 @@ def test_search_and_context_remain_bounded_on_large_offline_history(store):
     assert time.perf_counter() - start < 1
     assert len(selected) <= 4 and sum(len(r["content"]) for r in selected) <= 150
     assert store.db.execute("SELECT COUNT(*) FROM memory_metrics").fetchone()[0] < 10
+
+
+def test_old_schema_migration_is_idempotent_preserves_history_and_links(tmp_path):
+    path = tmp_path / "legacy.sqlite"
+    db = sqlite3.connect(path)
+    db.executescript(
+        "CREATE TABLE facts(id INTEGER PRIMARY KEY,content TEXT,created_at TEXT);"
+        "INSERT INTO facts VALUES(42,'Люблю чай','2020-01-01');"
+    )
+    db.close()
+    for _ in range(2):
+        store = MemoryStore(path)
+        try:
+            assert store.facts() == [(42, "Люблю чай")]
+            assert store.memories()[0]["confirmed_at"] is None
+            assert search(store, "чай")[0]["id"] == 42
+            assert store.db.execute("PRAGMA foreign_key_check").fetchall() == []
+        finally:
+            store.close()
+
+
+def test_conversation_history_paging_keeps_all_original_messages(store):
+    cid = store.new_conversation()
+    for i in range(250):
+        store.add(cid, "user", f"Сообщение {i}")
+    latest = store.conversation_page(cid)
+    older = store.conversation_page(cid, 200)
+    assert len(latest) == 200 and len(older) == 50
+    assert len(store.transcript(cid)) == 250
+    assert not {r["id"] for r in latest} & {r["id"] for r in older}
+
+
+def test_rejected_proposal_cannot_be_reextracted_from_current_or_old_history(store):
+    store.set_preference("settings", "memory", {"automatic": "ask"})
+    context, _, mid = user(store, "Я изучаю алгоритмы")
+    memory = ProfileMemory(store)
+    with request_scope(context):
+        memory.capture(context.text, mid)
+    proposal = store.preference("memory", "pending")[0]
+    center = object.__new__(SettingsCenter)
+    center.store = store
+    center.approve_memory({"id": proposal["id"], "approve": False})
+    with request_scope(context):
+        memory.capture(context.text, mid)
+    assert store.preference("memory", "pending") == [] and store.memories() == []
+
+
+def test_scoped_voice_remember_and_forget_resolve_only_current_project(library):
+    run(library, op="project_add", name="Орион")
+    project = library.snapshot()["projects"][0]["id"]
+    context, cid, _ = user(library.store, "Запомни, что я не люблю аниме")
+    run(library, op="project_bind", project=project, conversation=cid)
+    memory = ProfileMemory(library.store)
+    with request_scope(context):
+        from backend.tools.memory import LongTermMemory
+
+        asyncio.run(LongTermMemory(library.store).remember("я не люблю аниме"))
+        assert memory.project_scope() == project
+    assert library.store.memories()[0]["project_id"] == project
+    assert library.store.facts() == []
+
+
+def test_legacy_settings_backup_route_requires_separate_sensitive_import_consent(store):
+    from types import SimpleNamespace
+
+    from backend.settings_backup import backup_request
+
+    center = SimpleNamespace(
+        store=store, bus=HudBus(), conv=SimpleNamespace(tools=SimpleNamespace(automations=None))
+    )
+    document = {
+        "version": 1,
+        "memories": [{"content": "Мой диагноз астма", "category": "profile", "sensitive": True}],
+    }
+    asyncio.run(backup_request(center, {"op": "import_preview", "document": document}))
+    token = center.pending_import[0]
+    with pytest.raises(ValueError, match="отдельное согласие"):
+        asyncio.run(backup_request(center, {"op": "import_apply", "token": token, "confirm": True}))
+    assert store.memories() == []
+
+
+def test_voice_forget_in_project_never_deletes_matching_global_fact(library):
+    from backend.tools.memory import LongTermMemory
+
+    library.store.save_memory("Любит аниме")
+    run(library, op="project_add", name="Учёба")
+    project = library.snapshot()["projects"][0]["id"]
+    library.store.save_memory("Любит аниме", project_id=project)
+    context, cid, _ = user(library.store, "Забудь про аниме")
+    run(library, op="project_bind", project=project, conversation=cid)
+    with request_scope(context):
+        asyncio.run(LongTermMemory(library.store).forget(text="аниме"))
+    assert library.store.facts() == [(1, "Любит аниме")]
+    assert search(library.store, "аниме", project) == []
+
+
+def test_token_cache_is_bounded_omits_sensitive_inputs_and_clears_on_forget(store):
+    from backend.memory.profile import _TOKEN_CACHE, clear_token_cache, tokens
+
+    clear_token_cache()
+    tokens("Мой диагноз астма")
+    tokens("пароль: fake-secret")
+    assert not _TOKEN_CACHE
+    for i in range(300):
+        tokens(f"алгоритмы {i}")
+    assert len(_TOKEN_CACHE) == 256
+    assert all(isinstance(key, bytes) for key in _TOKEN_CACHE)
+    idx, _ = store.save_memory("Люблю чай")
+    store.forget_fact(idx)
+    assert not _TOKEN_CACHE
+
+
+def test_bulk_clear_preserves_transcripts_and_other_categories_and_purges_indexes(store):
+    _, cid, mid = user(store, "Я изучаю алгоритмы")
+    study, _ = store.save_memory("Я изучаю алгоритмы", category="study")
+    store.save_memory("Люблю чай", category="preference")
+    evidence(store, study, mid)
+    assert store.forget_memories("study") == 1
+    assert store.facts() == [(2, "Люблю чай")]
+    assert store.transcript(cid)
+    assert history(store, "алгоритмы") == []
+    assert store.db.execute("SELECT COUNT(*) FROM memory_evidence").fetchone()[0] == 0
+    assert store.forget_all_facts() == 1
+    assert not store.memories()
+    assert store.db.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_shared_registry_never_leaks_action_context_to_unauthenticated_session(store):
+    settings = Settings(language="ru-RU", tools={"enabled": ["memory"]})
+    tools = build_registry(settings, store=store)
+    tools.memory.last_actions = ["Частное наблюдение про Орион"]
+    device = DeviceContext("untrusted", "server", "untrusted")
+    conv = Conversation(settings, Model(), store, tools=tools, device=device)
+    conv._request = RequestContext(device, "Орион")
+    assert "Частное наблюдение" not in conv.system_prompt
+
+
+def test_cancellation_during_analysis_always_restores_user_context(store):
+    from unittest.mock import AsyncMock
+
+    from backend.tools.registry import user_text as current_user_text
+
+    settings = Settings(language="ru-RU", tools={"enabled": ["memory"]})
+    conv = Conversation(settings, Model(), store, tools=build_registry(settings, store=store))
+    conv.tools.memory.after_response = AsyncMock(side_effect=asyncio.CancelledError)
+
+    async def go():
+        with pytest.raises(asyncio.CancelledError):
+            async for _ in conv.reply("Я не люблю аниме"):
+                pass
+        assert current_user_text.get() is None
+        assert conv._request is None
+
+    asyncio.run(go())
+
+
+def test_voice_replacement_keeps_old_revisions_under_the_new_fact_and_forgets_them_together(store):
+    idx, _ = store.save_memory("Первый вариант", key="test")
+    store.save_memory("Второй вариант", key="test")
+    new, _ = store.replace_fact(idx, "Исправленный вариант")
+    assert new != idx
+    versions = store.db.execute(
+        "SELECT content FROM memory_versions WHERE memory_id=? ORDER BY revision", (new,)
+    ).fetchall()
+    assert [r[0] for r in versions] == ["Первый вариант", "Второй вариант"]
+    store.forget_fact(new)
+    assert store.db.execute("SELECT COUNT(*) FROM memory_versions").fetchone()[0] == 0

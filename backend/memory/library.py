@@ -131,7 +131,8 @@ def search(
         join = " JOIN memory_fts ON memory_fts.rowid=f.id"
         where.append("memory_fts MATCH ?")
         arguments.append(" OR ".join('"' + term + '"*' for term in terms))
-        order = "bm25(memory_fts),f.updated_at DESC"
+        if sort == "recent":
+            order = "bm25(memory_fts),f.updated_at DESC"
     elif terms:
         where.append("(" + " OR ".join("casefold(f.content) LIKE ?" for _ in terms) + ")")
         arguments.extend("%" + term + "%" for term in terms)
@@ -177,6 +178,8 @@ def search(
                 entity=entity,
                 include_inactive=include_inactive,
                 fuzzy=False,
+                offset=offset,
+                sort=sort,
             )
             for item in result:
                 item["_fuzzy"] = True
@@ -685,19 +688,7 @@ class MemoryLibrary(Center):
             category = value.get("category")
             if category and category not in CATEGORY_LABELS:
                 raise ValueError("Неизвестная категория.")
-            with store.memory_transaction():
-                targets = rows(
-                    store.db,
-                    "SELECT * FROM facts" + (" WHERE category=?" if category else ""),
-                    (category,) if category else (),
-                )
-                for row in targets:
-                    store.forget_fact(row["id"])
-                store.clear_preference("memory", "pending")
-                if not category:
-                    store.db.execute("DELETE FROM memory_actions")
-                    store.db.execute("DELETE FROM memory_entities")
-                    store.db.execute("DELETE FROM conversation_summaries")
+            store.forget_memories(category)
             message = (
                 "Записи исключены из поиска и контекста. Старые резервные копии удаляются отдельно."
             )

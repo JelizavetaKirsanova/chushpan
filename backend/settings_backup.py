@@ -11,6 +11,7 @@ from pydantic import Field, model_validator
 from backend.audio.activity import VoiceControls
 from backend.automation.models import Place, Scenario
 from backend.brain.privacy import contains_secret
+from backend.memory.profile import _SENSITIVE
 from backend.personality import PersonalityProfile, Strict
 from backend.settings_models import CATEGORIES, DialogueExtras
 
@@ -133,6 +134,9 @@ async def backup_request(center, value):
                     "profiles": len(document.profiles),
                     "scenarios": len(document.scenarios),
                     "memories": len(document.memories),
+                    "sensitive": sum(
+                        m.sensitive or bool(_SENSITIVE.search(m.content)) for m in document.memories
+                    ),
                     "categories": len(document.settings),
                 },
                 "message": (
@@ -151,6 +155,11 @@ async def backup_request(center, value):
     ):
         raise ValueError("Подтверждение импорта истекло. Выбери файл ещё раз.")
     document = staged[2]
+    if (
+        any(m.sensitive or _SENSITIVE.search(m.content) for m in document.memories)
+        and value.get("consent_sensitive") is not True
+    ):
+        raise ValueError("Для чувствительных воспоминаний нужно отдельное согласие при импорте.")
     if "studio" in document.settings:
         center.validate_studio(document.settings["studio"])
     # Prepare every object first. A corrupt copy cannot leave half an import.
@@ -220,7 +229,7 @@ async def backup_request(center, value):
                 memory.content,
                 category=memory.category,
                 source="local_backup_import",
-                sensitive=memory.sensitive,
+                sensitive=memory.sensitive or bool(_SENSITIVE.search(memory.content)),
             )
         for category, setting in document.settings.items():
             if category != "access":

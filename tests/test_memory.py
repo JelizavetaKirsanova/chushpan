@@ -10,7 +10,7 @@ from backend.config import Settings
 from backend.memory.cli import run_memory
 from backend.memory.store import MemoryStore
 from backend.tools import ToolError, build_registry
-from backend.tools.memory import MAX_FACTS, LongTermMemory, asks_to_remember
+from backend.tools.memory import LongTermMemory, asks_to_remember
 from backend.tools.registry import user_text
 
 
@@ -121,10 +121,9 @@ def test_remember_limits(tmp_path):
         run(memory.remember("  "))
     with pytest.raises(ToolError, match="too long"):
         run(memory.remember("x" * 400))
-    for i in range(MAX_FACTS):
+    for i in range(101):
         memory.store.add_fact(f"Fato {i}.")
-    with pytest.raises(ToolError, match="full"):
-        run(memory.remember("Mais um."))
+    assert run(memory.remember("Mais um."))["ok"]  # retrieval bounds context, not database size
     assert run(memory.remember("Fato 0 corrigido.", replaces=1))["ok"]  # a fix still fits
 
 

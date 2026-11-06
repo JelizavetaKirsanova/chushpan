@@ -5,11 +5,10 @@ from __future__ import annotations
 import re
 
 from backend.context import request_context
-from backend.memory.store import MemoryStore
+from backend.memory.store import MemoryStore, _now
 from backend.security import command_text, explicit_request
 from backend.tools.registry import Tool, ToolError, user_text
 
-MAX_FACTS = 100  # all of them go into the system prompt
 MAX_FACT_CHARS = 300
 # Without it, qwen3 confirmed with "A nota foi salva com sucesso. Se precisar de algo mais...".
 CONFIRM = (
@@ -51,11 +50,27 @@ class LongTermMemory:
     def __init__(self, store: MemoryStore) -> None:
         self.store = store
 
+    def facts(self):
+        from backend.memory.profile import ProfileMemory
+        from backend.memory.store import _now
+
+        scope = ProfileMemory(self.store).project_scope()
+        return [
+            (r["id"], r["content"])
+            for r in self.store.db.execute(
+                "SELECT id,content FROM facts WHERE project_id IS ? AND status='active' "
+                "AND (expires_at IS NULL OR expires_at>?) ORDER BY id",
+                (scope, _now()),
+            )
+        ]
+
     def prepare_remember(self, arguments: dict) -> dict:
-        from backend.memory.profile import safe_memory
+        from backend.memory.profile import _SENSITIVE, safe_memory
 
         if not safe_memory(arguments["fact"]):
             raise ToolError("Секреты нельзя записывать в память.")
+        if _SENSITIVE.search(arguments["fact"]):
+            raise ToolError("Для чувствительного факта нужно отдельное согласие в разделе Память.")
         return arguments
 
     async def remember(
@@ -76,12 +91,10 @@ class LongTermMemory:
         replaced = None
         if replaces is not None:
             replaces = _as_id(replaces)
-            old = dict(self.store.facts()).get(replaces)
+            old = dict(self.facts()).get(replaces)
             if old is None:
                 raise ToolError(f"no memory with id {replaces}")
             replaced = old
-        elif len(self.store.facts()) >= MAX_FACTS:
-            raise ToolError("memory is full; ask the user which memory to forget first")
         from backend.memory.profile import _SENSITIVE, ProfileMemory
 
         sensitive = bool(_SENSITIVE.search(fact))
@@ -89,11 +102,22 @@ class LongTermMemory:
             fact_id, new = (
                 self.store.replace_fact(replaces, fact)
                 if replaces is not None
-                else self.store.save_memory(fact, category=category, sensitive=sensitive)
+                else self.store.save_memory(
+                    fact,
+                    category=category,
+                    sensitive=sensitive,
+                    project_id=ProfileMemory(self.store).project_scope(),
+                )
             )
             self.store.db.execute(
-                "UPDATE facts SET sensitive=?, source=? WHERE id=?",
-                (int(sensitive), ProfileMemory(self.store).source("explicit_user"), fact_id),
+                "UPDATE facts SET sensitive=?, source=?,confirmed=1,confidence=1,confirmed_at=? "
+                "WHERE id=?",
+                (
+                    int(sensitive),
+                    ProfileMemory(self.store).source("explicit_user"),
+                    _now(),
+                    fact_id,
+                ),
             )
         out: dict = {"ok": True, "id": fact_id, "already_known": not new}
         if replaced:
@@ -103,7 +127,7 @@ class LongTermMemory:
     def prepare_forget(self, arguments: dict) -> dict:
         """Resolve one real fact before asking for confirmation, then bind its identity."""
         id, text = arguments.get("id"), arguments.get("text")
-        facts = self.store.facts()
+        facts = self.facts()
         if id is not None:
             targets = [f for f in facts if f[0] == _as_id(id)]
         elif text and text.strip():
@@ -154,14 +178,14 @@ class LongTermMemory:
         return {"id": target_id}
 
     def forget_summary(self, arguments: dict) -> str:
-        content = dict(self.store.facts()).get(arguments["id"])
+        content = dict(self.facts()).get(arguments["id"])
         if content is None:
             raise ToolError("no memory matches")
         return f"удалить факт №{arguments['id']} из памяти: «{content}»"
 
     def remember_summary(self, arguments: dict) -> str:
         if arguments.get("replaces"):
-            old = dict(self.store.facts()).get(arguments["replaces"])
+            old = dict(self.facts()).get(arguments["replaces"])
             if old is None:
                 raise ToolError("no memory with id")
             return f"заменить факт №{arguments['replaces']} «{old}» на «{arguments['fact']}»"
@@ -169,7 +193,7 @@ class LongTermMemory:
 
     async def forget(self, id: int | None = None, text: str | None = None) -> dict:
         target = self.prepare_forget({"id": id, "text": text})["id"]
-        content = dict(self.store.facts())[target]
+        content = dict(self.facts())[target]
         self.store.forget_fact(target)
         return {"ok": True, "forgotten": content, "note": CONFIRM}
 
@@ -184,6 +208,8 @@ def _as_id(value: object) -> int:
 
 def memory_tools(store: MemoryStore) -> list[Tool]:
     memory = LongTermMemory(store)
+    from backend.memory.profile import CATEGORY_LABELS
+
     cap = {
         "ru": "запоминать, исправлять и удалять факты по просьбе пользователя",
         "pt": "guardar e esquecer fatos sobre a pessoa entre conversas (memória de longo prazo)",
@@ -217,7 +243,7 @@ def memory_tools(store: MemoryStore) -> list[Tool]:
                 },
                 "category": {
                     "type": "string",
-                    "enum": ["profile", "preference", "habit", "project", "episode", "correction"],
+                    "enum": list(CATEGORY_LABELS),
                 },
             },
             required=["fact"],
