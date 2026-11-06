@@ -73,7 +73,7 @@ test('metadata and favorite colors persist with optimistic revision',async()=>{
 test('wizard scans only by explicit click and allows honest manual addition',async()=>{
   const f=fixture();try {
     f.button('Добавить устройство');f.button('LED-лента',f.window.document.querySelector('dialog')!);
-    assert.equal(f.requests.some(r=>r.op==='discover'),false);f.button('Найти поблизости');assert.equal(f.requests.at(-1)!.op,'discover');
+    assert.equal(f.requests.some(r=>r.op==='discover'),false);f.button('Найти устройства',f.window.document.querySelector('dialog')!);assert.equal(f.requests.at(-1)!.op,'discover');
     f.view.receive({...f.state,candidates:[{token:'found-token',name:'ELK-BLEDOB'}]});f.button('ELK-BLEDOB');f.button('Проверить подключение');assert.equal(f.requests.at(-1)!.op,'check');assert.equal(f.requests.at(-1)!.token,'found-token');
     f.view.receive({...f.state,checked:{message:'GATT ответил. Функции не подтверждены.'}});f.button('Далее');
     const form=f.window.document.querySelector('dialog form')!;form.querySelector('input')!.value='Свет у окна';form.querySelector('select')!.value='dorm';form.dispatchEvent(new f.window.Event('submit',{cancelable:true}));
@@ -161,5 +161,76 @@ test('opening location settings and search performs no discovery',async()=>{
     f.button('×',f.window.document.querySelector('dialog[open]')!);
     f.window.document.querySelector<HTMLButtonElement>('[aria-label="Открыть поиск устройств"]')!.click();assert.match(f.window.document.querySelector('.device-search-results')!.textContent!,/Свет у стола/);
     assert.equal(f.requests.some(r=>r.op==='discover'||r.op==='inspect'||r.op==='system_audio'),false);
+  }finally{await f.close();}
+});
+
+test('BLE discovery shows signal and unknown group, connects explicitly and ignores late results',async()=>{
+  const f=fixture();try{
+    f.button('Найти устройства');const scan=f.requests.at(-1)!;
+    assert.equal(scan.op,'discover');assert.equal(scan.kind,'led_strip');
+    let dialog=f.window.document.querySelector('dialog')!;
+    assert.match(dialog.querySelector('[role=status]')!.textContent!,/Сканирование Bluetooth LE/);
+    assert.equal(dialog.querySelector('[aria-busy=true]')!.getAttribute('aria-busy'),'true');
+    f.view.receive({...f.state,operation_id:scan.request_id as string,candidates:[
+      {token:'elk',name:'ELK-BLEDDM 39',kind:'led_strip',protocol:'ble',rssi:-58,compatibility:'candidate',compatibility_reason:'Семейство ELK BLE; протокол требует проверки.'},
+      {token:'unknown',name:'Sensor',kind:'led_strip',protocol:'ble',rssi:-82,compatibility:'unknown',compatibility_reason:'Совместимость не определена.'}
+    ]});
+    assert.equal(dialog.querySelectorAll('.device-discovery-row').length,2);
+    assert.match(dialog.textContent!,/−?\-58 dBm/);assert.match(dialog.textContent!,/Bluetooth \(BLE\)/);
+    assert.match(dialog.querySelectorAll('.device-discovery-group')[1].textContent!,/Неизвестные.*Sensor.*не определена/s);
+    assert.equal(f.requests.some(r=>r.op==='check'||r.op==='probe_led'||r.op==='act'),false);
+    f.button('Повторить поиск',dialog);const second=f.requests.at(-1)!;
+    f.view.receive({...f.state,operation_id:scan.request_id as string,candidates:[]});
+    assert.ok(dialog.querySelector('[aria-busy=true]'));
+    f.view.receive({...f.state,operation_id:second.request_id as string,candidates:[{token:'elk2',name:'ELK-BLEDDM 39',kind:'led_strip',rssi:-58,compatibility:'candidate'}]});
+    dialog.querySelector<HTMLButtonElement>('[aria-label="Подключить ELK-BLEDDM 39"]')!.click();
+    const check=f.requests.at(-1)!;assert.equal(check.op,'check');assert.equal(check.token,'elk2');
+    f.view.receive({...f.state,operation_id:check.request_id as string,error:'FFF3 не найден. Команды не отправлял.'});
+    assert.match(dialog.textContent!,/FFF3 не найден/);assert.equal(f.requests.some(r=>r.op==='act'||r.op==='probe_led'),false);
+    f.button('Проверить подключение',dialog);assert.equal(f.requests.at(-1)!.op,'check');
+    assert.doesNotMatch(dialog.textContent!,/FFF3 не найден/);
+  }finally{await f.close();}
+});
+
+test('scan errors remain visible and cancelling rejects stale scan responses',async()=>{
+  const f=fixture();try{
+    f.button('Найти устройства');const first=f.requests.at(-1)!;const dialog=f.window.document.querySelector('dialog')!;
+    f.view.receive({...f.state,operation_id:first.request_id as string,error:'Bluetooth выключен. Включи его.'});
+    assert.match(dialog.textContent!,/Bluetooth выключен/);assert.equal(dialog.querySelector('[aria-busy=true]'),null);
+    f.button('Найти устройства',dialog);const second=f.requests.at(-1)!;f.button('Остановить поиск',dialog);
+    assert.equal(f.requests.at(-1)!.op,'cancel');assert.equal(f.requests.at(-1)!.operation_id,second.request_id);
+    f.view.receive({...f.state,operation_id:second.request_id as string,candidates:[{token:'late',name:'Late sensor'}]});
+    assert.doesNotMatch(dialog.textContent!,/Late sensor/);
+  }finally{await f.close();}
+});
+
+test('automatic connection checks restore opted-in local strips sequentially without control writes',async()=>{
+  const f=fixture();try{
+    const first={...f.state.items[0],auto_connect:true};const second={...first,id:'led-second',name:'Вторая лента'};
+    const remote={...first,id:'remote',usable:false,place_id:'home'};
+    const state={...f.state,items:[first,second,remote]};f.view.receive(state);
+    const a=f.requests.at(-1)!;assert.equal(a.op,'inspect');assert.equal(a.id,first.id);
+    f.view.receive(state);assert.equal(f.requests.filter(r=>r.op==='inspect').length,1);
+    f.view.receive({...state,operation_id:a.request_id as string,result:{message:'GATT ответил.',result_status:'unverified'}});
+    const b=f.requests.at(-1)!;assert.equal(b.op,'inspect');assert.equal(b.id,second.id);
+    f.view.receive({...state,operation_id:b.request_id as string,error:'Нет соединения.'});
+    f.view.receive(state);assert.equal(f.requests.filter(r=>r.op==='inspect').length,2);
+    assert.equal(f.requests.some(r=>r.op==='act'||r.op==='probe_led'),false);
+    f.view.connection(false);f.view.connection(true);f.view.receive(state);
+    assert.equal(f.requests.filter(r=>r.op==='inspect').length,3);
+    assert.equal(f.requests.at(-1)!.id,first.id);
+  }finally{await f.close();}
+});
+
+test('control diagnostic only sends one chosen frame after explicit consent',async()=>{
+  const f=fixture();try{
+    f.view.receive({...f.state,items:[{...f.state.items[0],features:{probe:true,colors:[],color:false,power_on:false,power_off:false,brightness:false}}]});
+    f.open('Свет у стола');f.button('Проверить управление');assert.equal(f.requests.some(r=>r.op==='probe_led'),false);
+    assert.equal(f.window.document.querySelector<HTMLInputElement>('[aria-label="Выбрать цвет ленты"]')!.disabled,true);
+    f.button('Тест: Красный');const request=f.requests.at(-1)!;
+    assert.equal(request.op,'probe_led');assert.deepEqual(request.parameters,{color:'#FF0000'});assert.equal(request.consent,true);
+    f.view.receive({...f.state,operation_id:request.request_id as string,result:{probe_id:'observation',message:'Проверь ленту.'}});
+    f.button('Да, вижу результат');assert.equal(f.requests.at(-1)!.op,'confirm_probe');assert.equal(f.requests.at(-1)!.probe_id,'observation');
+    assert.equal(f.requests.filter(r=>r.op==='probe_led').length,1);
   }finally{await f.close();}
 });

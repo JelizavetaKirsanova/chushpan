@@ -26,6 +26,7 @@ class Device(BaseModel):
     aliases: list[str] = Field(default_factory=list, max_length=16)
     favorite: bool = False
     auto_connect: bool = False
+    ble_name: str | None = Field(default=None, min_length=1, max_length=80)
 
     @model_validator(mode="after")
     def identity(self):

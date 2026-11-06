@@ -1,4 +1,14 @@
 /* Device centre: the existing application shell stays in place. */
+.device-discovery-group {margin:18px 0;}
+.device-discovery-group h3 {font-size:14px;color:#e4c7f5;}
+.device-discovery-row {display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid var(--device-line);border-radius:14px;padding:12px;margin:8px 0;background:#b85ee908;}
+.device-discovery-row>div {min-width:0;overflow-wrap:anywhere;}
+#devices-root .device-discovery-name {padding:0;border:0;background:none;text-align:left;font-weight:600;}
+.device-scan-progress {display:flex;align-items:center;gap:10px;color:#dfb7f5;}
+.device-scan-progress::before {content:'';width:15px;height:15px;border:2px solid #c665f144;border-top-color:var(--device-accent);border-radius:50%;animation:device-scan-spin .8s linear infinite;}
+@keyframes device-scan-spin {to {transform:rotate(360deg);}}
+@media(prefers-reduced-motion:reduce) {.device-scan-progress::before {animation:none;}}
+@media(max-width:540px) {.device-discovery-row {align-items:stretch;flex-direction:column;}}
 .hud[data-view=devices] .devices-page {display:block;padding:0;background:radial-gradient(ellipse at 7% 0%,#8b426339,transparent 44%),radial-gradient(ellipse at 90% 35%,#763ca51c,transparent 48%),#1b1926;}
 #devices-root {--device-line:#ffffff18;--device-muted:#b9afc7;--device-accent:#c665f1;min-height:100%;color:#f3eff9;}
 #devices-root *,#devices-root *::before,#devices-root *::after {box-sizing:border-box;}

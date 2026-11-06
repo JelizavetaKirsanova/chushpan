@@ -414,7 +414,10 @@ def test_uuid_discovery_is_bounded_async_and_never_rebinds_or_writes(monkeypatch
 
         result, _ = await asyncio.gather(strip.discover(), heartbeat())
         assert ticks
-        assert result["candidates"] == [{"name": "ELK-BLEDOB", "address": "new-uuid"}]
+        assert [(c["name"], c["address"], c["compatibility"]) for c in result["candidates"]] == [
+            ("ELK-BLEDOB", "new-uuid", "candidate"),
+            ("other", "other-uuid", "unknown"),
+        ]
         assert str(strip.cfg.address) == "3a4f5301-2291-2e56-628d-83567e951876"
         assert not strip.path.exists()
 

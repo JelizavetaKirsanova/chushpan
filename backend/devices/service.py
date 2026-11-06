@@ -75,6 +75,7 @@ class Devices(DeviceCenter):
         self.inflight = set()
         self.completed = OrderedDict()
         self.scans = {}
+        self.discovery_lock = asyncio.Lock()
         self.probes = {}
         self.strips = {}
         self.preferred = None
@@ -169,6 +170,8 @@ class Devices(DeviceCenter):
             else:
                 settings = self.s.model_copy(deep=True)
                 settings.led.enabled, settings.led.address = True, UUID(device.endpoint)
+                if device.ble_name:
+                    settings.led.name, settings.led.firmware = device.ble_name, "unknown"
                 strip = LEDStrip(settings)
                 strip.path = self.s.data_path / "devices" / device.id / "led.json"
             strip.before_write = lambda: self.check_location(self.store.get(device.id))
@@ -482,15 +485,27 @@ class Devices(DeviceCenter):
                 *(self.discover(k) for k in ("led_strip", "airplay", "audio_output")),
                 return_exceptions=True,
             )
+            for kind_name, result in zip(("LED", "AirPlay", "Аудиовыходы"), results, strict=True):
+                if isinstance(result, Exception):
+                    self.publish(message=f"{kind_name}: {result}")
             return [item for result in results if isinstance(result, list) for item in result]
         if kind not in KINDS:
             raise ValueError("Для этого типа нет подключённого протокола управления.")
         if kind == "led_strip":
             strip = LEDStrip(self.s.model_copy(deep=True))
             strip.cfg = strip.cfg.model_copy(update={"enabled": True})
-            items = (await strip.discover())["candidates"]
+            async with self.discovery_lock:
+                items = (await strip.discover())["candidates"]
             items = [
-                {"name": v.get("name") or "ELK-BLEDOB", "endpoint": str(UUID(v["address"]))}
+                {
+                    **{
+                        k: v[k]
+                        for k in ("rssi", "compatibility", "compatibility_reason", "connection")
+                        if k in v
+                    },
+                    "name": v.get("name") or "Без имени",
+                    "endpoint": str(UUID(v["address"])),
+                }
                 for v in items
             ]
         elif kind == "airplay":
@@ -520,7 +535,7 @@ class Devices(DeviceCenter):
             ]
         candidates = []
         self.scans = {k: v for k, v in self.scans.items() if v["expires"] > time.monotonic()}
-        for item in items[:30]:
+        for item in items if kind == "led_strip" else items[:30]:
             token = uuid4().hex
             self.scans[token] = {**item, "kind": kind, "expires": time.monotonic() + 300}
             candidates.append(
@@ -530,6 +545,11 @@ class Devices(DeviceCenter):
                     "kind": kind,
                     "protocol": KINDS[kind][1],
                     "status": "discovered",
+                    **{
+                        k: item[k]
+                        for k in ("rssi", "compatibility", "compatibility_reason", "connection")
+                        if k in item
+                    },
                 }
             )
         return candidates
@@ -544,6 +564,7 @@ class Devices(DeviceCenter):
                 kind=found["kind"],
                 protocol=KINDS[found["kind"]][1],
                 endpoint=found["endpoint"],
+                ble_name=found["name"] if found["kind"] == "led_strip" else None,
             )
         kind = value.get("kind")
         if kind not in KINDS:
@@ -668,6 +689,7 @@ class Devices(DeviceCenter):
                 "физическое состояние не считывается.",
                 "result_status": "unverified",
                 "characteristics": result["characteristics"],
+                "compatibility": result["compatibility"],
             }
         if device.kind == "external_display":
             from backend.mac import MacDesktop
@@ -747,17 +769,16 @@ class Devices(DeviceCenter):
                 if candidate.kind == "led_strip":
                     settings = self.s.model_copy(deep=True)
                     settings.led.enabled, settings.led.address = True, UUID(candidate.endpoint)
+                    if candidate.ble_name:
+                        settings.led.name, settings.led.firmware = candidate.ble_name, "unknown"
                     strip = LEDStrip(settings)
                     strip.path = self.s.data_path / "devices" / "connection-check" / "led.json"
                     lock = self.tools.device_locks.setdefault("led", asyncio.Lock())
                     if lock.locked():
                         raise ValueError("Лента выполняет другую команду. Повтори проверку позже.")
                     async with lock:
-                        await strip.inspect(listen_s=0)
-                    message = (
-                        "Ожидаемый GATT-профиль ответил. Функции прошивки требуют "
-                        "отдельного теста; физическое состояние не считывалось."
-                    )
+                        inspection = await strip.inspect(listen_s=0)
+                    message = inspection["message"]
                 elif candidate.kind == "external_display":
                     from backend.mac import MacDesktop
                     from backend.night import BetterDisplay
@@ -795,7 +816,20 @@ class Devices(DeviceCenter):
                         "Локальные функции Mac зарегистрированы. Батарея, звук и яркость "
                         "читаются кнопкой обновления после добавления."
                     )
-                self.publish(checked={"message": message}, request_id=request_id)
+                self.publish(
+                    checked={
+                        "message": message,
+                        **(
+                            {
+                                "compatibility": inspection["compatibility"],
+                                "connection": "disconnected",
+                            }
+                            if candidate.kind == "led_strip"
+                            else {}
+                        ),
+                    },
+                    request_id=request_id,
+                )
                 return
             if op == "add":
                 device = self.candidate(value)
@@ -804,6 +838,7 @@ class Devices(DeviceCenter):
                     value.get("place_id", "general"),
                     value.get("room", ""),
                 )
+                device.auto_connect = value.get("auto_connect", False)
                 device = Device.model_validate(device.model_dump())
                 self.valid_place(device.place_id)
                 saved = self.store.save(device)

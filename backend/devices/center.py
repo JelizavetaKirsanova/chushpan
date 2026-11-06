@@ -331,8 +331,9 @@ class DeviceCenter:
     def voice_plan(self, text):
         """Exact names/aliases plus conservative light-group matching; never guesses a target."""
         from backend.intents import compile_plan
+        from backend.security import command_text
 
-        value = text.casefold().replace("ё", "е")
+        value = command_text(text).replace("ё", "е").rstrip(".!? ")
         if not re.search(
             r"\b(включи|выключи|сделай|поставь|установи|переключи|верни|подключи|проверь|пауза|продолжи)\b",
             value,
@@ -340,39 +341,30 @@ class DeviceCenter:
             return None
         devices = self.store.list()
         groups = self.store.collections("group")
-        if re.search(r"(?:верни|переключи|выведи).*звук.*(?:\bmac\b|\bмак\b)", value):
-            macs = [d for d in devices if d.kind == "mac"]
-            if len(macs) == 1:
-                return {"commands": [{"target": macs[0].id, "action": "audio_output"}]}
-        matched = []
-        for target in [*groups, *devices]:
-            names = [target.name, *getattr(target, "aliases", [])]
-            for name in sorted(names, key=len, reverse=True):
-                normalized = name.casefold().replace("ё", "е")
-                if re.search(r"(?<!\w)" + re.escape(normalized) + r"(?!\w)", value):
-                    matched.append((target, normalized))
-                    break
-        if not matched and re.search(r"весь свет|все лампы|всю подсветку", value):
-            place = self.locations.current().get("place_id")
-            matches = [
-                d
-                for d in devices
-                if d.kind in {"led_strip", "wled"} and d.place_id in {place, "general"}
-            ]
-            rooms = {d.room for d in matches if d.room}
-            named_rooms = [room for room in rooms if room.casefold().rstrip("аяеуыи") in value]
-            if named_rooms:
-                matches = [d for d in matches if d.room in named_rooms]
-            normalized = re.sub(r"весь свет|все лампы|всю подсветку", "ленту", value)
+        place = self.locations.current().get("place_id")
+        explicit = []
+        place_phrases = []
+        for profile in self.locations.list():
+            phrases = [re.escape(profile.name.casefold().replace("ё", "е"))]
+            if profile.id == "home":
+                phrases += [r"дома", r"в доме"]
+            elif profile.id == "dorm":
+                phrases += [r"(?:в )?общаге", r"в общагу"]
+            for phrase in phrases:
+                if re.search(rf"(?<!\w){phrase}(?!\w)", value):
+                    explicit.append(profile.id)
+                    place_phrases.append(phrase)
+
+        def without_place(command):
+            for phrase in place_phrases:
+                command = re.sub(rf"(?<!\w){phrase}(?!\w)", " ", command)
+            return " ".join(command.split())
+
+        def light_commands(targets, command):
             plan = compile_plan(
-                normalized, comfortable_brightness=self.s.led.comfortable_brightness
+                without_place(command), comfortable_brightness=self.s.led.comfortable_brightness
             )
-            if (
-                matches
-                and plan
-                and plan.actions
-                and all(a.device == "led_strip" for a in plan.actions)
-            ):
+            if plan and plan.actions and all(a.device == "led_strip" for a in plan.actions):
                 return {
                     "commands": [
                         {
@@ -380,23 +372,73 @@ class DeviceCenter:
                             "action": "led",
                             **a.parameters.model_dump(exclude_none=True),
                         }
-                        for d in matches
+                        for d in targets
                         for a in plan.actions
                     ]
                 }
+            return None
+
+        local_places = set(explicit) if explicit else {place, "general"}
+        if re.search(r"(?:верни|переключи|выведи).*звук.*(?:\bmac\b|\bмак\b)", value):
+            macs = [d for d in devices if d.kind == "mac"]
+            if len(macs) == 1:
+                return {"commands": [{"target": macs[0].id, "action": "audio_output"}]}
+        matched = []
+        for target in [*groups, *devices]:
+            names = [
+                n.casefold().replace("ё", "е")
+                for n in [target.name, *getattr(target, "aliases", [])]
+            ]
+            # Bounded inflection for names such as «Новая лента» → «новую ленту».
+            for name in names[:]:
+                if name.endswith("лента"):
+                    words = name[:-5].split()
+                    names.append(
+                        " ".join([re.sub(r"ая$", "ую", word) for word in words] + ["ленту"])
+                    )
+            for name in sorted(names, key=len, reverse=True):
+                normalized = name.casefold().replace("ё", "е")
+                if re.search(r"(?<!\w)" + re.escape(normalized) + r"(?!\w)", value):
+                    matched.append((target, normalized))
+                    break
+        all_lights = r"\b(?:весь свет|все лампы|всю подсветку|все ленты)\b"
+        if not matched and re.search(all_lights, value):
+            matches = [
+                d for d in devices if d.kind in {"led_strip", "wled"} and d.place_id in local_places
+            ]
+            rooms = {d.room for d in matches if d.room}
+            named_rooms = [room for room in rooms if room.casefold().rstrip("аяеуыи") in value]
+            if named_rooms:
+                matches = [d for d in matches if d.room in named_rooms]
+            normalized = re.sub(all_lights, "ленту", value)
+            plan = light_commands(matches, normalized)
+            if matches and len(set(explicit)) <= 1 and plan:
+                return plan
             return {"error": "Уточни комнату, профиль и поддерживаемое действие для света."}
         if not matched:
-            return None  # Existing bounded context parser handles ordinary follow-ups.
-        place = self.locations.current().get("place_id")
-        explicit = [
-            p.id
-            for p in self.locations.list()
-            if p.name.casefold() in value
-            or p.id == "dorm"
-            and "общаг" in value
-            or p.id == "home"
-            and re.search(r"\bдома\b", value)
-        ]
+            normalized = value
+            if re.fullmatch(r"установи яркость (?:\d{1,3}|[а-я ]+) процент(?:ов|а)?", value):
+                normalized = value.replace("яркость", "яркость ленты", 1)
+            matches = [d for d in devices if d.kind == "led_strip" and d.place_id in local_places]
+            plan = light_commands(matches, normalized)
+            if matches and plan:
+                if not explicit and len(matches) > 1:
+                    # Preserve the existing authenticated, expiring selection for follow-ups.
+                    try:
+                        selected = self.resolve("led_control")
+                    except ToolError:
+                        selected = None
+                    if selected and any(d.id == selected.id for d in matches):
+                        return light_commands([selected], normalized)
+                if len(matches) == 1 and len(set(explicit)) <= 1:
+                    return plan
+                return {"error": "Уточни, какую ленту: " + ", ".join(d.name for d in matches) + "."}
+            if re.search(r"\bновую ленту\b", value):
+                return {
+                    "error": "Назови ленту «Новая лента» или добавь голосовой синоним "
+                    "в её настройках."
+                }
+            return None  # Existing bounded context parser handles other follow-ups.
         if explicit:
             matched = [(d, n) for d, n in matched if d.place_id in {*explicit, "general"}]
         else:
@@ -415,20 +457,9 @@ class DeviceCenter:
             target, "device_ids"
         ):
             normalized = value.replace(name, "ленту")
-            plan = compile_plan(
-                normalized, comfortable_brightness=self.s.led.comfortable_brightness
-            )
-            if plan and plan.actions and all(a.device == "led_strip" for a in plan.actions):
-                return {
-                    "commands": [
-                        {
-                            "target": target.id,
-                            "action": "led",
-                            **a.parameters.model_dump(exclude_none=True),
-                        }
-                        for a in plan.actions
-                    ]
-                }
+            plan = light_commands([target], normalized)
+            if plan:
+                return plan
         if getattr(target, "kind", "") == "audio_output" and re.search(r"звук|вывод", value):
             return {"commands": [{"target": target.id, "action": "audio_output"}]}
         if getattr(target, "kind", "") == "mac":

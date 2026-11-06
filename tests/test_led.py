@@ -28,7 +28,7 @@ def rig(monkeypatch):
     char = SimpleNamespace(
         uuid=str(settings.led.write_characteristic), properties=["write-without-response"]
     )
-    service = SimpleNamespace(get_characteristic=Mock(return_value=char))
+    service = SimpleNamespace(get_characteristic=Mock(return_value=char), characteristics=[char])
     clients = []
 
     def create(*args, **kwargs):
@@ -440,7 +440,9 @@ def test_status_and_notification_diagnostics_never_write_or_claim_ack(rig):
             client = create(*args, **kwargs)
             service = client.services.get_service.return_value
             service.characteristics = [rig.char, notify]
-            service.get_characteristic.return_value = notify
+            service.get_characteristic.side_effect = lambda uuid: (
+                rig.char if uuid == rig.char.uuid else notify
+            )
 
             async def start(char, callback):
                 callback(char, bytearray.fromhex("7e 01 ef"))

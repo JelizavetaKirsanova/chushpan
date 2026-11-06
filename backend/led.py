@@ -1,4 +1,4 @@
-"""Local ELK-BLEDOB control. Firmware experiments are never exposed as tools."""
+"""Local ELK BLE control. Firmware experiments are never exposed as tools."""
 
 from __future__ import annotations
 
@@ -26,6 +26,20 @@ from backend.security import Risk, command_text, control_text
 from backend.tools.registry import DeviceUnavailable, Tool, ToolError
 
 log = logging.getLogger(__name__)
+
+
+def bluetooth_error(exc: BleakBluetoothNotAvailableError) -> str:
+    reasons = {
+        BleakBluetoothNotAvailableReason.POWERED_OFF: "Bluetooth выключен на Mac. Включи его.",
+        BleakBluetoothNotAvailableReason.NO_BLUETOOTH: "Bluetooth-адаптер недоступен.",
+        BleakBluetoothNotAvailableReason.NO_BLE_CENTRAL_ROLE: "Нет поддержки BLE.",
+        BleakBluetoothNotAvailableReason.DENIED_BY_USER: (
+            "Разреши Чушпану Bluetooth в Настройках macOS → Конфиденциальность и безопасность."
+        ),
+        BleakBluetoothNotAvailableReason.DENIED_BY_SYSTEM: "Доступ Bluetooth запрещён macOS.",
+    }
+    return "Bluetooth недоступен. " + reasons.get(exc.reason, "Проверь доступ Bluetooth в macOS.")
+
 
 COLORS = {
     "красный": (255, 0, 0),
@@ -516,23 +530,13 @@ class LEDStrip:
             # Keep the link alive while the controller consumes the queued write.
             await asyncio.sleep(self.cfg.settle_s)
         except BleakBluetoothNotAvailableError as exc:
-            reasons = {
-                BleakBluetoothNotAvailableReason.POWERED_OFF: "Bluetooth выключен на Mac.",
-                BleakBluetoothNotAvailableReason.NO_BLUETOOTH: "Bluetooth-адаптер недоступен.",
-                BleakBluetoothNotAvailableReason.NO_BLE_CENTRAL_ROLE: "Нет поддержки BLE.",
-                BleakBluetoothNotAvailableReason.DENIED_BY_USER: "Запрещено пользователем macOS.",
-                BleakBluetoothNotAvailableReason.DENIED_BY_SYSTEM: "Запрещено системой macOS.",
-            }
             unavailable = not write_started and exc.reason in {
                 BleakBluetoothNotAvailableReason.POWERED_OFF,
                 BleakBluetoothNotAvailableReason.NO_BLUETOOTH,
                 BleakBluetoothNotAvailableReason.NO_BLE_CENTRAL_ROLE,
             }
             failure = DeviceUnavailable if unavailable else ToolError
-            raise failure(
-                "Bluetooth недоступен. "
-                + reasons.get(exc.reason, "Система не сообщила точную причину недоступности.")
-            ) from None
+            raise failure(bluetooth_error(exc)) from None
         except BleakDeviceNotFoundError:
             failure = ToolError if write_started else DeviceUnavailable
             raise failure(
@@ -753,7 +757,7 @@ class LEDStrip:
         if not self.cfg.enabled or not 0 <= listen_s <= 5:
             raise ToolError("LED отключена или время диагностики вне 0–5 секунд.")
         async with self._exclusive():
-            client = BleakClient(str(self.cfg.address), timeout=self.cfg.connect_timeout_s)
+            client = None
             notifications = []
 
             def receive(_, data):
@@ -761,11 +765,21 @@ class LEDStrip:
                     notifications.append(bytes(data).hex(" "))
 
             try:
+                client = BleakClient(str(self.cfg.address), timeout=self.cfg.connect_timeout_s)
                 async with asyncio.timeout(self.cfg.connect_timeout_s + listen_s + 3):
                     await client.connect()
                     service = client.services.get_service(str(self.cfg.service))
                     if service is None:
-                        raise ToolError("Ожидаемый GATT service LED не найден.")
+                        raise ToolError(
+                            "Подключение установлено, но сервис FFF0 LED не найден. "
+                            "Совместимость не подтверждена; команды не отправлял."
+                        )
+                    write = service.get_characteristic(str(self.cfg.write_characteristic))
+                    if write is None or "write-without-response" not in write.properties:
+                        raise ToolError(
+                            "Подключение установлено, но FFF3 с write-without-response не найден. "
+                            "Существующий драйвер не подходит; команды не отправлял."
+                        )
                     chars = [
                         {"uuid": c.uuid, "properties": list(c.properties)}
                         for c in service.characteristics
@@ -778,8 +792,17 @@ class LEDStrip:
                         "identity": self.identity,
                         "characteristics": chars,
                         "notifications": notifications,
-                        "message": "Диагностика без команд. Сырые уведомления не являются ACK.",
+                        "compatibility": "gatt_match"
+                        if notify and "notify" in notify.properties
+                        else "gatt_partial",
+                        "connection": "disconnected",
+                        "message": "GATT FFF0/FFF3 подходит для проверки существующего драйвера. "
+                        "Протокол и функции этой ленты ещё не подтверждены. "
+                        "Диагностика без команд; соединение закрывается после проверки. "
+                        "Сырые уведомления не являются ACK.",
                     }
+            except BleakBluetoothNotAvailableError as exc:
+                raise ToolError(bluetooth_error(exc)) from None
             except (BleakError, OSError, TimeoutError):
                 raise ToolError(
                     "Bluetooth/GATT LED недоступен; проверь питание и доступ macOS."
@@ -790,7 +813,8 @@ class LEDStrip:
                 log.warning("LED inspection failed type=%s", type(exc).__name__)
                 raise ToolError("Не удалось проверить GATT LED; команды не отправлял.") from None
             finally:
-                await self._disconnect(client)
+                if client is not None:
+                    await self._disconnect(client)
 
     async def discover(self, timeout_s: float = 4) -> dict:
         """Explicit bounded discovery, never automatic rebinding or control packets."""
@@ -799,22 +823,56 @@ class LEDStrip:
         async with self._exclusive():
             try:
                 async with asyncio.timeout(timeout_s + 2):
-                    found = await BleakScanner.discover(
-                        timeout=timeout_s, service_uuids=[str(self.cfg.service)], return_adv=True
+                    found = await BleakScanner.discover(timeout=timeout_s, return_adv=True)
+                candidates = []
+                for device, adv in found.values():
+                    # Advertising a service is optional; absence is not incompatibility.
+                    name = (adv.local_name or device.name or "Без имени").strip()
+                    name = "".join(c for c in name if ord(c) >= 32)[:80] or "Без имени"
+                    services = [str(s).lower() for s in getattr(adv, "service_uuids", [])]
+                    family = bool(re.match(r"^ELK-BLE", name, re.IGNORECASE))
+                    service_match = str(self.cfg.service).lower() in services
+                    candidates.append(
+                        {
+                            "name": name,
+                            "address": device.address,
+                            "rssi": getattr(adv, "rssi", None),
+                            "service_uuids": services,
+                            "connection": "not_checked",
+                            "compatibility": "candidate" if family or service_match else "unknown",
+                            "compatibility_reason": (
+                                "Семейство ELK BLE; требуется проверка GATT и протокола."
+                                if family
+                                else "Рекламируется FFF0; протокол ещё не проверен."
+                                if service_match
+                                else "Профиль неизвестен; совместимость не определена."
+                            ),
+                        }
                     )
-                candidates = [
-                    {"name": device.name or adv.local_name, "address": device.address}
-                    for device, adv in found.values()
-                    if (adv.local_name or device.name) == self.cfg.name
-                ]
+                candidates.sort(
+                    key=lambda c: (
+                        c["compatibility"] != "candidate",
+                        -(c["rssi"] if c["rssi"] is not None else -200),
+                        c["name"].casefold(),
+                        c["address"],
+                    )
+                )
                 return {
                     "candidates": candidates,
-                    "message": "Найденные UUID нужно проверить и указать в led.address. "
+                    "message": "Найденные BLE-устройства доступны в разделе «Устройства». "
+                    "Имя и UUID сервиса не доказывают совместимость протокола. "
                     "Настройки не изменял; команды не отправлял.",
                 }
+            except BleakBluetoothNotAvailableError as exc:
+                raise ToolError(bluetooth_error(exc)) from None
             except (BleakError, OSError, TimeoutError):
                 raise ToolError(
                     "Поиск LED не завершён: Bluetooth недоступен или истёк тайм-аут."
+                ) from None
+            except Exception as exc:
+                log.warning("BLE discovery failed type=%s", type(exc).__name__)
+                raise ToolError(
+                    "Ошибка поиска BLE. Проверь доступ Bluetooth и повтори поиск."
                 ) from None
 
     def tool(self) -> Tool:
