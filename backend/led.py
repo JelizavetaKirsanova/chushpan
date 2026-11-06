@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fcntl
+import json
 import logging
+import os
 import re
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -21,6 +23,7 @@ from bleak.exc import (
 from pydantic import BaseModel, Field, ValidationError
 
 from backend.ble_diagnostics import device_key, runtime_info, trace
+from backend.ble_profiles import BLEProfile, candidate_profile, gatt_fingerprint
 from backend.config import LEDConfig, Settings
 from backend.latency import measure
 from backend.security import Risk, command_text, control_text
@@ -392,6 +395,10 @@ class LEDState(BaseModel):
     pending_probe: dict | None = None
     last_transaction: dict | None = None
     brightness: int | None = Field(default=None, ge=0, le=100)
+    profile: BLEProfile | None = None
+    gatt_fingerprint: str | None = None
+    last_diagnostic: dict | None = None
+    driver_fingerprint: str | None = None
 
 
 class LEDStrip:
@@ -401,6 +408,7 @@ class LEDStrip:
         self.lock = asyncio.Lock()
         self.before_write = None
         self.state_listener = None
+        self.connection_closed = False
 
     @property
     def identity(self) -> dict[str, str]:
@@ -431,6 +439,15 @@ class LEDStrip:
         if state.identity != self.identity:
             # Evidence belongs to this exact device, firmware and GATT profile.
             state = LEDState(identity=self.identity, confirmed=set())
+        driver = state.profile or candidate_profile(self.cfg)
+        fingerprint = driver.fingerprint if driver else "unsupported"
+        if state.driver_fingerprint != fingerprint:
+            # Existing observations belong to the old BLEDOB serializer only.
+            if state.driver_fingerprint or not driver or driver.id != "elk-bledob-legacy":
+                state.confirmed.clear()
+                state.pending_probe = state.last_write = state.last_transaction = None
+                state.brightness = state.gatt_fingerprint = state.last_diagnostic = None
+            state.driver_fingerprint = fingerprint
         return state
 
     def _save(self, state: LEDState) -> None:
@@ -453,6 +470,45 @@ class LEDStrip:
         finally:
             with contextlib.suppress(OSError):
                 temporary.unlink(missing_ok=True)
+
+    def driver(self, state=None):
+        state = state if state is not None else self._load()
+        return state.profile or candidate_profile(self.cfg)
+
+    def driver_status(self):
+        state = self._load()
+        profile = self.driver(state)
+        report = state.last_diagnostic or {}
+        return {
+            "driver": profile.name if profile else "Не выбран",
+            "driver_id": profile.id if profile else "unsupported",
+            "compatibility": "unsupported"
+            if not profile
+            else report.get("compatibility", "unverified"),
+            "confirmed_functions": sorted(state.confirmed),
+            "last_command": state.last_write,
+            "diagnostic": report,
+        }
+
+    async def select_profile(self, profile: BLEProfile | None):
+        """Local explicit import/selection is not evidence of physical compatibility."""
+        async with self._exclusive():
+            state = self._load()
+            state.profile = profile
+            selected = self.driver(state)
+            state.driver_fingerprint = selected.fingerprint if selected else "unsupported"
+            state.confirmed.clear()
+            state.pending_probe = state.last_write = state.last_transaction = None
+            state.brightness = state.gatt_fingerprint = state.last_diagnostic = None
+            self._save(state)
+
+    def serialize(self, state, action, *, rgb=None, level=None):
+        profile = self.driver(state)
+        if not profile:
+            raise ToolError(
+                "Протокол LED неизвестен. Импортируй подтверждённый профиль; команды не отправлял."
+            )
+        return profile.serialize(action, rgb=rgb, level=level)
 
     @asynccontextmanager
     async def _exclusive(self):
@@ -479,12 +535,20 @@ class LEDStrip:
             args["action"] == "color" and "rgb" in state.confirmed
         )
 
-    async def _disconnect(self, client) -> None:
+    async def _disconnect(self, client) -> bool:
+        diagnostic("disconnect", "started")
         try:
             async with asyncio.timeout(3):
                 await client.disconnect()
+            if getattr(client, "is_connected", False) is True:
+                diagnostic("disconnect", "unknown")
+                return False
+            diagnostic("disconnect", "closed")
+            return True
         except Exception:
             log.warning("LED disconnect failed; next request will use a new connection")
+            diagnostic("disconnect", "unknown")
+            return False
 
     async def _write(self, data: bytes, state: LEDState, args: dict) -> None:
         if self.before_write:
@@ -492,29 +556,46 @@ class LEDStrip:
         # Reconnect only before write. After write starts, delivery is ambiguous: no replay.
         client = None
         write_started = False
+        self.connection_closed = False
         try:
             for attempt in range(2):
                 client = BleakClient(str(self.cfg.address), timeout=self.cfg.connect_timeout_s)
                 try:
+                    diagnostic("connect", "started", attempt=attempt + 1)
                     with measure("ble_connect", device="led_strip", attempt=attempt + 1):
                         async with asyncio.timeout(self.cfg.connect_timeout_s):
                             await client.connect()
+                    diagnostic("connect", "connected", attempt=attempt + 1)
                     break
                 except BleakBluetoothNotAvailableError:
                     raise
                 except BleakDeviceNotFoundError:
                     raise
-                except (BleakError, OSError, TimeoutError):
+                except (BleakError, OSError, TimeoutError) as exc:
+                    diagnostic(
+                        "connect", "error", attempt=attempt + 1, error_type=type(exc).__name__
+                    )
                     await self._disconnect(client)
                     client = None
                     if attempt:
                         raise
-            service = client.services.get_service(str(self.cfg.service))
-            char = (
-                service.get_characteristic(str(self.cfg.write_characteristic)) if service else None
-            )
-            if char is None or "write-without-response" not in char.properties:
-                raise ToolError("Ожидаемый GATT service/write characteristic LED не найден.")
+            profile = self.driver(state)
+            if profile is None:
+                raise ToolError("Протокол LED неизвестен; команды не отправлял.")
+            services = list(client.services)
+            fingerprint = gatt_fingerprint(services)
+            if state.gatt_fingerprint and state.gatt_fingerprint != fingerprint:
+                state.confirmed.clear()
+                state.pending_probe = None
+                state.brightness = None
+                state.last_diagnostic = None
+                state.gatt_fingerprint = fingerprint
+                self._save(state)
+                raise ToolError(
+                    "GATT изменился; допуски сброшены. Повтори диагностику и проверку управления."
+                )
+            char, response = profile.bind(services)
+            state.gatt_fingerprint = fingerprint
             # Some controllers drop writes made immediately after service discovery.
             await asyncio.sleep(self.cfg.settle_s)
             state.last_write = {"status": "unknown", "requested": args}
@@ -522,11 +603,18 @@ class LEDStrip:
             if args["action"] == "brightness":
                 state.brightness = None
             self._save(state)
-            diagnostic("delivery", "write_started", delivery_state="requested")
+            diagnostic(
+                "delivery",
+                "write_started",
+                delivery_state="requested",
+                response=response,
+                characteristic=char.uuid,
+                driver=profile.id,
+            )
             write_started = True
             with measure("ble_write", device="led_strip"):
                 async with asyncio.timeout(self.cfg.write_timeout_s):
-                    await client.write_gatt_char(char, data, response=False)
+                    await client.write_gatt_char(char, data, response=response)
             diagnostic("delivery", "sent", delivery_state="sent", physical_confirmed=False)
             # Keep the link alive while the controller consumes the queued write.
             await asyncio.sleep(self.cfg.settle_s)
@@ -545,7 +633,10 @@ class LEDStrip:
                 "после смены UUID выполни python -m backend led discover и обнови led.address. "
                 "Другую ленту автоматически не выбираю."
             ) from None
-        except (BleakError, OSError, TimeoutError):
+        except (BleakError, OSError, TimeoutError) as exc:
+            diagnostic(
+                "delivery", "error", write_started=write_started, error_type=type(exc).__name__
+            )
             raise ToolError(
                 "Bluetooth: отключение, ошибка или тайм-аут LED. Выполнение не подтверждено; "
                 "автоповтора записи нет. Следующая просьба подключится заново."
@@ -560,7 +651,7 @@ class LEDStrip:
             ) from None
         finally:
             if client is not None:
-                await self._disconnect(client)
+                self.connection_closed = await self._disconnect(client)
 
     async def execute(self, *, action: str, rgb=None, level=None, experiment=False) -> dict:
         diagnostic("request", action="set_color" if action == "color" else action)
@@ -593,7 +684,19 @@ class LEDStrip:
                 raise ToolError("Сначала задай абсолютную яркость подсветки, например 50%.")
             level = max(0, min(100, state.brightness + (10 if action == "ярче" else -10)))
             action = "brightness"
-        data = packet(action, rgb=rgb, level=level)
+        data = self.serialize(state, action, rgb=rgb, level=level)
+        if (
+            experiment
+            and self.driver(state).id != "elk-bledob-legacy"
+            and (
+                not state.last_diagnostic
+                or state.last_diagnostic.get("compatibility") != "gatt_match"
+            )
+        ):
+            raise ToolError(
+                "Сначала выполни диагностику: GATT выбранного профиля ещё не проверен. "
+                "Команды не отправлял."
+            )
         args = {"action": action}
         if action == "color":
             args["rgb"] = list(rgb)
@@ -626,6 +729,7 @@ class LEDStrip:
             "delivery_state": "sent",
             "verification": "unsupported",
             "probe_id": state.pending_probe["id"] if state.pending_probe else None,
+            "connection": "disconnected" if self.connection_closed else "unknown",
             "message": "Команда подсветки отправлена по Bluetooth: "
             + _description(args)
             + ". Физическое выполнение не подтверждено.",
@@ -680,7 +784,9 @@ class LEDStrip:
                         "action": "brightness",
                         "level": max(0, min(100, simulated.brightness + delta)),
                     }
-                packet(item["action"], rgb=item.get("rgb"), level=item.get("level"))
+                self.serialize(
+                    simulated, item["action"], rgb=item.get("rgb"), level=item.get("level")
+                )
                 if not self._allowed(simulated, item):
                     raise ToolError(
                         "В составной команде есть непроверенный режим LED. "
@@ -753,69 +859,151 @@ class LEDStrip:
             "Физическое выполнение не подтверждено.",
         }
 
-    async def inspect(self, listen_s: float = 2) -> dict:
-        """Discover GATT and capture raw FFF4 notifications; send no protocol commands."""
+    async def inspect(self, listen_s: float = 2, *, read_values: bool = True) -> dict:
+        """Inventory every service. Never issue a control/query packet or export values."""
         if not self.cfg.enabled or not 0 <= listen_s <= 5:
             raise ToolError("LED отключена или время диагностики вне 0–5 секунд.")
         async with self._exclusive():
+            state = self._load()
+            profile = self.driver(state)
+            report = {
+                "report_id": uuid4().hex,
+                "at": datetime.now(UTC).isoformat(),
+                "driver_id": profile.id if profile else "unsupported",
+                "services": [],
+                "characteristics": [],
+                "notifications": [],
+                "errors": [],
+                "stages": [],
+                "compatibility": "unverified" if profile else "unsupported",
+                "connection": "unknown",
+                "result_status": "unverified",
+                "control_packets_sent": 0,
+                "values_redacted": True,
+            }
             client = None
-            notifications = []
+            subscriptions = []
 
-            def receive(_, data):
-                if len(notifications) < 20:
-                    notifications.append(bytes(data).hex(" "))
+            def stage(name, **values):
+                report["stages"].append({"stage": name, **values})
+                diagnostic("gatt_" + name, **values)
+
+            def error(name, exc, **values):
+                # Exception messages can contain peripheral addresses and read values.
+                entry = {"stage": name, "type": type(exc).__name__, **values}
+                report["errors"].append(entry)
+                stage(name, outcome="error", error_type=type(exc).__name__, **values)
+
+            def receive(char, data):
+                if len(report["notifications"]) < 20:
+                    entry = {"uuid": char.uuid, "byte_count": len(data), "value": "redacted"}
+                    report["notifications"].append(entry)
+                    stage("notification", uuid=char.uuid, byte_count=len(data))
 
             try:
-                client = BleakClient(str(self.cfg.address), timeout=self.cfg.connect_timeout_s)
-                async with asyncio.timeout(self.cfg.connect_timeout_s + listen_s + 3):
-                    await client.connect()
-                    service = client.services.get_service(str(self.cfg.service))
-                    if service is None:
-                        raise ToolError(
-                            "Подключение установлено, но сервис FFF0 LED не найден. "
-                            "Совместимость не подтверждена; команды не отправлял."
-                        )
-                    write = service.get_characteristic(str(self.cfg.write_characteristic))
-                    if write is None or "write-without-response" not in write.properties:
-                        raise ToolError(
-                            "Подключение установлено, но FFF3 с write-without-response не найден. "
-                            "Существующий драйвер не подходит; команды не отправлял."
-                        )
-                    chars = [
-                        {"uuid": c.uuid, "properties": list(c.properties)}
-                        for c in service.characteristics
-                    ]
-                    notify = service.get_characteristic(str(self.cfg.notify_characteristic))
-                    if notify and "notify" in notify.properties and listen_s:
-                        await client.start_notify(notify, receive)
+                async with asyncio.timeout(40):
+                    stage("connect_started")
+                    client = BleakClient(str(self.cfg.address), timeout=self.cfg.connect_timeout_s)
+                    async with asyncio.timeout(self.cfg.connect_timeout_s):
+                        await client.connect()
+                    stage("connected")
+                    services = list(client.services)
+                    fingerprint = gatt_fingerprint(services)
+                    if state.gatt_fingerprint and state.gatt_fingerprint != fingerprint:
+                        state.confirmed.clear()
+                        state.pending_probe = None
+                        state.brightness = None
+                        stage("gatt_changed", confirmations_cleared=True)
+                    state.gatt_fingerprint = fingerprint
+                    for service in services:
+                        chars = []
+                        for char in service.characteristics:
+                            props = sorted(char.properties)
+                            entry = {
+                                "uuid": char.uuid,
+                                "properties": props,
+                                "write_modes": [
+                                    mode
+                                    for prop, mode in (
+                                        ("write", "response"),
+                                        ("write-without-response", "without-response"),
+                                    )
+                                    if prop in props
+                                ],
+                            }
+                            chars.append(entry)
+                            report["characteristics"].append(entry)
+                            if "read" in props and read_values:
+                                try:
+                                    stage("read_started", uuid=char.uuid)
+                                    async with asyncio.timeout(self.cfg.write_timeout_s):
+                                        value = await client.read_gatt_char(char)
+                                    entry["read"] = {"byte_count": len(value), "value": "redacted"}
+                                    stage("read_finished", uuid=char.uuid, byte_count=len(value))
+                                except Exception as exc:
+                                    entry["read"] = {"error": type(exc).__name__}
+                                    error("read", exc, uuid=char.uuid)
+                            if listen_s and ("notify" in props or "indicate" in props):
+                                try:
+                                    async with asyncio.timeout(self.cfg.write_timeout_s):
+                                        await client.start_notify(char, receive)
+                                    subscriptions.append(char)
+                                    stage("notify_started", uuid=char.uuid)
+                                except Exception as exc:
+                                    error("notify", exc, uuid=char.uuid)
+                        report["services"].append({"uuid": service.uuid, "characteristics": chars})
+                    stage("services_enumerated", count=len(services))
+                    if profile:
+                        try:
+                            char, response = profile.bind(services)
+                            report["write_characteristic"] = char.uuid
+                            report["write_mode"] = "response" if response else "without-response"
+                            report["compatibility"] = "gatt_match"
+                        except ToolError:
+                            report["compatibility"] = "gatt_mismatch"
+                    if subscriptions:
                         await asyncio.sleep(listen_s)
-                    return {
-                        "identity": self.identity,
-                        "characteristics": chars,
-                        "notifications": notifications,
-                        "compatibility": "gatt_match"
-                        if notify and "notify" in notify.properties
-                        else "gatt_partial",
-                        "connection": "disconnected",
-                        "message": "GATT FFF0/FFF3 подходит для проверки существующего драйвера. "
-                        "Протокол и функции этой ленты ещё не подтверждены. "
-                        "Диагностика без команд; соединение закрывается после проверки. "
-                        "Сырые уведомления не являются ACK.",
-                    }
-            except BleakBluetoothNotAvailableError as exc:
-                raise ToolError(bluetooth_error(exc)) from None
-            except (BleakError, OSError, TimeoutError):
-                raise ToolError(
-                    "Bluetooth/GATT LED недоступен; проверь питание и доступ macOS."
-                ) from None
-            except ToolError:
+            except asyncio.CancelledError:
+                stage("cancelled")
+                report["result_status"] = "failed"
                 raise
             except Exception as exc:
-                log.warning("LED inspection failed type=%s", type(exc).__name__)
-                raise ToolError("Не удалось проверить GATT LED; команды не отправлял.") from None
+                error("connect_or_inventory", exc)
+                report["result_status"] = "failed"
+                if isinstance(exc, BleakBluetoothNotAvailableError):
+                    report["message"] = bluetooth_error(exc)
             finally:
                 if client is not None:
-                    await self._disconnect(client)
+                    for char in subscriptions:
+                        try:
+                            async with asyncio.timeout(1):
+                                await client.stop_notify(char)
+                            stage("notify_stopped", uuid=char.uuid)
+                        except Exception as exc:
+                            error("stop_notify", exc, uuid=char.uuid)
+                    closed = await self._disconnect(client)
+                    report["connection"] = "disconnected" if closed else "unknown"
+                    stage("disconnect", closed=closed)
+                if report["result_status"] == "failed":
+                    report["message"] = (
+                        report.get("message", "")
+                        + " Диагностика не завершена: смотри этапы и тайм-ауты в отчёте; "
+                        "команды не отправлял."
+                    )
+                else:
+                    report["message"] = (
+                        "GATT перечислен. Протокол и функции этой ленты ещё не подтверждены. "
+                        "Диагностика без команд; команды не отправлял. Уведомления не являются ACK."
+                    )
+                state.last_diagnostic = report
+                self._save(state)
+                path = self.path.parent / "diagnostics" / (report["report_id"] + ".json")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                # No address, name, identity, free-form exceptions or raw payloads in export.
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as output:
+                    json.dump(report, output, ensure_ascii=False, indent=2)
+            return report
 
     async def discover(
         self, timeout_s: float = 4, *, scan_id: str | None = None, show_all_ble: bool = False

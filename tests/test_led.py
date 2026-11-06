@@ -3,7 +3,7 @@ import asyncio
 import json
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from bleak.exc import BleakBluetoothNotAvailableError, BleakBluetoothNotAvailableReason, BleakError
@@ -28,15 +28,26 @@ def rig(monkeypatch):
     char = SimpleNamespace(
         uuid=str(settings.led.write_characteristic), properties=["write-without-response"]
     )
-    service = SimpleNamespace(get_characteristic=Mock(return_value=char), characteristics=[char])
+    service = SimpleNamespace(
+        uuid=str(settings.led.service),
+        get_characteristic=Mock(return_value=char),
+        characteristics=[char],
+    )
     clients = []
 
     def create(*args, **kwargs):
+        services = MagicMock()
+        services.get_service = Mock(return_value=service)
+        services.__iter__.side_effect = lambda: iter(
+            [services.get_service.return_value] if services.get_service.return_value else []
+        )
         client = SimpleNamespace(
             connect=AsyncMock(),
             disconnect=AsyncMock(),
             write_gatt_char=AsyncMock(),
-            services=SimpleNamespace(get_service=Mock(return_value=service)),
+            services=services,
+            read_gatt_char=AsyncMock(return_value=b"mock-private-value"),
+            stop_notify=AsyncMock(),
         )
         clients.append(client)
         return client
@@ -452,7 +463,9 @@ def test_status_and_notification_diagnostics_never_write_or_claim_ack(rig):
 
         rig.factory.side_effect = diagnostic
         result = await rig.strip.inspect(0.001)
-        assert result["notifications"] == ["7e 01 ef"]
+        assert result["notifications"] == [
+            {"uuid": notify.uuid, "byte_count": 3, "value": "redacted"}
+        ]
         assert "не являются ACK" in result["message"]
         rig.clients[0].write_gatt_char.assert_not_awaited()
 

@@ -411,6 +411,11 @@ def test_new_led_requires_explicit_probe_and_retains_firmware_evidence(devices):
         assert "error" in await request(
             r, op="probe_led", id=identifier, parameters={"power": True}, consent=False
         )
+        # An unnamed controller no longer inherits the primary strip's driver.
+        assert "error" in await request(
+            r, op="probe_led", id=identifier, parameters={"power": True}, consent=True
+        )
+        await request(r, op="ble_profile", id=identifier, driver="elk-bledob-legacy", consent=True)
         probe = (
             await request(
                 r, op="probe_led", id=identifier, parameters={"power": True}, consent=True

@@ -229,7 +229,7 @@ test('control diagnostic only sends one chosen frame after explicit consent',asy
     assert.equal(f.window.document.querySelector<HTMLInputElement>('[aria-label="Выбрать цвет ленты"]')!.disabled,true);
     f.button('Тест: Красный');const request=f.requests.at(-1)!;
     assert.equal(request.op,'probe_led');assert.deepEqual(request.parameters,{color:'#FF0000'});assert.equal(request.consent,true);
-    f.view.receive({...f.state,operation_id:request.request_id as string,result:{probe_id:'observation',message:'Проверь ленту.'}});
+    f.view.receive({...f.state,operation_id:request.request_id as string,result:{probe_id:'observation',device_id:'led-test',message:'Проверь ленту.'}});
     f.button('Да, вижу результат');assert.equal(f.requests.at(-1)!.op,'confirm_probe');assert.equal(f.requests.at(-1)!.probe_id,'observation');
     assert.equal(f.requests.filter(r=>r.op==='probe_led').length,1);
   }finally{await f.close();}
@@ -256,4 +256,24 @@ test('all BLE diagnostic mode renders every candidate across place and text filt
     f.view.receive({...f.state,operation_id:next.request_id as string,discovery,candidates:[{token:'late',name:'Stale result'}]});
     assert.equal(f.requests.at(-1)!.stage,'frontend_ignored');assert.doesNotMatch(dialog.textContent!,/Stale result/);
   }finally{await f.close();}
+});
+
+test('BLE diagnostics expose driver and GATT while sending no control command',async()=>{
+  const f=fixture();try {
+    f.state.items[0].ble={driver:'ELK-BLEDDM · кандидат',driver_id:'elk-bleddm-candidate',compatibility:'gatt_match',confirmed_functions:[],diagnostic:{report_id:'report',connection:'disconnected',services:[{uuid:'service-gatt',characteristics:[{uuid:'write-gatt',properties:['write'],write_modes:['response'],read:{error:'TimeoutError'}}]}],errors:[{stage:'read',type:'TimeoutError'}],notifications:[]}};
+    f.view.receive(f.state);f.open('Свет у стола');const panel=f.window.document.querySelector('.device-panel')!;
+    assert.match(panel.textContent!,/Драйвер: ELK-BLEDDM/);assert.match(panel.textContent!,/GATT совпал; функции требуют наблюдения/);assert.match(panel.textContent!,/write-gatt/);assert.match(panel.textContent!,/TimeoutError/);
+    f.button('Диагностика',panel);assert.equal(f.requests.at(-1)!.op,'diagnose_ble');assert.equal(f.requests.at(-1)!.id,'led-test');
+    assert.equal(f.requests.some(r=>r.op==='act'||r.op==='probe_led'),false);
+    f.button('Выбрать профиль',panel);assert.equal(f.requests.at(-1)!.op,'ble_profile');assert.equal(f.requests.at(-1)!.consent,true);
+  } finally {await f.close();}
+});
+
+test('a probe response stays bound to its device when selection changes',async()=>{
+  const f=fixture();try {
+    f.open('Свет у стола');f.open('MacBook');
+    f.view.receive({...f.state,result:{probe_id:'old-led-probe',device_id:'led-test',message:'Проверь ленту.'}});
+    assert.equal([...f.window.document.querySelectorAll('.device-panel button')].some(b=>b.textContent==='Да, вижу результат'),false);
+    f.open('Свет у стола');f.button('Да, вижу результат');assert.equal(f.requests.at(-1)!.id,'led-test');assert.equal(f.requests.at(-1)!.probe_id,'old-led-probe');
+  } finally {await f.close();}
 });

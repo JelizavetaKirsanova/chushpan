@@ -149,14 +149,16 @@ def test_gatt_mismatch_is_not_reported_as_compatible_and_always_disconnects(rig,
             if missing == "service":
                 result.services.get_service.return_value = None
             elif missing == "write":
-                service.get_characteristic.return_value = None
+                service.characteristics = []
             else:
                 rig.char.properties = ["read"]
             return result
 
         rig.factory.side_effect = client
-        with pytest.raises(ToolError, match="команды не отправлял"):
-            await rig.strip.inspect(listen_s=0)
+        report = await rig.strip.inspect(listen_s=0)
+        assert report["compatibility"] == "gatt_mismatch"
+        assert report["control_packets_sent"] == 0
+        assert "команды не отправлял" in report["message"]
         rig.clients[0].disconnect.assert_awaited_once()
         rig.clients[0].write_gatt_char.assert_not_awaited()
 
@@ -195,7 +197,7 @@ def test_ui_scan_metadata_multiple_strips_and_restore_are_independent(devices, m
         assert event["candidates"][1]["compatibility"] == "unknown"
         assert "endpoint" not in candidate and "address" not in candidate
         check = await request(r, op="check", token=candidate["token"])
-        assert check["checked"]["compatibility"] == "gatt_partial"
+        assert check["checked"]["compatibility"] == "gatt_match"
         assert check["checked"]["connection"] == "disconnected"
         added = await request(
             r,
@@ -301,7 +303,13 @@ def test_saved_strips_keep_separate_evidence_and_write_targets(devices):
     async def run():
         r = devices
         other = r.service.store.save(
-            Device(name="Вторая лента", kind="led_strip", protocol="ble", endpoint=str(uuid4()))
+            Device(
+                name="Вторая лента",
+                kind="led_strip",
+                protocol="ble",
+                endpoint=str(uuid4()),
+                ble_name="ELK-BLEDOB",
+            )
         )
         strip = r.service.strip(other)
         strip._save(LEDState(identity=strip.identity, confirmed={"rgb"}))
@@ -358,8 +366,10 @@ def test_readonly_connection_check_disconnects_when_cancelled(rig):
 
 def test_readonly_connection_check_handles_native_constructor_failure(rig):
     rig.factory.side_effect = RuntimeError("native init failure")
-    with pytest.raises(ToolError, match="команды не отправлял"):
-        asyncio.run(rig.strip.inspect(listen_s=0))
+    result = asyncio.run(rig.strip.inspect(listen_s=0))
+    assert result["result_status"] == "failed"
+    assert result["errors"][0]["type"] == "RuntimeError"
+    assert "команды не отправлял" in result["message"]
 
 
 def test_generic_colour_followup_retains_existing_authenticated_strip_selection(devices):

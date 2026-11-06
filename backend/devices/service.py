@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 import httpx
 
 from backend.ble_diagnostics import device_key, runtime_info, trace
+from backend.ble_profiles import DDM_PROFILE, BLEProfile, legacy_profile
 from backend.context import (
     RequestContext,
     device_selection,
@@ -172,8 +173,7 @@ class Devices(DeviceCenter):
             else:
                 settings = self.s.model_copy(deep=True)
                 settings.led.enabled, settings.led.address = True, UUID(device.endpoint)
-                if device.ble_name:
-                    settings.led.name, settings.led.firmware = device.ble_name, "unknown"
+                settings.led.name, settings.led.firmware = device.ble_name or "unknown", "unknown"
                 strip = LEDStrip(settings)
                 strip.path = self.s.data_path / "devices" / device.id / "led.json"
             strip.before_write = lambda: self.check_location(self.store.get(device.id))
@@ -275,7 +275,10 @@ class Devices(DeviceCenter):
         device.last_contact = last["time"]
         device.result_status = "unverified"
         self.store.observe(device)
-        self.connections[identifier] = "observed"
+        strip = self.strips.get(identifier)
+        self.connections[identifier] = (
+            "disconnected" if strip and strip.connection_closed else "unknown"
+        )
         self.publish()
 
     def observe(self, name, args, result):
@@ -359,16 +362,19 @@ class Devices(DeviceCenter):
         enabled = self.tools.enabled
         if device.kind == "led_strip":
             try:
-                confirmed = self.strip(device)._load().confirmed
+                strip = self.strip(device)
+                confirmed = strip._load().confirmed
+                driver = strip.driver()
             except ToolError:
                 confirmed = set()
+                driver = None
             return {
                 "power_on": enabled("led_control") and "on" in confirmed,
                 "power_off": enabled("led_control") and "off" in confirmed,
                 "brightness": enabled("led_control") and "brightness" in confirmed,
                 "color": enabled("led_control") and "rgb" in confirmed,
                 "colors": sorted(confirmed),
-                "probe": enabled("led_control"),
+                "probe": enabled("led_control") and driver is not None,
                 "warm_white": "rgb_approximation",
                 "physical_feedback": False,
             }
@@ -423,6 +429,7 @@ class Devices(DeviceCenter):
                 {
                     **d.model_dump(),
                     "features": self.features(d),
+                    **({"ble": self.ble_status(d)} if d.kind == "led_strip" else {}),
                     "connection": self.connections.get(d.id, "unknown"),
                     "usable": usable,
                     "reason": reason,
@@ -453,6 +460,12 @@ class Devices(DeviceCenter):
             if "request_id" in extra:
                 extra["operation_id"] = extra.pop("request_id")
             self.bus.publish(self.snapshot(**extra))
+
+    def ble_status(self, device):
+        try:
+            return self.strip(device).driver_status()
+        except ToolError:
+            return {"driver": "Профиль недоступен", "compatibility": "unsupported"}
 
     def bind(self, bus, conv):
         self.bus, self.conv = bus, conv
@@ -727,18 +740,15 @@ class Devices(DeviceCenter):
             if lock.locked():
                 raise ValueError("Лента выполняет другую команду. Дождись завершения.")
             async with lock:
-                result = await self.strip(device).inspect(listen_s=0)
-            self.connections[device.id] = "observed"
+                result = await self.strip(device).inspect(listen_s=0, read_values=False)
+            self.connections[device.id] = (
+                "disconnected" if result["connection"] == "disconnected" else "error"
+            )
             device = self.store.get(device.id)
-            device.last_contact = stamp()
+            if result["services"]:
+                device.last_contact = stamp()
             self.store.observe(device)
-            return {
-                "message": "Bluetooth/GATT ответил. Соединение закрыто; "
-                "физическое состояние не считывается.",
-                "result_status": "unverified",
-                "characteristics": result["characteristics"],
-                "compatibility": result["compatibility"],
-            }
+            return result
         if device.kind == "external_display":
             from backend.mac import MacDesktop
             from backend.night import BetterDisplay
@@ -871,15 +881,17 @@ class Devices(DeviceCenter):
                 if candidate.kind == "led_strip":
                     settings = self.s.model_copy(deep=True)
                     settings.led.enabled, settings.led.address = True, UUID(candidate.endpoint)
-                    if candidate.ble_name:
-                        settings.led.name, settings.led.firmware = candidate.ble_name, "unknown"
+                    settings.led.name, settings.led.firmware = (
+                        candidate.ble_name or "unknown",
+                        "unknown",
+                    )
                     strip = LEDStrip(settings)
                     strip.path = self.s.data_path / "devices" / "connection-check" / "led.json"
                     lock = self.tools.device_locks.setdefault("led", asyncio.Lock())
                     if lock.locked():
                         raise ValueError("Лента выполняет другую команду. Повтори проверку позже.")
                     async with lock:
-                        inspection = await strip.inspect(listen_s=0)
+                        inspection = await strip.inspect(listen_s=0, read_values=False)
                     message = inspection["message"]
                 elif candidate.kind == "external_display":
                     from backend.mac import MacDesktop
@@ -924,7 +936,7 @@ class Devices(DeviceCenter):
                         **(
                             {
                                 "compatibility": inspection["compatibility"],
-                                "connection": "disconnected",
+                                "connection": inspection["connection"],
                             }
                             if candidate.kind == "led_strip"
                             else {}
@@ -974,6 +986,8 @@ class Devices(DeviceCenter):
                 "favorites",
                 "act",
                 "inspect",
+                "diagnose_ble",
+                "ble_profile",
                 "probe_led",
                 "confirm_probe",
                 "confirm",
@@ -1023,7 +1037,49 @@ class Devices(DeviceCenter):
                 )
                 return
             self.check_location(device)
-            if op == "inspect":
+            if op == "ble_profile":
+                self.require_adapter()
+                if device.kind != "led_strip" or value.get("consent") is not True:
+                    raise ActionDenied("Выбери ленту и явно подтверди смену BLE-профиля.")
+                if "mac.system" not in self.conv.device.capabilities:
+                    raise ActionDenied("Смена BLE-профиля доступна только локальному Mac.")
+                strip = self.strip(device)
+                if "profile" in value:
+                    if len(json.dumps(value["profile"])) > 32768:
+                        raise ValueError("Профиль больше 32 КБ.")
+                    profile = BLEProfile.model_validate(value["profile"])
+                else:
+                    choices = {
+                        "auto": None,
+                        "elk-bleddm-candidate": DDM_PROFILE,
+                        "elk-bledob-legacy": legacy_profile(strip.cfg),
+                    }
+                    if value.get("driver") not in choices:
+                        raise ValueError("Неизвестный BLE-драйвер.")
+                    profile = choices[value["driver"]]
+                await strip.select_profile(profile)
+                self.probes.pop(identifier, None)
+                device.sent, device.state = {}, {}
+                device.result_status = "unverified"
+                self.store.observe(device)
+                self.update_catalogue()
+                result = {
+                    "message": "Профиль сохранён. Допуски сброшены; "
+                    "выполни диагностику и ручную проверку.",
+                    "result_status": "unverified",
+                }
+            elif op == "diagnose_ble":
+                self.require_adapter()
+                if device.kind != "led_strip" or "mac.system" not in self.conv.device.capabilities:
+                    raise ActionDenied("Диагностика BLE доступна для выбранной ленты на Mac.")
+                lock = self.tools.device_locks.setdefault("led", asyncio.Lock())
+                if lock.locked():
+                    raise ValueError("Лента занята другой командой.")
+                async with lock:
+                    result = await self.strip(device).inspect()
+                self.connections[device.id] = result["connection"]
+                self.update_catalogue()
+            elif op == "inspect":
                 self.require_adapter()
                 with measure("device_connect"):
                     async with asyncio.timeout(45):
@@ -1126,6 +1182,7 @@ class Devices(DeviceCenter):
                 async with lock:
                     result = await self.strip(device).execute(**args, experiment=True)
                 self.probes[identifier] = result["probe_id"]
+                result["device_id"] = identifier
                 result["message"] = (
                     "Тестовая команда отправлена. Проверь ленту и отметь, сработала ли функция. "
                     "Физический результат пока не подтверждён."
@@ -1173,6 +1230,13 @@ class Devices(DeviceCenter):
                     if isinstance(exc, (ToolError, TimeoutError, OSError))
                     else self.connections.get(identifier, "unknown")
                 )
+                if value.get("op") in {"act", "probe_led"}:
+                    try:
+                        failed_device = self.store.get(identifier)
+                        failed_device.result_status = "failed"
+                        self.store.observe(failed_device)
+                    except (ValueError, sqlite3.Error):
+                        pass
             message = (
                 str(exc)
                 if isinstance(exc, (ToolError, ActionDenied)) or type(exc) is ValueError

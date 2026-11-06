@@ -3,12 +3,14 @@ import {icon} from './dashboard';
 import {DeviceWriter} from './devices_state';
 
 type Values=Record<string,unknown>;
-export interface DeviceRecord {id:string;revision:number;name:string;kind:'led_strip'|'mac'|'external_display'|'airplay'|'audio_output'|'wled';protocol:string;endpoint:string;place_id:string;room:string;state:Values;sent:Values;last_contact:string|null;state_at:string|null;result_status:string|null;favorites:string[];favorite?:boolean;aliases?:string[];auto_connect?:boolean;features:Record<string,boolean|string|string[]>;connection:string;usable:boolean;reason:string;busy:boolean}
+interface BleDiagnostic {report_id?:string;at?:string;connection?:string;compatibility?:string;errors?:{stage:string;type:string;uuid?:string}[];services?:{uuid:string;characteristics:{uuid:string;properties:string[];write_modes:string[];read?:{byte_count?:number;error?:string}}[]}[];notifications?:{uuid:string;byte_count:number}[];}
+interface BleStatus {driver:string;driver_id?:string;compatibility:string;confirmed_functions?:string[];diagnostic?:BleDiagnostic;last_command?:{status:string;physical_confirmed?:boolean}|null;}
+export interface DeviceRecord {id:string;revision:number;name:string;kind:'led_strip'|'mac'|'external_display'|'airplay'|'audio_output'|'wled';protocol:string;endpoint:string;place_id:string;room:string;state:Values;sent:Values;last_contact:string|null;state_at:string|null;result_status:string|null;favorites:string[];favorite?:boolean;aliases?:string[];auto_connect?:boolean;features:Record<string,boolean|string|string[]>;connection:string;usable:boolean;reason:string;busy:boolean;ble?:BleStatus;}
 interface Collection {id:string;revision:number;name:string;place_id:string;device_ids?:string[];}
 interface Output {uid:string;name:string;active:boolean;transport:string;}
 interface Candidate {token:string;name:string;kind?:string;protocol?:string;rssi?:number|null;connection?:string;compatibility?:string;compatibility_reason?:string;}
 interface Discovery {scan_id:string;started_at:string;finished_at:string;show_all_ble:boolean;scanner_count?:number;candidate_count:number;ble_candidate_count?:number;excluded_count?:number;runtime?:{version:string;python:string;bleak:string;scanner_backend:string;executable:string;bluetooth_authorization:string;build?:{source_commit?:string;built_at?:string;contains_ba705ed?:boolean}};}
-export interface DevicesEvent {groups?:Collection[];rooms?:Collection[];profiles?:{id:string;revision:number;name:string;cities:string[]}[];outputs?:Output[];history?:{id:string;items:{at:string;action:string;result_status:string;elapsed_ms:number}[]};metrics?:{total_ms:number;action:string};type:'devices';items:DeviceRecord[];places:{id:string;name:string}[];location:{place_id:string|null;name:string|null;status:string;mode:string};kinds:{id:string;name:string;protocol:string}[];operation_id?:string;running?:boolean;saved?:string;message?:string;error?:string;candidates?:Candidate[];discovery?:Discovery;checked?:{message:string;compatibility?:string;connection?:string};result?:{message?:string;error?:string;result_status?:string;probe_id?:string;status?:string}}
+export interface DevicesEvent {groups?:Collection[];rooms?:Collection[];profiles?:{id:string;revision:number;name:string;cities:string[]}[];outputs?:Output[];history?:{id:string;items:{at:string;action:string;result_status:string;elapsed_ms:number}[]};metrics?:{total_ms:number;action:string};type:'devices';items:DeviceRecord[];places:{id:string;name:string}[];location:{place_id:string|null;name:string|null;status:string;mode:string};kinds:{id:string;name:string;protocol:string}[];operation_id?:string;running?:boolean;saved?:string;message?:string;error?:string;candidates?:Candidate[];discovery?:Discovery;checked?:{message:string;compatibility?:string;connection?:string};result?:{message?:string;error?:string;result_status?:string;probe_id?:string;device_id?:string;status?:string}}
 const el=<T extends keyof HTMLElementTagNameMap>(tag:T,text='',cls=''):HTMLElementTagNameMap[T]=>{const n=document.createElement(tag);n.textContent=text;n.className=cls;return n;};
 const protocolNames:Record<string,string>={ble:'Bluetooth (BLE)',local:'Этот Mac',betterdisplay:'BetterDisplay',bonjour:'AirPlay · Bonjour',coreaudio:'CoreAudio',http:'Wi-Fi · WLED'};
 const deviceIcon=(d:DeviceRecord)=>d.kind==='led_strip'||d.kind==='wled'?'led':d.kind==='airplay'?'airplay':d.kind==='audio_output'?'volume':d.kind==='mac'?'cpu':'monitor';
@@ -35,7 +37,7 @@ export class DevicesView {
   private discovery:Discovery|null=null;
   private checked='';
   private wizardBusy=false;
-  private pendingProbe:{id:string;probe_id:string}|null=null;
+  private pendingProbes=new Map<string,string>();
   private confirmation='';
   private tab:'control'|'settings'|'history'='control';
   private auxiliary:HTMLDialogElement|null=null;
@@ -83,7 +85,7 @@ export class DevicesView {
     if(event.operation_id&&!event.running&&(event.result||event.error))this.writer.complete(event.operation_id,!event.error&&event.result?.result_status!=='failed');
     if(event.error||event.message||event.result){this.feedback.textContent=event.error??event.message??event.result?.error??event.result?.message??outcomes[event.result?.result_status??'']??'';this.feedback.dataset.error=String(!!event.error||!!event.result?.error);}
     else if(!this.feedback.dataset.error)this.feedback.textContent='Выбери устройство для управления. Подключение проверяется по твоему действию.';
-    if(event.result?.probe_id&&this.selected)this.pendingProbe={id:this.selected,probe_id:event.result.probe_id};
+    if(event.result?.probe_id&&event.result.device_id)this.pendingProbes.set(event.result.device_id,event.result.probe_id);
     if(event.result?.status==='confirmation_required')this.confirmation=this.selected;
     if(event.history){this.history=event.history;}
     if(event.candidates){
@@ -116,7 +118,7 @@ export class DevicesView {
     if(d.kind==='led_strip'&&Object.keys(sent).length){const values=[];if(typeof sent.power==='boolean')values.push(sent.power?'включение':'выключение');if(sent.color)values.push(colors.find(([,color])=>color===sent.color)?.[0]??`цвет ${sent.color}`);if(typeof sent.brightness==='number')values.push(`яркость ${sent.brightness}%`);return `Отправлено: ${values.join(' · ')}. Факт не подтверждён.`;}
     return items.join(' · ')||'Фактическое состояние ещё не прочитано';
   }
-  private statusText(d:DeviceRecord):string {return !this.online?'Нет связи с Чушпаном':!d.usable?'В другом месте':d.busy||this.writer.busy(d.id)?'Выполняется':d.connection==='observed'?'Последняя связь успешна':d.connection==='error'?'Нужна проверка подключения':'Подключение не проверено';}
+  private statusText(d:DeviceRecord):string {return !this.online?'Нет связи с Чушпаном':!d.usable?'В другом месте':d.busy||this.writer.busy(d.id)?'Выполняется':d.connection==='observed'?'Последняя связь успешна':d.connection==='disconnected'?'BLE-соединение закрыто':d.connection==='error'?'Нужна проверка подключения':'Подключение не проверено';}
   private renderTopOutput():void {
     const button=document.getElementById('devices-audio-output')!;button.replaceChildren();const symbol=el('span');symbol.innerHTML=icon('volume');const words=el('span');words.append(el('small','Вывод звука'),el('strong',this.data?.outputs?.find(o=>o.active)?.name??'Выбрать аудиовыход'));button.append(symbol,words,el('span','⌄'));
   }
@@ -146,7 +148,7 @@ export class DevicesView {
     if(!records.length)this.list.append(el('div',this.data?.items.length?'Ничего не найдено. Измени фильтр или название.':'Здесь появится твоя техника. Добавь устройство — поиск начнётся только по твоему действию.','devices-empty'));
   }
   private placeName(id:string):string {return id==='general'?'Общее':this.data?.places.find(p=>p.id===id)?.name??'Место не задано';}
-  private choose(id:string):void {this.previousFocus=document.activeElement as HTMLElement;this.selected=id;this.tab='control';this.pendingProbe=null;this.renderList();this.renderPanel();}
+  private choose(id:string):void {this.previousFocus=document.activeElement as HTMLElement;this.selected=id;this.tab='control';this.renderList();this.renderPanel();}
   private placePanel():void {
     if(this.narrow.matches&&this.selected){this.root.append(this.sheet);this.sheet.append(this.panel);if(!this.sheet.open)this.sheet.showModal();this.panel.setAttribute('role','region');}
     else {if(this.sheet.open)this.sheet.close();this.root.querySelector('.devices-layout')!.append(this.panel);this.sheet.remove();if(!this.selected)this.previousFocus?.focus();}
@@ -187,9 +189,10 @@ export class DevicesView {
     if(d.kind!=='led_strip'&&d.features.brightness)this.panel.append(this.slider(d,'Яркость экрана','level','brightness',d.state.brightness));
     if(d.kind==='external_display')this.panel.append(el('p','Яркость — через BetterDisplay. Громкость, входы и питание текущей интеграцией не поддерживаются.','device-hint'));
     this.metadata(d);
-    if(this.data?.metrics)this.panel.append(el('p','Последняя операция · '+this.data.metrics.total_ms+' мс','device-hint'));
+    if(typeof this.data?.metrics?.total_ms==='number'&&Number.isFinite(this.data.metrics.total_ms))this.panel.append(el('p','Последняя операция · '+this.data.metrics.total_ms+' мс','device-hint'));
   }
   private ledPanel(d:DeviceRecord):void {
+    if(d.kind==='led_strip')this.blePanel(d);
     if(typeof d.state.power==='boolean'){const row=el('div','','device-power-row');row.append(el('strong','Питание'),this.powerSwitch(d));this.panel.append(row);}
     const power=el('div','','device-quick');for(const [feature,value,label]of [['power_on',true,'Включить'],['power_off',false,'Выключить']] as const){const b=this.button(label,()=>this.act(d,'led',{power:value},true));b.disabled=!this.canAct(d)||d.features[feature]!==true;power.append(b);}this.panel.append(power);
     if(d.features.brightness)this.panel.append(this.slider(d,'Яркость ленты','brightness','led',d.state.brightness,d.sent.brightness));
@@ -201,8 +204,23 @@ export class DevicesView {
     if(d.kind!=='led_strip')return;
     const test=el('details','','device-advanced');const toggle=this.button('Проверить управление',()=>{test.open=!test.open;});test.append(el('summary','Проверка функций контроллера'),el('p','Непроверенные функции заблокированы. Имя и GATT UUID не доказывают совместимость протокола. Каждый тест отправляет ровно одну выбранную команду; затем подтверди наблюдение. Для полного RGB проверь красный, зелёный и синий. Тёплый белый доступен как RGB после проверки цвета.'));
     for(const [label,parameters]of [['Включение',{power:true}],['Выключение',{power:false}],['Яркость 50%',{brightness:50}],...colors.slice(4,7).map(([name,color])=>[name,{color}])] as [string,Values][]){const b=this.button('Тест: '+label,()=>{if(window.confirm(`Отправить тестовую команду «${label}» этой ленте?`))this.request({op:'probe_led',id:d.id,parameters,consent:true});});b.disabled=!this.canAct(d)||!d.features.probe;test.append(b);}
-    if(this.pendingProbe?.id===d.id){const probe_id=this.pendingProbe.probe_id;test.open=true;test.append(el('p','Функция сработала так, как указано?'));for(const [value,label]of [[true,'Да, вижу результат'],[false,'Нет, не сработало']] as const)test.append(this.button(label,()=>{this.pendingProbe=null;this.request({op:'confirm_probe',id:d.id,probe_id,observed:value});}));}
+    if(this.pendingProbes.has(d.id)){const probe_id=this.pendingProbes.get(d.id)!;test.open=true;test.append(el('p','Функция сработала так, как указано?'));for(const [value,label]of [[true,'Да, вижу результат'],[false,'Нет, не сработало']] as const)test.append(this.button(label,()=>{this.pendingProbes.delete(d.id);this.request({op:'confirm_probe',id:d.id,probe_id,observed:value});}));}
     this.panel.append(toggle,test);
+  }
+  private blePanel(d:DeviceRecord):void {
+    const ble=d.ble;const compatibility:Record<string,string>={unsupported:'Протокол неизвестен',unverified:'GATT ещё не проверен',gatt_match:'GATT совпал; функции требуют наблюдения',gatt_mismatch:'GATT не соответствует драйверу'};
+    this.panel.append(el('p','Драйвер: '+(ble?.driver??'Не выбран'),'device-hint'),el('p','Протокол: '+(compatibility[ble?.compatibility??'unverified']??'Не подтверждён'),'device-hint'));
+    if(ble?.confirmed_functions?.length)this.panel.append(el('p','Проверено наблюдением: '+ble.confirmed_functions.join(', '),'device-hint'));
+    const last=ble?.last_command;this.panel.append(el('p','Последняя команда: '+(last?.status==='unknown'?'исход записи неизвестен; проверь ленту':d.result_status==='failed'?'не подтверждена':last?.status==='written'?(last.physical_confirmed?'подтверждена наблюдением':'байты отправлены; физическое выполнение не подтверждено'):'команд в журнале пока нет'),'device-hint'));
+    const diagnose=this.button('Диагностика',()=>this.request({op:'diagnose_ble',id:d.id}));diagnose.disabled=!this.canAct(d);this.panel.append(diagnose);
+    const report=ble?.diagnostic;
+    if(report?.report_id){const details=el('details','','device-advanced');details.append(el('summary','Последний GATT-отчёт'),el('p','BLE: '+(report.connection==='disconnected'?'соединение закрыто':'закрытие не подтверждено')+'. Управляющие команды не отправлялись. Значения чтений и уведомлений скрыты.'));
+      for(const service of report.services??[]){details.append(el('p','Сервис '+service.uuid));for(const char of service.characteristics){details.append(el('code',char.uuid),el('p',char.properties.join(', ')+' · запись: '+(char.write_modes.join(', ')||'нет')+(char.read?' · чтение: '+(char.read.error??`${char.read.byte_count} байт`):'')));}}
+      for(const error of report.errors??[])details.append(el('p',`${error.stage}: ${error.type}`,'device-warning'));
+      details.append(el('p',`Уведомлений: ${report.notifications?.length??0}. Уведомление не подтверждает выполнение команды.`),this.button('Скачать GATT-отчёт',()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:'application/json'}));const a=el('a');a.href=url;a.download='ble-diagnostic-'+report.report_id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}));this.panel.append(details);}
+    const profiles=el('details','','device-advanced');profiles.append(el('summary','BLE-профиль'),el('p','Смена профиля сбрасывает подтверждённые функции. Импорт не подтверждает совместимость этой ленты. После выбора выполни диагностику и проверь одну функцию.'));
+    const driver=this.select([['auto','Авто · кандидат по модели'],['elk-bledob-legacy','ELK-BLEDOB · существующий'],['elk-bleddm-candidate','ELK-BLEDDM · кандидат']],ble?.driver_id??'auto');driver.disabled=!this.canAct(d);const select=this.button('Выбрать профиль',()=>{if(window.confirm('Сменить профиль этой ленты и сбросить подтверждения?'))this.request({op:'ble_profile',id:d.id,driver:driver.value,consent:true});});select.disabled=!this.canAct(d);
+    const file=el('input');file.type='file';file.accept='.json,application/json';file.setAttribute('aria-label','Импорт BLE-профиля');file.disabled=!this.canAct(d);file.onchange=async()=>{const selected=file.files?.[0];if(!selected)return;try{if(selected.size>32768)throw new Error('Профиль больше 32 КБ');const profile=JSON.parse(await selected.text());if(window.confirm('Импортировать профиль и сбросить подтверждения этой ленты?'))this.request({op:'ble_profile',id:d.id,profile,consent:true});}catch{this.feedback.textContent='Не удалось прочитать JSON-профиль размером до 32 КБ.';this.feedback.dataset.error='true';}};profiles.append(driver,select,this.label('Импорт подтверждённого профиля JSON',file));this.panel.append(profiles);
   }
   private metadata(d:DeviceRecord):void {
     const detail=el('details','','device-advanced');detail.append(el('summary','Настройки устройства'));
