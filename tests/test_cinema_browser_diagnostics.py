@@ -9,6 +9,7 @@ import httpx
 
 from backend.cinema.archive_open import FILMS, verified_alias
 from backend.cinema.browser_diagnostics import BrowserDiagnostics
+from backend.cinema.browser_search import BrowserSearch
 from backend.cinema.evidence import diagnostic_reason, observations, public_url, safe_reason
 from backend.cinema.internet import PageVerifier, SearchProviders
 from backend.cinema.models import Preferences
@@ -17,6 +18,7 @@ from backend.cinema.sources import SourceManager
 from backend.cinema.store import CinemaStore
 from backend.hud.bus import HudBus
 from backend.hud.server import create_app
+from backend.permission_policy import requests_allowed
 
 
 class OpenHTTP:
@@ -167,6 +169,29 @@ def test_api_failure_uses_free_browser_but_never_another_paid_provider():
         free.search.reset_mock()
         await engines.search({}, Preferences(allow_browser=False), [])
         free.search.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_safari_search_preserves_unicode_for_applescript_and_uses_ee_region(monkeypatch):
+    async def run():
+        scripts = []
+
+        async def execute(script):
+            assert not requests_allowed.get()
+            scripts.append(script)
+            if "make new document" in script:
+                return "1234"
+            if "do JavaScript" in script:
+                return json.dumps({"urls": ["https://source.test/film"]})
+            return "0"
+
+        monkeypatch.setattr("backend.cinema.browser_search.asyncio.sleep", AsyncMock())
+        result = await BrowserSearch(SimpleNamespace(_run=execute)).search("Фильм", "EE", "ru")
+        assert result == ["https://source.test/film"]
+        assert "kl=ee-et" in scripts[0]
+        assert "подтвердите" in scripts[1] and r"\u043f" not in scripts[1]
+        assert 'starts with "https://duckduckgo.com/"' in scripts[-1]
 
     asyncio.run(run())
 

@@ -57,7 +57,7 @@ class BrowserSearch:
                     await asyncio.sleep(0.7)
                     value = await self.executor._run(
                         'tell application "Safari"\nreturn do JavaScript '
-                        + json.dumps(script)
+                        + json.dumps(script, ensure_ascii=False)
                         + " in current tab of window id "
                         + window
                         + "\nend tell"
