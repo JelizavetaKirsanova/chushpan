@@ -14,6 +14,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from backend.desktop import VERSION
 from scripts.macos_release import BUILD_RECEIPT, new_build_directory, verify_bundle, write_receipt
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +43,7 @@ MANIFEST_SOURCES = (
     "frontend/src/memory_library.ts",
     "frontend/src/module_ui.ts",
     "frontend/dist/index.html",
+    "packaging/macos/Chushpan.spec",
 )
 
 
@@ -51,7 +53,6 @@ def run(*args, env=None):
 
 def build_manifest(build_root: Path | None = None) -> Path:
     """Stamp shipped sources, rather than trusting a manually incremented version."""
-    from backend.desktop import VERSION
 
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=ROOT).decode().strip()
@@ -215,7 +216,10 @@ def build() -> Path:
         )
     run("codesign", "--force", "--sign", "-", "--identifier", "ee.chushpan.desktop", str(app))
     run("codesign", "--verify", "--deep", "--strict", str(app))
-    write_receipt(BUILD_RECEIPT, verify_bundle(app))
+    receipt = verify_bundle(app)
+    if receipt["version"] != VERSION:
+        raise SystemExit("Версия пакета macOS отличается от версии исходников.")
+    write_receipt(BUILD_RECEIPT, receipt)
     print(f"Сборка проверена: {app}. Для обновления: python -m scripts.install_macos")
     return app
 

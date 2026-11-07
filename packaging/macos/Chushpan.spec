@@ -1,6 +1,7 @@
 # Build from the locked Apple Silicon development environment.
 # PyInstaller supplies SPECPATH, Analysis, PYZ, EXE, COLLECT and BUNDLE.
 # ruff: noqa: F821
+import json
 import os
 from pathlib import Path
 
@@ -15,6 +16,7 @@ root = Path(SPECPATH).parents[1]
 build_root = Path(os.environ["CHUSHPAN_BUILD_ROOT"])
 if not any(part.endswith(".noindex") for part in build_root.parts):
     raise SystemExit("Build staging must be inside a .noindex directory")
+build_info = json.loads((build_root / "metadata/build-info.json").read_text())
 native = build_root / "native"
 datas = [
     (str(root / "config.yaml"), "."),
@@ -113,8 +115,8 @@ app = BUNDLE(
         "CFBundleDisplayName": "Чушпан",
         "CFBundleName": "Чушпан",
         "CFBundleIconFile": "icon.icns",
-        "CFBundleShortVersionString": "0.3.7",
-        "CFBundleVersion": "20",
+        "CFBundleShortVersionString": build_info["version"],
+        "CFBundleVersion": "21",
         "LSMinimumSystemVersion": "26.2",
         "NSHighResolutionCapable": True,
         "NSMicrophoneUsageDescription": (
