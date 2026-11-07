@@ -22,11 +22,25 @@ def main():
         help="suppress microphone auto-start for this launch; keep preferences",
     )
     parser.add_argument("--self-test", type=Path)
+    parser.add_argument(
+        "--install-cinema-browser",
+        action="store_true",
+        help="install the matching Playwright Chromium headless shell into the browser cache",
+    )
     parser.add_argument("--permission-status", type=Path)
     parser.add_argument("--ble-runtime", type=Path, help="read-only BLE runtime identity, no scan")
     args = parser.parse_args()
     os.environ["CHUSHPAN_DESKTOP"] = "1"
     os.umask(0o077)
+    if args.install_cinema_browser:
+        from playwright.__main__ import main as playwright_main
+
+        from backend.cinema.browser_diagnostics import configure_browser_cache
+
+        configure_browser_cache()
+        os.environ["PLAYWRIGHT_SKIP_BROWSER_GC"] = "1"
+        sys.argv[1:] = ["install", "--only-shell", "chromium"]
+        playwright_main()
     if args.ble_runtime:
         from backend.ble_diagnostics import runtime_info
 

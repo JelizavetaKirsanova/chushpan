@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import httpx
 
 from backend.cinema.archive_open import FILMS, verified_alias
-from backend.cinema.browser_diagnostics import BrowserDiagnostics
+from backend.cinema.browser_diagnostics import BrowserDiagnostics, configure_browser_cache
 from backend.cinema.browser_search import BrowserSearch
 from backend.cinema.evidence import diagnostic_reason, observations, public_url, safe_reason
 from backend.cinema.internet import PageVerifier, SearchProviders
@@ -219,6 +219,24 @@ def test_cancelled_browser_check_is_finalized_and_can_be_run_again(tmp_path, mon
         assert not saved["running"] and not saved["playback_confirmed"]
 
     asyncio.run(run())
+
+
+def test_frozen_app_uses_standard_browser_cache_and_respects_an_explicit_path(monkeypatch):
+    import os
+    import sys
+    from pathlib import Path
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "/before-test")
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+    configure_browser_cache()
+    assert os.environ["PLAYWRIGHT_BROWSERS_PATH"] == str(
+        Path.home() / "Library/Caches/ms-playwright"
+    )
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "/custom/browser-cache")
+    configure_browser_cache()
+    assert os.environ["PLAYWRIGHT_BROWSERS_PATH"] == "/custom/browser-cache"
 
 
 def test_private_browser_screenshot_rejects_foreign_embedding_and_path_traversal(tmp_path):

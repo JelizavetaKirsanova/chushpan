@@ -9,7 +9,9 @@ import contextlib
 import hashlib
 import ipaddress
 import json
+import os
 import re
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +25,16 @@ from backend.cinema.playback import SourceValidator
 from backend.cinema.public_search import Page, key
 from backend.cinema.sources import addresses
 from backend.tools.registry import ToolError
+
+
+def configure_browser_cache():
+    # Playwright otherwise uses a writable .local-browsers folder inside a frozen
+    # app. Use its standard macOS cache and keep the signed bundle immutable.
+    if getattr(sys, "frozen", False) and sys.platform == "darwin":
+        os.environ.setdefault(
+            "PLAYWRIGHT_BROWSERS_PATH", str(Path.home() / "Library/Caches/ms-playwright")
+        )
+
 
 # Semantic roles/labels survive class-name changes. Site profiles only add aliases;
 # none accepts scripts, executable selectors or credentials from source settings.
@@ -138,11 +150,26 @@ class BrowserDiagnostics:
         browser = context = page = runtime = None
         await self.publish()
         try:
+            from playwright.async_api import Error as PlaywrightError
             from playwright.async_api import async_playwright
 
+            configure_browser_cache()
             runtime = await async_playwright().start()
             async with asyncio.timeout(75):
-                browser = await runtime.chromium.launch(headless=True)
+                try:
+                    browser = await runtime.chromium.launch(headless=True)
+                except PlaywrightError as exc:
+                    if "Executable doesn't exist" not in str(exc):
+                        raise
+                    command = (
+                        "/Applications/Чушпан.app/Contents/MacOS/Chushpan --install-cinema-browser"
+                        if getattr(sys, "frozen", False)
+                        else "python -m playwright install --only-shell chromium"
+                    )
+                    raise ToolError(
+                        "Для диагностики нужен Chromium этой версии Playwright. "
+                        f"Установи его один раз в Терминале: {command}"
+                    ) from None
                 context = await browser.new_context(
                     locale="ru-RU",
                     accept_downloads=False,
