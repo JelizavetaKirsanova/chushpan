@@ -212,6 +212,61 @@ test("disconnect disables all command buttons and displays connection state", as
   }
 });
 
+test("nullable saved preset fields stay absent when reopening and saving", async () => {
+  const f = fixture();
+  try {
+    f.view.receive({
+      ...f.state,
+      lighting: {
+        ...f.state.lighting,
+        presets: [
+          {
+            id: "a".repeat(32),
+            revision: 1,
+            name: "Только цвет",
+            action: {
+              kind: "set",
+              color: "#FF0000",
+              brightness: null,
+              power: null,
+              preset_id: null,
+            },
+          },
+        ],
+      },
+    });
+    const row = [...f.window.document.querySelectorAll(".lighting-row")].find(
+      (row) => row.textContent?.includes("Только цвет"),
+    )!;
+    assert.ok(row);
+    assert.doesNotMatch(row.textContent!, /null|выкл|вкл/);
+    f.button("Изменить / переименовать", row);
+    const form =
+      f.window.document.querySelector<HTMLFormElement>("dialog form")!;
+    const checkboxes = form.querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    assert.equal(checkboxes[0].checked, true);
+    assert.equal(checkboxes[1].checked, false);
+    const power = [...form.querySelectorAll("label")]
+      .find((label) => label.textContent?.startsWith("Питание"))!
+      .querySelector("select")!;
+    assert.equal(power.value, "keep");
+    form.dispatchEvent(new f.window.Event("submit", { cancelable: true }));
+    const saved = f.events.at(-1);
+    assert.equal(saved.operation, "preset_save");
+    assert.equal(saved.value.action.color, "#FF0000");
+    assert.equal(Object.hasOwn(saved.value.action, "power"), false);
+    assert.equal(Object.hasOwn(saved.value.action, "brightness"), false);
+    assert.equal(
+      f.events.some((event) => event.operation === "apply"),
+      false,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
 test("reconnect unlocks normal power commands without assuming the strip is off", async () => {
   const f = fixture();
   try {

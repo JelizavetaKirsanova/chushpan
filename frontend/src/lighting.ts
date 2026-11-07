@@ -5,10 +5,10 @@ import type { ColorDraft, UserColor } from "./color_editor";
 
 type Action = {
   kind?: string;
-  color?: string;
-  brightness?: number;
-  power?: boolean;
-  preset_id?: string;
+  color?: string | null;
+  brightness?: number | null;
+  power?: boolean | null;
+  preset_id?: string | null;
   duration_s?: number;
   effect?: string;
   period_s?: number;
@@ -591,10 +591,10 @@ export class LightingView {
           "span",
           [
             preset.action.color,
-            preset.action.brightness !== undefined
+            preset.action.brightness != null
               ? preset.action.brightness + "%"
               : "",
-            preset.action.power !== undefined
+            preset.action.power != null
               ? preset.action.power
                 ? "вкл"
                 : "выкл"
@@ -712,7 +712,7 @@ export class LightingView {
     const fields = el("div");
     form.append(fields);
     const colorEnabled = this.input(fields, "Изменить цвет", "checkbox", "");
-    colorEnabled.checked = initial.color !== undefined;
+    colorEnabled.checked = initial.color != null;
     const color = this.input(
       fields,
       "Цвет HEX",
@@ -725,7 +725,7 @@ export class LightingView {
       "checkbox",
       "",
     );
-    brightnessEnabled.checked = initial.brightness !== undefined;
+    brightnessEnabled.checked = initial.brightness != null;
     const brightness = this.input(
       fields,
       "Яркость 0–100",
@@ -743,7 +743,7 @@ export class LightingView {
         ["on", "Включить"],
         ["off", "Выключить"],
       ],
-      initial.power === undefined ? "keep" : initial.power ? "on" : "off",
+      initial.power == null ? "keep" : initial.power ? "on" : "off",
     );
     const programs = el("div");
     form.append(programs);
