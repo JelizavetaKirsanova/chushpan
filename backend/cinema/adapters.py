@@ -59,6 +59,7 @@ class ManualAdapter:
             "page_opened": True,
             "playback_confirmed": False,
             "mode": "manual",
+            "manual_required": True,
             "message": "Страница открыта. Запусти плеер и укажи прогресс вручную.",
         }
 
@@ -267,6 +268,7 @@ class HTML5Adapter:
                         "page_opened": True,
                         "playback_confirmed": False,
                         "mode": "manual",
+                        "manual_required": True,
                         "message": str(exc)
                         + f" Сохранённый таймкод: {target['episode']['position']:.1f} с. "
                         "Установи его вручную.",
@@ -293,10 +295,11 @@ class HTML5Adapter:
                 return {
                     "page_opened": True,
                     "mode": "manual",
+                    "manual_required": True,
                     "playback_confirmed": False,
                     "video_type": current["video_type"],
                     "content_verified": False,
-                    "message": "Источник для просмотра не найден. "
+                    "message": "Страница доступна, но автоматический просмотр не подтверждён. "
                     + current["classification_reason"]
                     + " Прогресс сохранён; автоматический запуск отменён.",
                 }

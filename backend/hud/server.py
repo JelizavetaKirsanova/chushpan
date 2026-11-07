@@ -6,13 +6,14 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import socket
 import sqlite3
 import webbrowser
 from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from backend.config import ROOT_DIR, Settings
@@ -69,6 +70,21 @@ def create_app(bus: HudBus, origins: set[str], dist: Path = DIST_DIR, native=Non
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     if native is not None:
         native.routes(app)
+
+    @app.get("/cinema/diagnostics/{identifier}/image")
+    async def cinema_diagnostic_image(identifier: str, request: Request) -> Response:
+        cinema = getattr(bus, "cinema", None)
+        if (
+            not cinema
+            or not re.fullmatch(r"[0-9a-f]{32}", identifier)
+            or request.headers.get("sec-fetch-site") not in {"same-origin", "none"}
+            or str(request.base_url).rstrip("/") not in origins
+        ):
+            return Response(status_code=403)
+        path = cinema.browser_diagnostics.root / identifier / "page.png"
+        if not path.is_file():
+            return Response(status_code=404)
+        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
 
     @app.post("/cinema/progress/{token}")
     async def cinema_progress(token: str, request: Request) -> Response:

@@ -10,12 +10,14 @@ import json
 import os
 import re
 import secrets
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
 
 from backend.cinema.classification import classify
+from backend.cinema.evidence import public_url, safe_reason
 from backend.cinema.models import Source, origin, web_url
 from backend.cinema.public_search import Page, PublicCatalogue, Robots, key
 from backend.tools.registry import ToolError
@@ -225,6 +227,7 @@ class PageVerifier:
                     "url": url,
                     "kind": "page",
                     "match": 1.0,
+                    "identity_status": "confirmed",
                     "availability": "available",
                     "embedded": False,
                     "playback_confirmed": False,
@@ -239,6 +242,22 @@ class PageVerifier:
                     )
                     + "Видео и доступ к нему ещё не подтверждены.",
                 }
+        probable = page.probable_identity(query)
+        if probable:
+            return {
+                **probable,
+                **classification,
+                "url": url,
+                "kind": "page",
+                "availability": "available",
+                "embedded": False,
+                "playback_confirmed": False,
+                "access_status": "UNKNOWN",
+                "region_access": "unknown",
+                "reason": "Название и год видны на странице, но независимые метаданные "
+                "не подтвердили соответствие. Это вероятное совпадение для ручного открытия; "
+                "сезон, серия и полное видео не подтверждены.",
+            }
         raise ToolError(
             "Метаданные страницы не подтвердили название, год/IMDb, тип или номер серии. "
             "Сниппет поисковика не принят за доказательство."
@@ -298,37 +317,48 @@ class InternetSearch:
                     "Safari». Поиск по всему интернету не выполнялся."
                 )
             ]
-        urls = []
-        try:
-            queries = (
-                self.provider.queries(query, prefs)
-                if callable(getattr(self.provider, "queries", None))
-                else self.queries(query, prefs)
-            )
-            for q in queries:
-                urls.extend(
-                    await self.provider.search(
-                        q, prefs.watch_region, "ru" if prefs.prefer_russian else "en"
+        urls, errors = [], []
+        started = time.monotonic()
+        deadline = started + 43
+        queries = (
+            self.provider.queries(query, prefs)
+            if callable(getattr(self.provider, "queries", None))
+            else self.queries(query, prefs)
+        )
+        for q in queries[:3]:
+            try:
+                async with asyncio.timeout(min(12, max(0.1, deadline - time.monotonic()))):
+                    urls.extend(
+                        await self.provider.search(
+                            q, prefs.watch_region, "ru" if prefs.prefer_russian else "en"
+                        )
+                    )
+            except (ToolError, httpx.HTTPError, OSError, TimeoutError, ValueError) as exc:
+                errors.append(
+                    self.error(
+                        safe_reason(exc)
+                        if isinstance(exc, ToolError)
+                        else "Поиск не завершён: " + type(exc).__name__
                     )
                 )
-            rows = []
-            verifier = PageVerifier(self.http)
-            for url in list(dict.fromkeys(urls))[:8]:
+                break
+        verifier = PageVerifier(self.http)
+        semaphore = asyncio.Semaphore(3)
+
+        async def verify(url):
+            try:
                 known = next(
                     (
-                        s
-                        for s in sources
-                        if s.get("base_url") and origin(s["base_url"]) == origin(url)
+                        source
+                        for source in sources
+                        if source.get("base_url") and origin(source["base_url"]) == origin(url)
                     ),
                     None,
                 )
                 if known and not known["enabled"]:
-                    continue
-                try:
-                    async with asyncio.timeout(20):
-                        row = await verifier.verify(url, {**query, "region": prefs.watch_region})
-                except (ToolError, httpx.HTTPError, OSError, TimeoutError, ValueError, TypeError):
-                    continue
+                    return None
+                async with semaphore, asyncio.timeout(16):
+                    row = await verifier.verify(url, {**query, "region": prefs.watch_region})
                 identifier = "web-" + hashlib.sha256(origin(url).encode()).hexdigest()[:16]
                 source = (
                     known
@@ -349,22 +379,56 @@ class InternetSearch:
                 )
                 if known and source.get("access_status") in {"FREE", "PAID"}:
                     row["access_status"] = source["access_status"]
-                rows.append(row)
-            return rows or [
-                self.error(
-                    "Поисковик ответил, но среди результатов нет проверенной страницы "
-                    "нужного произведения/серии. Защита, номера серий и недостающие "
-                    "метаданные не обходились."
-                )
-            ]
-        except (ToolError, httpx.HTTPError, OSError, TimeoutError, ValueError) as exc:
-            return [
-                self.error(
-                    str(exc)
+            except (
+                ToolError,
+                httpx.HTTPError,
+                OSError,
+                TimeoutError,
+                ValueError,
+                TypeError,
+            ) as exc:
+                row = self.error(
+                    safe_reason(exc)
                     if isinstance(exc, ToolError)
-                    else "Поисковый API временно недоступен. Повтор не выполнялся."
+                    else "Проверка страницы: " + type(exc).__name__
                 )
-            ]
+                row["checked_url"] = public_url(url)
+            row.update(
+                search_provider=self.name,
+                result_count=len(urls),
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
+            return row
+
+        tasks = [asyncio.create_task(verify(url)) for url in list(dict.fromkeys(urls))[:8]]
+        rows = []
+        if tasks:
+            try:
+                done, pending = await asyncio.wait(
+                    tasks, timeout=max(0.1, deadline - time.monotonic())
+                )
+                # Preserve completed results if one page stalls; do not discard a working source.
+                rows = [task.result() for task in tasks if task in done and task.result()]
+                if pending:
+                    errors.append(
+                        self.error(
+                            "Часть страниц не ответила за отведённое время. "
+                            "Завершённые результаты сохранены."
+                        )
+                    )
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+        rows.extend(errors)
+        rows.sort(key=lambda row: row.get("kind") == "page", reverse=True)
+        return rows or [
+            self.error(
+                "Поиск не нашёл точную проверяемую страницу произведения. "
+                "Это не подтверждение отсутствия фильма."
+            )
+        ]
 
     def error(self, message):
         return {
@@ -388,7 +452,7 @@ class InternetSearch:
 
 
 class SearchProviders:
-    """Explicit provider selection; never silently spend credits on a fallback."""
+    """Use the selected API, then a free browser path; no second paid API request."""
 
     def __init__(self, http, providers):
         self.http, self.providers = http, providers
@@ -398,7 +462,17 @@ class SearchProviders:
         self.selected = prefs.search_provider
         engine = self.providers[self.selected]
         engine.http = self.http
-        return await engine.search(query, prefs, sources)
+        rows = await engine.search(query, prefs, sources)
+        fallback = self.providers.get("safari")
+        if (
+            fallback
+            and engine is not fallback
+            and prefs.allow_browser
+            and not any(r.get("content_verified") for r in rows)
+        ):
+            fallback.http = self.http
+            rows.extend(await fallback.search(query, prefs, sources))
+        return rows
 
     def error(self, message):
         return self.providers[self.selected].error(message)

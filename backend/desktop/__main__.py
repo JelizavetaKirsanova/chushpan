@@ -61,6 +61,8 @@ def main():
             "backend.sync.service",
             "backend.cinema.playback",
             "backend.cinema.native_player",
+            "backend.cinema.browser_diagnostics",
+            "playwright.async_api",
             "cryptography.x509",
         ]
         result = {}

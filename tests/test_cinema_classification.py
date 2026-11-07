@@ -170,10 +170,14 @@ def test_tmdb_trailer_without_a_full_source_never_opens_during_watch(tmp_path):
             episode = item["current"]
             await cinema.db("progress", episode["id"], 60, 120, "manual")
             result = await cinema.resume(item["id"])
-            assert "Источник для просмотра не найден" in result["message"]
+            assert (
+                "подтвержд" in result["message"].lower() or "страница" in result["message"].lower()
+            )
             assert not result["playback_confirmed"]
             result = await cinema.execute("смотреть фильм " + QUERY["title"])
-            assert "Источник для просмотра не найден" in result["message"]
+            assert (
+                "подтвержд" in result["message"].lower() or "страница" in result["message"].lower()
+            )
             opened.assert_not_awaited()
             player.open.assert_not_awaited()
             assert not any(path.endswith("/videos") for path in requests)

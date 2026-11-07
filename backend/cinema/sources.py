@@ -19,6 +19,7 @@ from uuid import uuid4
 import httpx
 
 from backend.cinema.classification import FULL_TYPES, PROMO_TYPES, classify
+from backend.cinema.evidence import observations
 from backend.cinema.models import Source, web_url
 from backend.cinema.personal import normalized
 from backend.cinema.public_search import PublicCatalogue
@@ -574,6 +575,28 @@ class SourceManager:
             raise ValueError("Серия не найдена.")
         prefs = await self.db("preferences")
         sources = [s for s in await self.db("sources") if s["enabled"]]
+        # Shipped licensed catalogue is usable on first watch, without API keys or
+        # the circular requirement that this source has already played once.
+        from backend.cinema.archive_open import find
+
+        query = {**item, "season": ep["season"], "episode": ep["episode"]}
+        configured = await self.db("sources")
+        if (
+            not saved_only
+            and find(query)
+            and not any(urlsplit(s["base_url"]).hostname == "archive.org" for s in configured)
+        ):
+            sources.append(
+                Source(
+                    id="builtin-archive",
+                    name="Internet Archive · открытое кино",
+                    base_url="https://archive.org",
+                    adapter="direct",
+                    search_mode="archive",
+                    access_status="FREE",
+                    embed_allowed=True,
+                ).model_dump()
+            )
         if saved_only:
             sources = [
                 s for s in sources if any(link["source_id"] == s["id"] for link in ep["links"])
@@ -599,6 +622,7 @@ class SourceManager:
             self.pending.pop(key, None)
 
     async def _search(self, item, ep, sources, prefs, alternative, generation, saved_only=False):
+        configured_ids = {s["id"] for s in await self.db("sources")}
         memory = item.get("source_memory", {})
         last_link = next((link for link in ep["links"] if link["id"] == ep["last_link_id"]), None)
         last = memory.get("last_source_id") or (last_link or {}).get("source_id")
@@ -621,6 +645,7 @@ class SourceManager:
 
         async def search_source(source):
             async with semaphore:
+                started = self.clock()
                 adapter = self.adapter(source)
                 links = [link for link in ep["links"] if link["source_id"] == source["id"]]
                 try:
@@ -709,7 +734,15 @@ class SourceManager:
                         capabilities=adapter.getPlaybackCapabilities(),
                         playback_confirmed=False,
                         auto_eligible=source.get("health", {}).get("successes", 0) > 0,
+                        elapsed_ms=round((self.clock() - started) * 1000),
+                        result_count=len(rows),
                     )
+                    if source["id"] == "builtin-archive" and source["id"] not in configured_ids:
+                        row.update(
+                            source_config=source,
+                            new_source=True,
+                            automatic_trust=row.get("provider") == "archive_open",
+                        )
                     row["access_type"] = row.get("access_type") or "unknown"
                     if row.get("region_checked") and row["region_checked"] != prefs.watch_region:
                         row["region_access"] = "unknown"
@@ -739,7 +772,20 @@ class SourceManager:
                     )
                 return rows
 
-        groups = await asyncio.gather(*(search_source(s) for s in sources))
+        licensed = [s for s in sources if s["search_mode"] == "archive"]
+        groups = []
+        if licensed and not alternative:
+            from backend.cinema.archive_open import find
+
+            if find({**item, "season": ep["season"], "episode": ep["episode"]}):
+                groups = await asyncio.gather(*(search_source(s) for s in licensed))
+        if not any(
+            r.get("content_verified") and r.get("availability") == "available"
+            for group in groups
+            for r in group
+        ):
+            others = [s for s in sources if not groups or s not in licensed]
+            groups.extend(await asyncio.gather(*(search_source(s) for s in others)))
         if generation != self.generation:
             raise ToolError("Настройки источников изменились. Повтори поиск.")
         rows = [r for group in groups for r in group if not alternative or r["source_id"] != last]
@@ -848,7 +894,9 @@ class SourceManager:
                 # only reaches a confirmation, never automatic playback.
                 or row.get("link_id")
                 or row.get("requires_confirmation")
+                or (row.get("provider") == "archive_open" and row.get("content_verified"))
             )
+            row.update(observations(row, item["kind"]))
         rows.sort(
             key=lambda r: (
                 r["allowed"],
@@ -893,8 +941,24 @@ class SourceManager:
             "selected_id": next((r["id"] for r in verified if r["auto_eligible"]), None)
             if prefs.auto_select_source
             else None,
+            "inspection_id": next(
+                (
+                    r["id"]
+                    for r in rows
+                    if r.get("browser_openable")
+                    and r.get("identity_status") == "confirmed"
+                    and r.get("scope") in {"movie", "episode"}
+                    and (r.get("allowed") or r.get("manual_allowed"))
+                    and not r.get("new_source")
+                ),
+                None,
+            )
+            if prefs.auto_select_source and prefs.allow_browser
+            else None,
             "message": "Найдено совпадение. Выбери вариант просмотра."
             if verified
-            else "Источник для просмотра не найден. Тип видео или соответствие произведению "
-            "не подтверждены. Причины указаны у источников; трейлер вместо фильма не открывается.",
+            else "Найдена точная страница. Плеер и полное видео нужно проверить в браузере."
+            if any(r.get("browser_openable") for r in rows)
+            else "Подтверждённое видео не найдено. Ниже указаны причины проверки сайтов и поиска; "
+            "это не означает, что произведение отсутствует.",
         }

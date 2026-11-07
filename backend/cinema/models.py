@@ -204,7 +204,7 @@ class Preferences(BaseModel):
     auto_open: bool = True
     ask_paid: bool = True
     internet_search: bool = True
-    search_provider: Literal["tavily", "brave"] = "tavily"
+    search_provider: Literal["tavily", "brave", "safari"] = "tavily"
     prefer_free: bool = True
     prefer_russian: bool = True
     open_in_safari: bool = False

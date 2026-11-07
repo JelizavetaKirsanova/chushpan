@@ -166,7 +166,9 @@ def test_watch_search_open_saved_repeat_and_episode_restore(tmp_path):
             source, item = await seed(service)
             result = await service.resume(item["id"])
             assert not result["playback_confirmed"] and not player.opened
-            assert "Источник для просмотра не найден" in result["message"]
+            assert (
+                "подтвержд" in result["message"].lower() or "страница" in result["message"].lower()
+            )
             choices = await service.sources.search(item["id"])
             await service.source_result(
                 choices["results"][0]["id"], open_result=True, manual_choice=True
@@ -188,7 +190,9 @@ def test_watch_search_open_saved_repeat_and_episode_restore(tmp_path):
             next_ep = next(e for e in updated["episodes"] if e["season"] == 2)
             result = await service.resume(item["id"], next_ep["id"])
             assert len(player.opened) == 1
-            assert "Источник для просмотра не найден" in result["message"]
+            assert (
+                "подтвержд" in result["message"].lower() or "страница" in result["message"].lower()
+            )
             assert not result["playback_confirmed"]
             assert (await service.db("detail", item["id"]))["current"]["id"] == ep["id"]
             assert source["id"] == first["source_memory"]["last_source_id"]

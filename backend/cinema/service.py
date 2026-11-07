@@ -5,7 +5,6 @@ import contextlib
 import functools
 import json
 import math
-import re
 import secrets
 import sqlite3
 import time
@@ -21,10 +20,13 @@ from backend.cinema.adapters import (
     SafariBridge,
     open_page,
 )
+from backend.cinema.browser_diagnostics import BrowserDiagnostics
+from backend.cinema.browser_search import BrowserSearch
 from backend.cinema.catalogue import Catalogue
 from backend.cinema.classification import FULL_TYPES, PROMO_TYPES
 from backend.cinema.commands import command
 from backend.cinema.diagnostics import DiagnosticSafariBridge, SourceDiagnostics, fingerprint
+from backend.cinema.evidence import diagnostic_reason, public_url, safe_reason
 from backend.cinema.filters import excluded_library_keys, with_preferences
 from backend.cinema.internet import InternetSearch, SearchCredentials, SearchProviders
 from backend.cinema.keychain import TavilyCredentials
@@ -107,6 +109,8 @@ class Cinema:
         self.search_credentials = SearchCredentials(settings.data_path / "integrations")
         self.tavily_credentials = TavilyCredentials()
         self.tavily = TavilySearch(self.tavily_credentials)
+        self.browser_search = BrowserSearch(self.safari.executor)
+        self.browser_diagnostics = BrowserDiagnostics(settings.data_path, self.publish)
         self.sources.web = SearchProviders(
             self.sources.http,
             {
@@ -114,6 +118,12 @@ class Cinema:
                     self.tavily_credentials, self.sources.http, provider=self.tavily, name="Tavily"
                 ),
                 "brave": InternetSearch(self.search_credentials, self.sources.http),
+                "safari": InternetSearch(
+                    self.browser_search,
+                    self.sources.http,
+                    provider=self.browser_search,
+                    name="Safari",
+                ),
             },
         )
         self.watch_confirmations = {}
@@ -175,7 +185,7 @@ class Cinema:
                 "episode_id": {"type": "string", "maxLength": 64},
                 "link_id": {"type": "string", "maxLength": 64},
                 "device": {"type": "string", "enum": ["mac", "airplay"]},
-                "player": {"type": "string", "enum": ["native", "safari", "embedded"]},
+                "player": {"type": "string", "enum": ["native", "safari", "embedded", "browser"]},
             },
             ["title_id"],
             risk=Risk.CHANGE,
@@ -261,6 +271,7 @@ class Cinema:
         search_status = {
             "tavily": tavily_status,
             "brave": {"configured": self.search_credentials.configured, "storage": "private_file"},
+            "safari": {"configured": True, "storage": "none"},
         }
         for source in data["sources"]:
             source["capabilities"] = capabilities(source)
@@ -289,6 +300,7 @@ class Cinema:
                     **source_report,
                     "running": self.diagnostics.running,
                 },
+                "browser_diagnostics": self.browser_diagnostics.report,
                 "message": self.message,
                 "matches": self.matches,
                 "tmdb": {"configured": self.tmdb.credentials.configured},
@@ -343,6 +355,87 @@ class Cinema:
                 pass
             elif op == "diagnose_sources":
                 await self.diagnostics.check(value.get("title_id") or None)
+                return
+            elif op == "browser_diagnostics_cancel":
+                await self.browser_diagnostics.cancel()
+                return
+            elif op == "browser_diagnostics":
+                self.require_playback()
+                if self.session:
+                    raise ToolError("Заверши просмотр перед отдельной проверкой Playwright.")
+                source = (await self.db("source", value["source_id"])).model_dump()
+                if not source["enabled"] or source["adapter"] == "local":
+                    raise ToolError("Выбери включённый внешний источник.")
+                prefs = await self.db("preferences")
+                item = await self.db("detail", value["title_id"])
+                ep = item["current"]
+                query = {
+                    **item,
+                    "season": ep["season"],
+                    "episode": ep["episode"],
+                    "region": prefs.watch_region,
+                }
+                candidate = None
+                with contextlib.suppress(ToolError, TimeoutError, httpx.HTTPError, OSError):
+                    async with asyncio.timeout(20):
+                        adapter = self.sources.adapter(source)
+                        results = await adapter.search(query)
+                        candidate = next(
+                            (
+                                r
+                                for r in results
+                                if r.get("kind") == "page" and r.get("match", 0) >= 0.95
+                            ),
+                            None,
+                        )
+                report = await self.browser_diagnostics.run(
+                    source,
+                    query,
+                    prefs.watch_region,
+                    url=(candidate or {}).get("url", ""),
+                    proof=candidate,
+                    play=value.get("play") is True,
+                )
+                if report.get("playback_confirmed") and report.get("content_verified"):
+                    address = (candidate or {}).get("url") or self.browser_diagnostics.resolved_url
+                    saved = await self.db(
+                        "add",
+                        {
+                            "title_id": item["id"],
+                            "title": item["title"],
+                            "kind": item["kind"],
+                            "year": item["year"],
+                            "season": ep["season"],
+                            "episode": ep["episode"],
+                            "source_id": source["id"],
+                            "url": address,
+                        },
+                    )
+                    link = next(
+                        link
+                        for e in saved["episodes"]
+                        if e["id"] == ep["id"]
+                        for link in e["links"]
+                        if link["source_id"] == source["id"]
+                    )
+                    await self.db(
+                        "verify_link",
+                        link["id"],
+                        {
+                            "scope": "episode" if item["kind"] == "series" else "movie",
+                            "content_verified": True,
+                            "video_type": report["video_type"],
+                            "classification_reason": (
+                                "Полное видео проверено в изолированном Playwright. "
+                                "Возможности Safari и встроенного плеера проверяются отдельно."
+                            ),
+                            "region_access": report["region_access"],
+                            "region_checked": prefs.watch_region,
+                        },
+                    )
+                    await self.db("remember_source", item["id"], source["id"], ep["id"], link["id"])
+                    self.sources.invalidate()
+                    await self.publish()
                 return
             elif op == "diagnose_player":
                 self.require_playback()
@@ -521,6 +614,7 @@ class Cinema:
                     open_result=op == "source_result_open",
                     pin=value.get("pin") is True,
                     manual_choice=op == "source_result_open",
+                    player="browser" if value.get("player") == "browser" else None,
                 )
                 source_action = {
                     "result_id": value["result_id"],
@@ -835,14 +929,7 @@ class Cinema:
             )
 
     async def trace_source(self, row):
-        from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-
-        url = urlsplit(row.get("url", ""))
-        query = [
-            (k, "[redacted]" if re.search(r"token|key|auth|signature|credential", k, re.I) else v)
-            for k, v in parse_qsl(url.query, keep_blank_values=True)
-        ]
-        address = urlunsplit((url.scheme, url.netloc, url.path, urlencode(query), ""))
+        address = public_url(row.get("url") or row.get("checked_url", ""))
         accepted = row.get("content_verified") is True and row.get("video_type") in FULL_TYPES
         await self.trace(
             "VERIFY",
@@ -857,7 +944,17 @@ class Cinema:
                     "url": address,
                     "video_type": row.get("video_type", "unknown"),
                     "accepted": accepted,
-                    "reason": row.get("classification_reason", row.get("reason", "")),
+                    "reason": safe_reason(diagnostic_reason(row)),
+                    "provider": row.get("search_provider", row.get("provider", "source_adapter")),
+                    "result_count": row.get("result_count"),
+                    "elapsed_ms": row.get("elapsed_ms"),
+                    "page": row.get("page_status", row.get("availability")),
+                    "identity": row.get("identity_status"),
+                    "episode": row.get("episode_status"),
+                    "region": row.get("region_access", "unknown"),
+                    "player": row.get("player_status", "unverified"),
+                    "controls": row.get("control_status", "unverified"),
+                    "playback": "unconfirmed",
                 },
                 ensure_ascii=False,
             ),
@@ -971,7 +1068,10 @@ class Cinema:
         )
         if (
             row["kind"] != "page"
-            or row["match"] < 0.95
+            or (
+                row["match"] < 0.95
+                and not (manual_choice and player == "browser" and row.get("manual_candidate"))
+            )
             or (row["availability"] != "available" and not browser_verified)
         ):
             if not open_result:
@@ -1003,7 +1103,15 @@ class Cinema:
         if (
             open_result
             and not approved
-            and (paid or voice_change or (new_source and not manual_choice))
+            and (
+                paid
+                or voice_change
+                or (
+                    new_source
+                    and not manual_choice
+                    and not (row.get("provider") == "archive_open" and row.get("content_verified"))
+                )
+            )
         ):
             token = secrets.token_urlsafe(32)
             self.watch_confirmations = {
@@ -1153,10 +1261,48 @@ class Cinema:
                     self.playback.failure(exc)
                 if self.resolution is not attempt:
                     return result
+                if (
+                    not result.get("playback_confirmed")
+                    and row.get("embedded")
+                    and row.get("content_verified")
+                    and attempt["player"] is None
+                    and (
+                        result.get("page_opened")
+                        or result.get("error_code")
+                        in {
+                            "automation_denied",
+                            "automation_unknown",
+                            "javascript_denied",
+                            "javascript_disabled",
+                            "safari_unavailable",
+                            "player_unavailable",
+                        }
+                    )
+                    and row["source_id"] not in attempt.setdefault("engine_fallbacks", set())
+                ):
+                    attempt["engine_fallbacks"].add(row["source_id"])
+                    await self.trace(
+                        "CHECKING_PLAYER",
+                        "limited",
+                        "Safari не подтвердил просмотр. Пробуем тот же проверенный "
+                        "полный файл во встроенном плеере.",
+                        row["title_id"],
+                        row["episode_id"],
+                    )
+                    result = await self.source_result(
+                        row["id"],
+                        open_result=True,
+                        player="embedded",
+                        _resolving=True,
+                        **(attempt["initial"] if first else {}),
+                    )
                 if self.session and self.session["target"]["item"]["id"] == row["title_id"]:
                     attempt["token"] = self.session["token"]
                 if result.get("playback_confirmed"):
                     self.resolver.record(row["source_id"], True)
+                    return result
+                if result.get("manual_required"):
+                    self.resolution = None
                     return result
                 # Embedded video is pending until its own media events arrive. User
                 # gestures, permission and payment decisions never trigger retries.
@@ -1811,6 +1957,7 @@ class Cinema:
         from urllib.parse import urlsplit
 
         self.require_playback()
+        search_started = time.monotonic()
         self.watch_sequence += 1
         self.resolution = None
         sequence = self.watch_sequence
@@ -1940,7 +2087,28 @@ class Cinema:
                 result = await self.resolver.search(title_id, episode_id, saved_only=True)
             if sequence != self.watch_sequence:
                 return {"playback_confirmed": False, "message": "Поиск заменён новым запросом."}
-            selected = result["selected_id"]
+            selected = result["selected_id"] or result.get("inspection_id")
+            await self.trace(
+                "SEARCH",
+                "success",
+                json.dumps(
+                    {
+                        "title": item["title"],
+                        "year": item["year"],
+                        "season": ep["season"],
+                        "episode": ep["episode"],
+                        "region": prefs.watch_region,
+                        "provider": prefs.search_provider,
+                        "result_count": len(result["results"]),
+                        "elapsed_ms": round((time.monotonic() - search_started) * 1000),
+                        "selected": bool(selected),
+                        "playback_confirmed": False,
+                    },
+                    ensure_ascii=False,
+                ),
+                title_id,
+                ep["id"],
+            )
             for candidate in result["results"]:
                 await self.trace_source(candidate)
             if (
@@ -2108,7 +2276,7 @@ class Cinema:
                 source["adapter"] == "direct"
                 and (prefs.embedded_playback or player in {"native", "embedded"})
                 and (not prefs.open_in_safari or player in {"native", "embedded"})
-                and player != "safari"
+                and player not in {"safari", "browser"}
             ):
                 resolved = provider_result or await self.sources.adapter(source).resolve(
                     {"url": target["link"]["url"]}
@@ -2181,7 +2349,7 @@ class Cinema:
             )
             adapter = self.adapter_factory(
                 "manual"
-                if series_page
+                if series_page or player == "browser"
                 else "html5"
                 if source["adapter"] == "manual"
                 or source["adapter"] == "direct"
@@ -2722,6 +2890,7 @@ class Cinema:
         self.playback.clear()
 
     async def close(self):
+        await self.browser_diagnostics.cancel()
         for task in list(self.jobs):
             task.cancel()
         await asyncio.gather(*self.jobs, return_exceptions=True)

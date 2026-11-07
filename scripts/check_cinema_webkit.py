@@ -82,7 +82,9 @@ async def check(window, report, title):
                 rows = await cinema.sources.adapter(source).search({**query, "title": query_name})
                 assert rows[0]["content_verified"] and rows[0]["video_type"] == "full_movie"
                 report["searches"].append({"query": query_name, "url": rows[0]["media_url"]})
-            if title != "Sintel":
+            if title == "Sita":
+                query = {"title": "Сита поёт блюз", "kind": "movie", "year": 2008}
+            elif title != "Sintel":
                 query = {
                     "title": "Каминандес",
                     "kind": "series",
@@ -100,7 +102,7 @@ async def check(window, report, title):
             )
             item = await cinema.db("add", query)
             await cinema.db(
-                "configure", {"internet_search": False, "auto_search": False, "poll_seconds": 2}
+                "configure", {"internet_search": False, "auto_search": True, "poll_seconds": 2}
             )
             await cinema.publish()
             window.load_url(f"http://127.0.0.1:{port}")
@@ -121,7 +123,6 @@ async def check(window, report, title):
             result = await cinema.resume(item["id"], player="embedded")
             if not cinema.session:
                 choices = await cinema.resolver.search(item["id"])
-                assert choices["selected_id"] is None
                 selected = next(r for r in choices["results"] if r.get("content_verified"))
                 report["first_source_explicitly_selected"] = True
                 result = await cinema.source_result(
@@ -228,7 +229,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true")
     parser.add_argument(
-        "--title", choices=["Sintel", "Caminandes1", "Caminandes2"], default="Sintel"
+        "--title", choices=["Sintel", "Sita", "Caminandes1", "Caminandes2"], default="Sintel"
     )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()

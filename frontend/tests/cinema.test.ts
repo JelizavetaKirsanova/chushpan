@@ -21,6 +21,8 @@ function fixture() {
     const source=stripTypeScriptTypes(readFileSync(new URL(`../src/${file}.ts`,import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'');
     vm.runInNewContext(`{${source}globalThis.${cls}=${cls};}`,sandbox);
   }
+  const browser=stripTypeScriptTypes(readFileSync(new URL('../src/cinema_browser_diagnostics.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^export /gm,'');
+  vm.runInNewContext(`{${browser}globalThis.browserDiagnosticsPanel=browserDiagnosticsPanel;globalThis.copyDiagnostic=copyDiagnostic;}`,sandbox);
   vm.runInNewContext(code,sandbox);
   return {window,...sandbox.exports.api};
 }
@@ -276,7 +278,7 @@ test('unknown cost is a visible manual choice under free-only, not paid or autom
   const f=fixture();try{
     const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const item=movie('Film','planned');
     view.receive({...snapshot([item]),source_results:{title_id:item.id,episode_id:item.current.id,selected_id:null,message:'Только подтверждённые бесплатные',results:[{id:'unknown',content_verified:true,video_type:'full_movie',source_name:'Unknown',source_id:'source',kind:'page',url:'https://site.example/film',availability:'available',reason:'Совпадение проверено',access_status:'UNKNOWN',access_type:'unknown',match:1,allowed:false,manual_allowed:true,embedded:false,capabilities:{mode:'HTML5'}}]}});
-    assert.match(f.window.document.querySelector('dialog').textContent,/Условия доступа неизвестны/);const choose=button(f,'Выбрать вручную');assert.equal(choose.disabled,false);assert.ok(!sent.some(v=>v.op==='source_result_open'));choose.click();assert.equal(sent.at(-1).op,'source_result_open');assert.equal(sent.at(-1).result_id,'unknown');
+    assert.match(f.window.document.querySelector('dialog').textContent,/Стоимость просмотра не проверена/);const choose=button(f,'Смотреть');assert.equal(choose.disabled,false);assert.ok(!sent.some(v=>v.op==='source_result_open'));choose.click();assert.equal(sent.at(-1).op,'source_result_open');assert.equal(sent.at(-1).result_id,'unknown');
   }finally{f.window.happyDOM.abort();}
 });
 
@@ -311,7 +313,7 @@ test('remembered Safari playback remains manually resumable when anonymous check
   const f=fixture();try{
     const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const item=movie('Private film','watching');
     view.receive({...snapshot([item]),source_results:{title_id:item.id,episode_id:item.current.id,selected_id:null,message:'Анонимная проверка ограничена',results:[{id:'last',source_name:'Last source',source_id:'source',kind:'page',scope:'movie',url:'https://site.example/film',availability:'restricted',reason:'Ранее воспроизводился в Safari',access_status:'UNKNOWN',access_type:'unknown',match:1,allowed:true,manual_allowed:true,previously_played:true,embedded:false,capabilities:{mode:'HTML5'}}]}});
-    const resume=button(f,'Проверить страницу без автозапуска');assert.equal(resume.disabled,false);resume.click();assert.equal(sent.at(-1).op,'source_result_open');assert.equal(sent.at(-1).result_id,'last');
+    const resume=button(f,'Проверить плеер в Safari');assert.equal(resume.disabled,false);resume.click();assert.equal(sent.at(-1).op,'source_result_open');assert.equal(sent.at(-1).result_id,'last');
   }finally{f.window.happyDOM.abort();}
 });
 
@@ -527,5 +529,28 @@ test('automatic dialog close on prepared playback keeps the fallback request ali
     view.receive({...snapshot([item]),session:{title_id:item.id,episode_id:item.current.id,mode:'embedded'},embedded_player:{token:'pending',title:item.title,title_id:item.id,episode_id:item.current.id,position:0,url:'https://video.example/full.mp4',autoplay:false}});
     assert.equal(f.window.document.querySelector('dialog'),null);
     assert.ok(!sent.slice(before).some(v=>v.op==='watch_cancel'));
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('Playwright is an explicit diagnostic action and can be cancelled without starting a watch',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const item=movie('Film','planned');
+    const state={...snapshot([item]),sources:[{id:'source',name:'External',base_url:'https://site.example',adapter:'html5',enabled:true}]};
+    view.receive(state);button(f,'Настройки').click();button(f,'Поиск и Safari').click();
+    assert.ok(!sent.some(v=>v.op==='browser_diagnostics'));button(f,'Проверить Play и currentTime').click();
+    assert.equal(sent.at(-1).op,'browser_diagnostics');assert.equal(sent.at(-1).source_id,'source');assert.equal(sent.at(-1).title_id,item.id);assert.equal(sent.at(-1).play,true);
+    view.receive({...state,browser_diagnostics:{id:'a'.repeat(32),running:true,status:'running'}});button(f,'Отменить проверку').click();assert.equal(sent.at(-1).op,'browser_diagnostics_cancel');
+    view.receive({...state,browser_diagnostics:{id:'a'.repeat(32),running:false,status:'limited',message:'HTTP 451: доступ ограничен',region:'EE',region_access:'blocked',playback_confirmed:false,report_path:'/private/report.json'}});
+    assert.match(f.window.document.querySelector('[data-browser-diagnostics]').textContent,/HTTP 451.*доступ ограничен/);
+    assert.ok(!sent.some(v=>v.op==='watch'||v.op==='source_result_open'));
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('a probable page opens only through an explicit browser action and is never called playing',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);const item=movie('Film','planned');
+    view.receive({...snapshot([item]),source_results:{title_id:item.id,episode_id:item.current.id,selected_id:null,message:'Вероятное совпадение',results:[{id:'probable',source_name:'External',source_id:'source',kind:'page',url:'https://site.example/film',availability:'available',viewing_status:'browser_only',identity_status:'probable',reason:'На странице видны название и год',access_status:'UNKNOWN',match:.85,allowed:true,manual_allowed:true,embedded:false,capabilities:{mode:'HTML5'}}]}});
+    assert.ok(!sent.some(v=>v.op==='source_result_open'));button(f,'Открыть вероятное совпадение').click();assert.equal(sent.at(-1).player,'browser');
+    assert.ok(![...f.window.document.querySelectorAll('button')].some((b:any)=>b.textContent==='Смотреть'));
   }finally{f.window.happyDOM.abort();}
 });

@@ -5,7 +5,8 @@ creator, exact original file and licence; live metadata must still match.
 """
 
 import math
-from urllib.parse import quote, urlsplit
+import re
+from urllib.parse import quote, unquote, urlsplit
 
 from backend.cinema.personal import normalized
 from backend.tools.registry import ToolError
@@ -42,6 +43,17 @@ FILMS = (
         "episode": 3,
         "file": "Caminandes_ Llamigos-1080p.mp4",
         "duration": 150.15,
+    },
+    {
+        "id": "Sita_Sings_the_Blues",
+        "title": "Sita Sings the Blues",
+        "aliases": ("Сита поёт блюз", "Сита поет блюз"),
+        "year": 2008,
+        "file": "Sita_Sings_the_Blues.mp4",
+        "original": "Sita_Sings_the_Blues.ogv",
+        "creator": "nina paley",
+        "license": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "duration": 4891.24,
     },
 )
 
@@ -95,6 +107,8 @@ async def resolve(http, source, *, query=None, url=""):
         "pablo vazquez",
         "pablo vázquez",
     }
+    if film.get("creator"):
+        allowed_creator = normalized(creators) == film["creator"]
     if (
         data.get("is_dark")
         or str(meta.get("access-restricted-item", "")).casefold() == "true"
@@ -102,7 +116,11 @@ async def resolve(http, source, *, query=None, url=""):
         or not allowed_creator
         or normalized(meta.get("title", "")) != normalized(film["title"])
         or str(meta.get("year") or meta.get("date", ""))[:4] != str(film["year"])
-        or not licence.startswith("https://creativecommons.org/licenses/by/")
+        or (
+            licence != film["license"]
+            if film.get("license")
+            else not licence.startswith("https://creativecommons.org/licenses/by/")
+        )
     ):
         raise ToolError(
             "Метаданные, автор или открытая лицензия фильма Internet Archive не совпали."
@@ -114,9 +132,9 @@ async def resolve(http, source, *, query=None, url=""):
     if not media or str(media.get("private", "")).lower() == "true":
         raise ToolError("Internet Archive не опубликовал ожидаемый оригинальный MP4.")
     if media.get("source") != "original" and not (
-        film["id"] == "Sintel"
-        and media.get("source") == "derivative"
-        and media.get("original") == "sintel-2048-stereo.mp4"
+        media.get("source") == "derivative"
+        and media.get("original") == film.get("original", "sintel-2048-stereo.mp4")
+        and (film.get("original") or film["id"] == "Sintel")
         and any(
             f.get("name") == media["original"] and f.get("source") == "original"
             for f in data.get("files", [])
@@ -169,14 +187,28 @@ def verified_alias(proof, direct_url, media_url, query=None):
     parsed = urlsplit(media_url)
     return (
         parsed.scheme == "https"
-        and parsed.hostname == "archive.org"
+        and (
+            parsed.hostname == "archive.org"
+            or bool(re.fullmatch(r"(?:ia|dn)\d+\.[a-z]{2}\.archive\.org", parsed.hostname or ""))
+        )
         and parsed.username is None
         and parsed.password is None
         and parsed.port is None
         and not parsed.query
-        and parsed.path
-        in {
-            f"/download/{film['id']}/{quote(film['file'])}",
-            f"/serve/{film['id']}/{quote(film['file'])}",
-        }
+        and (
+            parsed.path
+            in {
+                f"/download/{film['id']}/{quote(film['file'])}",
+                f"/serve/{film['id']}/{quote(film['file'])}",
+            }
+            or (
+                parsed.hostname != "archive.org"
+                and bool(
+                    re.fullmatch(
+                        r"/\d{1,3}/items/" + re.escape(film["id"] + "/" + film["file"]),
+                        unquote(parsed.path),
+                    )
+                )
+            )
+        )
     )

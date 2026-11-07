@@ -120,11 +120,15 @@ class Page(HTMLParser):
         super().__init__()
         self.structured, self.ld, self.buffer = [], False, []
         self.links = []
+        self.meta = {}
         self.heading, self.title = False, ""
         self.feed(html)
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        if tag == "meta":
+            name = attrs.get("property", attrs.get("name", "")).lower()
+            self.meta[name] = attrs.get("content", "")[:1000]
         if tag in {"title", "h1"}:
             self.heading = True
         if tag == "a" and attrs.get("href") and len(self.links) < 10000:
@@ -165,6 +169,30 @@ class Page(HTMLParser):
 
         for item in self.structured:
             yield from walk(item)
+
+    def probable_identity(self, query):
+        """Visible primary title/year is a manual candidate, never full-video proof."""
+        title = key(self.title + " " + self.meta.get("og:title", ""))
+        meta = query.get("metadata") or {}
+        names = [
+            query.get("title", ""),
+            meta.get("original_title", ""),
+            *meta.get("alternative_titles", []),
+        ]
+        if not query.get("year") or str(query["year"]) not in title.split():
+            return None
+        if not any(
+            len(key(name)) >= 3 and re.search(r"(?<!\w)" + re.escape(key(name)) + r"(?!\w)", title)
+            for name in names
+        ):
+            return None
+        return {
+            "scope": "series" if query["kind"] == "series" else "movie",
+            "identity_status": "probable",
+            "manual_candidate": True,
+            "match": 0.85,
+            "episode_match": False,
+        }
 
 
 class PublicCatalogue:
@@ -308,6 +336,7 @@ class PublicCatalogue:
                     continue
                 results.append(
                     {
+                        **identity,
                         "url": url,
                         "kind": "page",
                         "match": 1.0,
