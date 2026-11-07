@@ -37,6 +37,7 @@ class SearchSession:
     window: str = ""
     created_window: bool = False
     prefix: str = SEARCH_ORIGIN
+    companion_urls: list[str] | None = None
 
     @property
     def tag(self):
@@ -108,6 +109,7 @@ if currentAddress does not contain "{session.tag}" then return "unowned"
     async def _open(self, session, url, *, own_window=False):
         address = json.dumps(url)
         owner = "no_window"
+        previous = None
         if not own_window:
             owner = await self._run(f"""
 if (count of windows) is 0 then return "no_window"
@@ -118,7 +120,17 @@ end tell
 return ownerID as text
 """)
         if owner == "no_window":
-            session.created_window = True
+            previous = await self._run("""
+set inventory to ""
+repeat with w in windows
+    set inventory to inventory & "WINDOW " & (id of w as text) & linefeed
+    repeat with t in tabs of w
+        set u to URL of t
+        if u is not missing value then set inventory to inventory & u & linefeed
+    end repeat
+end repeat
+return inventory
+""")
             await self._run(f'make new document with properties {{URL:{address}}}\nreturn "sent"')
         elif owner.isdigit():
             session.window = owner
@@ -128,6 +140,30 @@ return ownerID as text
             owner = await self._owned(session, "return ownerID")
             if owner.isdigit():
                 session.window = owner
+                if previous is not None and "WINDOW " + owner not in previous.splitlines():
+                    session.created_window = True
+                    companions = await self._owned(
+                        session,
+                        """
+set addresses to ""
+repeat with t in tabs of window id (ownerID as integer)
+    set u to URL of t
+    if u is missing value then return "unknown"
+    if u does not contain """
+                        + json.dumps(session.tag)
+                        + """ then
+        set addresses to addresses & u & linefeed
+    end if
+end repeat
+return addresses
+""",
+                    )
+                    # Safari mirrors pinned tabs in a newly created window.
+                    # Close that window only while its original companions
+                    # still exist in their original windows and are unchanged.
+                    addresses = companions.splitlines()
+                    if all(u in previous.splitlines() for u in addresses):
+                        session.companion_urls = addresses
                 return
             await asyncio.sleep(0.15)
         raise ToolError("Safari не подтвердил метку временной вкладки поиска.")
@@ -150,9 +186,28 @@ return ownerID as text
     async def _cleanup(self, session):
         close_tab = 'close ownedTab\nreturn "closed"'
         action = close_tab
-        if session.created_window and session.window:
-            action = """
-if (count of tabs of window id (ownerID as integer)) is 1 then
+        if session.created_window and session.window and session.companion_urls is not None:
+            companions = "{" + ", ".join(json.dumps(u) for u in session.companion_urls) + "}"
+            action = f"""
+set companions to {{}}
+repeat with t in tabs of window id (ownerID as integer)
+    set u to URL of t
+    if u is missing value then set u to ""
+    if u does not contain "{session.tag}" then set end of companions to u
+end repeat
+set originalsPresent to true
+repeat with address in {companions}
+    set foundOriginal to false
+    repeat with w in windows
+        if (id of w as text) is not ownerID then
+            repeat with t in tabs of w
+                if URL of t is (address as text) then set foundOriginal to true
+            end repeat
+        end if
+    end repeat
+    if not foundOriginal then set originalsPresent to false
+end repeat
+if companions is {companions} and originalsPresent then
     close window id (ownerID as integer)
 else
     close ownedTab
