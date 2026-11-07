@@ -379,7 +379,7 @@ def test_refused_existing_tab_is_not_sampled_paused_or_detached_during_cleanup(t
     asyncio.run(run())
 
 
-def test_resolver_falls_back_after_embedded_error_and_never_repeats_source(tmp_path):
+def test_resolver_does_not_retry_same_video_across_duplicate_archive_profiles(tmp_path):
     async def run():
         memory = MemoryStore(tmp_path / "resolver.sqlite")
         tools = ToolRegistry()
@@ -401,6 +401,7 @@ def test_resolver_falls_back_after_embedded_error_and_never_repeats_source(tmp_p
                 )
                 await cinema.db("source_health", source["id"], "available", playback=True)
             choices = await cinema.resolver.search(item["id"])
+            assert len([row for row in choices["results"] if row["kind"] == "page"]) == 1
             result = await cinema.source_result(
                 choices["selected_id"], open_result=True, player="embedded"
             )
@@ -412,7 +413,7 @@ def test_resolver_falls_back_after_embedded_error_and_never_repeats_source(tmp_p
                 await cinema.embedded_event(
                     {"token": token, "sequence": 1, "event": "error", "position": 0, "duration": 0}
                 )
-            assert len(visited) == 3  # A fourth source is deliberately never attempted.
+            assert len(visited) == 1  # All configured profiles resolved to the same file.
             assert cinema.playback.code == "sources_exhausted"
             detail = await cinema.db("detail", item["id"])
             assert detail["current"]["position"] == 0 and not detail["current"]["watched"]
@@ -424,7 +425,7 @@ def test_resolver_falls_back_after_embedded_error_and_never_repeats_source(tmp_p
                         if r["stage"] == "SOURCE_ATTEMPT" and r["status"] == "running"
                     ]
                 )
-                == 3
+                == 1
             )
         finally:
             await cinema.close()

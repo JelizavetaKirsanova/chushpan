@@ -16,10 +16,10 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from backend.cinema.classification import classify
+from backend.cinema.classification import classify, kinds
 from backend.cinema.evidence import public_url, safe_reason
 from backend.cinema.models import Source, origin, web_url
-from backend.cinema.public_search import Page, PublicCatalogue, Robots, key
+from backend.cinema.public_search import Page, PublicCatalogue, Robots, episode_coordinates, key
 from backend.tools.registry import ToolError
 
 BRAVE = "https://api.search.brave.com/res/v1/web/search"
@@ -27,6 +27,33 @@ COUNTRIES = set(
     "AR AU AT BE BR CA CL DK FI FR DE HK IN ID IT JP KR MY MX NL NZ NO CN PL PT PH RU SA ZA "
     "ES SE CH TW TR AE GB US ALL".split()
 )
+PUBLISHERS = {
+    "tv.apple.com",
+    "www.netflix.com",
+    "www.primevideo.com",
+    "watch.plex.tv",
+    "kion.ru",
+    "archive.org",
+    "go3.tv",
+}
+REFERENCE_ONLY = {"imdb.com", "themoviedb.org", "wikipedia.org", "fandom.com", "rottentomatoes.com"}
+
+
+def candidate_urls(urls, limit=10):
+    """Give publishers and distinct domains a chance before repeated uploads."""
+    groups = {}
+    for url in dict.fromkeys(urls):
+        host = urlsplit(url).hostname or ""
+        if any(host == site or host.endswith("." + site) for site in REFERENCE_ONLY):
+            continue
+        groups.setdefault(host, []).append(url)
+    hosts = sorted(groups, key=lambda host: host not in PUBLISHERS)
+    return [
+        groups[host][index]
+        for index in range(max((len(group) for group in groups.values()), default=0))
+        for host in hosts
+        if index < len(groups[host])
+    ][:limit]
 
 
 class SearchCredentials:
@@ -116,12 +143,11 @@ def number(value):
 
 
 def verified_entity(entity, query):
-    kind = entity.get("@type")
-    kinds = kind if isinstance(kind, list) else [kind]
-    episode = "TVEpisode" in kinds
-    if query["kind"] == "movie" and "Movie" not in kinds:
+    types = kinds(entity)
+    episode = "TVEpisode" in types
+    if query["kind"] == "movie" and "Movie" not in types:
         return None
-    if query["kind"] == "series" and not ({"TVSeries", "TVEpisode"} & set(kinds)):
+    if query["kind"] == "series" and not ({"TVSeries", "TVEpisode"} & types):
         return None
     identity = entity.get("partOfSeries", {}) if episode else entity
     if not isinstance(identity, dict):
@@ -210,58 +236,115 @@ class PageVerifier:
         catalogue.rules = Robots(response.text if response.status_code == 200 else "")
         response = await catalogue.request(url)
         final = getattr(response, "extensions", {}).get("final_url", url)
-        if final.rstrip("/") != url.rstrip("/"):
-            raise ToolError(
-                "Найденный адрес перенаправляет на другую страницу; совпадение не подтверждено."
-            )
-        page = Page(response.text)
+        # The request policy already checked every hop. Verify the resulting
+        # page from scratch, including identity; a URL is not evidence.
+        return self.inspect(response.text, final, query)
+
+    @staticmethod
+    def inspect(html, url, query):
+        parsed = urlsplit(web_url(url))
+        if parsed.scheme != "https" or parsed.path in {"", "/"}:
+            raise ToolError("Адрес привёл на главную страницу, а не на произведение.")
+        page = Page(html)
         classification = classify(
             query, {"page_url": url, "page_title": page.title, "structured": page.structured}
         )
-        for entity in page.entities({"Movie", "TVSeries", "TVEpisode"}):
-            verified = verified_entity(entity, query)
-            if verified:
-                return {
-                    **verified,
-                    **classification,
-                    "url": url,
-                    "kind": "page",
-                    "match": 1.0,
-                    "identity_status": "confirmed",
-                    "availability": "available",
-                    "embedded": False,
-                    "playback_confirmed": False,
-                    "reason": "Страница проверена по структурированным метаданным: название, "
-                    "год/IMDb и тип совпали. "
-                    + (
-                        "Сезон и серия совпали. "
-                        if verified["scope"] == "episode"
-                        else "Это общая страница сериала. "
-                        if query["kind"] == "series"
-                        else ""
-                    )
-                    + "Видео и доступ к нему ещё не подтверждены.",
-                }
-        probable = page.probable_identity(query)
-        if probable:
-            return {
-                **probable,
-                **classification,
-                "url": url,
-                "kind": "page",
-                "availability": "available",
-                "embedded": False,
-                "playback_confirmed": False,
-                "access_status": "UNKNOWN",
-                "region_access": "unknown",
-                "reason": "Название и год видны на странице, но независимые метаданные "
-                "не подтвердили соответствие. Это вероятное совпадение для ручного открытия; "
-                "сезон, серия и полное видео не подтверждены.",
-            }
-        raise ToolError(
-            "Метаданные страницы не подтвердили название, год/IMDb, тип или номер серии. "
-            "Сниппет поисковика не принят за доказательство."
+        entities = list(page.entities({"Movie", "TVSeries", "TVEpisode", "CollectionPage"}))
+        matches = [match for entity in entities if (match := verified_entity(entity, query))]
+        region = matches[0]["region_access"] if matches else "unknown"
+        identity = next(
+            (match for match in matches if match["scope"] == "episode"),
+            matches[0] if matches else None,
         )
+        explicit = []
+        scope = "movie" if query["kind"] == "movie" else "series"
+        episode_status = "unconfirmed"
+        if query["kind"] == "series":
+            expected = (query.get("season"), query.get("episode"))
+            explicit = [
+                (label, episode_coordinates(value))
+                for label, value in (
+                    ("заголовок", page.primary["h1"] + " " + page.primary["title"]),
+                    (
+                        "описание",
+                        page.meta.get("description") or page.meta.get("og:description", ""),
+                    ),
+                    ("адрес страницы", parsed.path),
+                )
+            ]
+            for entity in entities:
+                if "TVEpisode" in kinds(entity):
+                    part = entity.get("partOfSeason")
+                    season = number(part.get("seasonNumber")) if isinstance(part, dict) else None
+                    episode = number(entity.get("episodeNumber"))
+                    if season is not None and episode is not None:
+                        explicit.append(("структурированные данные", {(season, episode)}))
+                        break
+            if any(len(values) == 1 and expected not in values for _, values in explicit):
+                raise ToolError("Страница указывает другой сезон или серию.")
+            signals = [name for name, values in explicit if values == {expected}]
+            # Structured identity plus its explicit encoding is separately
+            # corroborated by the player before actual playback is counted.
+            bound_media = (
+                identity and identity["scope"] == "episode" and classification["content_verified"]
+            )
+            if len(signals) >= 2 or bound_media:
+                scope, episode_status = "episode", "confirmed"
+            elif signals:
+                episode_status = "single_signal"
+                # Keep the page selectable, but never auto-open an episode
+                # from a single claim without verified media.
+                scope = "series"
+        else:
+            signals = []
+        probable = page.probable_identity(query, url, episode_hint=bool(signals))
+        if not identity and not probable:
+            raise ToolError(
+                "Метаданные страницы и её заголовок не подтвердили название, год/IMDb или тип."
+            )
+        if not identity:
+            types = set().union(*(kinds(entity) for entity in entities))
+            if "CollectionPage" in types or (
+                query["kind"] == "movie" and types & {"TVSeries", "TVEpisode"}
+            ):
+                raise ToolError("Страница относится к другому типу контента.")
+            if query["kind"] == "series" and "Movie" in types:
+                if not re.search(r"\b(сезон[а-я]*|seasons?|серии|episodes?)\b", page.title, re.I):
+                    raise ToolError("Страница помечена как фильм, признаков сериала нет.")
+                # Some site templates mark even pages with seasons as Movie.
+                scope, episode_status = "series", "unconfirmed"
+        confirmed = bool(identity) or (
+            scope == "episode" and episode_status == "confirmed" and probable["year_match"]
+        )
+        if not confirmed and scope == "episode":
+            scope, episode_status = "series", "single_signal"
+        return {
+            **(identity or probable),
+            **classification,
+            "url": url,
+            "kind": "page",
+            "match": 1.0 if confirmed else 0.85,
+            "identity_status": "confirmed" if confirmed else "probable",
+            "scope": scope,
+            "episode_status": episode_status,
+            "episode_match": scope == "episode",
+            "identity_signals": signals,
+            "availability": "available",
+            "embedded": False,
+            "playback_confirmed": False,
+            "access_status": (identity or {}).get("access_status", "UNKNOWN"),
+            "region_access": (identity or {}).get("region_access", region),
+            "player_detected": bool(page.media_elements),
+            "reason": (
+                "Сезон и серия сопоставлены по нескольким признакам."
+                if scope == "episode"
+                else "Название и номер серии похожи. Год и полное видео не подтверждены."
+                if probable and not probable["year_match"]
+                else "Название и год совпадают. Нужная серия и полное видео не подтверждены."
+                if query["kind"] == "series"
+                else "Название и год совпадают. Запуск полного видео проверяется отдельно."
+            ),
+        }
 
 
 class InternetSearch:
@@ -325,11 +408,13 @@ class InternetSearch:
             if callable(getattr(self.provider, "queries", None))
             else self.queries(query, prefs)
         )
-        for q in queries[:3]:
+        batch = getattr(self.provider, "discover", None)
+        for q in [queries[:3]] if batch else queries[:3]:
             try:
-                async with asyncio.timeout(min(12, max(0.1, deadline - time.monotonic()))):
+                limit = 26 if batch else 12
+                async with asyncio.timeout(min(limit, max(0.1, deadline - time.monotonic()))):
                     urls.extend(
-                        await self.provider.search(
+                        await (batch or self.provider.search)(
                             q, prefs.watch_region, "ru" if prefs.prefer_russian else "en"
                         )
                     )
@@ -359,6 +444,7 @@ class InternetSearch:
                     return None
                 async with semaphore, asyncio.timeout(16):
                     row = await verifier.verify(url, {**query, "region": prefs.watch_region})
+                url = row["url"]
                 identifier = "web-" + hashlib.sha256(origin(url).encode()).hexdigest()[:16]
                 source = (
                     known
@@ -400,7 +486,7 @@ class InternetSearch:
             )
             return row
 
-        tasks = [asyncio.create_task(verify(url)) for url in list(dict.fromkeys(urls))[:8]]
+        tasks = [asyncio.create_task(verify(url)) for url in candidate_urls(urls)]
         rows = []
         if tasks:
             try:
@@ -468,7 +554,9 @@ class SearchProviders:
             fallback
             and engine is not fallback
             and prefs.allow_browser
-            and not any(r.get("content_verified") for r in rows)
+            and not any(
+                r.get("content_verified") and r.get("region_access") != "blocked" for r in rows
+            )
         ):
             fallback.http = self.http
             rows.extend(await fallback.search(query, prefs, sources))

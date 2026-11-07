@@ -82,7 +82,32 @@ def page_identity(structured, query):
 def visible_identity(observed, query):
     page = Page("")
     page.title = observed["title"] + " " + observed.get("heading", "")
-    return page.probable_identity(query)
+    return page.probable_identity(query, observed.get("url", ""))
+
+
+async def attach_public_routes(context):
+    cache = {}
+
+    async def public_only(route):
+        target = urlsplit(route.request.url)
+        if target.scheme in {"data", "blob"}:
+            return await route.continue_()
+        try:
+            if target.scheme not in {"http", "https"} or target.username or target.password:
+                raise ValueError
+            host = target.hostname
+            if host not in cache:
+                resolved = await addresses(host, target.port or 443)
+                cache[host] = bool(resolved) and all(
+                    ipaddress.ip_address(a).is_global for a in resolved
+                )
+            if not cache[host]:
+                raise ValueError
+        except (OSError, ValueError):
+            return await route.abort("blockedbyclient")
+        await route.continue_()
+
+    await context.route("**/*", public_only)
 
 
 class BrowserDiagnostics:
@@ -147,14 +172,15 @@ class BrowserDiagnostics:
         }
         folder = self.root / identifier
         folder.mkdir(parents=True, mode=0o700)
-        browser = context = page = runtime = None
+        browser = context = page = runtime = driver = None
         await self.publish()
         try:
             from playwright.async_api import Error as PlaywrightError
             from playwright.async_api import async_playwright
 
             configure_browser_cache()
-            runtime = await async_playwright().start()
+            driver = async_playwright()
+            runtime = await driver.start()
             async with asyncio.timeout(75):
                 try:
                     browser = await runtime.chromium.launch(headless=True)
@@ -176,32 +202,7 @@ class BrowserDiagnostics:
                     service_workers="block",
                     viewport={"width": 1280, "height": 800},
                 )
-                cache = {}
-
-                async def public_only(route):
-                    target = urlsplit(route.request.url)
-                    if target.scheme in {"data", "blob"}:
-                        return await route.continue_()
-                    try:
-                        if (
-                            target.scheme not in {"http", "https"}
-                            or target.username
-                            or target.password
-                        ):
-                            raise ValueError
-                        host = target.hostname
-                        if host not in cache:
-                            resolved = await addresses(host, target.port or 443)
-                            cache[host] = bool(resolved) and all(
-                                ipaddress.ip_address(a).is_global for a in resolved
-                            )
-                        if not cache[host]:
-                            raise ValueError
-                    except (OSError, ValueError):
-                        return await route.abort("blockedbyclient")
-                    await route.continue_()
-
-                await context.route("**/*", public_only)
+                await attach_public_routes(context)
                 page = await context.new_page()
                 page.set_default_timeout(4000)
                 # No page is allowed to open a payment/login/pop-up workflow for us.
@@ -484,6 +485,9 @@ class BrowserDiagnostics:
             if runtime:
                 with contextlib.suppress(Exception):
                     await runtime.stop()
+            elif driver:
+                with contextlib.suppress(Exception):
+                    await driver.__aexit__(None, None, None)
             self.report.update(running=False, elapsed_ms=round((time.monotonic() - started) * 1000))
             if (folder / "page.png").exists():
                 self.report["screenshot_path"] = str(folder / "page.png")
@@ -507,8 +511,14 @@ class BrowserDiagnostics:
                 rows.append((frame, await frame.evaluate(INSPECT)))
         return rows
 
-    async def find_title(self, page, query):
-        names = [query["title"], (query.get("metadata") or {}).get("original_title", "")]
+    @staticmethod
+    async def find_title(page, query):
+        metadata = query.get("metadata") or {}
+        names = [
+            query["title"],
+            metadata.get("original_title", ""),
+            *metadata.get("alternative_titles", []),
+        ]
         fields = page.locator(
             "input[type=search],input[name=q],input[name=story],input[name=search],input[role=searchbox]"
         )

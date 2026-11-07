@@ -19,7 +19,7 @@ from uuid import uuid4
 import httpx
 
 from backend.cinema.classification import FULL_TYPES, PROMO_TYPES, classify
-from backend.cinema.evidence import observations
+from backend.cinema.evidence import observations, result_url
 from backend.cinema.models import Source, web_url
 from backend.cinema.personal import normalized
 from backend.cinema.public_search import PublicCatalogue
@@ -250,7 +250,11 @@ class WebsiteAdapter:
     async def resolve(self, content):
         query = content.get("_expected", {})
         content = {k: v for k, v in content.items() if k != "_expected"}
-        content.update(classify(query, {"page_url": content["url"]}))
+        classification = classify(query, {"page_url": content["url"]})
+        if not content.get("content_verified") or classification["video_type"] in PROMO_TYPES:
+            content.update(classification)
+        if query and self.source["adapter"] != "local" and not content.get("content_verified"):
+            content.update(match=0.0, scope="series" if query["kind"] == "series" else "movie")
         if self.source["adapter"] != "local" and urlsplit(content["url"]).path in {"", "/"}:
             return {
                 **content,
@@ -273,9 +277,8 @@ class WebsiteAdapter:
                 verified = await PageVerifier(self.http).verify(content["url"], query)
                 content.update(verified)
             except ToolError as exc:
-                content.update(
-                    content_verified=False, video_type="unknown", classification_reason=str(exc)
-                )
+                # A stored URL is not evidence that a remote page matches.
+                content.update(match=0.0, content_verified=False, classification_reason=str(exc))
         compatible = (
             self.source["adapter"] == "direct"
             and self.source.get("embed_allowed")
@@ -506,6 +509,7 @@ class SourceManager:
         self.pending = {}
         self.generation = 0
         self.web = None
+        self.site_browser = None
         self.site_adapters = {}
 
     def register_adapter(self, mode, factory, *, hosts=()):
@@ -564,7 +568,14 @@ class SourceManager:
         return result[1]
 
     async def search(
-        self, title_id, episode_id=None, *, alternative=False, refresh=False, saved_only=False
+        self,
+        title_id,
+        episode_id=None,
+        *,
+        alternative=False,
+        refresh=False,
+        saved_only=False,
+        method="all",
     ):
         item = await self.db("detail", title_id)
         ep = next(
@@ -602,14 +613,14 @@ class SourceManager:
                 s for s in sources if any(link["source_id"] == s["id"] for link in ep["links"])
             ]
         generation = self.generation
-        key = (generation, title_id, ep["id"], alternative, saved_only)
+        key = (generation, title_id, ep["id"], alternative, saved_only, method)
         cached = self.cache.get(key)
         if not refresh and cached and cached[0] > self.clock():
             return cached[1]
         if key in self.pending:
             return await asyncio.shield(self.pending[key])
         task = asyncio.create_task(
-            self._search(item, ep, sources, prefs, alternative, generation, saved_only)
+            self._search(item, ep, sources, prefs, alternative, generation, saved_only, method)
         )
         self.pending[key] = task
         try:
@@ -621,7 +632,7 @@ class SourceManager:
         finally:
             self.pending.pop(key, None)
 
-    async def _search(self, item, ep, sources, prefs, alternative, generation, saved_only=False):
+    async def _search(self, item, ep, sources, prefs, alternative, generation, saved_only, method):
         configured_ids = {s["id"] for s in await self.db("sources")}
         memory = item.get("source_memory", {})
         last_link = next((link for link in ep["links"] if link["id"] == ep["last_link_id"]), None)
@@ -649,7 +660,7 @@ class SourceManager:
                 adapter = self.adapter(source)
                 links = [link for link in ep["links"] if link["source_id"] == source["id"]]
                 try:
-                    async with asyncio.timeout(90):
+                    async with asyncio.timeout(25):
                         rows = [
                             await adapter.resolve(
                                 {
@@ -784,7 +795,14 @@ class SourceManager:
             for group in groups
             for r in group
         ):
-            others = [s for s in sources if not groups or s not in licensed]
+            others = [
+                s
+                for s in sources
+                if (not groups or s not in licensed)
+                and (
+                    method != "browser" or any(link["source_id"] == s["id"] for link in ep["links"])
+                )
+            ]
             groups.extend(await asyncio.gather(*(search_source(s) for s in others)))
         if generation != self.generation:
             raise ToolError("Настройки источников изменились. Повтори поиск.")
@@ -794,45 +812,50 @@ class SourceManager:
             return (
                 r.get("content_verified") is True
                 and r.get("video_type") in FULL_TYPES
+                and r.get("region_access") != "blocked"
                 and r["match"] >= 0.95
                 and r["availability"] == "available"
                 and (item["kind"] == "movie" or r.get("scope") == "episode")
             )
 
-        if (
-            not saved_only
-            and self.web
-            and prefs.internet_search
-            and not any(exact(r) for r in rows)
-        ):
-            self.web.http = self.http
-            preferred = next(
-                (
-                    urlsplit(s["base_url"]).hostname
-                    for s in sources
-                    if s["id"] == last and s["base_url"]
+        if not saved_only and not any(exact(row) for row in rows):
+            configured = await self.db("sources")
+            query = {
+                **item,
+                "season": ep["season"],
+                "episode": ep["episode"],
+                "preferred_source": next(
+                    (
+                        urlsplit(s["base_url"]).hostname
+                        for s in sources
+                        if s["id"] == last and s["base_url"]
+                    ),
+                    "",
                 ),
-                "",
-            )
-            try:
-                async with asyncio.timeout(90):
-                    discovered = await self.web.search(
-                        {
-                            **item,
-                            "season": ep["season"],
-                            "episode": ep["episode"],
-                            "preferred_source": preferred,
-                        },
-                        prefs,
-                        await self.db("sources"),
-                    )
-            except TimeoutError:
-                discovered = [
-                    self.web.error(
-                        "Истекло время интернет-поиска. Прежний прогресс сохранён; "
-                        "автоматический повтор не выполнялся."
-                    )
-                ]
+            }
+
+            async def web_search():
+                if not self.web or not prefs.internet_search or method == "browser":
+                    return []
+                self.web.http = self.http
+                try:
+                    async with asyncio.timeout(90):
+                        return await self.web.search(query, prefs, configured)
+                except TimeoutError:
+                    return [self.web.error("Истекло время интернет-поиска.")]
+
+            async def site_search():
+                if not self.site_browser or not prefs.allow_browser:
+                    return []
+                if not prefs.internet_search and method != "browser":
+                    return []
+                return await self.site_browser.search(
+                    query, prefs, configured, explicit=method == "browser"
+                )
+
+            discovered = [
+                row for group in await asyncio.gather(web_search(), site_search()) for row in group
+            ]
             for row in discovered:
                 if alternative and row["source_id"] == last:
                     continue
@@ -855,7 +878,8 @@ class SourceManager:
         for row in rows:
             row.setdefault("video_type", "unknown")
             row.setdefault("content_verified", False)
-            row.setdefault("classification_reason", "Тип самого видео не подтверждён.")
+            if row["kind"] == "page":
+                row.setdefault("classification_reason", "Тип самого видео не подтверждён.")
             if row["video_type"] in PROMO_TYPES:
                 row["allowed"] = row["manual_allowed"] = False
                 row["configurable"] = False
@@ -913,6 +937,17 @@ class SourceManager:
             ),
             reverse=True,
         )
+        # Keep the highest-evidence row for a page. Preserve diagnostic reasons
+        # separately, but collapse repeated failures for the same source and URL.
+        unique = {}
+        for row in rows:
+            address = result_url(row["url"]) if row.get("url") else row.get("checked_url", "")
+            if row["kind"] == "page":
+                key = ("page", address)
+            else:
+                key = (row["kind"], row["source_name"], address, row.get("reason"))
+            unique.setdefault(key, row)
+        rows = list(unique.values())
         for row in rows:
             row["id"] = uuid4().hex
             self.results[row["id"]] = (self.clock() + 300, row)
@@ -925,6 +960,7 @@ class SourceManager:
             and r.get("content_verified") is True
             and r.get("video_type") in FULL_TYPES
             and r["match"] >= 0.95
+            and (item["kind"] == "movie" or r.get("scope") == "episode")
             and (
                 r["availability"] == "available"
                 or (
@@ -941,24 +977,9 @@ class SourceManager:
             "selected_id": next((r["id"] for r in verified if r["auto_eligible"]), None)
             if prefs.auto_select_source
             else None,
-            "inspection_id": next(
-                (
-                    r["id"]
-                    for r in rows
-                    if r.get("browser_openable")
-                    and r.get("identity_status") == "confirmed"
-                    and r.get("scope") in {"movie", "episode"}
-                    and (r.get("allowed") or r.get("manual_allowed"))
-                    and not r.get("new_source")
-                ),
-                None,
-            )
-            if prefs.auto_select_source and prefs.allow_browser
-            else None,
             "message": "Найдено совпадение. Выбери вариант просмотра."
             if verified
-            else "Найдена точная страница. Плеер и полное видео нужно проверить в браузере."
+            else "Есть страницы для ручной проверки. Полное видео пока не подтверждено."
             if any(r.get("browser_openable") for r in rows)
-            else "Подтверждённое видео не найдено. Ниже указаны причины проверки сайтов и поиска; "
-            "это не означает, что произведение отсутствует.",
+            else "Подтверждённое видео не найдено. Попробуй повторить поиск другим способом.",
         }

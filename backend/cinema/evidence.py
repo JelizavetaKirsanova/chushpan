@@ -1,7 +1,7 @@
 """Independent observations; unknown cost or controls never means unavailable video."""
 
 import re
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from backend.cinema.classification import FULL_TYPES, PROMO_TYPES
 
@@ -39,15 +39,39 @@ def observations(row, kind):
     return {
         "page_status": row.get("availability", "unknown"),
         "identity_status": "confirmed" if exact else "probable" if probable else "unconfirmed",
-        "episode_status": "confirmed" if exact and episode else "unconfirmed",
+        "episode_status": row.get("episode_status")
+        or ("confirmed" if exact and episode else "unconfirmed"),
         "video_status": row.get("video_type", "unknown"),
         "region_status": row.get("region_access", "unknown"),
-        "player_status": "compatible" if row.get("embedded") and full else "unverified",
+        "player_status": "compatible"
+        if row.get("embedded") and full
+        else "detected"
+        if row.get("player_detected")
+        else "unverified",
         "control_status": "unverified",
         "playback_status": "unconfirmed",
         "browser_openable": browser,
         "viewing_status": state,
     }
+
+
+def result_url(value):
+    """Normalize cosmetic URL differences, retaining parameters that may select a video."""
+    parsed = urlsplit(value)
+    params = [
+        (k, v)
+        for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if not k.lower().startswith("utm_") and k.lower() not in {"fbclid", "gclid", "yclid"}
+    ]
+    return urlunsplit(
+        (
+            parsed.scheme.lower(),
+            parsed.netloc.lower(),
+            parsed.path.rstrip("/") or "/",
+            urlencode(params),
+            "" if parsed.fragment in {"top", "main", "content"} else parsed.fragment,
+        )
+    )
 
 
 def diagnostic_reason(row):

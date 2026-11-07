@@ -26,7 +26,7 @@ from backend.cinema.catalogue import Catalogue
 from backend.cinema.classification import FULL_TYPES, PROMO_TYPES
 from backend.cinema.commands import command
 from backend.cinema.diagnostics import DiagnosticSafariBridge, SourceDiagnostics, fingerprint
-from backend.cinema.evidence import diagnostic_reason, public_url, safe_reason
+from backend.cinema.evidence import diagnostic_reason, public_url, result_url, safe_reason
 from backend.cinema.filters import excluded_library_keys, with_preferences
 from backend.cinema.internet import InternetSearch, SearchCredentials, SearchProviders
 from backend.cinema.keychain import TavilyCredentials
@@ -41,6 +41,7 @@ from backend.cinema.playback import (
     duration_matches,
     playback_error,
 )
+from backend.cinema.site_browser import SiteBrowserSearch
 from backend.cinema.sources import SourceManager, capabilities
 from backend.cinema.store import CinemaStore
 from backend.cinema.tavily import TavilySearch
@@ -110,6 +111,7 @@ class Cinema:
         self.tavily_credentials = TavilyCredentials()
         self.tavily = TavilySearch(self.tavily_credentials)
         self.browser_search = BrowserSearch(self.safari.executor)
+        self.hud_search = None
         self.browser_diagnostics = BrowserDiagnostics(settings.data_path, self.publish)
         self.sources.web = SearchProviders(
             self.sources.http,
@@ -126,6 +128,7 @@ class Cinema:
                 ),
             },
         )
+        self.sources.site_browser = SiteBrowserSearch()
         self.watch_confirmations = {}
         self.open_approvals = {}
         self.resolution = None
@@ -233,6 +236,24 @@ class Cinema:
     def request(self, value):
         if not self.closed:
             self.schedule(self.handle(value))
+
+    async def run_hud_search(self, request_id, operation):
+        current = asyncio.current_task()
+        previous = self.hud_search
+        self.hud_search = (request_id, current)
+        try:
+            if previous and previous[1] is not current:
+                await self.cancel_search_task(previous[1])
+            return await operation()
+        finally:
+            if self.hud_search == (request_id, current):
+                self.hud_search = None
+
+    @staticmethod
+    async def cancel_search_task(task):
+        if not task.cancelling():
+            task.cancel()
+        await asyncio.shield(asyncio.gather(task, return_exceptions=True))
 
     def location(self):
         devices = getattr(self.tools, "devices", None)
@@ -575,15 +596,22 @@ class Cinema:
             elif op == "trailer":
                 result = await self.trailer(value.get("key"), value.get("title_id"))
             elif op == "watch":
-                result = await self.resume(
-                    value["title_id"],
-                    value.get("episode_id"),
-                    value.get("device"),
-                    request_id=str(value.get("request_id", ""))[:100],
-                    player=value.get("player"),
+                request_id = str(value.get("request_id", ""))[:100]
+                result = await self.run_hud_search(
+                    request_id,
+                    lambda: self.resume(
+                        value["title_id"],
+                        value.get("episode_id"),
+                        value.get("device"),
+                        request_id=request_id,
+                        player=value.get("player"),
+                    ),
                 )
             elif op == "watch_cancel":
-                self.watch_sequence += 1
+                active = self.hud_search
+                if active and value.get("request_id", "") == active[0]:
+                    self.watch_sequence += 1
+                    await self.cancel_search_task(active[1])
                 return
             elif op == "watch_confirm":
                 self.require_playback()
@@ -598,11 +626,16 @@ class Cinema:
                     player=confirmation[3] if len(confirmation) > 3 else None,
                 )
             elif op == "find_sources":
-                choices = await self.resolver.search(
-                    value["title_id"],
-                    value.get("episode_id"),
-                    refresh=value.get("refresh") is True,
-                    alternative=value.get("alternative") is True,
+                request_id = str(value.get("request_id", ""))[:100]
+                choices = await self.run_hud_search(
+                    request_id,
+                    lambda: self.resolver.search(
+                        value["title_id"],
+                        value.get("episode_id"),
+                        refresh=value.get("refresh") is True,
+                        alternative=value.get("alternative") is True,
+                        method="browser" if value.get("method") == "browser" else "all",
+                    ),
                 )
                 await self.publish(
                     source_results={**choices, "request_id": str(value.get("request_id", ""))[:100]}
@@ -1145,6 +1178,21 @@ class Cinema:
                 }
             )
             return {"message": message, "playback_confirmed": False}
+        if open_result and player == "browser" and not row.get("content_verified"):
+            if not prefs.allow_browser:
+                raise ToolError("Открытие браузера отключено в настройках.")
+            try:
+                await self.safari.ensure_page(row["url"], self.opener)
+            except ToolError as exc:
+                if getattr(exc, "code", "") not in {"automation_unknown", "automation_denied"}:
+                    raise
+                await self.opener(row["url"])
+            return {
+                "page_opened": True,
+                "manual_required": True,
+                "playback_confirmed": False,
+                "message": "Страница открыта для ручной проверки. Прогресс просмотра сохранён.",
+            }
         if new_source:
             await self.db("save_source", source.model_dump())
         ep = next(e for e in item["episodes"] if e["id"] == row["episode_id"])
@@ -1229,7 +1277,7 @@ class Cinema:
                 if self.resolution is not attempt or attempt["sequence"] != self.watch_sequence:
                     return {"playback_confirmed": False, "message": "Поиск заменён новым запросом."}
                 row = attempt["rows"].pop(0)
-                identity = (row["source_id"], row["url"])
+                identity = result_url(row["url"])
                 if identity in attempt["attempted"]:
                     continue
                 first = not attempt["attempted"]
@@ -2087,7 +2135,7 @@ class Cinema:
                 result = await self.resolver.search(title_id, episode_id, saved_only=True)
             if sequence != self.watch_sequence:
                 return {"playback_confirmed": False, "message": "Поиск заменён новым запросом."}
-            selected = result["selected_id"] or result.get("inspection_id")
+            selected = result["selected_id"]
             await self.trace(
                 "SEARCH",
                 "success",
@@ -2892,8 +2940,10 @@ class Cinema:
     async def close(self):
         await self.browser_diagnostics.cancel()
         for task in list(self.jobs):
-            task.cancel()
+            if not task.cancelling():
+                task.cancel()
         await asyncio.gather(*self.jobs, return_exceptions=True)
+        await self.browser_search.close()
         async with self.lock:
             await self.stop_tracking()
             self.closed = True

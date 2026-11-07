@@ -19,7 +19,7 @@ export interface CinemaLink {id:string;episode_id:string;source_id:string;source
 export interface CinemaEpisode {id:string;title_id:string;season:number;episode:number;position:number;duration:number;watched:number;last_viewed:string|null;last_link_id:string|null;name?:string;links:CinemaLink[]}
 export interface CinemaMetadata {genre_ids?:number[];directors?:string[];cast?:string[];keywords?:string[];backdrop_url?:string;country_names?:string[];genres:string[];runtime:number;rating:number;seasons:{season:number;episodes:number;name:string}[];episode_count:number;original_title?:string;original_language?:string;countries?:string[];release_date?:string;popularity?:number}
 export interface CatalogueTitle {library_id?:string;title:string;kind:'movie'|'series';year:number;poster_url:string;description:string;catalogue_key:string;metadata:CinemaMetadata}
-export interface SourceResult {viewing_status?:string;browser_openable?:boolean;identity_status?:string;episode_status?:string;player_status?:string;control_status?:string;page_status?:string;video_type?:string;content_verified?:boolean;classification_reason?:string;previously_played?:boolean;configurable?:boolean;scope?:string;region_access?:string;voice?:string;new_source?:boolean;id:string;source_id:string;source_name:string;kind:string;url:string;availability:string;reason:string;embedded:boolean;language:string;access_type:string;access_status?:string;manual_allowed?:boolean;requires_confirmation?:boolean;allowed:boolean;match:number;capabilities:{mode:string}}
+export interface SourceResult {checked_url?:string;identity_signals?:string[];viewing_status?:string;browser_openable?:boolean;identity_status?:string;episode_status?:string;player_status?:string;control_status?:string;page_status?:string;video_type?:string;content_verified?:boolean;classification_reason?:string;previously_played?:boolean;configurable?:boolean;scope?:string;region_access?:string;voice?:string;new_source?:boolean;id:string;source_id:string;source_name:string;kind:string;url:string;availability:string;reason:string;embedded:boolean;language:string;access_type:string;access_status?:string;manual_allowed?:boolean;requires_confirmation?:boolean;allowed:boolean;match:number;capabilities:{mode:string}}
 export interface SourceResults {request_id?:string;title_id:string;episode_id:string;results:SourceResult[];selected_id:string|null;message:string}
 interface SourceOptions {title_id:string;episode_id:string;options:{source:CinemaSource;link:CinemaLink|null;available:boolean;reason:string}[];official?:{region:string;url:string;providers:{name:string;type:string}[]};provider_error?:string}
 export interface CinemaTitle {id:string;title:string;kind:'movie'|'series';year:number;poster_url:string;description:string;status:'watching'|'planned'|'watched';watchlist?:number;manual_watched?:number|null;favorite:number;catalogue_key?:string;metadata?:CinemaMetadata;user_rating?:number|null;user_note?:string;completed_at?:string|null;added_at?:string;favorite_added_at?:string|null;source_memory?:{pinned_source_id?:string;last_source_id?:string;page_url?:string};episodes:CinemaEpisode[];current:CinemaEpisode|null}
@@ -301,36 +301,83 @@ export class CinemaView {
   private watchTarget(item:CinemaTitle,title:string):HTMLElement {
     const dialog=this.showDialog(title);dialog.classList.add('cinema-compact-search');dialog.dataset.titleId=item.id;return dialog;
   }
-  private findSources(item:CinemaTitle,ep=item.current,alternative=false):void {
-    const dialog=this.watchTarget(item,`Ищу источники · ${item.title}`);dialog.append(el('p','Проверяю подключённые сайты. Это может занять несколько секунд.','cinema-loading'),this.button('Повторить поиск',()=>this.findSources(item,ep,alternative)));
-    this.sourceRequest=`sources-${++this.sourceSequence}`;this.request({op:'find_sources',title_id:item.id,episode_id:ep?.id,alternative,request_id:this.sourceRequest});
+  private findSources(item:CinemaTitle,ep=item.current,alternative=false,method:'all'|'browser'='all',refresh=false):void {
+    const dialog=this.watchTarget(item,`Ищу источники · ${item.title}`);
+    dialog.append(el('p','Проверяю подключённые сайты.','cinema-loading'),this.button('Отменить поиск',()=>this.closeDialog()));
+    this.sourceRequest=`sources-${++this.sourceSequence}`;
+    this.request({op:'find_sources',title_id:item.id,episode_id:ep?.id,alternative,method,refresh,request_id:this.sourceRequest});
   }
   private sourceResults(choices:SourceResults):void {
-    const item=this.data?.items.find(i=>i.id===choices.title_id);const ep=item?.episodes.find(e=>e.id===choices.episode_id);if(!item||!ep)return;
-    const dialog=this.watchTarget(item,`Смотреть · ${item.title}`);if(dialog.tagName==='DIALOG')dialog.classList.add('cinema-compact-search');
+    const item=this.data?.items.find(i=>i.id===choices.title_id);
+    const ep=item?.episodes.find(e=>e.id===choices.episode_id);
+    if(!item||!ep)return;
+    this.sourceRequest='';
+    const dialog=this.watchTarget(item,`Смотреть · ${item.title}`);
     dialog.append(el('p',episodeCaption(item,ep),'cinema-muted'),el('p',choices.message));
-    const state=(r:SourceResult)=>r.viewing_status??(['trailer','teaser','review','clip'].includes(r.video_type??'')?'trailer':r.kind==='page'&&r.match>=.95&&(r.availability==='available'||r.previously_played)?r.content_verified?'playable':'browser_only':'unverified');
-    const groups:[string,string][]=[['playable','Доступен для просмотра'],['browser_only','Доступен только в браузере · плеер требует проверки'],['region_blocked','Недоступен в регионе'],['trailer','Найден только трейлер или фрагмент'],['unverified','Не удалось проверить'],['not_found','Точная страница не найдена']];
-    for(const [group,label] of groups){
-      const rows=choices.results.filter(r=>state(r)===group);if(!rows.length)continue;
-      const container=group==='not_found'?el('details'):el('section');container.append(el(group==='not_found'?'summary':'h3',label,'cinema-result-group'));dialog.append(container);
-      for(const result of rows){
-        const row=el('article','','cinema-source-option cinema-source-line');row.dataset.selected=String(result.id===choices.selected_id);row.dataset.resultId=result.id;
-        const exact=['playable','browser_only'].includes(group);const body=el('div');body.append(el('strong',result.source_name),el('small',({FREE:'Бесплатный доступ подтверждён',PAID:'Требуется оплата',MIXED:'Есть бесплатный и платный контент',UNKNOWN:'Стоимость просмотра не проверена'} as Record<string,string>)[result.access_status??'UNKNOWN']),el('p',result.reason,'cinema-muted'));
-        if(result.classification_reason&&result.classification_reason!==result.reason)body.append(el('small',result.classification_reason));
-        if(exact)body.append(el('small',result.url,'cinema-result-url'));if(result.embedded)body.append(el('small','Встроенный плеер · совместимое прямое видео'));row.append(body);
-        const evidence=el('details');evidence.append(el('summary','Что проверено'),el('p',`Страница: ${result.page_status??result.availability}; произведение: ${result.identity_status==='confirmed'?'подтверждено':'не подтверждено'}; сезон и серия: ${result.episode_status==='confirmed'?'подтверждены':'не подтверждены'}; регион: ${result.region_access==='blocked'?'ограничен':result.region_access==='allowed'?'доступен':'не проверен'}; плеер и управление: ${result.player_status==='compatible'?'совместим':'требуют проверки'}. Воспроизведение ещё не подтверждено.`));body.append(evidence);
-        if(exact){
-          const watch=this.button(result.identity_status==='probable'?'Открыть вероятное совпадение':!result.content_verified?'Проверить плеер в Safari':result.requires_confirmation?'Открыть…':'Смотреть',()=>this.request({op:'source_result_open',result_id:result.id,...(result.identity_status==='probable'?{player:'browser'}:{})}),'primary');watch.disabled=!this.online||(!result.allowed&&!result.manual_allowed);row.append(watch);
-          if(!result.content_verified&&result.identity_status!=='probable')row.append(this.button('Открыть страницу в браузере',()=>this.request({op:'source_result_open',result_id:result.id,player:'browser'})));
-          const details=el('details');details.append(el('summary','Запомнить выбор'),this.button('Запомнить источник',()=>this.request({op:'source_result_remember',result_id:result.id})));if(item.kind==='series')details.append(this.button('Закрепить за сериалом',()=>this.request({op:'source_result_remember',result_id:result.id,pin:true})));body.append(details);
+    const state=(result:SourceResult)=>result.viewing_status??(
+      ['trailer','teaser','review','clip'].includes(result.video_type??'')?'trailer':
+      result.kind==='page'&&result.match>=.95&&(result.availability==='available'||result.previously_played)
+        ?result.content_verified?'playable':'browser_only':'unverified'
+    );
+    const visible=(result:SourceResult)=>['playable','browser_only'].includes(state(result))||
+      (result.kind==='page'&&result.previously_played&&result.region_access!=='blocked'&&
+        !['trailer','teaser','review','clip'].includes(result.video_type??''));
+    for(const [group,label] of [['playable','Доступен для просмотра'],['browser_only','Страницы для ручной проверки']]){
+      const rows=choices.results.filter(result=>visible(result)&&
+        (state(result)==='playable'?'playable':'browser_only')===group);
+      if(!rows.length)continue;
+      const section=el('section');
+      section.append(el('h3',label,'cinema-result-group'));
+      const overflow=el('details');
+      overflow.append(el('summary','Ещё варианты'));
+      for(const [index,result] of rows.entries()){
+        const row=el('article','','cinema-source-option cinema-source-line');
+        row.dataset.selected=String(result.id===choices.selected_id);
+        row.dataset.resultId=result.id;
+        const body=el('div');
+        body.append(el('strong',result.source_name),el('p',result.reason,'cinema-muted'));
+        if(result.access_status==='FREE')body.append(el('small','Бесплатный доступ подтверждён'));
+        if(result.access_status==='PAID'||result.access_status==='MIXED')body.append(el('small','Возможна подписка или оплата'));
+        const details=el('details');
+        details.append(el('summary','Что проверено'),el('small',result.url,'cinema-result-url'));
+        if(result.access_status==='UNKNOWN')details.append(el('p','Стоимость просмотра не проверена'));
+        if(group==='playable'){
+          details.append(this.button('Запомнить источник',()=>this.request({op:'source_result_remember',result_id:result.id})));
+          if(item.kind==='series')details.append(this.button('Закрепить за сериалом',()=>this.request({op:'source_result_remember',result_id:result.id,pin:true})));
         }
-        container.append(row);
+        if(result.identity_signals?.length)details.append(el('p',`Признаки серии: ${result.identity_signals.join(', ')}`));
+        if(result.classification_reason)details.append(el('p',result.classification_reason));
+        body.append(details);
+        const manual=group==='browser_only'&&!result.previously_played;
+        const label=result.identity_status==='probable'?'Открыть вероятное совпадение':
+          manual?'Открыть страницу в браузере':result.previously_played&&!result.content_verified?'Проверить плеер в Safari':
+          result.requires_confirmation?'Открыть…':'Смотреть';
+        const watch=this.button(label,()=>this.request({
+          op:'source_result_open',result_id:result.id,...(manual?{player:'browser'}:{})
+        }),'primary');
+        watch.disabled=!this.online||(!result.allowed&&!result.manual_allowed);
+        row.append(body,watch);
+        (index<4?section:overflow).append(row);
       }
+      if(rows.length>4)section.append(overflow);
+      dialog.append(section);
     }
-    if(!choices.results.length)dialog.append(el('p','Подходящих сохранённых ссылок нет. Проверь настройку автоматического поиска.'));
+    const rejected=choices.results.filter(result=>!visible(result));
+    if(rejected.length){
+      const details=el('details');
+      details.append(el('summary',`Диагностика поиска · ${rejected.length}`));
+      for(const result of rejected){
+        details.append(el('p',`${result.source_name}. ${result.reason}`,'cinema-muted'));
+        if(result.checked_url)details.append(el('small',result.checked_url,'cinema-result-url'));
+      }
+      dialog.append(details);
+    }
+    dialog.append(
+      this.button('Карточка и прогресс',()=>this.detail(item.id,ep.id)),
+      this.button('Повторить поиск',()=>this.findSources(item,ep,false,'all',true)),
+      this.button('Повторить поиск по сайтам',()=>this.findSources(item,ep,false,'browser',true))
+    );
     if(item.source_memory?.pinned_source_id)dialog.append(this.button('Открепить источник',()=>this.request({op:'source_unpin',title_id:item.id})));
-    dialog.append(this.button('Карточка и прогресс',()=>this.detail(item.id,ep.id)),this.button('Повторить поиск',()=>this.findSources(item,ep)),this.button('Настроить источники',()=>{this.closeDialog();this.changeTab('sources');}));
   }
   private sectionHeading(title:string,action?:HTMLElement):HTMLElement {const n=el('div','','cinema-section-heading');n.append(el('h2',title));if(action)n.append(action);return n;}
   private empty(message:string,label?:string,action?:()=>void):HTMLElement {const n=el('div','','cinema-empty');const symbol=el('span');symbol.innerHTML=icon('film');n.append(symbol,el('p',message));if(label&&action)n.append(this.button(label,action,'primary'));return n;}
@@ -371,7 +418,7 @@ export class CinemaView {
     dialog.addEventListener('close',()=>{dialog.remove();if(this.dialog===dialog)this.dialog=null;if(focused?.isConnected)focused.focus({preventScroll:true});if(scroll)scroll.scrollTop=position;});
     this.root.append(dialog);this.dialog=dialog;dialog.showModal();return dialog;
   }
-  private closeDialog(cancelSearch=true):void {if(cancelSearch&&this.sourceRequest.startsWith('watch-'))this.request({op:'watch_cancel'});this.pendingDetailKey='';if(this.dialog?.dataset.rich==='true'||this.dialog?.dataset.rating==='true')this.request({op:'clear_focus'});this.sourceRequest='';this.dialog?.close();this.dialog?.remove();this.dialog=null;}
+  private closeDialog(cancelSearch=true):void {if(cancelSearch&&/^(watch|sources)-/.test(this.sourceRequest))this.request({op:'watch_cancel',request_id:this.sourceRequest});this.pendingDetailKey='';if(this.dialog?.dataset.rich==='true'||this.dialog?.dataset.rating==='true')this.request({op:'clear_focus'});this.sourceRequest='';this.dialog?.close();this.dialog?.remove();this.dialog=null;}
   private detail(id:string,episodeId?:string,linkId?:string):void {
     const item=this.data?.items.find(v=>v.id===id);if(!item)return;
     const ep=item.episodes.find(v=>v.id===episodeId)??item.current;if(!ep)return;

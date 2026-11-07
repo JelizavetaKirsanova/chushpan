@@ -13,6 +13,7 @@ from html.parser import HTMLParser
 from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree
 
+from backend.cinema.classification import kinds
 from backend.cinema.models import origin
 from backend.tools.registry import ToolError
 
@@ -122,23 +123,31 @@ class Page(HTMLParser):
         self.links = []
         self.meta = {}
         self.heading, self.title = False, ""
+        self.primary = {"h1": "", "title": ""}
+        self.canonical = ""
+        self.media_elements = 0
         self.feed(html)
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag == "meta":
-            name = attrs.get("property", attrs.get("name", "")).lower()
-            self.meta[name] = attrs.get("content", "")[:1000]
+            name = (attrs.get("property") or attrs.get("name") or "").lower()
+            self.meta[name] = (attrs.get("content") or "")[:1000]
+        if tag == "link" and (attrs.get("rel") or "").lower() == "canonical":
+            self.canonical = attrs.get("href", "")
+        if tag in {"video", "iframe"}:
+            self.media_elements += 1
         if tag in {"title", "h1"}:
-            self.heading = True
+            self.heading = tag
         if tag == "a" and attrs.get("href") and len(self.links) < 10000:
             self.links.append(attrs["href"])
-        if tag == "script" and attrs.get("type", "").lower() == "application/ld+json":
+        if tag == "script" and (attrs.get("type") or "").lower() == "application/ld+json":
             self.ld, self.buffer = True, []
 
     def handle_data(self, data):
         if self.heading:
             self.title = (self.title + " " + data)[:2000]
+            self.primary[self.heading] = (self.primary[self.heading] + " " + data)[:1000]
         if self.ld:
             self.buffer.append(data)
 
@@ -160,8 +169,7 @@ class Page(HTMLParser):
                 for child in value:
                     yield from walk(child)
             elif isinstance(value, dict):
-                kinds = value.get("@type", [])
-                if set(kinds if isinstance(kinds, list) else [kinds]).intersection(types):
+                if kinds(value) & types:
                     yield value
                 # Do not accept a recommended item nested in ItemList as the page identity.
                 yield from walk(value.get("@graph", []))
@@ -170,7 +178,7 @@ class Page(HTMLParser):
         for item in self.structured:
             yield from walk(item)
 
-    def probable_identity(self, query):
+    def probable_identity(self, query, url="", *, episode_hint=False):
         """Visible primary title/year is a manual candidate, never full-video proof."""
         title = key(self.title + " " + self.meta.get("og:title", ""))
         meta = query.get("metadata") or {}
@@ -179,7 +187,17 @@ class Page(HTMLParser):
             meta.get("original_title", ""),
             *meta.get("alternative_titles", []),
         ]
-        if not query.get("year") or str(query["year"]) not in title.split():
+        year = str(query.get("year") or "")
+        date_text = " ".join(
+            (
+                title,
+                key(unquote(urlsplit(url).path)),
+                key(self.meta.get("video:release_date", "")),
+                key(self.meta.get("description", self.meta.get("og:description", ""))),
+            )
+        )
+        year_match = bool(year and year in date_text.split())
+        if not year_match and not episode_hint:
             return None
         if not any(
             len(key(name)) >= 3 and re.search(r"(?<!\w)" + re.escape(key(name)) + r"(?!\w)", title)
@@ -192,7 +210,26 @@ class Page(HTMLParser):
             "manual_candidate": True,
             "match": 0.85,
             "episode_match": False,
+            "year_match": year_match,
         }
+
+
+_COORDINATES = (
+    r"(?<!\w)s(\d{1,3})\s*e(\d{1,4})(?!\d)",
+    r"(?:season|сезон)[\s/_-]*(\d{1,3})[\s,/_:—-]+"
+    r"(?:episode|серия|эпизод)[\s/_-]*(\d{1,4})(?!\d)",
+    r"(?<![\w-])(\d{1,3})\s*(?:сезон|season)\s*[,—:· ]+"
+    r"(\d{1,4})\s*(?:серия|эпизод|episode)\b",
+    r"sezon[/-](\d{1,3})[/_-]+(?:seriya|episode)[/-](\d{1,4})(?!\d)",
+)
+
+
+def episode_coordinates(value):
+    return {
+        (int(season), int(episode))
+        for pattern in _COORDINATES
+        for season, episode in re.findall(pattern, unquote(value), re.I)
+    }
 
 
 class PublicCatalogue:
@@ -256,10 +293,10 @@ class PublicCatalogue:
         await self.ensure_rules()
         maps = [u for u in self.rules.maps if origin(u) == self.base]
         if not maps:
-            raise ToolError(
-                "В robots.txt нет публичной карты сайта; поисковый путь "
-                "Filmix /search запрещён. Надёжный разрешённый автопоиск не найден."
-            )
+            reason = "В robots.txt не опубликована карта сайта."
+            if not self.rules.allowed(self.base + "/search"):
+                reason += " robots.txt ограничивает фоновый доступ к /search."
+            raise ToolError(reason)
         urls, visited = [], set()
         while maps and len(visited) < 6:
             url = maps.pop(0)
@@ -321,7 +358,7 @@ class PublicCatalogue:
         candidates = await asyncio.to_thread(shortlist)
         results = []
         self.last_reason = (
-            "В публичной карте сайта нет страницы с таким названием."
+            "В проверенной карте сайта нет подходящего адреса."
             if not candidates
             else "Страницы найдены, но метаданные не подтверждают название, год и тип."
         )

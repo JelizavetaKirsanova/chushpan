@@ -180,8 +180,10 @@ def test_safari_search_preserves_unicode_for_applescript_and_uses_ee_region(monk
         async def execute(script):
             assert not requests_allowed.get()
             scripts.append(script)
-            if "make new document" in script:
+            if "return ownerID" in script:
                 return "1234"
+            if "close ownedTab" in script:
+                return "closed"
             if "do JavaScript" in script:
                 return json.dumps({"urls": ["https://source.test/film"]})
             return "0"
@@ -190,7 +192,8 @@ def test_safari_search_preserves_unicode_for_applescript_and_uses_ee_region(monk
         result = await BrowserSearch(SimpleNamespace(_run=execute)).search("Фильм", "EE", "ru")
         assert result == ["https://source.test/film"]
         assert "kl=ee-et" in scripts[0]
-        assert "подтвердите" in scripts[1] and r"\u043f" not in scripts[1]
+        javascript = next(script for script in scripts if "do JavaScript" in script)
+        assert "подтвердите" in javascript and r"\u043f" not in javascript
         assert 'starts with "https://duckduckgo.com/"' in scripts[-1]
 
     asyncio.run(run())
