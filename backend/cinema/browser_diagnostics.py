@@ -19,10 +19,10 @@ from urllib.parse import urljoin, urlsplit
 from uuid import uuid4
 
 from backend.cinema.evidence import public_url, safe_reason
-from backend.cinema.internet import verified_entity
+from backend.cinema.internet import PageVerifier
 from backend.cinema.models import web_url
 from backend.cinema.playback import SourceValidator
-from backend.cinema.public_search import Page, key
+from backend.cinema.public_search import key
 from backend.cinema.sources import addresses
 from backend.tools.registry import ToolError
 
@@ -73,16 +73,11 @@ INSPECT = """() => {
 }"""
 
 
-def page_identity(structured, query):
-    from backend.cinema.classification import entities
-
-    return next((r for e in entities(structured) if (r := verified_entity(e, query))), None)
-
-
-def visible_identity(observed, query):
-    page = Page("")
-    page.title = observed["title"] + " " + observed.get("heading", "")
-    return page.probable_identity(query, observed.get("url", ""))
+async def page_identity(page, query):
+    try:
+        return PageVerifier.inspect(await page.content(), page.url, query), ""
+    except ToolError as exc:
+        return None, str(exc)
 
 
 async def attach_public_routes(context):
@@ -260,15 +255,13 @@ class BrowserDiagnostics:
                     main = await page.evaluate(INSPECT)
                 self.report["url"] = public_url(page.url)
                 self.resolved_url = web_url(page.url)
-                identity = page_identity(
-                    main["structured"], {**query, "region": region}
-                ) or visible_identity(main, query)
+                identity, identity_error = await page_identity(page, {**query, "region": region})
                 if play and identity and identity.get("scope") == "series":
                     await self.select_coordinates(page, query)
                     main = await page.evaluate(INSPECT)
-                    identity = page_identity(
-                        main["structured"], {**query, "region": region}
-                    ) or visible_identity(main, query)
+                    identity, identity_error = await page_identity(
+                        page, {**query, "region": region}
+                    )
                 if proof and proof.get("content_verified"):
                     identity = {
                         "scope": proof.get("scope"),
@@ -282,20 +275,17 @@ class BrowserDiagnostics:
                     if identity
                     and self.report["identity_status"] == "confirmed"
                     and identity.get("scope") in {"episode", "movie"}
-                    else "unconfirmed"
+                    else (identity or {}).get("episode_status", "unconfirmed")
                 )
+                self.report["identity_signals"] = (identity or {}).get("identity_signals", [])
                 if identity:
                     self.report["region_access"] = identity.get("region_access", "unknown")
                 self.stage(
                     "identity",
                     self.report["identity_status"],
-                    "Название, год и серия сопоставлены по независимым метаданным"
-                    if self.report["identity_status"] == "confirmed"
-                    else "На странице совпали название и год. Совпадение вероятное; "
-                    "номера сезона/серии и полное видео не подтверждены."
+                    identity.get("reason", "Названия и координаты сверены с источником.")
                     if identity
-                    else "Метаданные не подтверждают нужное произведение/серию; "
-                    "автоматический Play запрещён",
+                    else identity_error,
                     started,
                 )
                 if self.report["region_access"] == "blocked":
