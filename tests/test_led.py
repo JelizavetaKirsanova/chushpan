@@ -170,7 +170,7 @@ def test_rejected_probe_remains_blocked_and_cannot_be_reused(rig):
         await rig.strip.confirm_probe(result["probe_id"], False)
         with pytest.raises(ToolError, match="устарела"):
             await rig.strip.confirm_probe(result["probe_id"], True)
-        with pytest.raises(ToolError, match="не проверен"):
+        with pytest.raises(ToolError, match="не выполнила"):
             await rig.strip.execute(action="off")
 
     asyncio.run(go())
@@ -343,6 +343,10 @@ def test_conversation_and_voice_bypass_llm_even_on_failure(rig):
             assert "Физическое выполнение не подтверждено" in " ".join(said)
             said.clear()
             await reply_aloud(conv, speaker, "Чушпан, выключи подсветку", 20)
+            assert "отправлена" in " ".join(said)
+            assert "не подтверждено" in " ".join(said)
+            said.clear()
+            await reply_aloud(conv, speaker, "Чушпан, установи яркость подсветки 50%", 20)
             assert "не проверен" in " ".join(said)
             assert "отправлена" not in " ".join(said)
             model.chat_stream.assert_not_called()
@@ -350,7 +354,7 @@ def test_conversation_and_voice_bypass_llm_even_on_failure(rig):
             store.close()
 
     asyncio.run(go())
-    assert rig.factory.call_count == 1
+    assert rig.factory.call_count == 2
 
 
 def test_disabled_led_still_routes_locally(rig):

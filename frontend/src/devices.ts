@@ -6,8 +6,8 @@ import type {ColorDraft,UserColor} from './color_editor';
 
 type Values=Record<string,unknown>;
 interface BleDiagnostic {report_id?:string;at?:string;connection?:string;compatibility?:string;errors?:{stage:string;type:string;uuid?:string}[];services?:{uuid:string;characteristics:{uuid:string;properties:string[];write_modes:string[];read?:{byte_count?:number;error?:string}}[]}[];notifications?:{uuid:string;byte_count:number}[];}
-interface BleStatus {driver:string;driver_id?:string;compatibility:string;confirmed_functions?:string[];diagnostic?:BleDiagnostic;last_command?:{status:string;physical_confirmed?:boolean}|null;pending_probe?:{id:string;requested:{action:string;rgb?:number[]}}|null;}
-export interface DeviceRecord {id:string;revision:number;name:string;kind:'led_strip'|'mac'|'external_display'|'airplay'|'audio_output'|'wled';protocol:string;endpoint:string;place_id:string;room:string;state:Values;sent:Values;last_contact:string|null;state_at:string|null;result_status:string|null;favorites:string[];favorite?:boolean;aliases?:string[];auto_connect?:boolean;features:Record<string,boolean|string|string[]>;connection:string;usable:boolean;reason:string;busy:boolean;ble?:BleStatus;preview_color?:string|null;}
+interface BleStatus {driver:string;driver_id?:string;compatibility:string;confirmed_functions?:string[];diagnostic?:BleDiagnostic;last_command?:{status:string;physical_confirmed?:boolean}|null;pending_probe?:{id:string;requested:{action:string;rgb?:number[]}}|null;last_observed_power?:{power:boolean;at:string}|null;}
+export interface DeviceRecord {id:string;revision:number;name:string;kind:'led_strip'|'mac'|'external_display'|'airplay'|'audio_output'|'wled';protocol:string;endpoint:string;place_id:string;room:string;state:Values;sent:Values;last_contact:string|null;state_at:string|null;result_status:string|null;favorites:string[];favorite?:boolean;aliases?:string[];auto_connect?:boolean;features:Record<string,boolean|string|string[]>;connection:string;connection_error?:string|null;control_reason?:string;usable:boolean;reason:string;busy:boolean;ble?:BleStatus;preview_color?:string|null;}
 interface Collection {id:string;revision:number;name:string;place_id:string;device_ids?:string[];}
 interface Output {uid:string;name:string;active:boolean;transport:string;}
 interface Candidate {token:string;name:string;kind?:string;protocol?:string;rssi?:number|null;connection?:string;compatibility?:string;compatibility_reason?:string;}
@@ -159,7 +159,7 @@ export class DevicesView {
         const choose=this.button('',()=>this.choose(d.id),'device-tile-open');choose.setAttribute('aria-label','Открыть '+d.name);const symbol=el('span','','device-symbol');symbol.innerHTML=icon(deviceIcon(d));const words=el('span');words.append(el('strong',d.name),el('small',protocolNames[d.protocol]??d.protocol));choose.append(symbol,words);
         const state=el('span',this.statusText(d),'device-connection');state.dataset.status=d.usable?d.connection:'unavailable';card.append(choose,state);
         const star=this.button(d.favorite?'★':'☆',()=>this.request({op:'update',id:d.id,revision:d.revision,favorite:!d.favorite}),'device-star');star.setAttribute('aria-label',(d.favorite?'Убрать из избранного: ':'В избранное: ')+d.name);star.setAttribute('aria-pressed',String(!!d.favorite));card.append(star);
-        const known=d.state.power; if(typeof known==='boolean'&&(d.features.power_on||d.features.power_off)){card.append(this.powerSwitch(d));}else if(d.features.power_on||d.features.power_off){const quick=el('div','','device-quick');for(const [key,power,label]of [['power_on',true,'Вкл'],['power_off',false,'Выкл']] as const){const b=this.button(label,()=>this.act(d,'led',{power},true));b.disabled=!this.canAct(d)||d.features[key]!==true;quick.append(b);}card.append(quick);}
+        const known=d.state.power; if(typeof known==='boolean'&&(d.features.power_on||d.features.power_off)){card.append(this.powerSwitch(d));}else if(d.features.power_on||d.features.power_off){const quick=el('div','','device-quick');for(const [key,power,label]of [['power_on',true,'Вкл'],['power_off',false,'Выкл']] as const){const b=this.button(label,()=>this.act(d,'led',{power},true));b.disabled=!this.canPower(d,key);quick.append(b);}card.append(quick);}
         const more=this.button('›',()=>this.choose(d.id),'device-row-more');more.setAttribute('aria-label','Панель '+d.name);card.append(more);card.title=this.stateText(d);cards.append(card);
       }section.append(cards);this.list.append(section);
     }
@@ -172,9 +172,12 @@ export class DevicesView {
     else {if(this.sheet.open)this.sheet.close();this.root.querySelector('.devices-layout')!.append(this.panel);this.sheet.remove();if(!this.selected)this.previousFocus?.focus();}
   }
   private powerSwitch(d:DeviceRecord):HTMLButtonElement {
-    const known=d.state.power;const b=this.button('',()=>this.act(d,'led',{power:!known},true),'device-power-switch');b.setAttribute('role','switch');b.setAttribute('aria-label','Питание '+d.name);b.setAttribute('aria-checked',String(known===true));b.disabled=!this.canAct(d)||d.features[known===true?'power_off':'power_on']!==true;return b;
+    const known=d.state.power;const b=this.button('',()=>this.act(d,'led',{power:!known},true),'device-power-switch');b.setAttribute('role','switch');b.setAttribute('aria-label','Питание '+d.name);b.setAttribute('aria-checked',String(known===true));b.disabled=!this.canPower(d,known===true?'power_off':'power_on');return b;
   }
-  private canAct(d:DeviceRecord):boolean {return this.online&&d.usable&&!d.busy&&!this.writer.busy(d.id);}
+  private canAct(d:DeviceRecord):boolean {return this.online&&d.usable&&!d.control_reason&&!d.busy&&!this.writer.busy(d.id);}
+  private canPower(d:DeviceRecord,key:string):boolean {
+    return this.canAct(d)&&d.connection!=='error'&&d.features[key]===true;
+  }
   private act(d:DeviceRecord,action:string,parameters:Values,immediate=false):void {if(!this.online||!d.usable)return;this.writer.offer(d.id,action,parameters,immediate);}
   private slider(d:DeviceRecord,label:string,field:string,action:string,known:unknown,sent:unknown=undefined):HTMLElement {
     const box=el('div','','device-slider');const input=el('input');input.type='range';input.min='0';input.max='100';input.step='1';input.setAttribute('aria-label',label);input.value=String(typeof known==='number'?known:typeof sent==='number'?sent:50);
@@ -191,6 +194,7 @@ export class DevicesView {
     if(this.tab==='settings'){this.metadata(d);const details=this.panel.querySelector<HTMLDetailsElement>('.device-advanced');if(details)details.open=true;return;}
     if(this.tab==='history'){const log=el('div','','device-history');if(this.history?.id===d.id&&this.history.items.length){for(const item of this.history.items){const row=el('article');row.append(el('strong',({led:'Свет',brightness:'Яркость',volume:'Громкость',inspect:'Проверка',audio_output:'Аудиовыход'} as Record<string,string>)[item.action]??item.action),el('p',outcomes[item.result_status]??'Не подтверждено'),el('small',new Date(item.at+'Z').toLocaleString('ru-RU')+' · '+item.elapsed_ms+' мс'));log.append(row);}}else log.append(el('p','История команд пока пуста.','device-hint'));this.panel.append(log);return;}
     if(!d.usable)this.panel.append(el('p',d.reason,'device-warning'));
+    if(d.control_reason||d.connection_error)this.panel.append(el('p',d.control_reason||d.connection_error||'','device-warning'));
     const inspect=this.button(d.kind==='led_strip'?'Проверить / переподключить Bluetooth':'Обновить состояние',()=>this.request({op:'inspect',id:d.id}));inspect.disabled=!this.canAct(d);this.panel.append(inspect);
     if(d.last_contact)this.panel.append(el('p','Последняя успешная связь: '+new Date(d.last_contact).toLocaleString('ru-RU'),'device-hint'));
     if(d.kind==='led_strip'||d.kind==='wled')this.ledPanel(d);
@@ -213,7 +217,7 @@ export class DevicesView {
   private ledPanel(d:DeviceRecord):void {
     if(d.kind==='led_strip')this.blePanel(d);
     if(typeof d.state.power==='boolean'){const row=el('div','','device-power-row');row.append(el('strong','Питание'),this.powerSwitch(d));this.panel.append(row);}
-    const power=el('div','','device-quick');for(const [feature,value,label]of [['power_on',true,'Включить'],['power_off',false,'Выключить']] as const){const b=this.button(label,()=>this.act(d,'led',{power:value},true));b.disabled=!this.canAct(d)||d.features[feature]!==true;power.append(b);}this.panel.append(power);
+    const power=el('div','','device-quick');for(const [feature,value,label]of [['power_on',true,'Включить'],['power_off',false,'Выключить']] as const){const b=this.button(label,()=>this.act(d,'led',{power:value},true));b.disabled=!this.canPower(d,feature);b.title=String(d.features[feature+'_reason']||'');power.append(b);}this.panel.append(power);
     if(d.features.brightness)this.panel.append(this.slider(d,'Яркость ленты','brightness','led',d.state.brightness,d.sent.brightness));
     let draft=this.colorDrafts.get(d.id);if(!draft){draft=colorDraft(d.preview_color??String(d.sent.color??d.state.color??'#FFFFFF'));this.colorDrafts.set(d.id,draft);}
     this.colorEditor=new ColorEditor({device:{...d,busy:d.busy||this.writer.busy(d.id)},online:this.online,draft,colors:this.data?.user_colors??[],presets:colors,

@@ -318,6 +318,8 @@ class DeviceCenter:
                 if lock.locked():
                     raise ToolError("Устройство занято другой командой.")
                 async with lock, asyncio.timeout(45):
+                    if device.kind == "led_strip" and action == "led":
+                        self.publish(running=True)
                     if action == "save_color":
                         if device.kind not in {"led_strip", "wled"} or set(parameters) != {"name"}:
                             raise ToolError("Выбери одну RGB-ленту и название цвета.")
@@ -394,13 +396,17 @@ class DeviceCenter:
                 result = {
                     "result_status": "failed",
                     "error": str(exc)
-                    if isinstance(exc, ToolError)
-                    and device.kind == "led_strip"
-                    and action == "led"
-                    and "color" in parameters
+                    if isinstance(exc, ToolError) and device.kind == "led_strip" and action == "led"
                     else "Действие недоступно или не подтверждено. "
                     "Проверь возможности, место и подключение.",
                 }
+                if (
+                    device.kind == "led_strip"
+                    and action == "led"
+                    and isinstance(exc, (ToolError, TimeoutError, OSError))
+                ):
+                    self.connections[device.id] = "error"
+                    self.connection_errors[device.id] = result["error"]
             elapsed = round((time.monotonic() - started) * 1000)
             self.store.log(identifier, action, parameters, result, elapsed)
             self.metrics = {"device_id": identifier, "action": action, "total_ms": elapsed}

@@ -211,3 +211,49 @@ test("disconnect disables all command buttons and displays connection state", as
     await f.close();
   }
 });
+
+test("reconnect unlocks normal power commands without assuming the strip is off", async () => {
+  const f = fixture();
+  try {
+    const [first, second] = f.state.items;
+    const card = () => f.window.document.querySelectorAll(".lighting-card")[1];
+    f.view.receive({
+      ...f.state,
+      items: [
+        first,
+        {
+          ...second,
+          connection: "error",
+          connection_error: "Лента вне зоны Bluetooth",
+        },
+      ],
+    });
+    assert.match(card().textContent!, /Лента вне зоны Bluetooth/);
+    assert.match(card().textContent!, /Состояние питания неизвестно/);
+    assert.ok(f.button("Вкл", card()).disabled);
+    f.button("Переподключить", card());
+    assert.equal(f.events.at(-1).op, "inspect");
+    assert.equal(f.events.at(-1).id, "two");
+    const ready = {
+      ...second,
+      features: { ...second.features, power_on: true, power_off: true },
+    };
+    f.view.receive({ ...f.state, items: [first, ready] });
+    assert.match(card().textContent!, /Управление питанием доступно/);
+    assert.match(card().textContent!, /Состояние питания неизвестно/);
+    assert.equal(f.button("Вкл", card()).disabled, false);
+    assert.equal(f.events.at(-1).operation, "apply");
+    assert.equal(f.events.at(-1).action.power, true);
+    f.view.receive({ ...f.state, items: [first, { ...ready, busy: true }] });
+    assert.equal(card().getAttribute("aria-busy"), "true");
+    assert.ok(f.button("Выкл", card()).disabled);
+    f.view.receive({
+      ...f.state,
+      items: [first, { ...ready, control_reason: "Mac Agent недоступен" }],
+    });
+    assert.match(card().textContent!, /Mac Agent недоступен/);
+    assert.ok(f.button("Вкл", card()).disabled);
+  } finally {
+    await f.close();
+  }
+});

@@ -237,7 +237,7 @@ def test_weekday_voice_and_fail_closed(devices):
 
 def test_unavailable_capabilities_never_write_or_create_task(devices):
     devices.strip._save(devices.strip._load().model_copy(update={"confirmed": {"rgb"}}))
-    with pytest.raises(ToolError, match="не подтверждена"):
+    with pytest.raises(ToolError, match="не проверен"):
         make_job(devices)
     assert not devices.service.lighting.list("job")
     devices.factory.assert_not_called()

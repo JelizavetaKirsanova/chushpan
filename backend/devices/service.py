@@ -82,6 +82,7 @@ class Devices(DeviceCenter):
         self.scans = {}
         self.discovery_lock = asyncio.Lock()
         self.ble_queue = asyncio.Lock()
+        self.connection_errors = {}
         self.scan_reports = OrderedDict()
         self.probes = {}
         self.strips = {}
@@ -312,6 +313,7 @@ class Devices(DeviceCenter):
         self.connections[identifier] = (
             "disconnected" if strip and strip.connection_closed else "unknown"
         )
+        self.connection_errors.pop(identifier, None)
         self.publish()
 
     def observe(self, name, args, result):
@@ -326,6 +328,8 @@ class Devices(DeviceCenter):
             return
         if outcome == "failed":
             self.connections[device.id] = "error"
+            if device.kind == "led_strip":
+                self.connection_errors[device.id] = result.get("error") or result.get("message")
         elif name != "led_control":
             self.connections[device.id] = "observed"
         values = {}
@@ -396,16 +400,27 @@ class Devices(DeviceCenter):
         if device.kind == "led_strip":
             try:
                 strip = self.strip(device)
-                confirmed = strip._load().confirmed
-                driver = strip.driver()
-                color_reason = strip.rgb_block_reason()
+                state = strip._load()
+                confirmed = state.confirmed
+                driver = strip.driver(state)
+                color_reason = strip.rgb_block_reason(state)
+                power_on_reason = strip.power_block_reason(state, "on")
+                power_off_reason = strip.power_block_reason(state, "off")
             except ToolError:
                 confirmed = set()
                 driver = None
                 color_reason = "Профиль LED недоступен. Проверь локальный журнал и настройки."
+                power_on_reason = power_off_reason = color_reason
+            allowed = enabled("led_control")
+            if not allowed:
+                power_on_reason = power_off_reason = (
+                    "Управление LED отключено в настройках доступа."
+                )
             return {
-                "power_on": enabled("led_control") and "on" in confirmed,
-                "power_off": enabled("led_control") and "off" in confirmed,
+                "power_on": not power_on_reason,
+                "power_off": not power_off_reason,
+                "power_on_reason": power_on_reason,
+                "power_off_reason": power_off_reason,
                 "brightness": enabled("led_control") and "brightness" in confirmed,
                 "color": enabled("led_control") and "rgb" in confirmed,
                 "colors": sorted(confirmed),
@@ -471,6 +486,16 @@ class Devices(DeviceCenter):
                 usable, reason = True, ""
             except ToolError as exc:
                 usable, reason = False, str(exc)
+            control_reason = ""
+            if d.kind == "led_strip":
+                try:
+                    self.require_adapter()
+                except ActionDenied as exc:
+                    control_reason = str(exc)
+                if not self.tools.enabled("device_command") or not self.tools.enabled(
+                    "led_control"
+                ):
+                    control_reason = "Управление освещением отключено в настройках доступа."
             records.append(
                 {
                     **d.model_dump(),
@@ -482,6 +507,8 @@ class Devices(DeviceCenter):
                         else {}
                     ),
                     "connection": self.connections.get(d.id, "unknown"),
+                    "connection_error": self.connection_errors.get(d.id),
+                    "control_reason": control_reason,
                     "usable": usable,
                     "reason": reason,
                     "busy": d.id in self.inflight
@@ -542,6 +569,9 @@ class Devices(DeviceCenter):
 
         if (
             not isinstance(self.tools.mac_agent, LocalMacAgent)
+            or not self.conv
+            or not self.conv.device.authenticated
+            or self.conv.device.target_agent_id != "local-mac"
             or "mac.system" not in self.conv.device.capabilities
         ):
             raise ActionDenied("Для локального оборудования нужен разрешённый Mac Agent.")
@@ -792,20 +822,7 @@ class Devices(DeviceCenter):
                 "message": "Доступность подтверждена; воспроизведение не проверялось.",
             }
         if device.kind == "led_strip":
-            self.check_location(device)
-            lock = self.tools.device_locks.setdefault("led", asyncio.Lock())
-            if lock.locked():
-                raise ValueError("Лента выполняет другую команду. Дождись завершения.")
-            async with lock:
-                result = await self.strip(device).inspect(listen_s=0, read_values=False)
-            self.connections[device.id] = (
-                "disconnected" if result["connection"] == "disconnected" else "error"
-            )
-            device = self.store.get(device.id)
-            if result["services"]:
-                device.last_contact = stamp()
-            self.store.observe(device)
-            return result
+            return await self.inspect_led(device)
         if device.kind == "external_display":
             from backend.mac import MacDesktop
             from backend.night import BetterDisplay
@@ -844,6 +861,31 @@ class Devices(DeviceCenter):
             else "Доступные данные Mac обновлены.",
             "result_status": "partial_success" if failed else "success",
         }
+
+    async def inspect_led(self, device, *, diagnostics=False):
+        self.check_location(device)
+        lock = self.tools.device_locks.setdefault("led", asyncio.Lock())
+        async with self.ble_queue:
+            if lock.locked():
+                raise ValueError("Лента выполняет другую команду. Дождись завершения.")
+            async with lock:
+                strip = self.strip(device)
+                result = (
+                    await strip.inspect()
+                    if diagnostics
+                    else await strip.inspect(listen_s=0, read_values=False)
+                )
+        if result["result_status"] == "failed":
+            self.connections[device.id] = "error"
+            self.connection_errors[device.id] = result["message"]
+        else:
+            self.connections[device.id] = result["connection"]
+            self.connection_errors.pop(device.id, None)
+            device = self.store.get(device.id)
+            device.last_contact = stamp()
+            self.store.observe(device)
+        self.update_catalogue()
+        return result
 
     async def handle(self, value):
         request_id = value.get("request_id") if isinstance(value, dict) else None
@@ -1196,15 +1238,11 @@ class Devices(DeviceCenter):
                 self.require_adapter()
                 if device.kind != "led_strip" or "mac.system" not in self.conv.device.capabilities:
                     raise ActionDenied("Диагностика BLE доступна для выбранной ленты на Mac.")
-                lock = self.tools.device_locks.setdefault("led", asyncio.Lock())
-                if lock.locked():
-                    raise ValueError("Лента занята другой командой.")
-                async with lock:
-                    result = await self.strip(device).inspect()
-                self.connections[device.id] = result["connection"]
-                self.update_catalogue()
+                self.publish(running=True)
+                result = await self.inspect_led(device, diagnostics=True)
             elif op == "inspect":
                 self.require_adapter()
+                self.publish(running=True)
                 with measure("device_connect"):
                     async with asyncio.timeout(45):
                         result = await self.refresh(device)
@@ -1372,6 +1410,8 @@ class Devices(DeviceCenter):
                 else "Не удалось применить действие. Проверь параметры, доступ и подключение. "
                 "Автоповтора нет."
             )
+            if isinstance(identifier, str) and self.connections.get(identifier) == "error":
+                self.connection_errors[identifier] = message
             self.publish(error=message, request_id=request_id)
         finally:
             if busy:

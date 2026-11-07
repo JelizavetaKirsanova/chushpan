@@ -116,7 +116,7 @@ app = BUNDLE(
         "CFBundleName": "Чушпан",
         "CFBundleIconFile": "icon.icns",
         "CFBundleShortVersionString": build_info["version"],
-        "CFBundleVersion": "21",
+        "CFBundleVersion": "22",
         "LSMinimumSystemVersion": "26.2",
         "NSHighResolutionCapable": True,
         "NSMicrophoneUsageDescription": (

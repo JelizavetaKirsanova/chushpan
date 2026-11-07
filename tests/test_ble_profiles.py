@@ -47,7 +47,7 @@ def test_model_names_never_grant_compatibility(rig):
     rig.factory.assert_not_called()
 
 
-def test_ddm_needs_gatt_and_human_observation_and_restarts_without_replay(rig):
+def test_ddm_power_needs_gatt_but_not_physical_state_and_restarts_without_replay(rig):
     rig.strip.cfg.name = "ELK-BLEDDM 39"
 
     async def run():
@@ -57,8 +57,10 @@ def test_ddm_needs_gatt_and_human_observation_and_restarts_without_replay(rig):
         report = await rig.strip.inspect(listen_s=0)
         assert report["compatibility"] == "gatt_match"
         rig.clients[-1].write_gatt_char.assert_not_awaited()
-        with pytest.raises(ToolError, match="не проверен"):
-            await rig.strip.execute(action="on")
+        result = await rig.strip.execute(action="on")
+        assert result["physical_confirmed"] is False and result["probe_id"] is None
+        assert "on" not in rig.strip._load().confirmed
+        assert rig.clients[-1].write_gatt_char.await_args.args[1] == DDM_PROFILE.serialize("on")
         result = await rig.strip.execute(action="on", experiment=True)
         assert result["physical_confirmed"] is False
         assert "on" not in rig.strip._load().confirmed
@@ -66,10 +68,12 @@ def test_ddm_needs_gatt_and_human_observation_and_restarts_without_replay(rig):
         restarted = LEDStrip(rig.settings)
         restarted.cfg = rig.strip.cfg
         assert "on" in restarted._load().confirmed
-        assert rig.factory.call_count == 2  # Loading state never opens a connection.
-        result = await restarted.execute(action="on")
+        assert rig.factory.call_count == 3  # Loading state never opens a connection.
+        assert restarted.driver_status()["last_observed_power"]["power"] is True
+        result = await restarted.execute(action="off")
         assert result["physical_confirmed"] is False
-        assert rig.clients[-1].write_gatt_char.await_args.args[1] == DDM_PROFILE.serialize("on")
+        assert restarted.driver_status()["last_observed_power"]["power"] is True
+        assert rig.clients[-1].write_gatt_char.await_args.args[1] == DDM_PROFILE.serialize("off")
 
     asyncio.run(run())
 

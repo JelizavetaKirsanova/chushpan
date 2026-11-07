@@ -224,11 +224,20 @@ export class LightingView {
       );
     this.root.append(grid);
     if (this.selected.size) {
+      const selected = lights.filter((device) => this.selected.has(device.id));
       const group = el("section", "", "lighting-panel");
       group.append(el("h2", `Выбрано лент: ${this.selected.size}`));
       group.append(
-        this.button("Включить выбранные", () => this.apply({ power: true })),
-        this.button("Выключить выбранные", () => this.apply({ power: false })),
+        this.button(
+          "Включить выбранные",
+          () => this.apply({ power: true }),
+          selected.some((device) => !!this.powerBlock(device, "power_on")),
+        ),
+        this.button(
+          "Выключить выбранные",
+          () => this.apply({ power: false }),
+          selected.some((device) => !!this.powerBlock(device, "power_off")),
+        ),
         this.button("Таймер", () => this.jobDialog()),
         this.button("Расписание", () => this.jobDialog(undefined, true)),
         this.button("Переход / эффект", () => this.effectDialog()),
@@ -247,6 +256,21 @@ export class LightingView {
     this.renderJournal();
     if (this.data.lighting)
       this.root.append(el("p", this.data.lighting.notice, "lighting-notice"));
+  }
+  private powerBlock(
+    device: DeviceRecord,
+    key: "power_on" | "power_off",
+  ): string {
+    if (!device.usable)
+      return device.reason || "Лента недоступна в текущем месте.";
+    if (device.control_reason) return device.control_reason;
+    if (device.busy) return "Команда выполняется.";
+    if (device.connection === "error") {
+      return device.connection_error || "Проверь связь с лентой.";
+    }
+    return device.features[key] === true
+      ? ""
+      : String(device.features[`${key}_reason`] || "Команда недоступна.");
   }
   private card(device: DeviceRecord): HTMLElement {
     const card = el("article", "", "lighting-card");
@@ -282,7 +306,42 @@ export class LightingView {
       ),
       el("p", status, "lighting-status"),
     );
-    if (!device.usable) card.append(el("p", device.reason, "error"));
+    const onBlock = this.powerBlock(device, "power_on");
+    const offBlock = this.powerBlock(device, "power_off");
+    if (device.busy) {
+      card.setAttribute("aria-busy", "true");
+      card.append(el("p", "Команда выполняется…", "lighting-status"));
+    }
+    if (!device.usable || device.control_reason || device.connection_error) {
+      const message = !device.usable
+        ? device.reason
+        : device.control_reason || device.connection_error;
+      if (message) card.append(el("p", message, "error"));
+    } else if (!device.busy) {
+      const availability =
+        onBlock === offBlock
+          ? onBlock || "Управление питанием доступно"
+          : [
+              onBlock && `Включение. ${onBlock}`,
+              offBlock && `Выключение. ${offBlock}`,
+            ]
+              .filter(Boolean)
+              .join(" ");
+      card.append(el("p", availability, "lighting-status"));
+    }
+    const observed = device.ble?.last_observed_power;
+    const power = device.state.power;
+    card.append(
+      el(
+        "p",
+        typeof power === "boolean"
+          ? `Питание: ${power ? "включена" : "выключена"}`
+          : observed
+            ? `Последнее наблюдение: ${observed.power ? "включена" : "выключена"} · ${new Date(observed.at).toLocaleString("ru-RU")}. Текущее питание неизвестно.`
+            : "Состояние питания неизвестно",
+        "lighting-muted",
+      ),
+    );
     const state = el("div", "", "lighting-state");
     const swatch = el("span", "", "lighting-swatch");
     swatch.style.background = String(
@@ -316,14 +375,23 @@ export class LightingView {
       this.button(
         "Вкл",
         () => this.apply({ power: true }, [device.id]),
-        !device.usable || !device.features.power_on,
+        !!onBlock,
       ),
       this.button(
         "Выкл",
         () => this.apply({ power: false }, [device.id]),
-        !device.usable || !device.features.power_off,
+        !!offBlock,
       ),
     );
+    if (device.kind === "led_strip") {
+      actions.append(
+        this.button(
+          "Переподключить",
+          () => this.raw({ op: "inspect", id: device.id }),
+          !device.usable || !!device.control_reason || device.busy,
+        ),
+      );
+    }
     const brightness = el("input");
     brightness.type = "range";
     brightness.min = "0";
@@ -393,7 +461,9 @@ export class LightingView {
         el(
           "dd",
           device.features[key] === true
-            ? "Подтверждено"
+            ? key.startsWith("power_") && device.kind === "led_strip"
+              ? "Отправка доступна"
+              : "Подтверждено"
             : "Не подтверждено / недоступно",
         ),
       );

@@ -400,12 +400,15 @@ def _description(args: dict) -> str:
 class LEDState(BaseModel):
     identity: dict[str, str]
     confirmed: set[str] = Field(default_factory=set)
+    rejected_power: set[str] = Field(default_factory=set)
+    last_observed_power: dict | None = None
     last_write: dict | None = None
     pending_probe: dict | None = None
     last_transaction: dict | None = None
     brightness: int | None = Field(default=None, ge=0, le=100)
     profile: BLEProfile | None = None
     gatt_fingerprint: str | None = None
+    bound_gatt_fingerprint: str | None = None
     last_diagnostic: dict | None = None
     driver_fingerprint: str | None = None
 
@@ -461,6 +464,8 @@ class LEDStrip:
             # Existing observations belong to the old BLEDOB serializer only.
             if state.driver_fingerprint or not driver or driver.id != "elk-bledob-legacy":
                 state.confirmed.clear()
+                state.rejected_power.clear()
+                state.last_observed_power = state.bound_gatt_fingerprint = None
                 state.pending_probe = state.last_write = state.last_transaction = None
                 state.brightness = state.gatt_fingerprint = state.last_diagnostic = None
             state.driver_fingerprint = fingerprint
@@ -474,6 +479,26 @@ class LEDStrip:
         if requested.get("action") == "color" and last.get("physical_confirmed") is True:
             if _key(requested) in state.confirmed:
                 state.confirmed.add("rgb")
+        if (
+            state.gatt_fingerprint
+            and not state.bound_gatt_fingerprint
+            and (state.last_diagnostic or {}).get("compatibility") != "gatt_mismatch"
+            and (
+                (state.last_diagnostic or {}).get("compatibility") == "gatt_match"
+                or ("rgb" in state.confirmed and last.get("status") == "written")
+            )
+        ):
+            # Older releases only recorded the GATT inventory and write journal.
+            # A changed GATT inventory cleared both the diagnostic and RGB grant.
+            state.bound_gatt_fingerprint = state.gatt_fingerprint
+        if (
+            state.last_observed_power is None
+            and requested.get("action") in {"on", "off"}
+            and requested["action"] in state.confirmed
+            and last.get("physical_confirmed") is True
+            and last.get("time")
+        ):
+            state.last_observed_power = {"power": requested["action"] == "on", "at": last["time"]}
         return state
 
     def _save(self, state: LEDState) -> None:
@@ -505,16 +530,20 @@ class LEDStrip:
         state = self._load()
         profile = self.driver(state)
         report = state.last_diagnostic or {}
+        compatibility = report.get("compatibility", "unverified")
+        if not profile:
+            compatibility = "unsupported"
+        elif self._bound_gatt(state):
+            compatibility = "gatt_match"
         return {
             "driver": profile.name if profile else "Не выбран",
             "driver_id": profile.id if profile else "unsupported",
-            "compatibility": "unsupported"
-            if not profile
-            else report.get("compatibility", "unverified"),
+            "compatibility": compatibility,
             "confirmed_functions": sorted(state.confirmed),
             "last_command": state.last_write,
             "diagnostic": report,
             "pending_probe": state.pending_probe,
+            "last_observed_power": state.last_observed_power,
         }
 
     async def select_profile(self, profile: BLEProfile | None):
@@ -528,6 +557,8 @@ class LEDStrip:
             changed = not previous or not selected or previous.fingerprint != selected.fingerprint
             if changed:
                 state.confirmed.clear()
+                state.rejected_power.clear()
+                state.last_observed_power = state.bound_gatt_fingerprint = None
                 state.pending_probe = state.last_write = state.last_transaction = None
                 state.brightness = state.gatt_fingerprint = state.last_diagnostic = None
             self._save(state)
@@ -561,7 +592,33 @@ class LEDStrip:
                 handle.close()
 
     @staticmethod
-    def _allowed(state: LEDState, args: dict) -> bool:
+    def _bound_gatt(state: LEDState) -> bool:
+        return bool(
+            state.gatt_fingerprint and state.bound_gatt_fingerprint == state.gatt_fingerprint
+        )
+
+    def power_block_reason(self, state: LEDState, action: str) -> str:
+        if not self.cfg.enabled:
+            return "Управление лентой отключено в настройках."
+        profile = self.driver(state)
+        if not profile or action not in profile.commands:
+            return "Драйвер не поддерживает эту команду питания."
+        if (state.last_diagnostic or {}).get("compatibility") == "gatt_mismatch":
+            return "Канал Bluetooth не совпадает с профилем. Проверь драйвер ленты."
+        if action in state.rejected_power:
+            return "При проверке лента не выполнила эту команду. Проверь профиль устройства."
+        if action in state.confirmed:
+            return ""
+        built_in = candidate_profile(self.cfg)
+        if not built_in or built_in.fingerprint != profile.fingerprint:
+            return "Команду питания импортированного профиля нужно проверить отдельно."
+        if not self._bound_gatt(state):
+            return "Канал команд не проверен. Нажми «Переподключить»."
+        return ""
+
+    def _allowed(self, state: LEDState, args: dict) -> bool:
+        if args["action"] in {"on", "off"}:
+            return not self.power_block_reason(state, args["action"])
         return _key(args) in state.confirmed or (
             args["action"] == "color" and "rgb" in state.confirmed
         )
@@ -619,6 +676,8 @@ class LEDStrip:
             fingerprint = gatt_fingerprint(services)
             if state.gatt_fingerprint and state.gatt_fingerprint != fingerprint:
                 state.confirmed.clear()
+                state.rejected_power.clear()
+                state.last_observed_power = state.bound_gatt_fingerprint = None
                 state.pending_probe = None
                 state.brightness = None
                 state.last_diagnostic = None
@@ -629,6 +688,7 @@ class LEDStrip:
                 )
             char, response = profile.bind(services)
             state.gatt_fingerprint = fingerprint
+            state.bound_gatt_fingerprint = fingerprint
             # Some controllers drop writes made immediately after service discovery.
             await asyncio.sleep(self.cfg.settle_s)
             if self.before_write:
@@ -755,6 +815,8 @@ class LEDStrip:
         if not experiment and not self._allowed(state, args):
             if action == "color":
                 raise ToolError(self.rgb_block_reason(state) + " Команду не отправлял.")
+            if action in {"on", "off"}:
+                raise ToolError(self.power_block_reason(state, action) + " Команду не отправлял.")
             raise ToolError(
                 "Этот режим LED ещё не проверен на вашей прошивке. "
                 "Команду не отправлял. Нужна ручная проверка: python -m backend.led_cli probe."
@@ -812,10 +874,18 @@ class LEDStrip:
             key = _key(probe["requested"])
             if observed:
                 state.confirmed.add(key)
+                if key in {"on", "off"}:
+                    state.rejected_power.discard(key)
+                    state.last_observed_power = {
+                        "power": key == "on",
+                        "at": datetime.now(UTC).isoformat(),
+                    }
                 if probe["requested"]["action"] == "color":
                     state.confirmed.add("rgb")
             else:
                 state.confirmed.discard(key)
+                if key in {"on", "off"}:
+                    state.rejected_power.add(key)
                 if probe["requested"]["action"] == "color":
                     state.confirmed.discard("rgb")
                 if probe["requested"]["action"] == "brightness":
@@ -986,6 +1056,8 @@ class LEDStrip:
                     fingerprint = gatt_fingerprint(services)
                     if state.gatt_fingerprint and state.gatt_fingerprint != fingerprint:
                         state.confirmed.clear()
+                        state.rejected_power.clear()
+                        state.last_observed_power = state.bound_gatt_fingerprint = None
                         state.pending_probe = None
                         state.brightness = None
                         stage("gatt_changed", confirmations_cleared=True)
@@ -1034,8 +1106,10 @@ class LEDStrip:
                             report["write_characteristic"] = char.uuid
                             report["write_mode"] = "response" if response else "without-response"
                             report["compatibility"] = "gatt_match"
+                            state.bound_gatt_fingerprint = fingerprint
                         except ToolError:
                             report["compatibility"] = "gatt_mismatch"
+                            state.bound_gatt_fingerprint = None
                     if subscriptions:
                         await asyncio.sleep(listen_s)
             except asyncio.CancelledError:
@@ -1060,16 +1134,23 @@ class LEDStrip:
                     report["connection"] = "disconnected" if closed else "unknown"
                     stage("disconnect", closed=closed)
                 if report["result_status"] == "failed":
-                    report["message"] = (
-                        report.get("message", "")
-                        + " Диагностика не завершена: смотри этапы и тайм-ауты в отчёте; "
-                        "команды не отправлял."
+                    report["message"] = report.get("message") or (
+                        "Не удалось подключиться по Bluetooth. "
+                        "Проверь питание ленты и близость к Mac."
                     )
+                elif report["compatibility"] == "gatt_match":
+                    report["message"] = (
+                        "Связь с лентой и канал команд проверены. Состояние питания не считывается."
+                    )
+                elif report["compatibility"] == "gatt_mismatch":
+                    report["message"] = "Подключение есть, но канал команд не совпадает с профилем."
                 else:
                     report["message"] = (
                         "GATT перечислен. Протокол и функции этой ленты ещё не подтверждены. "
                         "Диагностика без команд; команды не отправлял. Уведомления не являются ACK."
                     )
+                if report["notifications"]:
+                    report["message"] += " Уведомления не являются ACK."
                 state.last_diagnostic = report
                 self._save(state)
                 path = self.path.parent / "diagnostics" / (report["report_id"] + ".json")

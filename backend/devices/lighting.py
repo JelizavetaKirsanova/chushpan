@@ -145,6 +145,16 @@ class Lighting:
             if action.power is not None:
                 required.append("power_on" if action.power else "power_off")
             if any(not features.get(key) for key in required):
+                reason = next(
+                    (
+                        features[f"{key}_reason"]
+                        for key in required
+                        if not features.get(key) and features.get(f"{key}_reason")
+                    ),
+                    None,
+                )
+                if reason:
+                    raise ToolError(f"{device.name}: {reason}")
                 raise ToolError(
                     f"{device.name}: функция ещё не подтверждена. "
                     "Открой настройки ленты и проверь её отдельно."
