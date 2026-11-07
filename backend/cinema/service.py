@@ -2085,6 +2085,7 @@ class Cinema:
                 observed_at=0,
                 last_position=episode["position"],
                 sample_position=episode["position"],
+                resume_floor=episode["position"],
                 confirmed=False,
                 allow_zero=False,
             )
@@ -2710,8 +2711,9 @@ class Cinema:
             or state.get("seeking")
         ):
             return False
-        if session["mode"] == "learned" and position < target["episode"]["position"]:
+        if position < session.get("resume_floor", 0):
             return False
+        session.pop("resume_floor", None)
         if position == 0 and target["episode"]["position"] > 0 and not session.get("allow_zero"):
             await self.trace(
                 "SAVE_PROGRESS",

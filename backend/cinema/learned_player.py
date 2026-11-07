@@ -176,6 +176,7 @@ class LearnedPlayer:
         self.episode = None
         self.voice = ""
         self.minimum = 0
+        self.last_sample = None
 
     async def page(self, **values):
         script = PAGE + "(" + json.dumps({**values, "url": self.url}, ensure_ascii=False) + ")"
@@ -376,6 +377,7 @@ class LearnedPlayer:
                     raise ToolError("Автозапуск отключён в настройках медиатеки.")
                 result = await self.confirm(nodes)
             self.report.update(result)
+            self.last_sample = result
             return result
         except BaseException:
             await self.detach()
@@ -385,6 +387,12 @@ class LearnedPlayer:
         state = self.verified_state(await self.nodes())
         if not state:
             raise ToolError("Плеер или выбранная серия изменились.")
+        if self.last_sample:
+            if state["duration"] != self.last_sample["duration"]:
+                raise ToolError("Длительность видео изменилась. Проверь источник заново.")
+            if state["paused"] is None and state["position"] > self.last_sample["position"]:
+                state["paused"] = False
+        self.last_sample = state
         return state
 
     async def control(self, action, position=0):
