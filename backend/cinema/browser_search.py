@@ -36,6 +36,7 @@ class SearchSession:
     marker: str
     window: str = ""
     created_window: bool = False
+    prefix: str = SEARCH_ORIGIN
 
     @property
     def tag(self):
@@ -88,7 +89,7 @@ repeat with w in {window}
     repeat with t in tabs of w
         set u to URL of t
         if u is not missing value then
-            if u starts with "{SEARCH_ORIGIN}" and u contains "{session.tag}" then
+            if u starts with {json.dumps(session.prefix)} and u contains "{session.tag}" then
                 set end of ownedTabs to t
                 set ownerID to (id of w) as text
             end if
@@ -99,14 +100,16 @@ if (count of ownedTabs) is not 1 then return "unowned"
 set ownedTab to item 1 of ownedTabs
 set currentAddress to URL of ownedTab
 if currentAddress is missing value then return "unowned"
-if currentAddress does not start with "{SEARCH_ORIGIN}" then return "unowned"
+if currentAddress does not start with {json.dumps(session.prefix)} then return "unowned"
 if currentAddress does not contain "{session.tag}" then return "unowned"
 {action}
 """)
 
-    async def _open(self, session, url):
+    async def _open(self, session, url, *, own_window=False):
         address = json.dumps(url)
-        owner = await self._run(f"""
+        owner = "no_window"
+        if not own_window:
+            owner = await self._run(f"""
 if (count of windows) is 0 then return "no_window"
 set ownerID to id of window 1
 tell window id ownerID
@@ -128,6 +131,21 @@ return ownerID as text
                 return
             await asyncio.sleep(0.15)
         raise ToolError("Safari не подтвердил метку временной вкладки поиска.")
+
+    async def open_marked(self, session, url):
+        self.sessions[session.marker] = session
+        task = asyncio.create_task(self._open(session, url, own_window=True))
+        try:
+            await asyncio.shield(task)
+        except BaseException:
+            with contextlib.suppress(ToolError, OSError, TimeoutError):
+                await asyncio.shield(task)
+            await asyncio.shield(self._cleanup(session))
+            raise
+
+    async def close_marked(self, session):
+        async with self.lock:
+            await self._cleanup(session)
 
     async def _cleanup(self, session):
         close_tab = 'close ownedTab\nreturn "closed"'

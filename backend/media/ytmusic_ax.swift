@@ -313,6 +313,92 @@ extension CGRect {
     var area: CGFloat { isNull ? 0 : width * height }
 }
 
+// Only the exact marked page in Safari's focused window and the iframe
+// selected on that page. Never return browser chrome or other tabs.
+func cinemaPlayer(_ request: [String: Any], _ op: String, _ app: NSRunningApplication, _ root: AXUIElement) -> Never {
+    guard (op == "cinema_snapshot" || app.isActive), let address = request["page"] as? String,
+          let pageURL = URL(string: address), pageURL.scheme == "https",
+          pageURL.fragment?.hasPrefix("chushpan_session=") == true,
+          let frameHost = request["frame_host"] as? String, !frameHost.isEmpty,
+          let window = attr(root, kAXFocusedWindowAttribute) ?? attr(root, kAXMainWindowAttribute),
+          CFGetTypeID(window) == AXUIElementGetTypeID()
+    else { fail("cinema_page_unavailable") }
+
+    func find(_ element: AXUIElement, _ depth: Int, _ matches: (AXUIElement) -> Bool) -> [AXUIElement] {
+        if matches(element) { return [element] }
+        guard depth > 0 else { return [] }
+        return children(element).flatMap { find($0, depth - 1, matches) }
+    }
+    let pages = find(window as! AXUIElement, 10) {
+        text($0, "AXRole") == "AXWebArea" && text($0, "AXURL") == address
+    }
+    guard pages.count == 1 else { fail("cinema_page_unavailable") }
+    let frames = find(pages[0], 18) {
+        text($0, "AXRole") == "AXWebArea" &&
+            URL(string: text($0, "AXURL"))?.host?.lowercased() == frameHost
+    }
+    guard frames.count == 1 else { fail("cinema_frame_unavailable") }
+    let frame = frames[0]
+    func playerChildren(_ element: AXUIElement) -> [AXUIElement] {
+        children(element).filter { text($0, "AXRole") != "AXWebArea" }
+    }
+    if op == "cinema_snapshot" {
+        var nodes: [[String: Any]] = []
+        func visit(_ element: AXUIElement, _ path: [Int]) {
+            guard nodes.count < 180, path.count < 12 else { return }
+            let properties = fields(element)
+            var node: [String: Any] = ["path": path]
+            for key in ["role", "title", "description", "value", "help"] {
+                if let value = properties[key] { node[key] = String(value.prefix(160)) }
+            }
+            nodes.append(node)
+            for (index, child) in playerChildren(element).enumerated() { visit(child, path + [index]) }
+        }
+        visit(frame, [])
+        output(["nodes": nodes])
+    }
+    guard let path = request["path"] as? [Int], path.count < 12,
+          let expected = request["expected"] as? [String: String],
+          let role = expected["role"], ["AXWebArea", "AXStaticText", "AXButton", "AXGroup"].contains(role)
+    else { fail("invalid_request") }
+    var target = frame
+    for index in path {
+        let items = playerChildren(target)
+        guard items.indices.contains(index) else { fail("element_changed") }
+        target = items[index]
+    }
+    let actual = fields(target)
+    guard expected.allSatisfy({ actual[$0.key, default: ""] == $0.value }),
+          app.isActive else { fail("element_changed") }
+    if role == "AXButton", AXUIElementPerformAction(target, kAXPressAction as CFString) == .success {
+        output(["ok": true])
+    }
+    guard let box = windowFrame(target), let area = windowFrame(frame),
+          let windowBox = windowFrame(window as! AXUIElement)
+    else { fail("cinema_geometry_unavailable") }
+    let visible = box.intersection(area).intersection(windowBox)
+    guard !visible.isEmpty else { fail("cinema_control_offscreen") }
+    let point = CGPoint(x: visible.midX, y: visible.midY)
+    var hit: AXUIElement?
+    guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(),
+                                            Float(point.x), Float(point.y), &hit) == .success,
+          var element = hit else { fail("cinema_hit_unavailable") }
+    var inside = false
+    for _ in 0..<18 {
+        if CFEqual(element, target) { inside = true; break }
+        guard let parent = attr(element, kAXParentAttribute),
+              CFGetTypeID(parent) == AXUIElementGetTypeID() else { break }
+        element = parent as! AXUIElement
+    }
+    guard inside, app.isActive else { fail("cinema_hit_changed") }
+    for kind in [CGEventType.leftMouseDown, .leftMouseUp] {
+        guard let event = CGEvent(mouseEventSource: nil, mouseType: kind, mouseCursorPosition: point,
+                                  mouseButton: .left) else { fail("cinema_control_unavailable") }
+        event.post(tap: .cghidEventTap)
+    }
+    output(["ok": true])
+}
+
 let data = FileHandle.standardInput.readDataToEndOfFile()
 guard let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
       let bundle = request["bundle"] as? String,
@@ -363,6 +449,10 @@ guard AXIsProcessTrusted() else { fail("accessibility_permission") }
 guard let app = running.first else { fail("app_closed") }
 let root = AXUIElementCreateApplication(app.processIdentifier)
 AXUIElementSetMessagingTimeout(root, 2)
+if ["cinema_snapshot", "cinema_press"].contains(op) {
+    guard bundle == "com.apple.Safari" else { fail("invalid_request") }
+    cinemaPlayer(request, op, app, root)
+}
 
 if op == "snapshot" {
     var nodes: [[String: Any]] = []

@@ -23,6 +23,8 @@ MANIFEST_SOURCES = (
     "backend/cinema/sources.py",
     "backend/cinema/internet.py",
     "backend/cinema/browser_search.py",
+    "backend/cinema/learned_player.py",
+    "backend/media/ytmusic_ax.swift",
     "backend/cinema/site_browser.py",
     "backend/cinema/browser_diagnostics.py",
     "backend/cinema/evidence.py",

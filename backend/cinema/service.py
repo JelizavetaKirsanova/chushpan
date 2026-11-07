@@ -30,11 +30,13 @@ from backend.cinema.evidence import diagnostic_reason, public_url, result_url, s
 from backend.cinema.filters import excluded_library_keys, with_preferences
 from backend.cinema.internet import InternetSearch, SearchCredentials, SearchProviders
 from backend.cinema.keychain import TavilyCredentials
+from backend.cinema.learned_player import LearnedPlayer, SafariPlayerAX, SiteRecipe
 from backend.cinema.models import CatalogueQuery, Source, origin
 from backend.cinema.native_player import AVPlayerAdapter
 from backend.cinema.personal import Recommender, score, signal, taste
 from backend.cinema.playback import (
     PlaybackManager,
+    PlaybackSource,
     PlaybackState,
     SourceResolver,
     SourceValidator,
@@ -111,6 +113,8 @@ class Cinema:
         self.tavily_credentials = TavilyCredentials()
         self.tavily = TavilySearch(self.tavily_credentials)
         self.browser_search = BrowserSearch(self.safari.executor)
+        self.site_ax = SafariPlayerAX(settings)
+        self.site_tabs = BrowserSearch(self.safari.executor)
         self.hud_search = None
         self.browser_diagnostics = BrowserDiagnostics(settings.data_path, self.publish)
         self.sources.web = SearchProviders(
@@ -376,6 +380,10 @@ class Cinema:
                 pass
             elif op == "diagnose_sources":
                 await self.diagnostics.check(value.get("title_id") or None)
+                return
+            elif op == "teach_site":
+                request_id = str(value.get("request_id", ""))[:100]
+                await self.run_hud_search(request_id, lambda: self.teach_site(value, request_id))
                 return
             elif op == "browser_diagnostics_cancel":
                 await self.browser_diagnostics.cancel()
@@ -1975,6 +1983,119 @@ class Cinema:
             "message": self.device_options()[1]["reason"],
         }
 
+    async def teach_site(self, value, request_id):
+        player = LearnedPlayer(self.safari.executor, self.site_ax, tabs=self.site_tabs)
+        saved = False
+        try:
+            self.require_playback()
+            prefs = await self.db("preferences")
+            if not prefs.allow_browser:
+                raise ToolError("Открытие Safari выключено в настройках медиатеки.")
+            if self.session:
+                raise ToolError("Сначала закрой текущий просмотр.")
+            recipe = SiteRecipe.model_validate(value["recipe"])
+            item = await self.db("detail", value["title_id"])
+            episode = next((ep for ep in item["episodes"] if ep["id"] == value["episode_id"]), None)
+            if not episode:
+                raise ToolError("Выбранная серия не найдена.")
+            if value.get("verify") is True:
+                await player.open({"recipe": recipe.model_dump(), "item": item, "episode": episode})
+                fields = {
+                    **recipe.model_dump(),
+                    "player": player.report["player"],
+                    "voice": player.voice,
+                }
+                await self.db("save_site_recipe", item, episode, fields, player.frame_host)
+                saved = True
+                message = player.report["message"] + " Сценарий сохранён."
+            else:
+                await player.open_page(recipe, item)
+                message = "Страница изучена. Проверь воспроизведение, чтобы сохранить сценарий."
+        except (ToolError, ActionDenied, ValueError, TimeoutError, OSError) as exc:
+            message = (
+                str(exc)
+                if isinstance(exc, (ToolError, ActionDenied))
+                else "Проверка не подтвердила воспроизведение. Проверь URL и элементы плеера."
+            )
+        finally:
+            await player.detach()
+        await self.publish(
+            site_lesson={
+                **player.report,
+                "request_id": request_id,
+                "saved": saved,
+                "message": message,
+            }
+        )
+
+    async def play_site_recipe(self, item, episode, prefs):
+        recipe = item["site_recipe"]
+        try:
+            source = await self.db("source", recipe["source_id"])
+        except ValueError:
+            return None
+        if not source.enabled or (prefs.free_only and source.access_status != "FREE"):
+            return None
+        if prefs.ask_paid and source.access_status in {"PAID", "MIXED"}:
+            return None
+        fields = {key: recipe[key] for key in ("url", "player", "voice")}
+        adapter = LearnedPlayer(self.safari.executor, self.site_ax, tabs=self.site_tabs)
+        async with self.lock:
+            await self.stop_tracking()
+            try:
+                result = await adapter.open(
+                    {
+                        "item": item,
+                        "episode": episode,
+                        "recipe": fields,
+                        "frame_host": recipe["frame_host"],
+                    }
+                )
+                link_id = await self.db(
+                    "save_site_recipe", item, episode, fields, adapter.frame_host
+                )
+                target = await self.db("target", item["id"], episode["id"], link_id)
+            except (ToolError, ValueError, TimeoutError, OSError) as exc:
+                await adapter.detach()
+                await self.trace(
+                    "LEARNED_PLAYER", "limited", safe_reason(exc), item["id"], episode["id"]
+                )
+                return None
+            except BaseException:
+                await adapter.detach()
+                raise
+            self.next_episode = None
+            self.playback.bind(
+                PlaybackSource(
+                    fields["url"],
+                    item["id"],
+                    episode["id"],
+                    source.id,
+                    link_id,
+                    "safari",
+                    "episode" if episode["season"] else "full_movie",
+                    fields["voice"],
+                ),
+                token=secrets.token_urlsafe(32),
+                target=target,
+                adapter=adapter,
+                mode="learned",
+                errors=0,
+                sequence=0,
+                observed_at=0,
+                last_position=episode["position"],
+                sample_position=episode["position"],
+                confirmed=False,
+                allow_zero=False,
+            )
+            self.playback.confirmed(result)
+            self.message = result["message"]
+            await self.db("select", episode["id"], link_id)
+            await self.save(result, "playing")
+            self.poller = asyncio.create_task(self.poll())
+            await self.publish()
+            return result
+
     async def resume(self, *args, **kwargs):
         self.playback.transition(PlaybackState.SEARCHING, "Ищем сохранённый источник просмотра.")
         try:
@@ -2042,6 +2163,19 @@ class Cinema:
         )
         if not ep:
             raise ToolError("Серия не найдена.")
+        if (
+            item.get("site_recipe")
+            and prefs.use_last_source
+            and prefs.allow_browser
+            and prefs.autoplay
+            and player in {None, "safari"}
+            and device != "airplay"
+            and prefs.devices.get(self.location(), "mac") != "airplay"
+        ):
+            await stage("Проверяем сохранённый сценарий сайта в Safari…")
+            result = await self.play_site_recipe(item, ep, prefs)
+            if result:
+                return result
         if not ep["links"] and item["kind"] == "series" and prefs.use_last_source:
             memory = item.get("source_memory", {})
             for previous in item["episodes"]:
@@ -2576,6 +2710,8 @@ class Cinema:
             or state.get("seeking")
         ):
             return False
+        if session["mode"] == "learned" and position < target["episode"]["position"]:
+            return False
         if position == 0 and target["episode"]["position"] > 0 and not session.get("allow_zero"):
             await self.trace(
                 "SAVE_PROGRESS",
@@ -2732,7 +2868,7 @@ class Cinema:
                 }
             if action not in {"play", "pause", "seek", "fullscreen"}:
                 raise ValueError("Неизвестное действие плеера.")
-            if self.session["mode"] not in {"html5", "native"}:
+            if self.session["mode"] not in {"html5", "native", "learned"}:
                 raise ToolError("Используй элементы управления встроенного видео или сайта.")
             position = value.get("position", 0)
             if type(position) not in {int, float} or not math.isfinite(position) or position < 0:
@@ -2929,7 +3065,7 @@ class Cinema:
             self.poller.cancel()
         self.poller = None
         if self.session:
-            if flush and self.session["mode"] in {"html5", "native"}:
+            if flush and self.session["mode"] in {"html5", "native", "learned"}:
                 with contextlib.suppress(
                     ToolError, OSError, TimeoutError, ValueError, sqlite3.Error
                 ):
@@ -2947,6 +3083,7 @@ class Cinema:
         async with self.lock:
             await self.stop_tracking()
             self.closed = True
+        await self.site_tabs.close()
         await self.db("close")
         if hasattr(self.tmdb, "close"):
             await self.tmdb.close()

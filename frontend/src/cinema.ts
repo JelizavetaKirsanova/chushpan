@@ -22,14 +22,16 @@ export interface CatalogueTitle {library_id?:string;title:string;kind:'movie'|'s
 export interface SourceResult {checked_url?:string;identity_signals?:string[];viewing_status?:string;browser_openable?:boolean;identity_status?:string;episode_status?:string;player_status?:string;control_status?:string;page_status?:string;video_type?:string;content_verified?:boolean;classification_reason?:string;previously_played?:boolean;configurable?:boolean;scope?:string;region_access?:string;voice?:string;new_source?:boolean;id:string;source_id:string;source_name:string;kind:string;url:string;availability:string;reason:string;embedded:boolean;language:string;access_type:string;access_status?:string;manual_allowed?:boolean;requires_confirmation?:boolean;allowed:boolean;match:number;capabilities:{mode:string}}
 export interface SourceResults {request_id?:string;title_id:string;episode_id:string;results:SourceResult[];selected_id:string|null;message:string}
 interface SourceOptions {title_id:string;episode_id:string;options:{source:CinemaSource;link:CinemaLink|null;available:boolean;reason:string}[];official?:{region:string;url:string;providers:{name:string;type:string}[]};provider_error?:string}
-export interface CinemaTitle {id:string;title:string;kind:'movie'|'series';year:number;poster_url:string;description:string;status:'watching'|'planned'|'watched';watchlist?:number;manual_watched?:number|null;favorite:number;catalogue_key?:string;metadata?:CinemaMetadata;user_rating?:number|null;user_note?:string;completed_at?:string|null;added_at?:string;favorite_added_at?:string|null;source_memory?:{pinned_source_id?:string;last_source_id?:string;page_url?:string};episodes:CinemaEpisode[];current:CinemaEpisode|null}
+interface SiteRecipe {url:string;player:string;voice:string;season?:number;episode?:number}
+interface SiteLesson {request_id:string;saved:boolean;message:string;players?:string[];player?:string;page_opened?:boolean;frame_host?:string;playback_confirmed?:boolean;before?:number;position?:number;duration?:number}
+export interface CinemaTitle {site_recipe?:SiteRecipe|null;id:string;title:string;kind:'movie'|'series';year:number;poster_url:string;description:string;status:'watching'|'planned'|'watched';watchlist?:number;manual_watched?:number|null;favorite:number;catalogue_key?:string;metadata?:CinemaMetadata;user_rating?:number|null;user_note?:string;completed_at?:string|null;added_at?:string;favorite_added_at?:string|null;source_memory?:{pinned_source_id?:string;last_source_id?:string;page_url?:string};episodes:CinemaEpisode[];current:CinemaEpisode|null}
 interface CinemaHistory {id:number;episode_id:string;title:string;title_id:string;season:number;episode:number;position:number;duration:number;created_at:string;event:string;source_name:string;watched:number}
 export interface CinemaPreferences {
   internet_search?:boolean;search_provider?:'tavily'|'brave'|'safari';prefer_free?:boolean;prefer_russian?:boolean;open_in_safari?:boolean;autoplay?:boolean;remember_voice?:boolean;offer_next?:boolean;resume_rewind_seconds?:number;watched_threshold:number;auto_next:boolean;startup:'continue'|'library';poll_seconds:number;devices:Record<string,'mac'|'airplay'>;
   watch_region?:string;save_progress?:boolean;recommendations_show_watched?:boolean;preferred_language?:string;free_only?:boolean;auto_search?:boolean;auto_open?:boolean;ask_paid?:boolean;auto_select_source?:boolean;use_last_source?:boolean;embedded_playback?:boolean;allow_browser?:boolean;personalize?:boolean;
   catalogue_filters?:Partial<import('./cinema_catalogue').CatalogueFilters>;russian_titles?:boolean;hide_animation?:boolean;hide_anime?:boolean;hide_documentary?:boolean;hide_watched?:boolean;hide_watchlist?:boolean;hide_saved?:boolean;default_sort?:string;cards_per_row?:number;resume_position?:boolean;recommend_ratings?:boolean;recommend_favorites?:boolean;recommend_history?:boolean;
 }
-export interface CinemaEvent {browser_diagnostics?:BrowserDiagnosticReport;source_diagnostics?:SourceDiagnosticReport;playback?:PlaybackSnapshot;internet_search?:{configured:boolean;provider:string;providers?:{tavily?:{configured:boolean;storage:string;state:string};brave?:{configured:boolean;storage:string}}};search_connection?:{provider:string;ok:boolean;authenticated?:boolean;code:string;message:string;usage?:number;limit?:number|null};cinema_stage?:{stage:string;status:string;message:string;title_id:string;episode_id:string};cinema_diagnostics?:{id:number;stage:string;status:string;message:string;created_at:string}[];safari_check?:{method:string;extension:string;automation:string;javascript?:string};next_episode?:{title_id:string;episode_id:string;season:number;episode:number;title:string;player?:string|null}|null;watch_progress?:{request_id:string;title_id:string;message:string};watch_confirmation?:{token:string;source_name:string;url:string;message:string};detail_updated?:string;similar?:{request_id:string;items:CatalogueTitle[]};library_export?:unknown;library_import_preview?:{token:string;titles:number;sources:number;events:number;existing:number};library_imported?:{added:number;preserved:number};source_action?:{result_id:string;message:string}|null;recommendation_dismissed?:string;recommendations_reset?:boolean;personal_result?:{request_id:string;profile?:FilmProfile;recommendations?:PersonalRecommendations;error?:string};personal_recommendations?:PersonalRecommendations;source_results?:SourceResults;embedded_player?:EmbeddedPlayerState;embedded_control?:EmbeddedControl;type:'cinema';items:CinemaTitle[];sources:CinemaSource[];history:CinemaHistory[];preferences:CinemaPreferences;location:string;devices:{id:string;name:string;available:boolean;reason:string}[];durable:boolean;session:{title_id:string;episode_id:string;mode:string}|null;message:string;error?:string;saved?:string;navigate?:boolean;matches?:CatalogueTitle[];tmdb?:{configured:boolean};catalogue_detail?:CatalogueTitle;source_options?:SourceOptions;active_tab?:string;season_loaded?:string;loaded_season?:number;catalogue_page?:CataloguePage;catalogue_config?:CatalogueConfig;catalogue_config_error?:string;catalogue_intent?:{query?:string;genre?:string}}
+export interface CinemaEvent {site_lesson?:SiteLesson;browser_diagnostics?:BrowserDiagnosticReport;source_diagnostics?:SourceDiagnosticReport;playback?:PlaybackSnapshot;internet_search?:{configured:boolean;provider:string;providers?:{tavily?:{configured:boolean;storage:string;state:string};brave?:{configured:boolean;storage:string}}};search_connection?:{provider:string;ok:boolean;authenticated?:boolean;code:string;message:string;usage?:number;limit?:number|null};cinema_stage?:{stage:string;status:string;message:string;title_id:string;episode_id:string};cinema_diagnostics?:{id:number;stage:string;status:string;message:string;created_at:string}[];safari_check?:{method:string;extension:string;automation:string;javascript?:string};next_episode?:{title_id:string;episode_id:string;season:number;episode:number;title:string;player?:string|null}|null;watch_progress?:{request_id:string;title_id:string;message:string};watch_confirmation?:{token:string;source_name:string;url:string;message:string};detail_updated?:string;similar?:{request_id:string;items:CatalogueTitle[]};library_export?:unknown;library_import_preview?:{token:string;titles:number;sources:number;events:number;existing:number};library_imported?:{added:number;preserved:number};source_action?:{result_id:string;message:string}|null;recommendation_dismissed?:string;recommendations_reset?:boolean;personal_result?:{request_id:string;profile?:FilmProfile;recommendations?:PersonalRecommendations;error?:string};personal_recommendations?:PersonalRecommendations;source_results?:SourceResults;embedded_player?:EmbeddedPlayerState;embedded_control?:EmbeddedControl;type:'cinema';items:CinemaTitle[];sources:CinemaSource[];history:CinemaHistory[];preferences:CinemaPreferences;location:string;devices:{id:string;name:string;available:boolean;reason:string}[];durable:boolean;session:{title_id:string;episode_id:string;mode:string}|null;message:string;error?:string;saved?:string;navigate?:boolean;matches?:CatalogueTitle[];tmdb?:{configured:boolean};catalogue_detail?:CatalogueTitle;source_options?:SourceOptions;active_tab?:string;season_loaded?:string;loaded_season?:number;catalogue_page?:CataloguePage;catalogue_config?:CatalogueConfig;catalogue_config_error?:string;catalogue_intent?:{query?:string;genre?:string}}
 
 export function playbackTime(value:number):string {
   const total=Math.max(0,Math.floor(Number.isFinite(value)?value:0));
@@ -152,6 +154,20 @@ export class CinemaView {
     if(event.cinema_diagnostics){const log=this.content.querySelector<HTMLElement>('[data-cinema-diagnostics]');if(log)log.replaceChildren(...event.cinema_diagnostics.map(r=>el('p',`${new Date(r.created_at).toLocaleTimeString('ru-RU')} · ${r.stage} · ${r.status}: ${r.message}`)));}
     if(event.search_connection){const result=event.search_connection;const status=this.content.querySelector<HTMLElement>('[data-tavily-connection]');if(status){status.textContent=result.message+(result.usage!==undefined?` Использовано кредитов ключа: ${result.usage}${result.limit!=null?' / '+result.limit:''}.`:'');status.dataset.error=String(!result.ok);}this.feedback.textContent=result.message;this.feedback.dataset.error=String(!result.ok);}
     if(event.safari_check){const check=event.safari_check;const status=this.content.querySelector<HTMLElement>('[data-safari-status]');if(status)status.textContent=`${check.method}: Автоматизация — ${check.automation}; JavaScript — ${check.javascript??'не проверен'}. Safari Web Extension: не установлено.`;}
+    if(event.site_lesson&&this.sourceRequest===event.site_lesson.request_id&&this.dialog?.dataset.teachSite==='true'){
+      const result=event.site_lesson;
+      const status=this.dialog.querySelector<HTMLElement>('[data-site-lesson]')!;
+      status.textContent=[
+        result.message,
+        result.frame_host?`Плеер: ${result.frame_host}`:'',
+        result.playback_confirmed?`Таймер: ${playbackTime(result.before??0)} → ${playbackTime(result.position??0)} из ${playbackTime(result.duration??0)}.`:'',
+      ].filter(Boolean).join(' ');
+      const player=this.dialog.querySelector<HTMLInputElement>('[data-site-player]')!;
+      if(!player.value&&result.player)player.value=result.player;
+      const choices=this.dialog.querySelector<HTMLDataListElement>('datalist')!;
+      choices.replaceChildren(...(result.players??[]).map(name=>{const option=el('option');option.value=name;return option;}));
+      for(const button of this.dialog.querySelectorAll<HTMLButtonElement>('[data-site-check]'))button.disabled=false;
+    }
     if(event.source_options)this.sourceChoices(event.source_options);
     if(event.source_action&&this.dialog){const row=[...this.dialog.querySelectorAll<HTMLElement>('[data-result-id]')].find(n=>n.dataset.resultId===event.source_action!.result_id);if(row){let status=row.querySelector<HTMLElement>('[role=status]');if(!status){status=el('p','','cinema-muted');status.setAttribute('role','status');row.append(status);}status.textContent=event.source_action.message;}}
     if(event.source_results&&(!event.source_results.request_id||event.source_results.request_id===this.sourceRequest))this.sourceResults(event.source_results);
@@ -209,7 +225,7 @@ export class CinemaView {
     if(!visible.length)section.append(this.empty(this.libraryQuery||this.ratingMin||this.ratingMax!==10?'По выбранным фильтрам ничего не найдено.':this.tab==='watching'?'Вечер начинается с хорошей истории. Начни просмотр — и Чушпан запомнит, где ты остановилась.':this.tab==='planned'?'Сохраняй сюда фильмы и сериалы на будущее. Источник можно привязать позже.':this.tab==='favorites'?'Любимые истории всегда рядом. Нажми сердечко на карточке, чтобы сохранить их здесь.':'Здесь появятся завершённые просмотры и твои оценки.','Найти в каталоге',()=>this.changeTab('catalogue')));
     this.content.replaceChildren(section);
     if(this.tab==='watched'){const history=el('details');history.append(el('summary','Журнал просмотра'));const holder=el('div');this.content.append(history);this.history(holder);history.append(holder);}
-    if(this.data.session){const session=this.data.session;const toolbar=el('div','','cinema-player-bar');toolbar.append(el('span',session.mode==='embedded'?(this.data.preferences.save_progress===false?'Встроенный плеер · автосохранение выключено':'Встроенный плеер · прогресс сохраняется'):session.mode==='html5'?'Активный HTML5-плеер':'Ручной режим · сохрани прогресс в карточке'),...['Поставь фильм на паузу','Продолжай','Включи следующую серию','Какая это серия?'].map(command=>this.button(command,()=>this.request({op:'control',command}))));this.content.append(toolbar);}
+    if(this.data.session){const session=this.data.session;const toolbar=el('div','','cinema-player-bar');toolbar.append(el('span',session.mode==='embedded'?(this.data.preferences.save_progress===false?'Встроенный плеер · автосохранение выключено':'Встроенный плеер · прогресс сохраняется'):(session.mode==='html5'||session.mode==='learned')?'Активный плеер Safari':'Ручной режим · сохрани прогресс в карточке'),...['Поставь фильм на паузу','Продолжай','Включи следующую серию','Какая это серия?'].map(command=>this.button(command,()=>this.request({op:'control',command}))));this.content.append(toolbar);}
   }
   private syncDetail():void {
     const item=this.data?.items.find(i=>(!!this.dialog?.dataset.titleId&&i.id===this.dialog.dataset.titleId)||(!!this.dialog?.dataset.catalogueKey&&i.catalogue_key===this.dialog.dataset.catalogueKey));
@@ -248,7 +264,13 @@ export class CinemaView {
     const tabs=el('div','','cinema-detail-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Подробности фильма');
     const watch=el('section','','cinema-detail-pane');watch.dataset.detailPane='watch';const sourceSlot=el('div','','cinema-watch-sources');sourceSlot.append(el('p','Нажми «Найти и смотреть», чтобы проверить подключённые источники.','cinema-muted'));watch.append(sourceSlot);
     for(const label of [...legacy.querySelectorAll('label')])if(['Сезон','Серия'].includes(label.querySelector('select')?.getAttribute('aria-label')??''))watch.insertBefore(label,sourceSlot);
-    if('id' in item)watch.append(legacy);
+    if('id' in item){
+      watch.append(this.button(item.site_recipe?'Изменить сохранённый сценарий сайта':'Научить Чушпана смотреть на этом сайте',()=>{
+        const current=this.libraryItem(item)??item;
+        const ep=current.episodes.find(e=>e.id===dialog.dataset.episodeId)??current.current;
+        if(ep)this.teachSite(current,ep);
+      }),legacy);
+    }
     const info=el('section','','cinema-detail-pane cinema-rich-info');info.dataset.detailPane='info';
     const similar=el('section','','cinema-detail-pane cinema-similar-grid');similar.dataset.detailPane='similar';
     for(const [key,label]of [['watch','Где смотреть'],['info','О фильме'],['similar','Похожие']]){const b=this.button(label,()=>{this.detailTab=key;select();});b.setAttribute('role','tab');b.dataset.detailTab=key;tabs.append(b);}
@@ -418,7 +440,34 @@ export class CinemaView {
     dialog.addEventListener('close',()=>{dialog.remove();if(this.dialog===dialog)this.dialog=null;if(focused?.isConnected)focused.focus({preventScroll:true});if(scroll)scroll.scrollTop=position;});
     this.root.append(dialog);this.dialog=dialog;dialog.showModal();return dialog;
   }
-  private closeDialog(cancelSearch=true):void {if(cancelSearch&&/^(watch|sources)-/.test(this.sourceRequest))this.request({op:'watch_cancel',request_id:this.sourceRequest});this.pendingDetailKey='';if(this.dialog?.dataset.rich==='true'||this.dialog?.dataset.rating==='true')this.request({op:'clear_focus'});this.sourceRequest='';this.dialog?.close();this.dialog?.remove();this.dialog=null;}
+  private closeDialog(cancelSearch=true):void {if(cancelSearch&&/^(watch|sources|site)-/.test(this.sourceRequest))this.request({op:'watch_cancel',request_id:this.sourceRequest});this.pendingDetailKey='';if(this.dialog?.dataset.rich==='true'||this.dialog?.dataset.rating==='true')this.request({op:'clear_focus'});this.sourceRequest='';this.dialog?.close();this.dialog?.remove();this.dialog=null;}
+  private teachSite(item:CinemaTitle,ep:CinemaEpisode):void {
+    const dialog=this.showDialog('Научить Чушпана смотреть на этом сайте');
+    dialog.dataset.teachSite='true';
+    const saved=item.site_recipe;
+    const form=el('form','','cinema-detail-choices');
+    const url=this.input(saved?.url??'','url');url.required=true;url.maxLength=2048;
+    const player=this.input(saved?.player??'');player.maxLength=80;player.dataset.sitePlayer='';
+    const choices=el('datalist');choices.id='cinema-site-players';player.setAttribute('list',choices.id);
+    const voice=this.input(saved?.voice??'');voice.maxLength=100;
+    const status=el('p',saved?'Можно изменить адрес, плеер или озвучку и проверить сценарий заново.':'Укажи страницу, где уже смотрела это видео.','cinema-muted');
+    status.dataset.siteLesson='';status.setAttribute('role','status');
+    const check=(verify:boolean)=>{
+      if(!form.reportValidity())return;
+      this.sourceRequest=`site-${++this.sourceSequence}`;
+      status.textContent=verify?'Проверяю выбранный эпизод и движение таймера в Safari…':'Изучаю элементы страницы в Safari…';
+      for(const button of form.querySelectorAll<HTMLButtonElement>('[data-site-check]'))button.disabled=true;
+      this.request({op:'teach_site',title_id:item.id,episode_id:ep.id,request_id:this.sourceRequest,
+        recipe:{url:url.value,player:player.value,voice:voice.value},verify});
+    };
+    const inspect=this.button('Изучить страницу',()=>check(false));inspect.dataset.siteCheck='';
+    const verify=this.button('Проверить и сохранить',()=>{},'primary');verify.type='submit';verify.dataset.siteCheck='';
+    form.append(this.field('Страница видео в Safari',url),this.field('Вкладка плеера',player),choices,
+      this.field('Озвучка · как на сайте',voice),inspect,verify);
+    form.onsubmit=event=>{event.preventDefault();check(true);};
+    dialog.append(el('p',`${item.title} · ${episodeCaption(item,ep)}`),status,form,
+      this.button('К карточке',()=>{this.closeDialog();this.detail(item.id,ep.id);}));
+  }
   private detail(id:string,episodeId?:string,linkId?:string):void {
     const item=this.data?.items.find(v=>v.id===id);if(!item)return;
     const ep=item.episodes.find(v=>v.id===episodeId)??item.current;if(!ep)return;

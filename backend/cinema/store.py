@@ -120,6 +120,11 @@ MIGRATIONS = [
     """
     ALTER TABLE cinema_source_health ADD COLUMN failures INTEGER NOT NULL DEFAULT 0;
     """,
+    """
+    CREATE TABLE cinema_site_recipes (
+      title_id TEXT PRIMARY KEY REFERENCES cinema_titles(id) ON DELETE CASCADE,
+      data TEXT NOT NULL);
+    """,
 ]
 
 
@@ -777,7 +782,56 @@ class CinemaStore:
             (ep for ep in episodes if ep["id"] == item["last_episode_id"]),
             next((ep for ep in episodes if not ep["watched"]), episodes[0] if episodes else None),
         )
+        recipe = self.db.execute(
+            "SELECT data FROM cinema_site_recipes WHERE title_id=?", (identifier,)
+        ).fetchone()
+        item["site_recipe"] = json.loads(recipe[0]) if recipe else None
         return item
+
+    def save_site_recipe(self, item, episode, recipe, frame_host):
+        with self.transaction():
+            base = origin(recipe["url"])
+            source = next(
+                (row for row in self.sources() if row["base_url"].rstrip("/") == base), None
+            )
+            if source is None:
+                source = self.save_source(
+                    {"name": base.removeprefix("https://"), "base_url": base, "adapter": "html5"}
+                )
+            if not source["enabled"]:
+                raise ValueError("Источник отключён в настройках медиатеки.")
+            saved = self.add(
+                {
+                    "title_id": item["id"],
+                    "title": item["title"],
+                    "kind": item["kind"],
+                    "year": item["year"],
+                    "season": episode["season"],
+                    "episode": episode["episode"],
+                    "source_id": source["id"],
+                    **{key: recipe[key] for key in ("url", "voice")},
+                }
+            )
+            ep = next(e for e in saved["episodes"] if e["id"] == episode["id"])
+            link = next(
+                row
+                for row in ep["links"]
+                if row["source_id"] == source["id"] and row["voice"] == recipe["voice"]
+            )
+            data = {
+                **recipe,
+                "frame_host": frame_host,
+                "source_id": source["id"],
+                "season": episode["season"],
+                "episode": episode["episode"],
+                "checked_at": now(),
+            }
+            self.db.execute(
+                "INSERT INTO cinema_site_recipes VALUES (?,?) "
+                "ON CONFLICT(title_id) DO UPDATE SET data=excluded.data",
+                (item["id"], json.dumps(data, ensure_ascii=False)),
+            )
+            return link["id"]
 
     def library(self, query=""):
         rows = self.db.execute("SELECT id FROM cinema_titles ORDER BY updated_at DESC").fetchall()
