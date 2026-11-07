@@ -26,13 +26,13 @@ class Safari:
 
     async def _run(self, script):
         marker = re.search(r"chushpan_session=([a-f0-9]{32})", script)[1]
-        if "make new document" in script:
+        if "make new tab" in script:
             assert marker not in self.tabs
             self.tabs[marker] = "owned"
             self.open_count += 1
             self.opened.set()
             await self.complete_open.wait()
-            return "sent"
+            return "73"
         if marker not in self.tabs:
             return "unowned"
         if "close ownedTab" in script:

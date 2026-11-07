@@ -35,6 +35,7 @@ RESULT_LINKS = """(() => {
 class SearchSession:
     marker: str
     window: str = ""
+    created_window: bool = False
 
     @property
     def tag(self):
@@ -74,10 +75,12 @@ class BrowserSearch:
         finally:
             requests_allowed.reset(token)
 
-    async def _owned(self, session, action):
+    async def _owned(self, session, action, *, any_window=False):
         # Safari's tab scripting class has no stable ID. Match both the owning
         # window (once known) and our unpredictable marker, never the active tab.
-        window = f"{{window id {session.window}}}" if session.window else "windows"
+        window = (
+            f"{{window id {session.window}}}" if session.window and not any_window else "windows"
+        )
         return await self._run(f"""
 set ownedTabs to {{}}
 set ownerID to ""
@@ -102,9 +105,22 @@ if currentAddress does not contain "{session.tag}" then return "unowned"
 """)
 
     async def _open(self, session, url):
-        await self._run(
-            f'make new document with properties {{URL:{json.dumps(url)}}}\nreturn "sent"'
-        )
+        address = json.dumps(url)
+        owner = await self._run(f"""
+if (count of windows) is 0 then return "no_window"
+set ownerID to id of window 1
+tell window id ownerID
+    make new tab at end of tabs with properties {{URL:{address}}}
+end tell
+return ownerID as text
+""")
+        if owner == "no_window":
+            session.created_window = True
+            await self._run(f'make new document with properties {{URL:{address}}}\nreturn "sent"')
+        elif owner.isdigit():
+            session.window = owner
+        else:
+            raise ToolError("Safari не подтвердил создание временной вкладки поиска.")
         for _ in range(15):
             owner = await self._owned(session, "return ownerID")
             if owner.isdigit():
@@ -114,18 +130,29 @@ if currentAddress does not contain "{session.tag}" then return "unowned"
         raise ToolError("Safari не подтвердил метку временной вкладки поиска.")
 
     async def _cleanup(self, session):
+        close_tab = 'close ownedTab\nreturn "closed"'
+        action = close_tab
+        if session.created_window and session.window:
+            action = """
+if (count of tabs of window id (ownerID as integer)) is 1 then
+    close window id (ownerID as integer)
+else
+    close ownedTab
+end if
+return "closed"
+"""
         try:
-            result = await self._owned(session, 'close ownedTab\nreturn "closed"')
+            result = await self._owned(session, action)
         except ToolError:
-            # The window may have closed already. Scan for this exact operation
-            # again on shutdown if Apple Events were temporarily unavailable.
-            if getattr(session, "window", ""):
-                try:
-                    session.window = ""
-                    result = await self._owned(session, 'close ownedTab\nreturn "closed"')
-                except ToolError:
-                    return
-            else:
+            if not session.window:
+                return
+            result = "unowned"
+        if result == "unowned" and session.window:
+            # Safari can move the marked tab into another window. Only close
+            # the tab in that case, even if it is now alone.
+            try:
+                result = await self._owned(session, close_tab, any_window=True)
+            except ToolError:
                 return
         if result in {"closed", "unowned"}:
             self.sessions.pop(session.marker, None)
