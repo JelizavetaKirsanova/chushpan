@@ -172,6 +172,48 @@ class CapabilityRegistry:
                         },
                     )
 
+                if lights:
+                    extra = {
+                        "light_stop": ("Остановить эффект / переход", []),
+                        "light_preset": ("Применить пресет", ["preset_id"]),
+                        "light_timer": ("Запустить таймер", ["delay_s", "power"]),
+                    }
+                    if all(f.get("color") for f in features):
+                        extra["light_fade"] = ("Плавно изменить цвет", ["color", "duration_s"])
+                        extra["light_effect"] = (
+                            "Программный эффект · Mac",
+                            ["effect", "duration_s", "period_s", "colors"],
+                        )
+                    if all(f.get("brightness") for f in features):
+                        extra["light_dim"] = (
+                            "Плавно изменить яркость",
+                            ["brightness", "duration_s"],
+                        )
+                    for action, (title, fields) in extra.items():
+                        parameters = {key: COMMAND_FIELDS[key] for key in fields}
+                        if action == "light_preset" and hasattr(devices, "lighting"):
+                            parameters = {
+                                "preset_id": {
+                                    **COMMAND_FIELDS["preset_id"],
+                                    "enum": [p.id for p in devices.lighting.list("preset")],
+                                }
+                            }
+                        self.items[f"device.{target.id}.{action}"] = Capability(
+                            f"device.{target.id}.{action}",
+                            f"{target.name} · {title}",
+                            f"device:{target.id}",
+                            "device_command",
+                            parameters,
+                            fields,
+                            [],
+                            "Программные переходы выполняет работающий Mac; "
+                            "состояние BLE не считывается.",
+                            {
+                                "target": target.id,
+                                "action": "light_fade" if action == "light_dim" else action,
+                            },
+                        )
+
     def get(self, identifier):
         if identifier not in self.items or self.items[identifier].tool not in self.tools:
             raise UnsupportedCapability(f"Действие {identifier!r} отключено или не поддерживается.")
@@ -305,6 +347,14 @@ class CapabilityRegistry:
         ):
             return "confirmed"
         if result.get("physical_confirmed") is True or result.get("device_state_confirmed") is True:
+            return "confirmed"
+        if tool == "device_command" and result.get("scheduled") is True:
+            return "confirmed"  # Confirms durable task creation, not a future physical action.
+        if (
+            tool == "device_command"
+            and args.get("action") == "light_stop"
+            and result.get("result_status") == "success"
+        ):
             return "confirmed"
         if (
             tool == "music_command"

@@ -27,6 +27,11 @@ COMMAND_FIELDS = {
             "airplay_video",
             "inspect",
             "save_color",
+            "light_preset",
+            "light_fade",
+            "light_effect",
+            "light_stop",
+            "light_timer",
         ],
     },
     "power": {"type": "boolean"},
@@ -36,6 +41,19 @@ COMMAND_FIELDS = {
     "mute": {"type": "boolean"},
     "playback": {"type": "string", "enum": ["pause", "resume", "stop", "next", "previous"]},
     "name": {"type": "string", "minLength": 1, "maxLength": 80},
+    "preset_id": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+    "duration_s": {"type": "integer", "minimum": 2, "maximum": 86400},
+    "delay_s": {"type": "integer", "minimum": 2, "maximum": 31536000},
+    "period_s": {"type": "integer", "minimum": 8, "maximum": 3600},
+    "effect": {
+        "type": "string",
+        "enum": ["cycle", "pulse", "breathing", "rainbow", "twinkle", "transition"],
+    },
+    "colors": {
+        "type": "array",
+        "items": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"},
+        "maxItems": 16,
+    },
 }
 
 
@@ -97,6 +115,17 @@ class DeviceCenter:
             "metrics": self.metrics,
             "user_colors": [c.model_dump() for c in self.colors.list()],
         }
+
+    def device_names(self, target):
+        names = [target.name, *getattr(target, "aliases", [])]
+        model = getattr(target, "ble_name", None)
+        if getattr(target, "kind", None) == "led_strip" and target.endpoint == str(
+            self.s.led.address
+        ):
+            model = model or self.s.led.name
+        if model:
+            names.append(model)
+        return names
 
     def remember_color_target(self, device):
         """An explicit HUD preview chooses context, but authorizes no hardware action."""
@@ -231,6 +260,46 @@ class DeviceCenter:
         if context is None or not context.device.authenticated:
             raise ToolError("Нужен авторизованный локальный запрос.")
         self.require_adapter()
+        if action.startswith("light_"):
+            from datetime import timedelta
+
+            from backend.devices.lighting import now
+            from backend.devices.lighting_models import LightAction
+
+            targets = self.lighting.targets([target])
+            kind = {
+                "light_preset": "preset",
+                "light_fade": "fade",
+                "light_effect": "effect",
+                "light_stop": "stop",
+                "light_timer": "set",
+            }.get(action)
+            if kind is None:
+                raise ToolError("Неизвестное действие освещения.")
+            delay = parameters.pop("delay_s", None)
+            item = LightAction(kind=kind, **parameters)
+            if action == "light_timer":
+                if type(delay) is not int or not 2 <= delay <= 31536000:
+                    raise ToolError("Укажи задержку таймера в секундах.")
+                job = self.lighting.save(
+                    "job",
+                    {
+                        "name": "Голосовой таймер / сценарий",
+                        "targets": targets,
+                        "action": item.model_dump(),
+                        "next_at": (now() + timedelta(seconds=delay)).isoformat(),
+                    },
+                )
+                result = {
+                    "result_status": "success",
+                    "message": "Таймер сохранён. Его выполняет работающий Mac.",
+                    "job_id": job.id,
+                    "scheduled": True,
+                }
+            else:
+                result = await self.lighting.apply(targets, item)
+            self.publish()
+            return result
         groups = {g.id: g for g in self.store.collections("group")}
         identifiers = groups[target].device_ids if target in groups else [target]
         if action == "save_color" and target in groups:
@@ -383,6 +452,12 @@ class DeviceCenter:
         from backend.security import command_text
 
         value = command_text(text).replace("ё", "е").rstrip(".!? ")
+        if hasattr(self, "lighting"):
+            from backend.devices.lighting_voice import voice_plan
+
+            extended = voice_plan(self, value)
+            if extended is not None:
+                return extended
         save_name = None
         if match := re.fullmatch(r"сохрани этот цвет как (.{1,80})", value):
             try:
@@ -459,10 +534,7 @@ class DeviceCenter:
                 return {"commands": [{"target": macs[0].id, "action": "audio_output"}]}
         matched = []
         for target in [*groups, *devices]:
-            names = [
-                n.casefold().replace("ё", "е")
-                for n in [target.name, *getattr(target, "aliases", [])]
-            ]
+            names = [n.casefold().replace("ё", "е") for n in self.device_names(target)]
             # Bounded inflection for names such as «Новая лента» → «новую ленту».
             for name in names[:]:
                 if name.endswith("лента"):
@@ -475,7 +547,7 @@ class DeviceCenter:
                 if re.search(r"(?<!\w)" + re.escape(normalized) + r"(?!\w)", value):
                     matched.append((target, normalized))
                     break
-        all_lights = r"\b(?:весь свет|все лампы|всю подсветку|все ленты)\b"
+        all_lights = r"\b(?:весь свет|все лампы|всю подсветку|все ленты|обе ленты)\b"
         if not matched and re.search(all_lights, value):
             matches = [
                 d for d in devices if d.kind in {"led_strip", "wled"} and d.place_id in local_places
@@ -556,6 +628,21 @@ class DeviceCenter:
     async def voice_execute(self, plan):
         if plan.get("error"):
             return plan["error"]
+        if "lighting_schedule" in plan:
+            context = request_context.get()
+            if (
+                not context
+                or not context.device.authenticated
+                or context.device.target_agent_id != "local-mac"
+                or "mac.system" not in context.device.capabilities
+            ):
+                return "Расписание света доступно авторизованному приложению на Mac."
+            try:
+                job = self.lighting.save("job", plan["lighting_schedule"])
+                self.publish()
+                return f"Расписание «{job.name}» сохранено. Выполняется работающим Mac."
+            except (ValueError, ToolError) as exc:
+                return str(exc)
         token = voice_addressed.set(True)
         try:
             messages = []

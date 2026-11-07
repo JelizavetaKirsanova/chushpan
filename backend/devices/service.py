@@ -81,6 +81,7 @@ class Devices(DeviceCenter):
         self.completed = OrderedDict()
         self.scans = {}
         self.discovery_lock = asyncio.Lock()
+        self.ble_queue = asyncio.Lock()
         self.scan_reports = OrderedDict()
         self.probes = {}
         self.strips = {}
@@ -90,6 +91,9 @@ class Devices(DeviceCenter):
         self.seed()
         self.ensure_led_tool()
         self.init_center()
+        from backend.devices.lighting import Lighting
+
+        self.lighting = Lighting(self)
         if self.primary:
             primary = next(
                 (
@@ -272,9 +276,10 @@ class Devices(DeviceCenter):
         if device.kind != "led_strip" or not self.tools.enabled("led_control"):
             raise ToolError("Управление выбранной LED-лентой отключено или недоступно.")
         self.check_location(device)
-        result = await self.strip(device).execute(
-            action="color", rgb=hex_rgb(color), experiment=experiment
-        )
+        async with asyncio.timeout(45), self.ble_queue:
+            result = await self.strip(device).execute(
+                action="color", rgb=hex_rgb(color), experiment=experiment
+            )
         return {**result, "device_id": device.id}
 
     def led_state(self, identifier, state):
@@ -410,6 +415,14 @@ class Devices(DeviceCenter):
                 "probe": enabled("led_control") and driver is not None,
                 "warm_white": "rgb_approximation",
                 "physical_feedback": False,
+                "effects": False,
+                "speed": False,
+                "white_channel": False,
+                "read_state": False,
+                "autonomous_timers": False,
+                "music_sync": False,
+                "software_color_effects": enabled("led_control") and "rgb" in confirmed,
+                "software_brightness_effects": enabled("led_control") and "brightness" in confirmed,
             }
         if device.kind == "mac":
             return {
@@ -490,6 +503,7 @@ class Devices(DeviceCenter):
             + [{"id": p.id, "name": p.name} for p in self.locations.list()],
             "kinds": [{"id": k, "name": v[0], "protocol": v[1]} for k, v in KINDS.items()],
             **self.center_snapshot(),
+            "lighting": self.lighting.snapshot(),
             **extra,
         }
 
@@ -508,6 +522,7 @@ class Devices(DeviceCenter):
     def bind(self, bus, conv):
         self.bus, self.conv = bus, conv
         bus.handle("devices", self.request)
+        self.lighting.bind()
         self.publish()
 
     def request(self, value):
@@ -735,6 +750,10 @@ class Devices(DeviceCenter):
         try:
             with request_scope(RequestContext(self.conv.device, text)):
                 async with asyncio.timeout(45):
+                    parsed = parse_led(args.get("command", "")) if name == "led_control" else None
+                    if name == "led_control" and (not parsed or parsed["action"] != "color"):
+                        async with self.ble_queue:
+                            return json.loads(await self.tools.call(name, args))
                     return json.loads(await self.tools.call(name, args))
         finally:
             voice_addressed.reset(address)
@@ -841,6 +860,40 @@ class Devices(DeviceCenter):
                     "Устройства доступны только авторизованному локальному приложению."
                 )
             op = value.get("op")
+            if op == "lighting":
+                request_key = value.get("request_id")
+                if not isinstance(request_key, str) or not re.fullmatch(
+                    r"[a-zA-Z0-9-]{8,80}", request_key
+                ):
+                    raise ValueError("Для освещения нужен уникальный идентификатор запроса.")
+                memo = (self.conv.device.session_id, request_key)
+                identity = json.dumps(value, sort_keys=True)
+                if memo in self.completed:
+                    if self.completed[memo][0] != identity:
+                        raise ValueError("Идентификатор относится к другому запросу.")
+                    self.publish(result=self.completed[memo][1], request_id=request_id)
+                    return
+                self.completed[memo] = (
+                    identity,
+                    {"message": "Запрос уже принят; повтора нет.", "result_status": "unverified"},
+                )
+                while len(self.completed) > 128:
+                    self.completed.popitem(last=False)
+                try:
+                    result = await self.lighting.handle(value)
+                except Exception:
+                    self.completed[memo] = (
+                        identity,
+                        {
+                            "message": "Запрос завершился ошибкой; "
+                            "для исправленного запроса нужен новый ID.",
+                            "result_status": "failed",
+                        },
+                    )
+                    raise
+                self.completed[memo] = (identity, result)
+                self.publish(result=result, request_id=request_id)
+                return
             if op in {"color_save", "color_delete", "color_preview"}:
                 self.require_adapter()
                 if not self.tools.enabled("device_command"):
@@ -1326,6 +1379,7 @@ class Devices(DeviceCenter):
                 self.publish()
 
     async def close(self):
+        await self.lighting.close()
         for task in list(self.jobs):
             task.cancel()
         if self.jobs:

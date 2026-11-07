@@ -18,6 +18,7 @@
       <button data-view="home" aria-current="page"><span data-icon="chat"></span><span>Чат</span><kbd>⌘1</kbd></button>
       <button data-view="automations"><span data-icon="sparkles"></span><span>Сценарии</span></button>
       <button data-view="devices"><span data-icon="lamp"></span><span>Устройства</span></button>
+      <button data-view="lighting"><span data-icon="lamp"></span><span>Освещение</span></button>
       <button data-view="cinema"><span data-icon="film"></span><span>Кино</span></button>
       <button data-view="memory"><span data-icon="note"></span><span>Память</span></button>
       <button data-view="mac-control"><span data-icon="monitor"></span><span>Управление Mac</span></button>
@@ -168,6 +169,7 @@
       <h2>Заметки</h2><div id="dashboard-notes" class="notes-grid"></div><h2>Сохранённая память</h2><p class="muted">Правки и удаление проходят существующую проверку подтверждения Чушпана.</p><div id="dashboard-memories" class="notes-grid"></div></section>
       <section class="workspace-page automations-page" aria-label="Мои команды"><div class="page-heading"><small>ПРИВЫЧНЫЕ РИТУАЛЫ</small><h1>Мои команды</h1><p>Существующие сценарии Чушпана. Запуск требует явного действия и предусмотренных подтверждений.</p></div><div class="integration-grid"><section class="dashboard-card ritual-card"><span class="ritual-icon" data-icon="moon"></span><h2>Я спать</h2><p>Существующий ночной сценарий: видео, BetterDisplay, громкость, подсветка и Shortcut <b>Youtube sleep</b>.</p><p id="night-availability" class="muted">Проверяю доступность сценария…</p><button data-command="Чушпан, я спать" id="run-night">Запустить сценарий</button></section></div></section>
       <section class="workspace-page devices-page" aria-label="Устройства"><div id="devices-root"></div></section>
+      <section class="workspace-page lighting-page" aria-label="Освещение"><div id="lighting-root"></div></section>
       <section class="workspace-page cinema-page" aria-label="Фильмы и сериалы"><div id="cinema-root"></div></section>
       <section class="boot" id="boot" aria-live="polite" hidden>
         <div class="boot-box">

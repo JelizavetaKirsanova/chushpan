@@ -1,0 +1,210 @@
+.hud[data-view="lighting"] .lighting-page {
+  display: block;
+}
+.lighting-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  gap: 18px;
+  margin: 20px 0;
+}
+.lighting-card,
+.lighting-panel {
+  border: 1px solid #493653;
+  border-radius: 18px;
+  background: #26202e;
+  padding: 22px;
+  min-width: 0;
+}
+.lighting-panel {
+  margin: 20px 0;
+}
+.lighting-card-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.lighting-card h2,
+.lighting-panel h2 {
+  font-size: 18px;
+  margin: 0 0 12px;
+}
+.lighting-card-title h2 {
+  margin: 0;
+}
+.lighting-card p {
+  font-size: 12px;
+  line-height: 1.6;
+}
+.lighting-toolbar,
+.lighting-quick,
+.lighting-row {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.lighting-toolbar {
+  margin: 12px 0;
+}
+.lighting-row {
+  padding: 13px 0;
+  border-bottom: 1px solid #423149;
+}
+.lighting-row > span {
+  color: #b9a9c5;
+  font-size: 12px;
+  flex: 1 1 180px;
+}
+.lighting-card button,
+.lighting-panel button,
+.lighting-toolbar button {
+  background: #362b40;
+  color: #eadff2;
+  border: 1px solid #594366;
+  border-radius: 9px;
+  padding: 9px 12px;
+  cursor: pointer;
+  margin: 3px 2px;
+}
+.lighting-card button:disabled,
+.lighting-panel button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.lighting-quick button {
+  border-left: 5px solid var(--swatch);
+}
+.lighting-muted,
+.lighting-status,
+.lighting-notice {
+  color: #b7a7c2;
+}
+.lighting-feedback {
+  min-height: 22px;
+  color: #d0b6e2;
+  white-space: pre-wrap;
+}
+.lighting-feedback.error,
+.lighting-page .error,
+.lighting-dialog .error {
+  color: #ffaea9;
+}
+.lighting-notice {
+  font-size: 12px;
+  line-height: 1.7;
+  max-width: 950px;
+}
+.lighting-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.lighting-swatch {
+  width: 28px;
+  height: 28px;
+  border: 1px solid #8e789b;
+  border-radius: 50%;
+}
+.lighting-card details {
+  margin-top: 18px;
+}
+.lighting-card summary {
+  color: #d8c6e7;
+  cursor: pointer;
+}
+.lighting-capabilities {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  font-size: 11px;
+  gap: 7px;
+}
+.lighting-capabilities dd {
+  margin: 0;
+  color: #af9dbc;
+}
+.lighting-card input[type="range"] {
+  width: 125px;
+  accent-color: #b494c8;
+}
+.lighting-dialog {
+  max-height: 88vh;
+  overflow: auto;
+  max-width: 650px;
+  width: calc(100% - 32px);
+  border: 1px solid #755583;
+  border-radius: 18px;
+  background: #26202e;
+  color: #eee0f5;
+  padding: 25px;
+}
+.lighting-dialog::backdrop {
+  background: #100c16c9;
+}
+.lighting-dialog form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.lighting-dialog label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  font-size: 13px;
+  margin: 10px 0;
+}
+.lighting-dialog input,
+.lighting-dialog select,
+.lighting-panel input[type="text"] {
+  background: #1c1722;
+  color: #eee0f5;
+  border: 1px solid #654d73;
+  border-radius: 7px;
+  padding: 9px;
+  max-width: 300px;
+}
+.lighting-dialog input[type="checkbox"] {
+  accent-color: #b494c8;
+}
+.lighting-dialog fieldset {
+  border: 1px solid #594366;
+  border-radius: 10px;
+}
+.lighting-dialog button {
+  background: #ad87c3;
+  color: #211627;
+  border: 0;
+  border-radius: 9px;
+  padding: 12px;
+  cursor: pointer;
+}
+.lighting-dialog p {
+  font-size: 12px;
+  color: #beaccb;
+  line-height: 1.6;
+}
+.lighting-dialog [hidden] {
+  display: none !important;
+}
+@media (max-width: 700px) {
+  .lighting-dialog label {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .lighting-dialog input,
+  .lighting-dialog select {
+    max-width: 100%;
+    width: 100%;
+  }
+  .lighting-dialog input[type="checkbox"] {
+    width: auto;
+  }
+  .lighting-card,
+  .lighting-panel {
+    padding: 16px;
+  }
+  .lighting-grid {
+    grid-template-columns: 1fr;
+  }
+}

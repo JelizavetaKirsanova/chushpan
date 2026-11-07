@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -103,9 +104,9 @@ def color_rgb(name: str) -> tuple[int, int, int] | None:
         base = color.replace("ё", "е")
         forms = {base}
         if base.endswith("ый"):
-            forms |= {base[:-2] + ending for ending in ("ая", "ую", "ой", "ым")}
+            forms |= {base[:-2] + ending for ending in ("ая", "ую", "ой", "ым", "ыми", "ые", "ых")}
         if base == "синий":
-            forms |= {"синяя", "синюю", "синей", "синим"}
+            forms |= {"синяя", "синюю", "синей", "синим", "синими", "синие", "синих"}
         if base == "теплый белый":
             forms |= {"теплой белой", "теплым белым", "теплую белую"}
         if name in forms:
@@ -417,6 +418,9 @@ class LEDStrip:
         self.before_write = None
         self.state_listener = None
         self.connection_closed = False
+        self.queued = 0
+        self.latest = {}
+        self.last_write_started = 0.0
 
     @property
     def identity(self) -> dict[str, str]:
@@ -462,14 +466,14 @@ class LEDStrip:
             state.driver_fingerprint = fingerprint
         else:
             state.driver_fingerprint = fingerprint
-            # Earlier releases stored one explicitly observed RGB value but required
-            # three primary colours to enable the same serializer. Never promote
-            # the legacy default-red seed or an unobserved write.
-            last = state.last_write or {}
-            requested = last.get("requested", {})
-            if requested.get("action") == "color" and last.get("physical_confirmed") is True:
-                if _key(requested) in state.confirmed:
-                    state.confirmed.add("rgb")
+        # Also migrate pre-fingerprint legacy observations on their first load.
+        # An incompatible driver above clears the observation before this check.
+        # The default red seed and an unobserved write never grant general RGB.
+        last = state.last_write or {}
+        requested = last.get("requested", {})
+        if requested.get("action") == "color" and last.get("physical_confirmed") is True:
+            if _key(requested) in state.confirmed:
+                state.confirmed.add("rgb")
         return state
 
     def _save(self, state: LEDState) -> None:
@@ -578,6 +582,8 @@ class LEDStrip:
             return False
 
     async def _write(self, data: bytes, state: LEDState, args: dict) -> None:
+        # Also covers sequence commands and probes. Reconnect retries never replay a write.
+        await asyncio.sleep(max(0, 0.25 - (time.monotonic() - self.last_write_started)))
         if self.before_write:
             self.before_write()
         # Reconnect only before write. After write starts, delivery is ambiguous: no replay.
@@ -625,6 +631,8 @@ class LEDStrip:
             state.gatt_fingerprint = fingerprint
             # Some controllers drop writes made immediately after service discovery.
             await asyncio.sleep(self.cfg.settle_s)
+            if self.before_write:
+                self.before_write()
             state.last_write = {"status": "unknown", "requested": args}
             state.pending_probe = None
             if args["action"] == "brightness":
@@ -639,6 +647,7 @@ class LEDStrip:
                 driver=profile.id,
             )
             write_started = True
+            self.last_write_started = time.monotonic()
             with measure("ble_write", device="led_strip"):
                 async with asyncio.timeout(self.cfg.write_timeout_s):
                     await client.write_gatt_char(char, data, response=response)
@@ -684,10 +693,24 @@ class LEDStrip:
         diagnostic("request", action="set_color" if action == "color" else action)
         if not self.cfg.enabled:
             raise DeviceUnavailable("LED-лента отключена в настройках.")
-        async with self._exclusive():
-            return await self._execute_locked(
-                self._load(), action=action, rgb=rgb, level=level, experiment=experiment
-            )
+        if self.queued >= 32:
+            raise ToolError("Очередь LED заполнена. Дождись завершения команд.")
+        generation = None
+        if action in {"color", "brightness"} and not experiment:
+            generation = self.latest[action] = self.latest.get(action, 0) + 1
+        deadline = time.monotonic() + 30
+        self.queued += 1
+        try:
+            async with self._exclusive():
+                if time.monotonic() > deadline or (
+                    generation is not None and generation != self.latest[action]
+                ):
+                    raise ToolError("Устаревшая команда LED отменена до отправки.")
+                return await self._execute_locked(
+                    self._load(), action=action, rgb=rgb, level=level, experiment=experiment
+                )
+        finally:
+            self.queued -= 1
 
     async def _execute_locked(self, state, *, action, rgb=None, level=None, experiment=False):
         if action == "status":

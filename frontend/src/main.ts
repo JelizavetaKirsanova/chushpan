@@ -2,6 +2,8 @@ import {microphonePresentation, requestMicrophone, dialogueCaption, type Microph
 import {VoiceSettingsPanel} from './voice_settings';
 import {AutomationsView} from './automations';
 import {DevicesView} from './devices';
+import {LightingView} from './lighting';
+import './lighting.css';
 import {CinemaView} from './cinema';
 import "./style.css";
 import "./workspace.css";
@@ -64,6 +66,7 @@ const core = new Character(byId('character'), tap);
 const dashboard = new DashboardView(value => link.dashboard(value), value => link.chat(value), view => workspace.navigate(view), value => link.historySearch(value), core, value => panels.weather(value));
 const automations = new AutomationsView(value => link.automations(value), view => workspace.navigate(view), () => link.send('wake'), text => link.chat({text}));
 const devices = new DevicesView(value=>link.devices(value),text=>link.chat({text}),()=>tap(),view=>workspace.navigate(view));
+const lighting = new LightingView(value=>link.devices(value),view=>workspace.navigate(view));
 const cinema = new CinemaView(value=>link.cinema(value),text=>link.chat({text}),()=>workspace.navigate('cinema'),()=>byId('listen-control').click());
 const settingsCenter = new SettingsCenterUI(value => link.settings(value), value => link.automations(value), view => workspace.navigate(view));
 const personalModules = new PersonalModules((channel,value)=>link.module(channel,value),view=>workspace.navigate(view));
@@ -207,6 +210,7 @@ function onEvent(e: HudEvent): void {
   voiceSettings.receive(e);
   automations.receive(e);
   devices.receive(e);
+  lighting.receive(e);
   cinema.receive(e);
   settingsCenter.receive(e);
   personalModules.receive(e);
@@ -267,6 +271,7 @@ const link = new Link(onEvent, (online) => {
   voiceSettings.connection(online);
   automations.connection(online);
   devices.connection(online);
+  lighting.connection(online);
   cinema.connection(online);
   settingsCenter.connection(online);
   personalModules.connection(online);

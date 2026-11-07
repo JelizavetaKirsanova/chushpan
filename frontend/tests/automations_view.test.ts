@@ -146,7 +146,7 @@ function disclosure(f: ReturnType<typeof fixture>, selector: string) {
 
 test('reference editor keeps navigation, inline controls, tags and advanced disclosure', async()=>{
   const f=fixture();try {
-    assert.deepEqual([...f.window.document.querySelectorAll('.workspace-nav > button[data-view]')].map(n=>n.getAttribute('data-view')),['home','automations','devices','cinema','memory','mac-control','my-devices','analytics','performance','settings']);
+    assert.deepEqual([...f.window.document.querySelectorAll('.workspace-nav > button[data-view]')].map(n=>n.getAttribute('data-view')),['home','automations','devices','lighting','cinema','memory','mac-control','my-devices','analytics','performance','settings']);
     assert.equal(f.window.document.querySelector('.permissions-page'),null);
     assert.ok(f.window.document.querySelector('.settings-page .permission-settings'));
     f.button('+ Создать сценарий');
