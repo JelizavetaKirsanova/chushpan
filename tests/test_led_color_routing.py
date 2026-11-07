@@ -63,7 +63,9 @@ def test_every_color_route_matches_the_successful_ddm_probe(devices, monkeypatch
         assert restarted.driver().id == DDM_PROFILE.id
         assert r.service.features(device)["color"]
         assert not r.service.features(device)["brightness"]
-        assert not r.service.features(device)["power_on"]
+        assert r.service.features(device)["power_on"]  # Validated GATT permits ordinary ON.
+        assert "on" not in restarted._load().confirmed
+        assert "power" not in r.service.store.get(device.id).state
         common.reset_mock()
         before = len(r.clients)
         if route in {"preset", "rgb-editor", "saved-color"}:
