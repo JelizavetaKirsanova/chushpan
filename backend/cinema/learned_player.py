@@ -294,7 +294,13 @@ class LearnedPlayer:
         )
 
     async def prepare(self, recipe, episode):
-        nodes = await self.wait_nodes(lambda tree: len(tree) > 3)
+        nodes = await self.wait_nodes(
+            lambda tree: (
+                bool(exact(tree, r"\d+ сезон") and exact(tree, r"\d+ серия"))
+                if episode["season"]
+                else len(tree) > 3
+            )
+        )
         if episode["season"]:
             nodes = await self.select(nodes, r"\d+ сезон", f"{episode['season']} сезон")
             nodes = await self.select(nodes, r"\d+ серия", f"{episode['episode']} серия")

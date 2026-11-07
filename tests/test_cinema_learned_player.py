@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from backend.cinema.learned_player import LearnedPlayer, SiteRecipe, player_state, title_agrees
@@ -25,6 +27,31 @@ def test_player_requires_one_full_timer_with_matching_episode_and_voice():
     assert player_state(good + nodes("00:01 / 00:20")) is None
     assert title_agrees("Последнее королевство (1-5 сезон)", {"title": "Последнее королевство"})
     assert not title_agrees("Другое королевство (1-5 сезон)", {"title": "Последнее королевство"})
+
+
+def test_prepare_waits_for_episode_controls_after_iframe_skeleton():
+    class DynamicFrame:
+        calls = 0
+
+        async def cinema(self, op, **kwargs):
+            self.calls += 1
+            loading = [{"role": "AXGroup", "path": [i]} for i in range(4)]
+            ready = [
+                {**node, "path": [i]}
+                for i, node in enumerate(nodes("1 сезон", "1 серия", "LostFilm"))
+            ]
+            return {"nodes": loading if self.calls == 1 else ready}
+
+    async def run():
+        ax = DynamicFrame()
+        player = LearnedPlayer(None, ax)
+        player.frame_host = "player.example"
+        recipe = SiteRecipe(url="https://some.example/show", voice="LostFilm")
+        result = await player.prepare(recipe, {"season": 1, "episode": 1})
+        assert ax.calls == 2
+        assert result[0]["value"] == "1 сезон"
+
+    asyncio.run(run())
 
 
 def test_taught_recipe_uses_public_https_and_is_versioned_without_resetting_progress(tmp_path):
