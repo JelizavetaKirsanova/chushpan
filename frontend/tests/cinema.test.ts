@@ -556,3 +556,18 @@ test('a probable page opens only through an explicit browser action and is never
     assert.ok(![...f.window.document.querySelectorAll('button')].some((b:any)=>b.textContent==='Смотреть'));
   }finally{f.window.happyDOM.abort();}
 });
+
+test('viewer keeps an entered seek time across background updates and link diagnostics',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);
+    const item=movie('Film','watching');const ep=item.current;ep.duration=7200;ep.links=[{id:'link',source_id:'source',source_name:'Fixture',url:'https://example.org/full.mp4',voice:'Русский'}] as any;
+    const data:any={...snapshot([item]),session:{title_id:item.id,episode_id:ep.id,mode:'learned'},playback:{state:'PLAYING',message:'Playing',token:'stable-session',source:{title_id:item.id,episode_id:ep.id,link_id:'link',source_id:'source',adapter_id:'learned',voice:'Русский',validation:{content_verified:true},capabilities:{seek:true,fullscreen:true}}}};
+    view.receive(data);const panel=f.window.document.querySelector('.cinema-viewer')!;const input=panel.querySelector<HTMLInputElement>('[aria-label="Перейти к таймкоду"]')!;input.value='37:00';
+    ep.links[0]={...ep.links[0],last_checked_at:'new observation'} as any;data.playback={...data.playback,state:'WAITING_FOR_PLAYER'};view.receive(data);
+    assert.equal(panel.querySelector('[aria-label="Перейти к таймкоду"]'),input);assert.equal(input.value,'37:00');
+    data.playback={...data.playback,source:{...data.playback.source,capabilities:{seek:true,fullscreen:false}}};view.receive(data);
+    assert.equal(panel.querySelector<HTMLInputElement>('[aria-label="Перейти к таймкоду"]')!.value,'37:00');
+    [...panel.querySelectorAll('button')].find(b=>b.textContent==='Перейти к времени')!.click();assert.equal(sent.at(-1).position,2220);
+    view.receive({...data,playback:{...data.playback,token:'different-session'}});assert.equal(panel.querySelector<HTMLInputElement>('[aria-label="Перейти к таймкоду"]')!.value,'');
+  }finally{f.window.happyDOM.abort();}
+});

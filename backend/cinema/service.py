@@ -3201,6 +3201,17 @@ class Cinema:
 
     async def sample(self, event):
         state = await self.player.sample()
+        if (
+            event == "close"
+            and state.get("observation_stale")
+            and self.session
+            and isinstance(self.session["adapter"], LearnedPlayer)
+        ):
+            # A fullscreen video in another Space can hide its AX clock.
+            # Reveal only the owned player before taking the final position.
+            async with asyncio.timeout(6):
+                await self.session["adapter"].reveal()
+                state = await self.player.sample()
         if self.session:
             self.session.source.capabilities.update(state.get("capabilities") or {})
         if state.get("observation_stale"):

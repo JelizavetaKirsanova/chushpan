@@ -293,7 +293,7 @@ def test_homepage_is_never_a_watch_result(tmp_path):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("scenario", ["resume", "seek_failure", "fallback"])
+@pytest.mark.parametrize("scenario", ["resume", "seek_failure", "fallback", "background_close"])
 def test_site_adapter_normal_watch_lifecycle_progress_and_fallback(tmp_path, monkeypatch, scenario):
     from backend.cinema import service as module
     from backend.cinema.learned_player import LearnedPlayer
@@ -302,6 +302,8 @@ def test_site_adapter_normal_watch_lifecycle_progress_and_fallback(tmp_path, mon
     calls = []
 
     class Player(LearnedPlayer):
+        revealed = False
+
         async def open(self, target):
             calls.append(target)
             self.session = object()
@@ -336,7 +338,13 @@ def test_site_adapter_normal_watch_lifecycle_progress_and_fallback(tmp_path, mon
             return self.last_sample
 
         async def sample(self):
+            if scenario == "background_close" and not self.revealed:
+                return {**self.last_sample, "observation_stale": True}
             return self.last_sample
+
+        async def reveal(self):
+            self.revealed = True
+            self.last_sample = {**self.last_sample, "position": 321, "observed_at": 300000}
 
         async def detach(self):
             self.session = None
@@ -371,6 +379,10 @@ def test_site_adapter_normal_watch_lifecycle_progress_and_fallback(tmp_path, mon
             assert actual["current"]["position"] == (90 if scenario == "seek_failure" else 88)
             assert actual["site_recipe"]["voice"] == "LostFilm"
             assert len(await service.db("site_templates")) == 1
+            if scenario == "background_close":
+                await service.stop_tracking()
+                actual = await service.db("detail", item["id"])
+                assert actual["current"]["position"] == 321
             if scenario == "fallback":
                 assert [call["recipe"]["player"] for call in calls] == ["Плеер 1", "Плеер 3"]
                 assert any(row["stage"] == "SITE_PLAYER" for row in await service.db("diagnostics"))

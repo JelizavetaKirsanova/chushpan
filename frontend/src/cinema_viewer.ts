@@ -16,6 +16,7 @@ export class CinemaViewer {
   private time=el('p');
   private controls=el('div');
   private signature='';
+  private controlToken='';
   private online=false;
   private data:CinemaEvent|null=null;
   private requestId='';
@@ -36,14 +37,16 @@ export class CinemaViewer {
     if(['PLAYING','PAUSED','IDLE','FAILED'].includes(p.state))this.requestId='';
     const item=data.items.find(i=>i.id===source?.title_id);const episode=item?.episodes.find(e=>e.id===source?.episode_id);
     this.time.textContent=item?`${item.title}${item.kind==='series'&&episode?` · ${episode.season} сезон, ${episode.episode} серия`:''} · сохранено ${playbackTime(episode?.position??0)}`:'';
-    const signature=JSON.stringify([p.token,p.state,this.requestId,p.pending_command,data.session?.mode,data.preferences.allow_browser,source?.adapter_id,source?.validation.content_verified,source?.capabilities,source?.voice,episode?.links,item?.episodes.map(e=>[e.id,e.name]),this.online]);
-    if(signature===this.signature)return;this.signature=signature;this.controls.replaceChildren();
+    const signature=JSON.stringify([p.token,this.requestId,p.pending_command,data.session?.mode,data.preferences.allow_browser,source?.adapter_id,source?.validation.content_verified,source?.capabilities,source?.voice,episode?.links.map(l=>[l.id,l.source_name,l.voice]),item?.episodes.map(e=>[e.id,e.name]),this.online]);
+    if(signature===this.signature)return;this.signature=signature;
+    const pendingTime=this.controlToken===p.token?this.controls.querySelector<HTMLInputElement>('[aria-label="Перейти к таймкоду"]')?.value??'':'';
+    this.controlToken=p.token;this.controls.replaceChildren();
     if(this.requestId)this.controls.append(this.button('Отменить поиск и запуск',()=>this.send({op:'watch_cancel',request_id:this.requestId})));
     if(!source||!item||!episode)return;
     const op=(action:string)=>this.send({op:'playback_control',token:p.token,action});
     const controllable=['html5','native','embedded','learned'].includes(data.session?.mode??'');
     this.controls.append(this.button('Продолжить',()=>op('play'),controllable&&!p.pending_command),this.button('Пауза',()=>op('pause'),controllable&&source.capabilities.pause!==false&&!p.pending_command));
-    if(source.capabilities.seek){const time=el('input');time.type='text';time.placeholder='37:00';time.setAttribute('aria-label','Перейти к таймкоду');
+    if(source.capabilities.seek){const time=el('input');time.type='text';time.placeholder='37:00';time.value=pendingTime;time.setAttribute('aria-label','Перейти к таймкоду');
       this.controls.append(time,this.button('Перейти к времени',()=>{try{const position=parsePlaybackTime(time.value);if(episode.duration&&position>=episode.duration)throw new Error('Таймкод выходит за длительность видео.');this.send({op:'playback_control',token:p.token,action:'seek',position});}catch(error){this.message.textContent=error instanceof Error?error.message:'Проверь таймкод.';}}));}
     const links=el('select');links.setAttribute('aria-label','Источник просмотра');
     for(const link of episode.links){const o=el('option',`${link.source_name}${link.voice?` · ${link.voice}`:''}`);o.value=link.id;links.append(o);}links.value=source.link_id;links.disabled=!this.online;
