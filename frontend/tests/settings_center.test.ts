@@ -190,3 +190,14 @@ test('all settings links keep the established icon text chevron grid structure',
     }
   }finally{await f.window.happyDOM.close();}
 });
+
+test('AX check performs a fresh check and recovery requires explicit confirmation',async()=>{
+  const f=fixture();try{
+    f.state.permissions={scope:'Текущий исполнитель',items:[{id:'accessibility',name:'Универсальный доступ',status:'denied',note:'',url:'',supported:true,can_request:true,can_repair:true,details:{identity:{pid:123,bundle_id:'local.chushpan.ytmusic-ax'},guidance:'Разрешение для Чушпан.app'}}]};
+    f.view.receive(f.state);f.view.open('access');
+    f.button('Проверить разрешения');assert.equal(f.requests.at(-1)!.action,'check');assert.equal(f.requests.at(-1)!.id,'accessibility');
+    const count=f.requests.length;f.window.confirm=()=>false;f.button('Обновить разрешение этой копии');assert.equal(f.requests.length,count);
+    f.window.confirm=()=>true;f.button('Обновить разрешение этой копии');assert.equal(f.requests.at(-1)!.action,'repair');
+    assert.match(f.window.document.body.textContent??'',/local.chushpan.ytmusic-ax/);
+  }finally{await f.window.happyDOM.abort();}
+});

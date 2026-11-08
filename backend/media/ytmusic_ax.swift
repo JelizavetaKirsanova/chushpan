@@ -12,6 +12,41 @@ func output(_ value: [String: Any]) -> Never {
     exit(0)
 }
 func fail(_ message: String) -> Never { output(["error": message]) }
+// Probe the same executable that performs AX actions. Never collect window titles/content.
+func accessibilityStatus() -> [String: Any] {
+    let executable = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+    var identity: [String: Any] = ["executable": executable.path, "pid": getpid(),
+        "ppid": getppid(), "bundle_id": Bundle.main.bundleIdentifier ?? ""]
+    var directory = executable.deletingLastPathComponent()
+    while directory.path != "/" {
+        if directory.pathExtension == "app", let owner = Bundle(url: directory) {
+            identity["enclosing_app"] = directory.path
+            identity["enclosing_bundle_id"] = owner.bundleIdentifier ?? ""
+            identity["enclosing_executable"] = owner.executableURL?.path ?? ""
+            break
+        }
+        directory.deleteLastPathComponent()
+    }
+    let trusted = AXIsProcessTrusted()
+    let optionsTrusted = AXIsProcessTrustedWithOptions(
+        [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: false] as CFDictionary)
+    var probe: [String: Any] = ["target": "com.apple.Safari", "status": "target_not_running"]
+    if let target = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first {
+        let root = AXUIElementCreateApplication(target.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, 1)
+        var windows: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(root, kAXWindowsAttribute as CFString, &windows)
+        probe = ["target": "com.apple.Safari", "target_pid": target.processIdentifier,
+                 "attribute": "AXWindows", "ax_error": error.rawValue,
+                 "status": error == .success ? "readable" : "unavailable"]
+        if error == .success { probe["window_count"] = (windows as? [AXUIElement])?.count ?? 0 }
+    }
+    return ["accessibility": trusted ? "granted" : "denied", "identity": identity,
+            "ax_is_process_trusted": trusted, "ax_is_process_trusted_with_options": optionsTrusted,
+            "live_ax_probe": probe, "fresh_process": true,
+            "restart_required": false, "restart_recommended": !trusted,
+            "screen_recording": CGPreflightScreenCaptureAccess() ? "granted" : "check_needed"]
+}
 func attr(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
     var value: CFTypeRef?
     return AXUIElementCopyAttributeValue(element, key as CFString, &value) == .success ? value : nil
@@ -411,9 +446,7 @@ if ["permission_status", "permission_request"].contains(op) {
         } else if key == "screen_recording" { _ = CGRequestScreenCaptureAccess() }
         else { fail("invalid_request") }
     }
-    output(["accessibility": AXIsProcessTrusted() ? "granted" : "check_needed",
-            "screen_recording": CGPreflightScreenCaptureAccess() ? "granted" : "check_needed",
-            "identity": ["executable": CommandLine.arguments[0], "pid": getpid(), "ppid": getppid()]])
+    output(accessibilityStatus())
 }
 if op.hasPrefix("desktop_") { desktop(request, op) }
 let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundle)

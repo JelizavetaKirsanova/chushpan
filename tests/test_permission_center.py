@@ -74,6 +74,84 @@ def test_diagnostics_only_preflights_and_exact_executor_identities(center):
     assert not requests_allowed.get()
 
 
+def test_ax_probe_explains_actual_actor_and_does_not_renew_on_check(center, monkeypatch, tmp_path):
+    import backend.permission_center as module
+
+    monkeypatch.setattr(module, "installed_app_identity", lambda: tmp_path)
+    renew = AsyncMock()
+    monkeypatch.setattr(module, "renew_accessibility_permission", renew)
+    center.desktop.request.return_value = {
+        "accessibility": "denied",
+        "ax_is_process_trusted": False,
+        "identity": {
+            "executable": "/Applications/Чушпан.app/Contents/Frameworks/native/ytmusic_ax",
+            "bundle_id": "local.chushpan.ytmusic-ax",
+            "pid": 123,
+            "ppid": 122,
+        },
+        "live_ax_probe": {"ax_error": -25211, "status": "unavailable"},
+    }
+    report = asyncio.run(center.report("check", "accessibility"))
+    item = next(i for i in report["items"] if i["id"] == "accessibility")
+    assert item["status"] == "denied"
+    assert item["can_request"] and item["can_repair"]
+    assert item["details"]["live_ax_probe"]["ax_error"] == -25211
+    assert item["details"]["launch_chain"]["responsible_bundle_id"] == "ee.chushpan.desktop"
+    assert item["details"]["app_signing"]["verified"]
+    renew.assert_not_awaited()
+    center.desktop.request.assert_awaited_once_with("permission_status")
+
+
+def test_ax_recovery_requires_explicit_action_and_never_resets_granted_access(center, monkeypatch):
+    import backend.permission_center as module
+
+    renew = AsyncMock()
+    monkeypatch.setattr(module, "renew_accessibility_permission", renew)
+    asyncio.run(center.report("repair", "accessibility"))
+    renew.assert_awaited_once_with()
+    assert any(
+        c.args == ("permission_request",) and c.kwargs == {"permission": "accessibility"}
+        for c in center.desktop.request.call_args_list
+    )
+    center.desktop.request.return_value = {"accessibility": "granted"}
+    with pytest.raises(ValueError, match="уже действует"):
+        asyncio.run(center.report("repair", "accessibility"))
+    with pytest.raises(ValueError, match="только разрешение Accessibility"):
+        asyncio.run(center.report("repair", "microphone"))
+    assert renew.await_count == 1
+
+
+def test_ax_recovery_is_unavailable_from_development(monkeypatch):
+    from backend import native_identity
+
+    monkeypatch.setattr(native_identity.sys, "frozen", False, raising=False)
+    create = AsyncMock()
+    monkeypatch.setattr(native_identity.asyncio, "create_subprocess_exec", create)
+    with pytest.raises(ValueError, match="установленном"):
+        asyncio.run(native_identity.renew_accessibility_permission())
+    create.assert_not_awaited()
+
+
+def test_ax_recovery_resets_only_canonical_app_accessibility(monkeypatch, tmp_path):
+    from backend import native_identity
+
+    monkeypatch.setattr(native_identity, "installed_app_identity", lambda: tmp_path)
+    monkeypatch.setattr(
+        native_identity, "signing_identity", AsyncMock(return_value={"verified": True})
+    )
+    create = AsyncMock(
+        return_value=SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(b"", b"")))
+    )
+    monkeypatch.setattr(native_identity.asyncio, "create_subprocess_exec", create)
+    asyncio.run(native_identity.renew_accessibility_permission())
+    assert create.call_args.args == (
+        "/usr/bin/tccutil",
+        "reset",
+        "Accessibility",
+        "ee.chushpan.desktop",
+    )
+
+
 @pytest.mark.parametrize(
     "key",
     [

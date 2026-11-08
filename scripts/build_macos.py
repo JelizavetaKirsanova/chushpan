@@ -106,6 +106,7 @@ def build_manifest(build_root: Path | None = None) -> Path:
 
 
 def build() -> Path:
+    signing_identity = os.environ.get("CHUSHPAN_CODESIGN_IDENTITY") or "-"
     if sys.platform != "darwin" or platform.machine() != "arm64":
         raise SystemExit("Сборка требует macOS на Apple Silicon и arm64 Python.")
     for module in ("PyInstaller", "ServiceManagement", "AVFoundation", "CoreLocation"):
@@ -202,7 +203,7 @@ def build() -> Path:
         "-o",
         str(helper / "MacOS/chushpan-personal"),
     )
-    run("codesign", "--force", "--sign", "-", str(helper.parent))
+    run("codesign", "--force", "--sign", signing_identity, str(helper.parent))
     run(
         sys.executable,
         "-m",
@@ -231,13 +232,23 @@ def build() -> Path:
             "codesign",
             "--force",
             "--sign",
-            "-",
+            signing_identity,
             "--identifier",
             "local.chushpan." + name.replace("_", "-"),
             *options,
             str(binary),
         )
-    run("codesign", "--force", "--sign", "-", "--identifier", "ee.chushpan.desktop", str(app))
+    run(
+        "codesign",
+        "--force",
+        "--sign",
+        signing_identity,
+        "--identifier",
+        "ee.chushpan.desktop",
+        "--entitlements",
+        str(ROOT / "packaging/macos/automation.entitlements.plist"),
+        str(app),
+    )
     run("codesign", "--verify", "--deep", "--strict", str(app))
     receipt = verify_bundle(app)
     if receipt["version"] != VERSION:

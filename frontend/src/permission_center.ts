@@ -5,6 +5,7 @@ export interface PermissionItem {
   group?:string; group_name?:string; icon?:string; purpose?:string; features?:string[];
   mechanism?:string; can_request?:boolean; supported?:boolean; last_error?:string|null;
   details?:Record<string,unknown>;
+  can_repair?:boolean;
 }
 export interface PermissionReport {
   items:PermissionItem[]; scope:string; message?:string|null;
@@ -48,7 +49,14 @@ export function permissionCenter(root:HTMLElement, report:PermissionReport|null,
       const actions=el('div','','permission-actions');
       if(item.can_request&&item.status!=='granted')actions.append(button('Запросить доступ',()=>act(item.id,'request')));
       if(item.url&&item.supported!==false)actions.append(button('Открыть настройки',()=>act(item.id,'open')));
-      if(item.supported!==false)actions.append(button('Проверить доступ',()=>act(item.id,'check')));card.append(actions);
+      if(item.supported!==false)actions.append(button(item.id==='accessibility'?'Проверить разрешения':'Проверить доступ',()=>act(item.id,'check')));
+      if(item.can_repair)actions.append(button('Обновить разрешение этой копии',()=>{
+        if(window.confirm('Обновить старую запись «Универсального доступа» только для Чушпана? macOS попросит снова включить Чушпан в настройках. Затем потребуется полностью перезапустить приложение. Другие разрешения сохранятся.'))act(item.id,'repair');
+      }));card.append(actions);
+      if(item.id==='accessibility'&&item.details){const d=item.details;const identity=d.identity as Record<string,unknown>|undefined;
+        if(identity)card.append(el('small',`Процесс: ytmusic_ax · PID ${identity.pid??'—'} · ${identity.bundle_id??'—'}`));
+        if(d.guidance)card.append(el('p',String(d.guidance),'settings-help'));
+      }
       if(item.details&&Object.keys(item.details).length){const details=el('details');details.append(el('summary','Для разработчика: исполнитель и результат API'),el('pre',JSON.stringify(item.details,null,2)));card.append(details);}
       list.append(card);
     }

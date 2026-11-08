@@ -532,7 +532,7 @@ wheels = [
 
 [[package]]
 name = "my-jarvis"
-version = "0.3.14"
+version = "0.3.15"
 source = { virtual = "." }
 dependencies = [
     { name = "bleak" },

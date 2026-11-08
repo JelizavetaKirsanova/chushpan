@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from datetime import UTC, datetime
 
@@ -11,7 +12,11 @@ from backend.desktop import VERSION, platform
 from backend.mac import DesktopBridge
 from backend.media.music_safari import SafariMusicTab
 from backend.media.youtube_playback import SafariPlayback
-from backend.native_identity import signing_identity
+from backend.native_identity import (
+    installed_app_identity,
+    renew_accessibility_permission,
+    signing_identity,
+)
 from backend.personal import PersonalContext
 
 GROUPS = {
@@ -107,7 +112,7 @@ def catalog(settings):
             "Универсальный доступ",
             "system",
             "Управление окнами и элементами интерфейса через существующий AX-адаптер.",
-            ["Окна", "YouTube Music Web App"],
+            ["Окна", "YouTube Music Web App", "Видеоплеер Safari"],
             request=True,
         ),
         row(
@@ -484,12 +489,40 @@ class PermissionCenter:
         item["status"] = (
             value if value in STATES else "denied" if value == "restricted" else "check_needed"
         )
-        if value == "denied":
+        if value == "denied" and key != "accessibility":
             item["can_request"] = False
         item["details"] = details
         identity = details.get("identity") or details
         if identity.get("executable"):
             item["details"] = {**details, "signing": await signing_identity(identity["executable"])}
+        if key == "accessibility":
+            app = installed_app_identity()
+            item["can_repair"] = app is not None and value != "granted"
+            item["details"]["launch_chain"] = {
+                "worker_executable": sys.executable,
+                "worker_pid": os.getpid(),
+                "helper_parent_pid": identity.get("ppid"),
+                "separate_helper_permission_required": False if app else "depends_on_launcher",
+                "responsible_app": str(app) if app else "проверьте приложение запуска",
+                "responsible_bundle_id": "ee.chushpan.desktop" if app else None,
+                "basis": "canonical_app_launch_chain" if app else "development_launch",
+            }
+            if app:
+                item["details"]["app_signing"] = await signing_identity(str(app))
+            item["details"]["guidance"] = (
+                "Исполнитель ytmusic_ax запускается заново при каждой проверке. "
+                "В установленном Чушпане разрешение выдаётся Чушпан.app (ee.chushpan.desktop). "
+                "Отдельная запись ytmusic_ax не исправляет старую подпись основного приложения. "
+                "Если переключатель включён, а API возвращает false, обновите разрешение этой "
+                "копии, включите Чушпан в настройках macOS и полностью перезапустите приложение."
+            )
+            if value != "granted":
+                item["last_error"] = (
+                    "AXIsProcessTrusted вернул false у исполнителя ytmusic_ax. "
+                    "macOS не разрешила управление Safari этой копии Чушпана. "
+                    "После обновления ad hoc сборки старая запись разрешения может не совпадать "
+                    "с новой подписью. Подробности и исправление — ниже."
+                )
         if value == "target_not_running":
             item["last_error"] = (
                 "Целевое приложение закрыто. Для запроса доступа оно будет открыто после "
@@ -533,7 +566,7 @@ class PermissionCenter:
                 )
 
     async def report(self, action="check", identifier=None):
-        if action not in {"check", "request", "open"}:
+        if action not in {"check", "request", "open", "repair"}:
             raise ValueError("Неизвестное действие центра разрешений.")
         items = catalog(self.s)
         selected = next((i for i in items if i["id"] == identifier), None)
@@ -542,7 +575,21 @@ class PermissionCenter:
         async with self.lock:
             self.checks = {}
             message = None
-            if action == "open":
+            if action == "repair":
+                if identifier != "accessibility":
+                    raise ValueError("Обновлять можно только разрешение Accessibility Чушпана.")
+                await self.check(selected)
+                if selected["status"] == "granted":
+                    raise ValueError("Разрешение уже действует; обновление записи не требуется.")
+                await renew_accessibility_permission()
+                await self.desktop.request("permission_request", permission="accessibility")
+                await asyncio.to_thread(platform.open_privacy, "accessibility")
+                message = (
+                    "Старая запись Accessibility только для Чушпана сброшена штатным tccutil. "
+                    "Включите «Чушпан» в настройках macOS, полностью завершите его через ⌘Q "
+                    "и запустите из /Applications. Затем нажмите «Проверить разрешения»."
+                )
+            elif action == "open":
                 if not selected["url"]:
                     raise ValueError("Используй настройки соответствующей интеграции.")
                 result = await asyncio.to_thread(platform.open_privacy, selected["pane"])
@@ -553,7 +600,10 @@ class PermissionCenter:
                 await self.check(selected)
                 key = selected["id"]
                 if selected["status"] != "granted":
-                    if selected["status"] == "denied":
+                    if key == "accessibility":
+                        await self.desktop.request("permission_request", permission=key)
+                        message = (await asyncio.to_thread(platform.open_privacy, key))["message"]
+                    elif selected["status"] == "denied":
                         message = (
                             await asyncio.to_thread(platform.open_privacy, selected["pane"])
                         )["message"]

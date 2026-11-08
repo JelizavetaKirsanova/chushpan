@@ -102,7 +102,7 @@ exe = EXE(
     upx=False,
     console=False,
     target_arch="arm64",
-    codesign_identity=None,
+    codesign_identity=os.environ.get("CHUSHPAN_CODESIGN_IDENTITY") or None,
     entitlements_file=None,
 )
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="Chushpan")
@@ -116,7 +116,7 @@ app = BUNDLE(
         "CFBundleName": "Чушпан",
         "CFBundleIconFile": "icon.icns",
         "CFBundleShortVersionString": build_info["version"],
-        "CFBundleVersion": "27",
+        "CFBundleVersion": "28",
         "LSMinimumSystemVersion": "26.2",
         "NSHighResolutionCapable": True,
         "NSMicrophoneUsageDescription": (

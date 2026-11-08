@@ -41,6 +41,12 @@ def main():
         print(f"Скопировано файлов: {len(migrate(args.migrate_from, target))}")
     result = install(app, cleanup=args.trash_build)
     print(f"Обновлено: {result['app']} — {result['version']} ({result['build']})")
+    if result.get("permissions_may_need_refresh"):
+        print(
+            "Подпись изменилась: старое разрешение Accessibility может не действовать. "
+            "В Чушпане: Настройки → Разрешения → Проверить разрешения. "
+            "При отказе используйте «Обновить разрешение этой копии»."
+        )
     if result["previous"]:
         print(f"Предыдущая рабочая копия сохранена: {result['previous']}")
     if not args.trash_build:

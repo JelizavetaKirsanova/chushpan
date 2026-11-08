@@ -20,6 +20,11 @@ def main():
     assert_not_running()
     result = install(build(), cleanup=args.trash_build)
     print(f"Обновлено единственное приложение: {result['app']}")
+    if result.get("permissions_may_need_refresh"):
+        print(
+            "Сменилась идентичность подписи. Проверьте разрешения в Чушпане; "
+            "при отказе Accessibility обновите разрешение этой копии."
+        )
     print(f"Резерв сохранён: {result['previous'] or 'первая установка'}")
     if not args.trash_build:
         print(f"Проверенная сборка сохранена вне поиска: {result['source']}")

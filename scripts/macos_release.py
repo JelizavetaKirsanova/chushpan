@@ -96,7 +96,25 @@ def verify_bundle(app: Path) -> dict:
         "version": info["CFBundleShortVersionString"],
         "build": str(info["CFBundleVersion"]),
         "executable_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "code_identity": code_identity(app),
     }
+
+
+def code_identity(app: Path) -> dict:
+    result = subprocess.run(
+        ["/usr/bin/codesign", "-d", "-r-", "--verbose=4", str(app)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    value = {}
+    for line in (result.stdout + getattr(result, "stderr", "")).splitlines():
+        key, _, data = line.partition("=")
+        if key in {"Identifier", "CDHash", "TeamIdentifier", "Signature"}:
+            value[key] = data
+        elif line.startswith("designated =>") or line.startswith("# designated =>"):
+            value["requirement"] = line.split("=>", 1)[1].strip()
+    return value
 
 
 def self_test(app: Path, directory: Path) -> None:
@@ -279,8 +297,7 @@ def _install(app: Path, *, cleanup: bool = False, allow_downgrade: bool = False)
         raise ValueError("Копия сборки не прошла проверку.")
     assert_not_running()
     had_previous = destination.exists()
-    if had_previous:
-        verify_bundle(destination)
+    prior_identity = verify_bundle(destination).get("code_identity", {}) if had_previous else {}
     write_receipt(
         record / "receipt.json",
         {**checked, "status": "replacing", "previous": str(previous), "source": str(app)},
@@ -313,6 +330,11 @@ def _install(app: Path, *, cleanup: bool = False, allow_downgrade: bool = False)
         "previous": str(previous) if had_previous else None,
         "installed_at": datetime.now(UTC).isoformat(),
         "cleanup_candidates": [str(app)],
+        "previous_code_identity": prior_identity,
+        "permissions_may_need_refresh": bool(
+            prior_identity.get("requirement")
+            and prior_identity.get("requirement") != installed["code_identity"].get("requirement")
+        ),
     }
     write_receipt(record / "receipt.json", receipt)
     write_receipt(state / "last-install.json", receipt)
