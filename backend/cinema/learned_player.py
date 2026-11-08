@@ -132,6 +132,7 @@ class SafariPlayerAX(AccessibilityApp):
                 "cinema_geometry_unavailable": "Safari не сообщил положение элемента плеера.",
                 "cinema_hit_unavailable": "Safari не подтвердил положение кнопки плеера.",
                 "cinema_hit_changed": "Другая панель перекрыла элемент плеера; нажатие отменено.",
+                "cinema_focus_unavailable": "Safari не подтвердил фокус выбранного видеоплеера.",
             }.items():
                 if code in str(error):
                     raise playback_error(code, message) from None
@@ -235,6 +236,7 @@ class LearnedPlayer:
         self.audio_tracks = []
         self.pending_next = None
         self.next_clock = None
+        self.window_role = ""
 
     async def javascript(self, script):
         raw = await self.tabs._owned(
@@ -357,9 +359,9 @@ class LearnedPlayer:
     async def nodes(self):
         if not self.frame_host:
             return []
-        return (await self.ax.cinema("cinema_snapshot", page=self.url, frame_host=self.frame_host))[
-            "nodes"
-        ]
+        result = await self.ax.cinema("cinema_snapshot", page=self.url, frame_host=self.frame_host)
+        self.window_role = result.get("window_role", "")
+        return result["nodes"]
 
     async def press(self, node, *, pointer=False, op="cinema_press", raise_window=False):
         expected = {
@@ -400,7 +402,7 @@ class LearnedPlayer:
                     ) from error
 
     async def key(self, key, *, large=False, repeat_count=1):
-        if self.engine != "venom_ax":
+        if self.engine != "venom_ax" and key != "fullscreen_exit":
             raise ToolError("Клавиши этого плеера ещё не проверены. Используй его кнопки.")
         await self.ax.cinema(
             "cinema_key",
@@ -448,6 +450,7 @@ class LearnedPlayer:
             player=self.report.get("player", ""), prepare=False, reveal=True, controls=controls
         )
         last_error = None
+        recovered_fullscreen = False
         for _ in range(12):
             try:
                 nodes = await self.nodes()
@@ -467,6 +470,21 @@ class LearnedPlayer:
                 }:
                     raise
                 last_error = error
+                if (
+                    not recovered_fullscreen
+                    and page.get("fullscreen")
+                    and getattr(error, "code", "")
+                    in {"cinema_page_unavailable", "cinema_frame_unavailable"}
+                ):
+                    await self.exit_fullscreen()
+                    recovered_fullscreen = True
+                    await self.activate()
+                    page = await self.page(
+                        player=self.report.get("player", ""),
+                        prepare=False,
+                        reveal=True,
+                        controls=controls,
+                    )
             await asyncio.sleep(0.15)
         raise last_error or ToolError("Плеер не подтвердил видимость элементов управления.")
 
@@ -479,6 +497,10 @@ class LearnedPlayer:
         if self.html5:
             return await self.html5.control("seek", position)
         await self.reveal()
+        if before.get("observation_stale"):
+            before = await self.sample()
+            if before.get("observation_stale"):
+                raise ToolError("Плеер не показал свежую позицию перед перемоткой.")
         nodes = await self.nodes()
         if self.engine == "venom_ax":
             playing = self.playing and before.get("paused") is not True
@@ -736,6 +758,10 @@ class LearnedPlayer:
         was_fullscreen = (await self.page()).get("fullscreen") is True
         if was_fullscreen:
             await self.control("fullscreen")
+        if before.get("observation_stale"):
+            before = await self.sample()
+            if before.get("observation_stale"):
+                raise ToolError("Плеер не показал свежую позицию перед сменой озвучки.")
         full = {}
         try:
             await self.reveal(controls=True)
@@ -1048,7 +1074,80 @@ class LearnedPlayer:
         }
         return state
 
+    async def exit_fullscreen(self):
+        try:
+            async with asyncio.timeout(7):
+                if self.html5:
+                    await self.page(exit_fullscreen=True)
+                else:
+                    try:
+                        await self.key("fullscreen_exit")
+                    except ToolError as error:
+                        if not getattr(error, "code", "").startswith("cinema_"):
+                            raise
+                for attempt in range(20):
+                    if not (await self.page()).get("fullscreen"):
+                        try:
+                            if await self.nodes() and self.window_role == "AXWindow":
+                                return {
+                                    "fullscreen": False,
+                                    "fullscreen_confirmed": False,
+                                    "capabilities": {
+                                        "fullscreen": False,
+                                        "fullscreen_available": True,
+                                    },
+                                    "message": "Видеоплеер вышел из полного экрана; "
+                                    "просмотр продолжается.",
+                                }
+                        except ToolError as error:
+                            if not getattr(error, "code", "").startswith("cinema_"):
+                                raise
+                    if attempt in {0, 5}:
+                        try:
+                            await self.ax.cinema(
+                                "cinema_exit_fullscreen",
+                                page=self.url,
+                                frame_host=self.frame_host,
+                            )
+                        except ToolError as error:
+                            if not getattr(error, "code", "").startswith("cinema_"):
+                                raise
+                    if attempt == 10:
+                        await self.page(exit_fullscreen=True)
+                    await asyncio.sleep(0.15)
+        except TimeoutError:
+            pass
+        raise ToolError("Safari не подтвердил выход из полного экрана и доступность плеера.")
+
     async def control(self, action, position=0):
+        restore_fullscreen = (
+            not self.html5
+            and action in {"play", "pause", "seek"}
+            and (await self.page()).get("fullscreen") is True
+        )
+        result = await self._control(action, position)
+        if restore_fullscreen and not (await self.page()).get("fullscreen"):
+            try:
+                full = await self.fullscreen()
+                if full.get("fullscreen_confirmed") is not True:
+                    raise ToolError("Плеер не подтвердил восстановление полного экрана.")
+                result.update(
+                    fullscreen_confirmed=full.get("fullscreen_confirmed") is True,
+                    capabilities={
+                        **result.get("capabilities", {}),
+                        **full.get("capabilities", {}),
+                    },
+                )
+            except ToolError as error:
+                result.update(
+                    fullscreen_error=str(error),
+                    capabilities={**result.get("capabilities", {}), "fullscreen": False},
+                    message=result.get("message", "Команда выполнена.")
+                    + " Полный экран требует повторного включения.",
+                )
+        return result
+
+    async def _control(self, action, position=0):
         await self.activate()
         if self.html5 and action != "fullscreen":
             return await self.html5.control(action, position)
@@ -1056,18 +1155,9 @@ class LearnedPlayer:
             return await self.seek(position)
         if action == "fullscreen":
             if (await self.page()).get("fullscreen"):
-                await self.page(exit_fullscreen=True)
-                for _ in range(15):
-                    await asyncio.sleep(0.2)
-                    if not (await self.page()).get("fullscreen"):
-                        return {
-                            "fullscreen": False,
-                            "fullscreen_confirmed": False,
-                            "capabilities": {"fullscreen": False, "fullscreen_available": True},
-                            "message": "Видеоплеер вышел из полного экрана; просмотр продолжается.",
-                        }
-                raise ToolError("Выход из полного экрана не подтверждён.")
+                return await self.exit_fullscreen()
             return await self.fullscreen()
+        await self.reveal()
         nodes = await self.nodes()
         if not self.verified_state(nodes):
             raise ToolError("Плеер или выбранная серия изменились.")

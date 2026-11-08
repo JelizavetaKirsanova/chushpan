@@ -427,3 +427,92 @@ def test_reveal_raises_owned_window_only_outside_video_fullscreen(fullscreen):
         assert ax.cinema.call_args.kwargs["raise_window"] is not fullscreen
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("confirmed", [True, False])
+def test_control_recovers_hidden_fullscreen_dialog_and_restores_it_after_seek(
+    monkeypatch, confirmed
+):
+    from unittest.mock import AsyncMock
+
+    from backend.cinema.playback import playback_error
+
+    monkeypatch.setattr("backend.cinema.learned_player.asyncio.sleep", AsyncMock())
+    actions = []
+
+    class AX:
+        async def cinema(self, op, **kwargs):
+            assert op == "cinema_exit_fullscreen"
+            actions.append("native_placeholder")
+            player.is_fullscreen = False
+            player.accessible = True
+            player.window_role = "AXWindow"
+            return {"ok": True}
+
+    class Player(LearnedPlayer):
+        is_fullscreen = True
+        accessible = False
+
+        async def activate(self):
+            pass
+
+        async def page(self, **values):
+            return {"fullscreen": self.is_fullscreen}
+
+        async def nodes(self):
+            if not self.accessible:
+                raise playback_error("cinema_page_unavailable", "Hidden fullscreen dialog")
+            return [{"path": [], "role": "AXWebArea"}]
+
+        async def key(self, key, **kwargs):
+            assert key == "fullscreen_exit"
+            raise playback_error("cinema_page_unavailable", "No exposed AX dialog")
+
+        async def press(self, node, **kwargs):
+            assert kwargs["op"] == "cinema_hover"
+
+        async def seek(self, position):
+            await self.reveal()
+            assert self.accessible and not self.is_fullscreen
+            actions.append("seek")
+            return {"position": position, "duration": 3600, "paused": False, "seek_confirmed": True}
+
+        async def fullscreen(self):
+            actions.append("fullscreen")
+            self.is_fullscreen = confirmed
+            return {"fullscreen_confirmed": confirmed, "capabilities": {"fullscreen": confirmed}}
+
+    async def run():
+        result = await player.control("seek", 1200)
+        assert result["position"] == 1200 and result["capabilities"]["fullscreen"] is confirmed
+        if not confirmed:
+            assert result["fullscreen_error"]
+        assert actions == ["native_placeholder", "seek", "fullscreen"]
+
+    player = Player(None, AX())
+    asyncio.run(run())
+
+
+def test_unavailable_nonfullscreen_frame_never_triggers_browser_exit(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from backend.cinema.playback import playback_error
+    from backend.tools.registry import ToolError
+
+    monkeypatch.setattr("backend.cinema.learned_player.asyncio.sleep", AsyncMock())
+
+    class Player(LearnedPlayer):
+        async def activate(self):
+            pass
+
+        async def page(self, **values):
+            return {"fullscreen": False}
+
+        async def nodes(self):
+            raise playback_error("cinema_frame_unavailable", "Not loaded")
+
+        async def exit_fullscreen(self):
+            raise AssertionError("A different window must not receive Exit")
+
+    with pytest.raises(ToolError, match="Not loaded"):
+        asyncio.run(Player(None, None).reveal())

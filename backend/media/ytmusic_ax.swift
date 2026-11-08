@@ -348,15 +348,16 @@ extension CGRect {
     var area: CGFloat { isNull ? 0 : width * height }
 }
 
-// Only the exact marked page in Safari's focused window and the iframe
-// selected on that page. Never return browser chrome or other tabs.
+// Only the window containing the exact marked page and its selected iframe.
+// Video fullscreen uses a separate AX dialog; the focused standard window can
+// contain only a placeholder. Never act on that placeholder or another tab.
 func cinemaPlayer(_ request: [String: Any], _ op: String, _ app: NSRunningApplication, _ root: AXUIElement) -> Never {
     guard (op == "cinema_snapshot" || app.isActive), let address = request["page"] as? String,
           let pageURL = URL(string: address), pageURL.scheme == "https",
           pageURL.fragment?.hasPrefix("chushpan_session=") == true,
           let frameHost = request["frame_host"] as? String, !frameHost.isEmpty,
-          let window = attr(root, kAXFocusedWindowAttribute) ?? attr(root, kAXMainWindowAttribute),
-          CFGetTypeID(window) == AXUIElementGetTypeID()
+          let focusedWindow = attr(root, kAXFocusedWindowAttribute) ?? attr(root, kAXMainWindowAttribute),
+          CFGetTypeID(focusedWindow) == AXUIElementGetTypeID()
     else { fail("cinema_page_unavailable") }
 
     func find(_ element: AXUIElement, _ depth: Int, _ matches: (AXUIElement) -> Bool) -> [AXUIElement] {
@@ -371,16 +372,75 @@ func cinemaPlayer(_ request: [String: Any], _ op: String, _ app: NSRunningApplic
         guard depth > 0 else { return [] }
         return children(element).flatMap { markedPages($0, depth - 1) }
     }
-    let windows = op == "cinema_snapshot" ?
-        (attr(root, kAXWindowsAttribute) as? [AXUIElement] ?? [window as! AXUIElement]) : [window as! AXUIElement]
-    let pages = windows.flatMap { markedPages($0, 10) }
-    guard pages.count == 1 else { fail("cinema_page_unavailable") }
-    let frames = frameHost == pageURL.host?.lowercased() ? [pages[0]] : find(pages[0], 18) {
+    let windows = attr(root, kAXWindowsAttribute) as? [AXUIElement] ?? [focusedWindow as! AXUIElement]
+    let owners = windows.flatMap { candidate in
+        markedPages(candidate, 10).map { (candidate, $0) }
+    }
+    if op == "cinema_exit_fullscreen" {
+        // The native placeholder belongs to this exact marked tab. It is a
+        // normal Safari control for exiting a video hidden in another Space.
+        guard owners.isEmpty else { fail("cinema_page_unavailable") }
+        let window = focusedWindow as! AXUIElement
+        let bars = find(window, 12) {
+            text($0, "AXIdentifier") == "WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD" &&
+                text($0, "AXValue") == address
+        }
+        guard bars.count == 1, app.isActive else { fail("cinema_page_unavailable") }
+        let placeholders = find(window, 8) {
+            text($0, "AXRole") == "AXStaticText" &&
+                fields($0).values.joined(separator: " ").range(
+                    of: "Нажмите для выхода из полноэкранного режима|Click to exit full.?screen",
+                    options: [.regularExpression, .caseInsensitive]) != nil
+        }
+        guard placeholders.count == 1 else { fail("cinema_page_unavailable") }
+        var target = placeholders[0]
+        if let parent = attr(target, kAXParentAttribute), CFGetTypeID(parent) == AXUIElementGetTypeID() {
+            let element = parent as! AXUIElement
+            if ["AXGroup", "AXTabGroup"].contains(text(element, "AXRole")), children(element).count == 1 {
+                target = element
+            }
+        }
+        _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+        guard let box = windowFrame(target), let windowBox = windowFrame(window) else { fail("cinema_geometry_unavailable") }
+        let visible = box.intersection(windowBox)
+        guard !visible.isEmpty else { fail("cinema_control_offscreen") }
+        let point = CGPoint(x: visible.midX, y: visible.midY)
+        guard let move = CGEvent(mouseEventSource:nil, mouseType:.mouseMoved, mouseCursorPosition:point, mouseButton:.left)
+        else { fail("cinema_control_unavailable") }
+        move.post(tap:.cghidEventTap)
+        Thread.sleep(forTimeInterval:0.06)
+        var hit: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(),Float(point.x),Float(point.y),&hit) == .success,
+              var element = hit else { fail("cinema_hit_unavailable") }
+        var matches = false
+        for _ in 0..<18 {
+            if CFEqual(element,target) { matches = true; break }
+            guard let parent = attr(element,kAXParentAttribute),CFGetTypeID(parent) == AXUIElementGetTypeID() else { break }
+            element = parent as! AXUIElement
+        }
+        guard matches,app.isActive else { fail("cinema_hit_changed") }
+        for kind in [CGEventType.leftMouseDown,.leftMouseUp] {
+            guard let event = CGEvent(mouseEventSource:nil,mouseType:kind,mouseCursorPosition:point,mouseButton:.left)
+            else { fail("cinema_control_unavailable") }
+            event.post(tap:.cghidEventTap)
+            Thread.sleep(forTimeInterval:0.06)
+        }
+        output(["ok":true])
+    }
+    guard owners.count == 1 else { fail("cinema_page_unavailable") }
+    let (window, page) = owners[0]
+    let frames = frameHost == pageURL.host?.lowercased() ? [page] : find(page, 18) {
         text($0, "AXRole") == "AXWebArea" &&
             URL(string: text($0, "AXURL"))?.host?.lowercased() == frameHost
     }
     guard frames.count == 1 else { fail("cinema_frame_unavailable") }
     let frame = frames[0]
+    if op != "cinema_snapshot",
+       !CFEqual(window, focusedWindow) || request["raise_window"] as? Bool == true {
+        // Raise the verified owner, which can be the fullscreen dialog.
+        // Raising the standard placeholder would take us away from the video.
+        _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+    }
     func playerChildren(_ element: AXUIElement) -> [AXUIElement] {
         children(element).filter { text($0, "AXRole") != "AXWebArea" }
     }
@@ -437,7 +497,7 @@ func cinemaPlayer(_ request: [String: Any], _ op: String, _ app: NSRunningApplic
             for (index, child) in playerChildren(element).enumerated() { visit(child, path + [index]) }
         }
         visit(frame, [])
-        output(["nodes": nodes])
+        output(["nodes": nodes, "window_role": text(window, "AXRole")])
     }
     guard let path = request["path"] as? [Int], path.count < 12,
           let expected = request["expected"] as? [String: String],
@@ -452,11 +512,6 @@ func cinemaPlayer(_ request: [String: Any], _ op: String, _ app: NSRunningApplic
     let actual = fields(target)
     guard expected.allSatisfy({ actual[$0.key, default: ""] == $0.value }),
           app.isActive else { fail("element_changed") }
-    if op == "cinema_hover", request["raise_window"] as? Bool == true {
-        // Leaving video fullscreen can keep another Safari window above the
-        // AX-focused window. Raise only the window containing our exact page.
-        _ = AXUIElementPerformAction(window as! AXUIElement, kAXRaiseAction as CFString)
-    }
     if op == "cinema_set_value" {
         guard role == "AXSlider", let value = request["value"] as? Double, value.isFinite,
               let minimum = attr(target, "AXMinValue") as? NSNumber,
@@ -471,7 +526,7 @@ func cinemaPlayer(_ request: [String: Any], _ op: String, _ app: NSRunningApplic
         output(["ok": true])
     }
     guard let box = windowFrame(target), let area = windowFrame(frame),
-          let windowBox = windowFrame(window as! AXUIElement)
+          let windowBox = windowFrame(window)
     else { fail("cinema_geometry_unavailable") }
     let visible = box.intersection(area).intersection(windowBox)
     guard !visible.isEmpty else { fail("cinema_control_offscreen") }
@@ -551,7 +606,7 @@ guard AXIsProcessTrusted() else { fail("accessibility_permission") }
 guard let app = running.first else { fail("app_closed") }
 let root = AXUIElementCreateApplication(app.processIdentifier)
 AXUIElementSetMessagingTimeout(root, 2)
-if ["cinema_snapshot", "cinema_press", "cinema_hover", "cinema_key", "cinema_set_value"].contains(op) {
+if ["cinema_snapshot", "cinema_press", "cinema_hover", "cinema_key", "cinema_set_value", "cinema_exit_fullscreen"].contains(op) {
     guard bundle == "com.apple.Safari" else { fail("invalid_request") }
     cinemaPlayer(request, op, app, root)
 }
