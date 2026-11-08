@@ -2150,6 +2150,9 @@ class Cinema:
 
         async with self.lock:
             await self.stop_tracking()
+            self.playback.transition(
+                PlaybackState.READY, "Проверяем сценарий выбранного источника."
+            )
             fresh = await self.db("detail", item["id"])
             episode = next(e for e in fresh["episodes"] if e["id"] == episode["id"])
             position = (

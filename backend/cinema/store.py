@@ -426,6 +426,9 @@ class CinemaStore:
     def diagnostic(self, stage, status, message, title_id="", episode_id="", session=""):
         if stage not in {
             "SOURCE_ATTEMPT",
+            "SITE_SEARCH",
+            "SITE_PLAYER",
+            "AUDIO",
             "CHECKING_REGION",
             "CHECKING_PLAYER",
             "READY",

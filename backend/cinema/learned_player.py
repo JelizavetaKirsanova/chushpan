@@ -791,7 +791,10 @@ class LearnedPlayer:
                         await stage("RESTORE_POSITION", "limited", result["message"])
                 else:
                     result["resume_confirmed"] = True
-                if target.get("auto_fullscreen", True):
+                if (
+                    target.get("auto_fullscreen", True)
+                    and result.get("resume_confirmed") is not False
+                ):
                     await stage("FULLSCREEN", "running", "Включаем полный экран видеоплеера.")
                     try:
                         full = await self.fullscreen()

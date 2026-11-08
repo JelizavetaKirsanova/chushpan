@@ -291,3 +291,91 @@ def test_homepage_is_never_a_watch_result(tmp_path):
             memory.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("scenario", ["resume", "seek_failure", "fallback"])
+def test_site_adapter_normal_watch_lifecycle_progress_and_fallback(tmp_path, monkeypatch, scenario):
+    from backend.cinema import service as module
+    from backend.cinema.learned_player import LearnedPlayer
+    from backend.cinema.playback import PlaybackState
+
+    calls = []
+
+    class Player(LearnedPlayer):
+        async def open(self, target):
+            calls.append(target)
+            self.session = object()
+            self.frame_host = "api.nextembed.ws"
+            self.engine = "venom_ax"
+            self.voice = "LostFilm"
+            self.report = {"player": target["recipe"]["player"], "players": ["Плеер 1", "Плеер 3"]}
+            diagnostic = target["diagnostic"]
+            await diagnostic("OPEN_SAFARI", "running", "Opening")
+            if scenario == "fallback" and len(calls) == 1:
+                raise ToolError("First player failed")
+            await diagnostic("DETECT_PLAYER", "success", "Found")
+            await diagnostic("PLAY", "running", "Playing")
+            await diagnostic("RESTORE_POSITION", "running", "Restoring")
+            restored = scenario != "seek_failure"
+            await diagnostic("RESTORE_POSITION", "success" if restored else "limited", "Position")
+            if restored:
+                await diagnostic("FULLSCREEN", "running", "Fullscreen")
+                await diagnostic("FULLSCREEN", "success", "Verified")
+            self.capabilities = {"play": True, "seek": True, "fullscreen": restored}
+            self.last_sample = {
+                "position": target["position"] + 1 if restored else 1,
+                "duration": 3500,
+                "paused": False,
+                "observed_at": 1000,
+                "content_verified": True,
+                "playback_confirmed": True,
+                "resume_confirmed": restored,
+                "capabilities": self.capabilities,
+                "message": "Playing",
+            }
+            return self.last_sample
+
+        async def sample(self):
+            return self.last_sample
+
+        async def detach(self):
+            self.session = None
+
+    async def discover(*args):
+        return [{"url": "https://kinogo.online/serialy/show.html"}]
+
+    async def run():
+        service, memory, _ = setup(tmp_path)
+        try:
+            await service.db(
+                "save_source",
+                {
+                    "name": "Kinogo",
+                    "base_url": "https://kinogo.online",
+                    "adapter": "html5",
+                    "access_status": "FREE",
+                },
+            )
+            item = await service.db(
+                "add", {"title": "Title", "kind": "series", "season": 1, "episode": 1}
+            )
+            episode = item["current"]
+            await service.db("progress", episode["id"], 90, 3500, "manual")
+            monkeypatch.setattr(module, "LearnedPlayer", Player)
+            monkeypatch.setattr(module, "discover_pages", discover)
+            result = await service.resume(item["id"], episode["id"])
+            assert result["playback_confirmed"] is True
+            assert service.playback.state == PlaybackState.PLAYING
+            assert calls[0]["position"] == 87
+            actual = await service.db("detail", item["id"])
+            assert actual["current"]["position"] == (90 if scenario == "seek_failure" else 88)
+            assert actual["site_recipe"]["voice"] == "LostFilm"
+            assert len(await service.db("site_templates")) == 1
+            if scenario == "fallback":
+                assert [call["recipe"]["player"] for call in calls] == ["Плеер 1", "Плеер 3"]
+                assert any(row["stage"] == "SITE_PLAYER" for row in await service.db("diagnostics"))
+        finally:
+            await service.close()
+            memory.close()
+
+    asyncio.run(run())
