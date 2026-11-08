@@ -57,7 +57,16 @@ PAGE = r"""(request => {
    const frame=[...document.querySelectorAll('iframe')].find(e=>{
      try{return visible(e)&&new URL(e.src).hostname===frames[0].host;}catch{return false;}
    });
-   frame?.scrollIntoView({block:'end',inline:'start'});
+   frame?.scrollIntoView({block:request.controls?'start':'end',inline:'start'});
+   if(frame&&request.controls){
+     // Keep the frame's top controls below a real fixed/sticky page header.
+     const headers=[...document.querySelectorAll('body *')].filter(visible).flatMap(e=>{
+       if(!['fixed','sticky'].includes(getComputedStyle(e).position))return [];
+       const r=e.getBoundingClientRect();
+       return r.top<=1&&r.bottom>0&&r.height<innerHeight*.35&&r.width>=innerWidth*.5?[r.bottom]:[];
+     });
+     if(headers.length)scrollBy(0,-Math.ceil(Math.max(...headers))-8);
+   }
  }
  const active=tabs.find(e=>e.matches('.current,[aria-selected=true]'));
  const fs=document.fullscreenElement||document.webkitFullscreenElement||
@@ -408,9 +417,11 @@ class LearnedPlayer:
             state = after
         raise ToolError("Истекло время восстановления позиции плеера.")
 
-    async def reveal(self):
+    async def reveal(self, *, controls=False):
         await self.activate()
-        await self.page(player=self.report.get("player", ""), prepare=False, reveal=True)
+        await self.page(
+            player=self.report.get("player", ""), prepare=False, reveal=True, controls=controls
+        )
         last_error = None
         for _ in range(12):
             try:
@@ -640,32 +651,42 @@ class LearnedPlayer:
         elif voice:
             self.voice = label(voice)
         self.audio_tracks = [self.voice] if self.voice else []
+        return nodes
+
+    async def discover_audio_tracks(self, nodes):
+        # The menu is populated after media metadata loads on some players.
+        # Read it after playback confirmation, not from the initial skeleton.
         control = voice_option(nodes)
         if control:
-            previous = {label(node) for node in nodes}
+            await self.reveal(controls=True)
+            nodes = await self.nodes()
+            control = voice_option(nodes)
+            if not control:
+                raise ToolError("Плеер изменил меню озвучки во время проверки.")
+            previous = {tuple(node["path"]) for node in nodes}
+            opened = False
             try:
                 await self.press(control)
-                await asyncio.sleep(0.2)
-                menu = await self.nodes()
-                self.audio_tracks = list(
-                    dict.fromkeys(
-                        [
-                            *self.audio_tracks,
-                            *[
-                                label(node)
-                                for node in menu
-                                if node.get("role") == "AXStaticText"
-                                and label(node) not in previous
-                                and 1 < len(label(node)) <= 100
-                                and not re.search(r"[:/]|^\d|сезон|серия", label(node), re.I)
-                            ],
-                        ]
-                    )
-                )[:30]
+                opened = True
+                for _ in range(10):
+                    await asyncio.sleep(0.2)
+                    menu = await self.nodes()
+                    options = [
+                        label(node)
+                        for node in menu
+                        if node.get("role") == "AXStaticText"
+                        and tuple(node["path"]) not in previous
+                        and node["path"][: len(control["path"]) - 1] == control["path"][:-1]
+                        and 1 < len(label(node)) <= 100
+                        and not re.search(r"[:/]|^\d|сезон|серия", label(node), re.I)
+                    ]
+                    if options:
+                        break
+                self.audio_tracks = list(dict.fromkeys([*self.audio_tracks, *options]))[:30]
             finally:
-                await self.press(control)
-            nodes = await self.nodes()
-        return nodes
+                if opened:
+                    await self.press(control)
+                await self.reveal()
 
     async def set_voice(self, voice):
         if voice not in self.audio_tracks:
@@ -676,7 +697,7 @@ class LearnedPlayer:
             await self.control("fullscreen")
         full = {}
         try:
-            await self.reveal()
+            await self.reveal(controls=True)
             nodes = await self.nodes()
             control = voice_option(nodes)
             if not control:
@@ -685,6 +706,7 @@ class LearnedPlayer:
             self.voice = voice
             self.last_sample = None
             self.pending_next = self.next_clock = None
+            await self.reveal()
             result = await self.confirm(await self.nodes())
             if before["position"] > 3 and abs(result["position"] - before["position"]) > 3:
                 result = await self.seek(before["position"])
@@ -805,13 +827,24 @@ class LearnedPlayer:
         if result:
             return result
         for _ in range(2):
-            button = exact([n for n in nodes if n.get("role") == "AXButton"], PLAY)
-            if not button and self.frame_host != "api.nextembed.ws":
+            # Some players expose a button's label only while it is hovered.
+            # Identify that real control before pressing it; the middle of an
+            # iframe can instead be a loading surface or an unrelated overlay.
+            button = await self.action_button(nodes, PLAY)
+            if button:
+                await self.press(button, pointer=True)
+            elif self.engine == "venom_ax":
+                await self.key("play_pause")
+            else:
                 raise ToolError("В плеере нет однозначной кнопки воспроизведения.")
-            await self.press(button or nodes[0])
-            result, nodes = await self.observe_playback(nodes, 7)
+            result, nodes = await self.observe_playback(await self.nodes(), 15)
             if result:
                 return result
+        if not self.verified_state(nodes):
+            raise ToolError(
+                "Плеер не загрузил полный таймер выбранной серии после нажатия Play. "
+                "Это может быть загрузка видео или недоступность потока."
+            )
         raise ToolError("Таймер выбранной серии не пошёл после запуска плеера Safari.")
 
     async def open(self, target):
@@ -847,12 +880,14 @@ class LearnedPlayer:
                         raise ToolError(result.get("message", "HTML5-плеер не подтвердил запуск."))
                     self.capabilities = (await self.html5.sample()).get("capabilities", {})
                 else:
-                    await self.reveal()
+                    await self.reveal(controls=True)
                     nodes = await self.prepare(recipe, self.episode)
+                    await self.reveal()
                     await stage(
                         "PLAY", "running", "Проверяем запуск полного видео по движению времени."
                     )
                     result = await self.confirm(nodes)
+                    await self.discover_audio_tracks(await self.nodes())
                     self.capabilities = {
                         "play": True,
                         "pause": self.engine == "venom_ax",
@@ -911,6 +946,7 @@ class LearnedPlayer:
                         if full.get("fullscreen_confirmed") is not True:
                             raise ToolError("Плеер не подтвердил полноэкранное состояние видео.")
                         result.update(fullscreen_confirmed=full.get("fullscreen_confirmed") is True)
+                        self.capabilities.update(full.get("capabilities", {}))
                         self.capabilities["fullscreen"] = result["fullscreen_confirmed"]
                         await stage(
                             "FULLSCREEN",

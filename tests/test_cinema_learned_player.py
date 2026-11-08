@@ -88,7 +88,7 @@ def test_resume_precedes_fullscreen_and_unverified_fullscreen_is_reported(auto_f
         async def open_page(self, *args):
             self.engine = "venom_ax"
 
-        async def reveal(self):
+        async def reveal(self, **kwargs):
             pass
 
         async def prepare(self, *args):
@@ -206,7 +206,7 @@ def test_audio_menu_uses_normal_layout_and_restores_player_fullscreen():
             assert action == "fullscreen"
             self.is_fullscreen = False
 
-        async def reveal(self):
+        async def reveal(self, **kwargs):
             assert not self.is_fullscreen
 
         async def nodes(self):
@@ -231,3 +231,86 @@ def test_audio_menu_uses_normal_layout_and_restores_player_fullscreen():
     assert result["voice_confirmed"] and result["fullscreen_confirmed"]
     assert player.voice == "LostFilm" and player.is_fullscreen
     assert result["position"] == 901
+
+
+def test_play_discovers_hover_label_and_waits_for_full_media_clock(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("backend.cinema.learned_player.asyncio.sleep", AsyncMock())
+
+    class Player(LearnedPlayer):
+        hovered = False
+        started = False
+        reads = 0
+        pressed = []
+
+        async def nodes(self):
+            self.reads += int(self.started)
+            loaded = self.started and self.reads > 5
+            tree = nodes("1 сезон", "2 серия", "LostFilm")
+            tree += nodes(f"00:{self.reads:02d} / 58:42" if loaded else "04:06")
+            tree = [{**node, "path": [0, 2, i]} for i, node in enumerate(tree)]
+            button = {"role": "AXButton", "path": [0, 1, 8]}
+            if loaded:
+                button["title"] = "Пауза (пробел)"
+            elif self.hovered:
+                button["title"] = "Смотреть (пробел) или клик в любом месте"
+            return [{"role": "AXWebArea", "path": []}, *tree, button]
+
+        async def press(self, node, *, pointer=False, op="cinema_press"):
+            assert node["path"] == [0, 1, 8]
+            if op == "cinema_hover":
+                self.hovered = True
+            else:
+                assert pointer and self.hovered
+                self.pressed.append(node)
+                self.started = True
+
+    async def run():
+        player = Player(None, None)
+        player.episode = {"season": 1, "episode": 2}
+        player.voice, player.minimum = "LostFilm", 720
+        result = await player.confirm(await player.nodes())
+        assert result["playback_confirmed"] and result["duration"] == 3522
+        assert result["position"] > result["before"]
+        assert len(player.pressed) == 1
+
+    asyncio.run(run())
+
+
+def test_audio_tracks_wait_for_dynamic_menu_and_close_it(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("backend.cinema.learned_player.asyncio.sleep", AsyncMock())
+    control = {"role": "AXStaticText", "value": "LostFilm", "path": [0, 1, 4]}
+    initial = [{"role": "AXStaticText", "value": "2 серия", "path": [0, 1, 2]}, control]
+
+    class Player(LearnedPlayer):
+        reads = 0
+        menu_open = False
+
+        async def reveal(self, **kwargs):
+            pass
+
+        async def press(self, node, **kwargs):
+            assert node == control
+            self.menu_open = not self.menu_open
+
+        async def nodes(self):
+            if not self.menu_open:
+                return initial
+            self.reads += 1
+            return initial + (
+                [{"role": "AXStaticText", "value": "Hurtom (укр)", "path": [0, 1, 5, 0]}]
+                if self.reads > 2
+                else []
+            )
+
+    async def run():
+        player = Player(None, None)
+        player.voice, player.audio_tracks = "LostFilm", ["LostFilm"]
+        await player.discover_audio_tracks(initial)
+        assert player.audio_tracks == ["LostFilm", "Hurtom (укр)"]
+        assert player.reads == 3 and not player.menu_open
+
+    asyncio.run(run())
