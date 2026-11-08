@@ -88,6 +88,9 @@ def test_resume_precedes_fullscreen_and_unverified_fullscreen_is_reported(auto_f
         async def open_page(self, *args):
             self.engine = "venom_ax"
 
+        async def reveal(self):
+            pass
+
         async def prepare(self, *args):
             return []
 
@@ -140,7 +143,8 @@ def test_fullscreen_controls_preserve_safari_video_window():
 
     async def run():
         tabs = type("Tabs", (), {"_owned": AsyncMock(return_value="sent")})()
-        player = LearnedPlayer(None, None, tabs=tabs)
+        ax = type("AX", (), {"cinema": AsyncMock(return_value={"frontmost": True})})()
+        player = LearnedPlayer(None, ax, tabs=tabs)
         player.page = AsyncMock(return_value={"fullscreen": True})
         await player.activate()
         action = tabs._owned.call_args.args[1]
@@ -151,3 +155,79 @@ def test_fullscreen_controls_preserve_safari_video_window():
         assert "set current tab" in tabs._owned.call_args.args[1]
 
     asyncio.run(run())
+
+
+def test_site_autonext_requires_countdown_adjacent_episode_voice_and_advancing_clock():
+    player = LearnedPlayer(None, None)
+    player.engine = "venom_ax"
+    player.episode = {"season": 1, "episode": 1}
+    player.voice = "LostFilm"
+    player.minimum = 720
+    player.report = {"heading": "Title (1-5 сезон)"}
+    old = nodes(
+        "1 сезон",
+        "1 серия",
+        "LostFilm",
+        "58:59 / 59:02",
+        "Title (1 сезон) - 2 серия",
+        "Следующая серия запустится через",
+    )
+    player.last_sample = player.verified_state(old)
+    assert player.last_sample["position"] == 3539
+    wrong = nodes("1 сезон", "3 серия", "LostFilm", "00:01 / 58:42")
+    assert player.site_advance(wrong) is None
+    assert player.site_advance(nodes("1 сезон", "2 серия", "Other", "00:01 / 58:42")) is None
+    first = player.site_advance(nodes("1 сезон", "2 серия", "LostFilm", "00:01 / 58:42"))
+    assert first["observation_stale"] and "site_next_episode" not in first
+    assert (
+        player.site_advance(nodes("1 сезон", "2 серия", "LostFilm", "00:01 / 58:42")).get(
+            "site_next_episode"
+        )
+        is None
+    )
+    second = player.site_advance(nodes("1 сезон", "2 серия", "LostFilm", "00:02 / 58:42"))
+    assert second["site_next_episode"] == {"season": 1, "episode": 2}
+    assert second["position"] == 3539 and second["ended"] is False
+    player.pending_next = None
+    assert player.site_advance(nodes("1 сезон", "2 серия", "LostFilm", "00:03 / 58:42")) is None
+
+
+def test_audio_menu_uses_normal_layout_and_restores_player_fullscreen():
+    class Player(LearnedPlayer):
+        is_fullscreen = True
+
+        async def page(self, **values):
+            return {"fullscreen": self.is_fullscreen}
+
+        async def sample(self):
+            return {"position": 900, "duration": 3600, "paused": False}
+
+        async def control(self, action, position=0):
+            assert action == "fullscreen"
+            self.is_fullscreen = False
+
+        async def reveal(self):
+            assert not self.is_fullscreen
+
+        async def nodes(self):
+            assert not self.is_fullscreen
+            return [{"role": "AXStaticText", "value": self.voice, "path": [0, 1, 2]}]
+
+        async def select(self, nodes, menu, desired):
+            assert not self.is_fullscreen
+
+        async def confirm(self, nodes):
+            self.playing = True
+            return {"position": 901, "duration": 3600, "paused": False}
+
+        async def fullscreen(self):
+            self.is_fullscreen = True
+            return {"fullscreen_confirmed": True, "capabilities": {"fullscreen": True}}
+
+    player = Player(None, None)
+    player.voice = "Original"
+    player.audio_tracks = ["Original", "LostFilm"]
+    result = asyncio.run(player.set_voice("LostFilm"))
+    assert result["voice_confirmed"] and result["fullscreen_confirmed"]
+    assert player.voice == "LostFilm" and player.is_fullscreen
+    assert result["position"] == 901

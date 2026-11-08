@@ -402,3 +402,31 @@ def test_tavily_snippet_does_not_validate_wrong_episode():
         assert rows[0]["kind"] == "error" and rows[0]["match"] == 0 and not rows[0]["allowed"]
 
     asyncio.run(run())
+
+
+def test_automatic_search_refuses_keychain_dialog_even_inside_explicit_action():
+    from backend.permission_policy import requests_allowed
+
+    async def run():
+        c = credentials()
+        c.save(TOKEN)
+        api = TavilySearch(
+            c,
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json={"results": []})
+            ),
+        )
+        token = requests_allowed.set(True)
+        try:
+            assert await api.search("Title", "EE", "ru") == []
+            assert requests_allowed.get() is True
+            query = next(
+                query
+                for op, query in reversed(c.security().calls)
+                if op == "copy" and query.get("data")
+            )
+            assert query["ui"] == "fail"
+        finally:
+            requests_allowed.reset(token)
+
+    asyncio.run(run())

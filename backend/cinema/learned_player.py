@@ -224,6 +224,8 @@ class LearnedPlayer:
         self.capabilities = {}
         self.playing = False
         self.audio_tracks = []
+        self.pending_next = None
+        self.next_clock = None
 
     async def javascript(self, script):
         raw = await self.tabs._owned(
@@ -318,8 +320,11 @@ class LearnedPlayer:
             'activate\nreturn "sent"'
             if fullscreen
             else (
-                "set current tab of window id (ownerID as integer) to ownedTab\n"
-                "try\nset index of window id (ownerID as integer) to 1\nend try\n"
+                "if URL of current tab of window id (ownerID as integer) "
+                "is not currentAddress then\n"
+                "set current tab of window id (ownerID as integer) to ownedTab\nend if\n"
+                "try\nif id of window 1 is not (ownerID as integer) then\n"
+                "set index of window id (ownerID as integer) to 1\nend if\nend try\n"
                 'activate\nreturn "sent"'
             )
         )
@@ -329,6 +334,16 @@ class LearnedPlayer:
         )
         if result != "sent":
             raise ToolError("Учебная вкладка Safari закрыта или изменила адрес.")
+        status = await self.ax.cinema("status")
+        if not status.get("frontmost"):
+            pids = status.get("pids", [])
+            if len(pids) != 1:
+                raise ToolError("Safari не подтвердил единственный процесс плеера.")
+            await self.ax.cinema(
+                "desktop_app", target_bundle="com.apple.Safari", pid=pids[0], action="switch"
+            )
+            if await self.tabs._owned(self.session, action) != "sent":
+                raise ToolError("Учебная вкладка Safari закрыта или изменила адрес.")
 
     async def nodes(self):
         if not self.frame_host:
@@ -396,9 +411,26 @@ class LearnedPlayer:
     async def reveal(self):
         await self.activate()
         await self.page(player=self.report.get("player", ""), prepare=False, reveal=True)
-        nodes = await self.nodes()
-        if nodes:
-            await self.press(nodes[0], op="cinema_hover")
+        last_error = None
+        for _ in range(12):
+            try:
+                nodes = await self.nodes()
+                if nodes:
+                    await self.press(nodes[0], op="cinema_hover")
+                    return
+            except ToolError as error:
+                if getattr(error, "code", "") not in {
+                    "cinema_page_unavailable",
+                    "cinema_frame_unavailable",
+                    "cinema_control_offscreen",
+                    "cinema_geometry_unavailable",
+                    "cinema_hit_unavailable",
+                    "cinema_hit_changed",
+                }:
+                    raise
+                last_error = error
+            await asyncio.sleep(0.15)
+        raise last_error or ToolError("Плеер не подтвердил видимость элементов управления.")
 
     async def seek(self, position):
         if not math.isfinite(position) or position < 0:
@@ -639,21 +671,41 @@ class LearnedPlayer:
         if voice not in self.audio_tracks:
             raise ToolError("Эта озвучка не обнаружена в выбранном плеере.")
         before = await self.sample()
-        await self.reveal()
-        nodes = await self.nodes()
-        control = voice_option(nodes)
-        if not control:
-            raise ToolError("Плеер не показал меню озвучки.")
-        await self.select(nodes, re.escape(label(control)), voice)
-        self.voice = voice
-        self.last_sample = None
-        result = await self.confirm(await self.nodes())
-        if before["position"] > 3 and abs(result["position"] - before["position"]) > 3:
-            result = await self.seek(before["position"])
+        was_fullscreen = (await self.page()).get("fullscreen") is True
+        if was_fullscreen:
+            await self.control("fullscreen")
+        full = {}
+        try:
+            await self.reveal()
+            nodes = await self.nodes()
+            control = voice_option(nodes)
+            if not control:
+                raise ToolError("Плеер не показал меню озвучки.")
+            await self.select(nodes, re.escape(label(control)), voice)
+            self.voice = voice
+            self.last_sample = None
+            self.pending_next = self.next_clock = None
+            result = await self.confirm(await self.nodes())
+            if before["position"] > 3 and abs(result["position"] - before["position"]) > 3:
+                result = await self.seek(before["position"])
+            self.last_sample = result
+        finally:
+            if was_fullscreen and self.last_sample and self.playing:
+                try:
+                    full = await self.fullscreen()
+                except ToolError as error:
+                    full = {"fullscreen_error": str(error), "capabilities": {"fullscreen": False}}
         return {
             **result,
+            **full,
             "voice_confirmed": True,
-            "capabilities": {"audio_tracks": self.audio_tracks},
+            "message": "Плеер подтвердил звуковую дорожку."
+            + (
+                " Полный экран требует повторного включения."
+                if full.get("fullscreen_error")
+                else ""
+            ),
+            "capabilities": {"audio_tracks": self.audio_tracks, **full.get("capabilities", {})},
         }
 
     def verified_state(self, nodes):
@@ -667,7 +719,56 @@ class LearnedPlayer:
             return None
         if self.voice and not exact(nodes, re.escape(self.voice)):
             return None
+        if (
+            self.engine == "venom_ax"
+            and self.episode["season"]
+            and state["duration"] - state["position"] <= 25
+            and exact(nodes, "Следующая серия запустится через")
+        ):
+            for node in nodes:
+                match = re.search(r"\((\d+) сезон\)\s*-\s*(\d+) серия", label(node))
+                if (
+                    match
+                    and int(match[1]) == self.episode["season"]
+                    and int(match[2]) == self.episode["episode"] + 1
+                    and title_agrees(
+                        self.report.get("heading", ""), {"title": label(node)[: match.start()]}
+                    )
+                ):
+                    self.pending_next = (int(match[1]), int(match[2]), time.monotonic())
         return state
+
+    def site_advance(self, nodes):
+        """Recognize a reviewed player's own countdown followed by the adjacent episode."""
+        pending = self.pending_next
+        state = player_state(nodes)
+        if not (
+            pending
+            and self.last_sample
+            and time.monotonic() - pending[2] <= 150
+            and state
+            and state["duration"] >= self.minimum
+            and state["position"] <= 120
+            and exact(nodes, rf"{pending[0]} сезон")
+            and exact(nodes, rf"{pending[1]} серия")
+            and (not self.voice or exact(nodes, re.escape(self.voice)))
+        ):
+            return None
+        before = self.next_clock
+        self.next_clock = state
+        result = {
+            **self.last_sample,
+            "observation_stale": True,
+            "ended": False,
+            "message": "Сайт выбрал следующую серию. Проверяем движение её таймера.",
+        }
+        if (
+            before
+            and before["duration"] == state["duration"]
+            and 0 < state["position"] - before["position"] <= 65
+        ):
+            result["site_next_episode"] = {"season": pending[0], "episode": pending[1]}
+        return result
 
     async def observe_playback(self, nodes, attempts):
         before = self.verified_state(nodes)
@@ -746,6 +847,7 @@ class LearnedPlayer:
                         raise ToolError(result.get("message", "HTML5-плеер не подтвердил запуск."))
                     self.capabilities = (await self.html5.sample()).get("capabilities", {})
                 else:
+                    await self.reveal()
                     nodes = await self.prepare(recipe, self.episode)
                     await stage(
                         "PLAY", "running", "Проверяем запуск полного видео по движению времени."
@@ -840,6 +942,10 @@ class LearnedPlayer:
                     return {**self.last_sample, "observation_stale": True}
             raise
         state = self.verified_state(nodes)
+        if not state:
+            advance = self.site_advance(nodes)
+            if advance:
+                return advance
         if not state and nodes:
             if (await self.ax.cinema("status")).get("frontmost"):
                 await self.press(nodes[0], op="cinema_hover")

@@ -8,6 +8,7 @@ import re
 import threading
 import time
 
+from backend.permission_policy import requests_allowed
 from backend.tools.registry import ToolError
 
 
@@ -110,7 +111,10 @@ class TavilyCredentials:
     def read(self):
         with self._lock:
             s = self.security()
-            code, data = s.SecItemCopyMatching({**self.query(), s.kSecReturnData: True}, None)
+            query = {**self.query(), s.kSecReturnData: True}
+            if not requests_allowed.get():
+                query[s.kSecUseAuthenticationUI] = s.kSecUseAuthenticationUIFail
+            code, data = s.SecItemCopyMatching(query, None)
             if code == s.errSecItemNotFound:
                 raise ToolError("Добавь ключ Tavily в медиатеке → Поиск и Safari.")
             if code != s.errSecSuccess:

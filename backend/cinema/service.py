@@ -2322,7 +2322,10 @@ class Cinema:
         self.playback.transition(PlaybackState.SEARCHING, "Ищем сохранённый источник просмотра.")
         try:
             result = await self._resume(*args, **kwargs)
-            if self.playback.state == PlaybackState.SEARCHING:
+            if not self.session and self.playback.state not in {
+                PlaybackState.BLOCKED,
+                PlaybackState.FAILED,
+            }:
                 self.playback.transition(
                     PlaybackState.BLOCKED,
                     result.get("message", "Выбери источник."),
@@ -3157,7 +3160,11 @@ class Cinema:
                     self.session["target"]["link"]["id"],
                     voice,
                 )
-                return {**result, "message": "Плеер подтвердил звуковую дорожку."}
+                self.session.source.capabilities.update(result.get("capabilities") or {})
+                return {
+                    **result,
+                    "message": result.get("message", "Плеер подтвердил звуковую дорожку."),
+                }
             action = value.get("action")
             if action == "close":
                 await self.stop_tracking()
@@ -3199,7 +3206,9 @@ class Cinema:
         if state.get("observation_stale"):
             self.playback.transition(
                 PlaybackState.WAITING_FOR_PLAYER,
-                "Вкладка плеера в фоне. Сохранена последняя подтверждённая позиция.",
+                state.get(
+                    "message", "Вкладка плеера в фоне. Сохранена последняя подтверждённая позиция."
+                ),
             )
         await self.save(state, "ended" if state.get("ended") else event)
         return state
@@ -3223,7 +3232,11 @@ class Cinema:
                         await self.stop_tracking(flush=False)
                         await self.publish()
                         return
-                    ended_target = self.session["target"] if state.get("ended") else None
+                    ended_target = (
+                        self.session["target"]
+                        if (state.get("ended") or state.get("site_next_episode"))
+                        else None
+                    )
                     await self.publish()
                 if ended_target:
                     await self.finished(ended_target, (await self.db("preferences")).auto_next)

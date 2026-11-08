@@ -6,6 +6,7 @@ import json
 import httpx
 
 from backend.cinema.models import web_url
+from backend.permission_policy import requests_allowed
 from backend.tools.registry import ToolError
 
 TAVILY = "https://api.tavily.com"
@@ -122,23 +123,27 @@ class TavilySearch:
         return [text[:400]]
 
     async def search(self, query, region, language):
-        data = await self.request(
-            "POST",
-            "/search",
-            {
-                "query": query[:400],
-                "search_depth": "basic",
-                "auto_parameters": False,
-                "topic": "general",
-                "max_results": 5,
-                "include_answer": False,
-                "include_raw_content": False,
-                "include_images": False,
-                "safe_search": True,
-                "language": language,
-                "include_usage": True,
-            },
-        )
+        permission_token = requests_allowed.set(False)
+        try:
+            data = await self.request(
+                "POST",
+                "/search",
+                {
+                    "query": query[:400],
+                    "search_depth": "basic",
+                    "auto_parameters": False,
+                    "topic": "general",
+                    "max_results": 5,
+                    "include_answer": False,
+                    "include_raw_content": False,
+                    "include_images": False,
+                    "safe_search": True,
+                    "language": language,
+                    "include_usage": True,
+                },
+            )
+        finally:
+            requests_allowed.reset(permission_token)
         rows = data.get("results")
         if not isinstance(rows, list):
             raise TavilyError("invalid_response", "В ответе Tavily нет списка результатов поиска.")
@@ -152,7 +157,11 @@ class TavilySearch:
         return urls
 
     async def check(self):
-        data = await self.request("GET", "/usage")
+        permission_token = requests_allowed.set(True)
+        try:
+            data = await self.request("GET", "/usage")
+        finally:
+            requests_allowed.reset(permission_token)
         key = data.get("key")
         if not isinstance(key, dict):
             raise TavilyError("invalid_response", "Tavily не подтвердил сведения о ключе.")
