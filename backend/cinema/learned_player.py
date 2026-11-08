@@ -1053,7 +1053,14 @@ class LearnedPlayer:
             self.pipeline_phase = name
             self.report["pipeline_phase"] = name
             if diagnostic:
-                await diagnostic(name, status, message)
+                try:
+                    await diagnostic(name, status, message)
+                except (ValueError, OSError):
+                    if not self.playing:
+                        raise
+                    self.report["diagnostic_warning"] = (
+                        "Не удалось записать этап после старта видео."
+                    )
 
         try:
             async with asyncio.timeout(180):
@@ -1075,6 +1082,7 @@ class LearnedPlayer:
                     )
                     if not result.get("playback_confirmed"):
                         raise ToolError(result.get("message", "HTML5-плеер не подтвердил запуск."))
+                    self.playing = True
                     self.capabilities = (await self.html5.sample()).get("capabilities", {})
                 else:
                     await self.reveal(controls=True)
@@ -1260,7 +1268,7 @@ class LearnedPlayer:
             self.report.update(result)
             self.last_sample = result
             return result
-        except TimeoutError:
+        except (ToolError, TimeoutError, ValueError, OSError) as error:
             if self.last_sample and self.playing:
                 # Optional controls cannot discard a page whose full video was
                 # already confirmed. A fresh poll will distinguish buffering.
@@ -1270,8 +1278,9 @@ class LearnedPlayer:
                     "observation_stale": True,
                     "buffering": True,
                     "playback_confirmed": False,
-                    "message": "Видео запускалось; проверка настроек превысила ожидание. "
-                    "Остаёмся на этой странице.",
+                    "post_start_error": str(error),
+                    "message": "Видео запускалось, но последняя проверка не завершилась. "
+                    "Сохраняем страницу и ожидаем плеер.",
                 }
                 self.report.update(result)
                 return result

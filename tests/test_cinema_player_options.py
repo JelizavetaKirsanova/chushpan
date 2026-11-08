@@ -298,3 +298,26 @@ def test_iframe_recovery_stays_on_exact_url_and_invalidates_old_quality(fullscre
     assert result["capabilities"]["fullscreen"] is not fullscreen_error
     player.open_page.assert_not_awaited()
     player.detach.assert_not_awaited()
+
+
+def test_late_resume_confirmation_after_optional_failure_is_not_blocked():
+    from backend.cinema.playback import PlaybackManager, PlaybackState
+
+    manager = PlaybackManager()
+    manager.transition(PlaybackState.READY)
+    for name, status in [
+        ("OPEN_SAFARI", "running"),
+        ("DETECT_PLAYER", "success"),
+        ("PLAY", "running"),
+        ("PLAYING_CONFIRMED", "success"),
+        ("RESTORE_POSITION", "running"),
+        ("RESTORE_POSITION", "limited"),
+        ("QUALITY_SELECTED", "limited"),
+        ("RESTORE_POSITION", "success"),
+        ("PLAYING_CONFIRMED", "success"),
+        ("FULLSCREEN", "running"),
+        ("FULLSCREEN_CONFIRMED", "success"),
+    ]:
+        manager.stage(name, status, name)
+    assert manager.state == PlaybackState.ENTERING_FULLSCREEN
+    assert manager.snapshot()["pipeline_phase"] == "FULLSCREEN_CONFIRMED"

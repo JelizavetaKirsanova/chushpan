@@ -409,6 +409,12 @@ class PlaybackManager:
             self.message = message
             self.revision += 1
             return
+        if name in {"RESTORE_POSITION", "FULLSCREEN"} and status in {"limited", "failed"}:
+            # Optional playback controls must not put a moving video into a
+            # source-validation BLOCKED state. Later confirmation is allowed.
+            self.message = message
+            self.revision += 1
+            return
         states = {
             "OPEN_SAFARI": PlaybackState.OPENING,
             "OPEN_NATIVE": PlaybackState.OPENING,
