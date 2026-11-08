@@ -257,6 +257,7 @@ class LearnedPlayer:
         self.window_role = ""
         self.original_language = ""
         self.pipeline_phase = ""
+        self.auto_max_quality = False
 
     async def javascript(self, script):
         raw = await self.tabs._owned(
@@ -837,6 +838,7 @@ class LearnedPlayer:
         )[:3]
         result = None
         last_error = None
+        quality = {"status": "disabled", "maximum_confirmed": False}
         try:
             for candidate in candidates:
                 try:
@@ -864,6 +866,21 @@ class LearnedPlayer:
                     last_error = error
             if result is None:
                 raise last_error or ToolError("Ни одна доступная дорожка не подтвердила запуск.")
+            # A different audio stream can expose different resolutions. Never
+            # carry the previous stream's maximum claim across this change.
+            if self.auto_max_quality:
+                try:
+                    quality = await QualityController(self).select_maximum()
+                    if quality.get("playback_confirmed"):
+                        result.update(self.last_sample)
+                except (ToolError, TimeoutError) as error:
+                    quality = {
+                        "status": "unverified",
+                        "maximum_confirmed": False,
+                        "error": str(error),
+                    }
+            quality["stream_resolution_verified"] = False
+            self.capabilities["quality"] = quality
         finally:
             if was_fullscreen and self.last_sample and self.playing:
                 try:
@@ -885,7 +902,11 @@ class LearnedPlayer:
                 if full.get("fullscreen_error")
                 else ""
             ),
-            "capabilities": {"audio_tracks": self.audio_tracks, **full.get("capabilities", {})},
+            "capabilities": {
+                "audio_tracks": self.audio_tracks,
+                "quality": quality,
+                **full.get("capabilities", {}),
+            },
         }
 
     def verified_state(self, nodes):
@@ -1056,6 +1077,7 @@ class LearnedPlayer:
         self.episode = target["episode"]
         self.voice = recipe.voice
         self.original_language = (target["item"].get("metadata") or {}).get("original_language", "")
+        self.auto_max_quality = target.get("auto_max_quality", True)
         runtime = (target["item"].get("metadata") or {}).get("runtime", 0)
         self.minimum = max(12 * 60 if self.episode["season"] else 45 * 60, runtime * 60 * 0.65)
         diagnostic = target.get("diagnostic")
@@ -1254,11 +1276,7 @@ class LearnedPlayer:
                     }.get(quality.get("status"), "")
                     if note:
                         result["message"] += " " + note
-                if (
-                    target.get("auto_fullscreen", True)
-                    and result.get("resume_confirmed") is not False
-                    and result.get("playback_confirmed") is True
-                ):
+                if target.get("auto_fullscreen", True) and result.get("playback_confirmed") is True:
                     await stage("FULLSCREEN", "running", "Включаем полный экран видеоплеера.")
                     try:
                         full = await self.fullscreen()

@@ -133,6 +133,105 @@ def test_absent_or_auto_only_quality_does_not_claim_maximum(menu, values, status
     assert player.requested == [] and player.screen == "closed"
 
 
+def test_quality_controls_appearing_after_reload_get_one_discovery_retry():
+    player = MenuPlayer(["480p", "720p"])
+    player.action_button = AsyncMock(side_effect=[None, {"role": "AXButton", "title": "Настройки"}])
+    result = asyncio.run(QualityController(player).select_maximum())
+    assert result["selected"] == "720p" and result["maximum_confirmed"]
+    assert player.action_button.await_count == 2 and player.screen == "closed"
+
+
+def test_failed_resume_does_not_suppress_fullscreen_of_freshly_confirmed_video():
+    class Player(LearnedPlayer):
+        async def open_page(self, *args):
+            self.session = object()
+            self.engine = "venom_ax"
+
+        async def confirm(self, nodes):
+            self.playing = True
+            return {
+                "position": 120,
+                "duration": 1800,
+                "playback_confirmed": True,
+                "message": "Confirmed",
+            }
+
+    player = Player(None, None)
+    player.reveal = AsyncMock()
+    player.prepare = AsyncMock(return_value=[])
+    player.nodes = AsyncMock(return_value=[])
+    player.discover_audio_tracks = AsyncMock()
+    player.sample = AsyncMock(
+        return_value={"position": 120, "duration": 1800, "paused": False, "observed_at": 120}
+    )
+    player.seek = AsyncMock(side_effect=ToolError("Transient player read after seek"))
+    player.fullscreen = AsyncMock(
+        return_value={"fullscreen_confirmed": True, "capabilities": {"fullscreen": True}}
+    )
+    player.detach = AsyncMock()
+    result = asyncio.run(
+        player.open(
+            {
+                "item": {"title": "Title"},
+                "episode": {"season": 1, "episode": 2, "position": 37},
+                "recipe": {"url": "https://example.org/title"},
+                "auto_max_quality": False,
+                "auto_fullscreen": True,
+            }
+        )
+    )
+    assert result["playback_confirmed"] and result["resume_confirmed"] is False
+    assert result["fullscreen_confirmed"] and player.session is not None
+    player.fullscreen.assert_awaited_once()
+    player.detach.assert_not_awaited()
+
+
+@pytest.mark.parametrize("quality_status", ["selected", "unavailable", "error"])
+def test_audio_change_rechecks_quality_and_never_reuses_previous_maximum(
+    monkeypatch, quality_status
+):
+    player = LearnedPlayer(None, None)
+    player.voice = "Рус. Оригинальный"
+    player.audio_tracks = [player.voice, "LostFilm"]
+    player.auto_max_quality = True
+    player.capabilities = {"quality": {"selected": "1080p", "maximum_confirmed": True}}
+    player.sample = AsyncMock(return_value={"position": 120, "duration": 1800})
+    player.page = AsyncMock(return_value={"fullscreen": False})
+    player.reveal = AsyncMock()
+    player.nodes = AsyncMock(
+        return_value=[
+            {"path": [0, 1, i], "role": "AXStaticText", "value": value}
+            for i, value in enumerate(["1 сезон", "2 серия", player.voice])
+        ]
+    )
+    player.select = AsyncMock()
+    player.confirm = AsyncMock(
+        return_value={"position": 121, "duration": 1800, "playback_confirmed": True}
+    )
+
+    async def quality():
+        if quality_status == "error":
+            raise ToolError("Quality menu changed")
+        if quality_status == "selected":
+            player.last_sample = {"position": 122, "duration": 1800, "playback_confirmed": True}
+            return {
+                "status": "selected",
+                "selected": "720p",
+                "maximum_confirmed": True,
+                "playback_confirmed": True,
+            }
+        return {"status": "unavailable", "maximum_confirmed": False}
+
+    monkeypatch.setattr(QualityController, "select_maximum", lambda owner: quality())
+    result = asyncio.run(player.set_voice("LostFilm"))
+    assert result["voice_confirmed"] and result["playback_confirmed"]
+    assert result["position"] >= 120
+    actual = result["capabilities"]["quality"]
+    assert actual is player.capabilities["quality"]
+    assert actual.get("selected") != "1080p"
+    assert actual["maximum_confirmed"] is (quality_status == "selected")
+
+
 def test_buffering_confirm_never_toggles_an_already_running_player():
     player = LearnedPlayer(None, None)
     player.playing = True

@@ -126,6 +126,11 @@ class QualityController:
                     values, current = await self.menu()
                     available = list(values)
                     if not values:
+                        if _attempt == 0:
+                            # Controls can still be changing after a seek or
+                            # stream reload. Retry discovery once on this page.
+                            await asyncio.sleep(0.5)
+                            continue
                         return {"status": "unavailable", "maximum_confirmed": False}
                     if not self.previous:
                         self.previous = current
