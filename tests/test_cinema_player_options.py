@@ -146,7 +146,8 @@ def test_buffering_confirm_never_toggles_an_already_running_player():
 
 
 @pytest.mark.parametrize("error", [ToolError("Menu unavailable"), TimeoutError()])
-def test_optional_audio_discovery_cannot_discard_confirmed_page(monkeypatch, error):
+@pytest.mark.parametrize("failed_stage", ["", "QUALITY_SELECTED", "PLAYING_CONFIRMED"])
+def test_optional_audio_discovery_cannot_discard_confirmed_page(monkeypatch, error, failed_stage):
     class Player(LearnedPlayer):
         async def open_page(self, *args):
             self.session = object()
@@ -179,6 +180,11 @@ def test_optional_audio_discovery_cannot_discard_confirmed_page(monkeypatch, err
     )
     player = Player(None, None)
     player.detach = AsyncMock()
+
+    async def diagnostic(name, status, message):
+        if name == failed_stage:
+            raise ValueError("Invalid playback transition")
+
     result = asyncio.run(
         player.open(
             {
@@ -186,6 +192,7 @@ def test_optional_audio_discovery_cannot_discard_confirmed_page(monkeypatch, err
                 "episode": {"season": 1, "episode": 1},
                 "recipe": {"url": "https://example.org/title"},
                 "auto_fullscreen": False,
+                "diagnostic": diagnostic,
             }
         )
     )
@@ -321,3 +328,72 @@ def test_late_resume_confirmation_after_optional_failure_is_not_blocked():
         manager.stage(name, status, name)
     assert manager.state == PlaybackState.ENTERING_FULLSCREEN
     assert manager.snapshot()["pipeline_phase"] == "FULLSCREEN_CONFIRMED"
+
+
+@pytest.mark.parametrize("manual_exit", [False, True])
+def test_late_clock_confirmation_enters_fullscreen_once_unless_user_exited(manual_exit):
+    from types import SimpleNamespace
+
+    from backend.cinema.playback import PlaybackManager, PlaybackSource
+    from backend.cinema.service import Cinema
+
+    async def run():
+        adapter = SimpleNamespace(
+            fullscreen=AsyncMock(
+                return_value={"fullscreen_confirmed": True, "capabilities": {"fullscreen": True}}
+            )
+        )
+        manager = PlaybackManager()
+        source = PlaybackSource(
+            "https://example.org/show", "title", "episode", "source", "link", "safari", "episode"
+        )
+        session = manager.bind(
+            source,
+            token="token",
+            adapter=adapter,
+            mode="learned",
+            errors=0,
+            fullscreen_pending=not manual_exit,
+            target={},
+        )
+        holder = SimpleNamespace(
+            session=session,
+            closed=False,
+            playback=manager,
+            lock=asyncio.Lock(),
+            tools=SimpleNamespace(enabled=lambda key: True),
+            db=AsyncMock(return_value=SimpleNamespace(poll_seconds=0)),
+            message="",
+        )
+
+        async def sample(event):
+            proof = {"position": 10, "duration": 1800, "paused": False, "playback_confirmed": True}
+            manager.confirmed(proof)
+            return proof
+
+        async def publish():
+            holder.closed = True
+
+        holder.sample = sample
+        holder.publish = publish
+        await Cinema.poll(holder)
+        assert source.url == "https://example.org/show" and not session["fullscreen_pending"]
+        if manual_exit:
+            adapter.fullscreen.assert_not_awaited()
+        else:
+            adapter.fullscreen.assert_awaited_once()
+            assert source.capabilities["fullscreen"]
+
+    asyncio.run(run())
+
+
+def test_initial_unlabelled_play_is_not_toggled_twice_while_loading():
+    player = LearnedPlayer(None, None)
+    player.engine = "venom_ax"
+    player.observe_playback = AsyncMock(return_value=(None, []))
+    player.action_button = AsyncMock(return_value=None)
+    player.nodes = AsyncMock(return_value=[])
+    player.key = AsyncMock()
+    with pytest.raises(ToolError):
+        asyncio.run(player.confirm([]))
+    player.key.assert_awaited_once_with("play_pause")

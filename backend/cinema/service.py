@@ -2271,6 +2271,7 @@ class Cinema:
                 sample_position=episode["position"],
                 resume_floor=0 if result.get("resume_confirmed") else episode["position"],
                 confirmed=False,
+                fullscreen_pending=bool(prefs.auto_fullscreen and result.get("buffering")),
                 allow_zero=bool(result.get("resume_confirmed") and position == 0),
             )
             self.playback.confirmed(result)
@@ -3215,6 +3216,8 @@ class Cinema:
                     "message": result.get("message", "Плеер подтвердил звуковую дорожку."),
                 }
             action = value.get("action")
+            if action == "fullscreen":
+                self.session["fullscreen_pending"] = False
             if action == "close":
                 await self.stop_tracking()
                 return {
@@ -3287,6 +3290,21 @@ class Cinema:
                         await self.stop_tracking()
                         return
                     state = await self.sample("periodic")
+                    if (
+                        self.session["mode"] == "learned"
+                        and self.session.get("fullscreen_pending")
+                        and self.playback.state == PlaybackState.PLAYING
+                    ):
+                        self.session["fullscreen_pending"] = False
+                        try:
+                            async with asyncio.timeout(9):
+                                full = await self.session["adapter"].fullscreen()
+                            self.session.source.capabilities.update(full.get("capabilities") or {})
+                        except (ToolError, OSError, TimeoutError):
+                            self.session.source.capabilities["fullscreen"] = False
+                            self.message = (
+                                "Видео воспроизводится; полный экран требует повторного включения."
+                            )
                     self.session["errors"] = 0
                     if state.get("closed"):
                         await self.stop_tracking(flush=False)

@@ -250,6 +250,7 @@ class LearnedPlayer:
         self.recipe = None
         self.capabilities = {}
         self.playing = False
+        self.ever_confirmed = False
         self.audio_tracks = []
         self.pending_next = None
         self.next_clock = None
@@ -553,7 +554,14 @@ class LearnedPlayer:
         if self.engine == "venom_ax":
             playing = self.playing and before.get("paused") is not True
             if playing:
-                before = await self.control("pause")
+                try:
+                    before = await self.control("pause")
+                except ToolError:
+                    # A transient read can fail after the pause itself worked.
+                    # Confirm first; never blindly toggle a potentially playing video.
+                    with contextlib.suppress(ToolError):
+                        await self.confirm(await self.nodes())
+                    raise
             try:
                 result = await self.seek_keys(position, before)
             except ToolError:
@@ -956,6 +964,7 @@ class LearnedPlayer:
                 and 0 < after["position"] - before["position"] <= 4
             ):
                 self.playing = True
+                self.ever_confirmed = True
                 return {
                     **after,
                     "paused": False,
@@ -976,12 +985,13 @@ class LearnedPlayer:
         result, nodes = await self.observe_playback(nodes, 4)
         if result:
             return result
+        toggle_sent = False
         for _ in range(2):
             # Some players expose a button's label only while it is hovered.
             # Identify that real control before pressing it; the middle of an
             # iframe can instead be a loading surface or an unrelated overlay.
             button = await self.action_button(nodes, PLAY)
-            if self.playing and not button:
+            if (self.ever_confirmed or self.playing or toggle_sent) and not button:
                 raise playback_error(
                     "buffering",
                     "Плеер временно не продвигает таймер; ожидаем загрузку на этой странице.",
@@ -990,6 +1000,7 @@ class LearnedPlayer:
                 await self.press(button, pointer=True)
             elif self.engine == "venom_ax":
                 await self.key("play_pause")
+                toggle_sent = True
             else:
                 raise ToolError("В плеере нет однозначной кнопки воспроизведения.")
             result, nodes = await self.observe_playback(await self.nodes(), 15)
@@ -1056,7 +1067,7 @@ class LearnedPlayer:
                 try:
                     await diagnostic(name, status, message)
                 except (ValueError, OSError):
-                    if not self.playing:
+                    if not self.ever_confirmed:
                         raise
                     self.report["diagnostic_warning"] = (
                         "Не удалось записать этап после старта видео."
@@ -1083,6 +1094,7 @@ class LearnedPlayer:
                     if not result.get("playback_confirmed"):
                         raise ToolError(result.get("message", "HTML5-плеер не подтвердил запуск."))
                     self.playing = True
+                    self.ever_confirmed = True
                     self.capabilities = (await self.html5.sample()).get("capabilities", {})
                 else:
                     await self.reveal(controls=True)
@@ -1098,6 +1110,7 @@ class LearnedPlayer:
                         "PLAY", "running", "Проверяем запуск полного видео по движению времени."
                     )
                     result = await self.start_with_audio_fallback(nodes)
+                    self.ever_confirmed = result.get("playback_confirmed") is True
                     self.last_sample = result
                     self.capabilities = {
                         "play": True,
@@ -1269,7 +1282,7 @@ class LearnedPlayer:
             self.last_sample = result
             return result
         except (ToolError, TimeoutError, ValueError, OSError) as error:
-            if self.last_sample and self.playing:
+            if self.last_sample and self.ever_confirmed:
                 # Optional controls cannot discard a page whose full video was
                 # already confirmed. A fresh poll will distinguish buffering.
                 result = {
