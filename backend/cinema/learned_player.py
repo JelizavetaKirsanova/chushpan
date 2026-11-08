@@ -508,6 +508,7 @@ class LearnedPlayer:
                     await self.press(
                         nodes[0], op="cinema_hover", raise_window=page.get("fullscreen") is False
                     )
+                    await self.settle_controls()
                     return
             except ToolError as error:
                 if getattr(error, "code", "") not in {
@@ -537,6 +538,34 @@ class LearnedPlayer:
                     )
             await asyncio.sleep(0.15)
         raise last_error or ToolError("Плеер не подтвердил видимость элементов управления.")
+
+    async def settle_controls(self):
+        """Wait for hover panels to move inside the iframe, without clicking them."""
+        previous = None
+        for _ in range(6):
+            await asyncio.sleep(0.1)
+            nodes = await self.nodes()
+            area = nodes[0].get("frame", []) if nodes else []
+            if len(area) != 4 or area[2] <= 0 or area[3] <= 0:
+                return
+            geometry = tuple(
+                (tuple(node["path"]), tuple(node["frame"]))
+                for node in nodes
+                if node.get("role") in {"AXButton", "AXStaticText"}
+                and len(node.get("frame", [])) == 4
+                and node["frame"][2] > 0
+                and node["frame"][3] > 0
+            )
+            visible = bool(geometry) and all(
+                box[0] >= area[0] - 1
+                and box[1] >= area[1] - 1
+                and box[0] + box[2] <= area[0] + area[2] + 1
+                and box[1] + box[3] <= area[1] + area[3] + 1
+                for _, box in geometry
+            )
+            if visible and geometry == previous:
+                return
+            previous = geometry
 
     async def seek(self, position):
         if not math.isfinite(position) or position < 0:
@@ -618,20 +647,21 @@ class LearnedPlayer:
                 continue
             try:
                 await self.press(button, op="cinema_hover")
-                await asyncio.sleep(0.15)
-                tree = await self.nodes()
+                for _ in range(3):
+                    await asyncio.sleep(0.15)
+                    tree = await self.nodes()
+                    current = next((n for n in tree if n["path"] == button["path"]), None)
+                    if current and (
+                        exact([current], pattern)
+                        or any(
+                            n["path"][: len(button["path"])] == button["path"]
+                            and re.fullmatch(pattern, label(n), re.I)
+                            for n in tree
+                        )
+                    ):
+                        return current
             except ToolError:
                 continue
-            current = next((n for n in tree if n["path"] == button["path"]), None)
-            if current and (
-                exact([current], pattern)
-                or any(
-                    n["path"][: len(button["path"])] == button["path"]
-                    and re.fullmatch(pattern, label(n), re.I)
-                    for n in tree
-                )
-            ):
-                return current
         return None
 
     async def fullscreen(self):

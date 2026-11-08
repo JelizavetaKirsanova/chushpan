@@ -1,6 +1,7 @@
 """Interpret displayed player choices; never infer quality from the Mac screen."""
 
 import re
+from time import monotonic
 
 
 def quality_height(value):
@@ -117,6 +118,15 @@ class QualityController:
 
         p = self.owner
         before = await p.sample()
+        observed = monotonic()
+
+        def position_changed(result):
+            elapsed = 0 if before.get("paused") is True else monotonic() - observed
+            return (
+                result["position"] < before["position"] - 4
+                or result["position"] > before["position"] + elapsed + 4
+            )
+
         available = []
         wanted = ""
         error = ""
@@ -149,7 +159,7 @@ class QualityController:
                         )
                     await self.close()
                     result = await p.confirm(await p.nodes())
-                    if abs(result["position"] - before["position"]) > 4:
+                    if position_changed(result):
                         await p.seek(before["position"])
                         result = await p.confirm(await p.nodes())
                     p.last_sample = result
@@ -173,7 +183,7 @@ class QualityController:
                     await self.apply(self.previous)
                     await self.close()
                     result = await p.confirm(await p.nodes())
-                    if abs(result["position"] - before["position"]) > 4:
+                    if position_changed(result):
                         await p.seek(before["position"])
                         result = await p.confirm(await p.nodes())
                     p.last_sample = result

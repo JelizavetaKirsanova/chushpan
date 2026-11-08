@@ -123,6 +123,25 @@ def test_failed_max_quality_retries_once_then_restores_previous_working_option()
     assert player.screen == "closed"
 
 
+def test_normal_time_advance_while_quality_menu_is_open_does_not_rewind(monkeypatch):
+    class PlayingMenu(MenuPlayer):
+        async def confirm(self, nodes):
+            self.position += 10
+            return {
+                "position": self.position,
+                "duration": 2000,
+                "paused": False,
+                "playback_confirmed": True,
+            }
+
+    clock = iter([0, 10])
+    monkeypatch.setattr("backend.cinema.player_options.monotonic", lambda: next(clock))
+    player = PlayingMenu(["480p", "720p"])
+    result = asyncio.run(QualityController(player).select_maximum())
+    assert result["maximum_confirmed"] and player.last_sample["position"] == 130
+    assert player.seeks == []
+
+
 @pytest.mark.parametrize(
     "menu,values,status", [(False, ["480p"], "unavailable"), (True, ["Auto"], "auto")]
 )
@@ -139,6 +158,36 @@ def test_quality_controls_appearing_after_reload_get_one_discovery_retry():
     result = asyncio.run(QualityController(player).select_maximum())
     assert result["selected"] == "720p" and result["maximum_confirmed"]
     assert player.action_button.await_count == 2 and player.screen == "closed"
+
+
+def test_controls_are_observed_until_animation_is_inside_frame_and_stable():
+    def tree(top):
+        return [
+            {"role": "AXWebArea", "path": [], "frame": [100, 200, 640, 400]},
+            {"role": "AXButton", "path": [0], "frame": [680, top, 40, 40]},
+        ]
+
+    player = LearnedPlayer(None, None)
+    player.nodes = AsyncMock(side_effect=[tree(680), tree(560), tree(560)])
+    player.press = AsyncMock()
+    asyncio.run(player.settle_controls())
+    assert player.nodes.await_count == 3
+    player.press.assert_not_awaited()
+
+
+def test_delayed_tooltip_is_rechecked_without_clicking_an_unlabelled_button():
+    button = {"role": "AXButton", "path": [0, 1]}
+    player = LearnedPlayer(None, None)
+    player.press = AsyncMock()
+    player.nodes = AsyncMock(
+        side_effect=[
+            [button],
+            [button, {"role": "AXStaticText", "path": [0, 1, 0], "value": "Настройки"}],
+        ]
+    )
+    found = asyncio.run(player.action_button([button], r"Настройки|Settings"))
+    assert found is button and player.nodes.await_count == 2
+    player.press.assert_awaited_once_with(button, op="cinema_hover")
 
 
 def test_failed_resume_does_not_suppress_fullscreen_of_freshly_confirmed_video():
