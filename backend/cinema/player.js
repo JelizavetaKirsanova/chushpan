@@ -53,6 +53,7 @@
   const desiredVoice=normalize(request.voice);
   const voiceConfirmed=()=>!!desiredVoice&&tracks().some(track=>track.enabled&&[track.label,track.language].some(value=>normalize(value)===desiredVoice));
   const snapshot = () => ({position: video.currentTime, duration: video.duration, observed_at: Date.now(),
+    video_width:video.videoWidth,video_height:video.videoHeight,buffering:!video.paused&&video.readyState<3,
     paused: video.paused, muted:video.muted, seeking:video.seeking, ended: video.ended, ready: video.readyState,
     remote: video.webkitCurrentPlaybackTargetIsWireless === true || video.remote?.state === 'connected',
     airplay: typeof video.webkitShowPlaybackTargetPicker === 'function' && !video.disableRemotePlayback,

@@ -192,6 +192,7 @@ class Preferences(BaseModel):
     watched_threshold: float = Field(default=0.95, ge=0.5, le=1)
     auto_next: bool = False
     auto_fullscreen: bool = True
+    auto_max_quality: bool = True
     startup: Literal["continue", "library"] = "continue"
     poll_seconds: int = Field(default=5, ge=2, le=60)
     devices: dict[str, Literal["mac", "airplay"]] = Field(default_factory=dict)

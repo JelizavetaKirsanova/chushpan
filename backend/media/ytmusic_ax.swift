@@ -510,6 +510,13 @@ func cinemaPlayer(_ request: [String: Any], _ op: String, _ app: NSRunningApplic
         target = items[index]
     }
     let actual = fields(target)
+    let labelPress = op == "cinema_label_press"
+    let requestedLabel = request["label"] as? String ?? ""
+    if labelPress {
+        guard role == "AXButton", expected.count == 1,
+              ["Настройки", "Settings", "Качество", "Quality"].contains(requestedLabel)
+        else { fail("invalid_request") }
+    }
     guard expected.allSatisfy({ actual[$0.key, default: ""] == $0.value }),
           app.isActive else { fail("element_changed") }
     if op == "cinema_set_value" {
@@ -543,6 +550,29 @@ func cinemaPlayer(_ request: [String: Any], _ op: String, _ app: NSRunningApplic
         element = parent as! AXUIElement
     }
     guard inside, app.isActive else { fail("cinema_hit_changed") }
+    if labelPress {
+        // Tooltips can disappear between helper processes. Re-establish the
+        // semantic label inside the same process before sending any click.
+        guard let move = CGEvent(mouseEventSource:nil,mouseType:.mouseMoved,
+                                 mouseCursorPosition:point,mouseButton:.left)
+        else { fail("cinema_control_unavailable") }
+        move.post(tap:.cghidEventTap)
+        Thread.sleep(forTimeInterval:0.2)
+        let semantic = fields(target).values.contains(requestedLabel) ||
+            children(target).contains { fields($0).values.contains(requestedLabel) }
+        var freshHit: AXUIElement?
+        guard semantic, app.isActive,
+              AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(),Float(point.x),Float(point.y),&freshHit) == .success,
+              var leaf = freshHit
+        else { fail("cinema_hit_changed") }
+        var stillInside = false
+        for _ in 0..<18 {
+            if CFEqual(leaf,target) { stillInside = true; break }
+            guard let parent = attr(leaf,kAXParentAttribute),CFGetTypeID(parent) == AXUIElementGetTypeID() else { break }
+            leaf = parent as! AXUIElement
+        }
+        guard stillInside else { fail("cinema_hit_changed") }
+    }
     if op == "cinema_hover" {
         guard let event = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
                                   mouseCursorPosition: point, mouseButton: .left)
@@ -554,6 +584,7 @@ func cinemaPlayer(_ request: [String: Any], _ op: String, _ app: NSRunningApplic
         guard let event = CGEvent(mouseEventSource: nil, mouseType: kind, mouseCursorPosition: point,
                                   mouseButton: .left) else { fail("cinema_control_unavailable") }
         event.post(tap: .cghidEventTap)
+        if labelPress { Thread.sleep(forTimeInterval:0.06) }
     }
     output(["ok": true])
 }
@@ -606,7 +637,7 @@ guard AXIsProcessTrusted() else { fail("accessibility_permission") }
 guard let app = running.first else { fail("app_closed") }
 let root = AXUIElementCreateApplication(app.processIdentifier)
 AXUIElementSetMessagingTimeout(root, 2)
-if ["cinema_snapshot", "cinema_press", "cinema_hover", "cinema_key", "cinema_set_value", "cinema_exit_fullscreen"].contains(op) {
+if ["cinema_snapshot", "cinema_press", "cinema_hover", "cinema_key", "cinema_set_value", "cinema_exit_fullscreen", "cinema_label_press"].contains(op) {
     guard bundle == "com.apple.Safari" else { fail("invalid_request") }
     cinemaPlayer(request, op, app, root)
 }

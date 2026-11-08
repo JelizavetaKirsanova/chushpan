@@ -441,6 +441,19 @@ class CinemaStore:
             "PLAY",
             "FULLSCREEN",
             "SAVE_PROGRESS",
+            "NAVIGATION",
+            "FOUND_PAGE",
+            "PLAYER_DETECTED",
+            "EPISODE_SELECTED",
+            "AUDIO_SELECTED_OR_SKIPPED",
+            "AUDIO_OPTIONS",
+            "QUALITY",
+            "QUALITY_SELECTED",
+            "PLAYING_CONFIRMED",
+            "FULLSCREEN_CONFIRMED",
+            "BUFFERING",
+            "RECOVERING",
+            "FAILED",
         }:
             raise ValueError("Неизвестный этап воспроизведения.")
         with self.transaction():

@@ -9,7 +9,7 @@ import secrets
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -2066,6 +2066,7 @@ class Cinema:
                         "item": item,
                         "episode": episode,
                         "auto_fullscreen": prefs.auto_fullscreen,
+                        "auto_max_quality": prefs.auto_max_quality,
                         "position": episode["position"] if prefs.resume_position else 0,
                         "restart": not prefs.resume_position,
                     }
@@ -2178,6 +2179,20 @@ class Cinema:
                         PlaybackState.READY, "Проверяем другой плеер источника."
                     )
                 try:
+                    await self.trace(
+                        "NAVIGATION",
+                        "running",
+                        (
+                            "Первое открытие точной страницы."
+                            if not index
+                            else "Предыдущий плеер не подтвердил запуск; ограниченная попытка "
+                            "другого плеера на той же странице."
+                        )
+                        + " URL: "
+                        + urlsplit(candidate["url"])._replace(query="", fragment="").geturl(),
+                        item["id"],
+                        episode["id"],
+                    )
                     result = await adapter.open(
                         {
                             "item": fresh,
@@ -2187,6 +2202,7 @@ class Cinema:
                             "position": position,
                             "restart": start_over or not prefs.resume_position,
                             "auto_fullscreen": prefs.auto_fullscreen,
+                            "auto_max_quality": prefs.auto_max_quality,
                             "diagnostic": diagnostic,
                         }
                     )
@@ -2258,6 +2274,8 @@ class Cinema:
                 allow_zero=bool(result.get("resume_confirmed") and position == 0),
             )
             self.playback.confirmed(result)
+            if result.get("buffering"):
+                self.playback.transition(PlaybackState.BUFFERING, result["message"])
             self.message = result["message"]
             await self.db("select", episode["id"], link_id)
             await self.save(result, "playing")
@@ -2287,6 +2305,13 @@ class Cinema:
             if prefs.ask_paid and source["access_status"] in {"PAID", "MIXED"}:
                 continue
             try:
+                await self.trace(
+                    "NAVIGATION",
+                    "running",
+                    "Внутренний поиск по запросу пользователя: " + source["base_url"],
+                    item["id"],
+                    episode["id"],
+                )
                 pages = await discover_pages(self.site_tabs, source, item)
                 for page in pages[:2]:
                     shared = matching[0] if matching else {}
@@ -2297,10 +2322,10 @@ class Cinema:
                         "player": shared.get(
                             "player", adapter.preferred_players[0] if adapter else ""
                         ),
-                        "voice": shared.get("voice", "") if prefs.remember_voice else "",
-                        "engine": shared.get("engine", "auto"),
+                        "voice": "LostFilm" if prefs.prefer_russian else "",
+                        "engine": "auto",
                         "template_id": shared.get("id", ""),
-                        "frame_host": shared.get("frame_host", ""),
+                        "frame_host": "",
                     }
                     result = await self.play_site_recipe(
                         item,
@@ -2319,6 +2344,28 @@ class Cinema:
         return None
 
     async def resume(self, *args, **kwargs):
+        self.require_playback()
+        if (
+            self.session
+            and args
+            and self.session.source.title_id == args[0]
+            and (len(args) < 2 or args[1] is None or args[1] == self.session.source.episode_id)
+            and not kwargs.get("start_over")
+            and not kwargs.get("player")
+            and (len(args) < 3 or args[2] is None)
+            and kwargs.get("device") is None
+            and self.session.source.validation.get("live_player_verified")
+        ):
+            if self.playback.state == PlaybackState.PAUSED:
+                return await self.viewer_control(
+                    {"op": "playback_control", "action": "play", "token": self.session["token"]}
+                )
+            return {
+                "playback_confirmed": self.playback.state == PlaybackState.PLAYING,
+                "message": "Подтверждено: видео уже воспроизводится на текущем источнике."
+                if self.playback.state == PlaybackState.PLAYING
+                else "Сохраняем текущий источник; ожидаем доступность плеера.",
+            }
         self.playback.transition(PlaybackState.SEARCHING, "Ищем сохранённый источник просмотра.")
         try:
             result = await self._resume(*args, **kwargs)
@@ -2920,6 +2967,7 @@ class Cinema:
                     "restart": start_over or not prefs.resume_position,
                     "autoplay": prefs.autoplay,
                     "auto_fullscreen": prefs.auto_fullscreen,
+                    "auto_max_quality": prefs.auto_max_quality,
                     "diagnostic": diagnostic,
                     "direct_verification": link_verification
                     if source["adapter"] == "direct"
@@ -3153,6 +3201,7 @@ class Cinema:
                 ):
                     raise ToolError("Плеер не подтвердил наличие этой звуковой дорожки.")
                 result = await self.session["adapter"].set_voice(voice)
+                voice = result.get("selected_voice", voice)
                 self.session.source.voice = voice
                 await self.db(
                     "playback_voice",
@@ -3257,6 +3306,45 @@ class Cinema:
                     if not self.session:
                         return
                     self.session["errors"] += 1
+                    if self.session["mode"] == "learned" and self.session["errors"] >= 3:
+                        attempts = self.session.get("recover_attempts", 0)
+                        if attempts < 2:
+                            self.session["recover_attempts"] = attempts + 1
+                            self.playback.transition(
+                                PlaybackState.RECOVERING,
+                                "Восстанавливаем текущий плеер без перехода на другой URL.",
+                            )
+                            await self.trace(
+                                "RECOVERING",
+                                "running",
+                                safe_reason(exc),
+                                self.session["target"]["item"]["id"],
+                                self.session["target"]["episode"]["id"],
+                            )
+                            await self.publish()
+                            try:
+                                async with asyncio.timeout(18):
+                                    restored = await self.session["adapter"].recover()
+                                self.playback.confirmed(restored)
+                                if "selected_voice" in restored:
+                                    self.session.source.voice = restored["selected_voice"]
+                                await self.save(restored, "periodic")
+                                self.session["errors"] = 0
+                            except (ToolError, OSError, TimeoutError) as recovery_error:
+                                self.playback.transition(
+                                    PlaybackState.BUFFERING,
+                                    "Плеер временно недоступен; остаёмся на странице. "
+                                    f"{safe_reason(recovery_error)}",
+                                )
+                        else:
+                            self.playback.failure(exc)
+                            self.message = (
+                                "Автовосстановление текущего плеера не удалось. "
+                                "Страница сохранена; можно повторить запуск "
+                                "или выбрать источник вручную."
+                            )
+                        await self.publish()
+                        continue
                     if self.session["errors"] >= 3:
                         self.message = (
                             "Плеер недоступен. Сохранена последняя подтверждённая позиция; "

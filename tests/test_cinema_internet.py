@@ -320,7 +320,7 @@ def test_web_discovery_new_domain_consent_then_one_click_saved_episode(tmp_path)
             saved = await service.db("detail", item["id"])
             assert saved["current"]["playback_state"]["confirmed"]
             await service.resume(item["id"])
-            assert len(player.opened) == 2 and len(provider.queries) == 3
+            assert len(player.opened) == 1 and len(provider.queries) == 3
             document = await service.db("export_library")
             assert "BSA_fixture_search_key" not in json.dumps(document)
         finally:

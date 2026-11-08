@@ -571,3 +571,18 @@ test('viewer keeps an entered seek time across background updates and link diagn
     view.receive({...data,playback:{...data.playback,token:'different-session'}});assert.equal(panel.querySelector<HTMLInputElement>('[aria-label="Перейти к таймкоду"]')!.value,'');
   }finally{f.window.happyDOM.abort();}
 });
+
+test('maximum quality preference defaults on and viewer distinguishes confirmed selection from Auto',()=>{
+  const f=fixture();try{
+    const view=new f.CinemaView(()=>{},()=>{},()=>{},()=>{});view.connection(true);
+    const item=movie('Film','watching');const ep=item.current;
+    const source:any={title_id:item.id,episode_id:ep.id,link_id:'link',source_id:'source',adapter_id:'learned',voice:'Рус. Оригинальный',validation:{content_verified:true},capabilities:{audio_tracks:['Рус. Оригинальный'],quality:{status:'selected',selected:'720p',maximum_confirmed:true}}};
+    const state:any={...snapshot([item]),session:{title_id:item.id,episode_id:ep.id,mode:'learned'},playback:{state:'PLAYING',message:'Confirmed',token:'quality-session',source}};
+    view.receive(state);const panel=f.window.document.querySelector('.cinema-viewer')!;
+    assert.match(panel.textContent,/720p.*максимум подтверждён/);assert.equal(panel.querySelector('[aria-label="Дорожка плеера"]'),null);
+    source.capabilities.quality={status:'auto',selected:'Auto',maximum_confirmed:false};view.receive(state);
+    assert.doesNotMatch(panel.textContent,/максимум подтверждён/);assert.match(panel.textContent,/качество не подтверждено/);
+    button(f,'Настройки').click();button(f,'Воспроизведение').click();
+    const input=f.window.document.querySelector<HTMLInputElement>('[aria-label="Автоматически выбирать максимальное качество видео"]');assert.ok(input?.checked);
+  }finally{f.window.happyDOM.abort();}
+});

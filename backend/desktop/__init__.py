@@ -1,4 +1,4 @@
 """macOS lifecycle around the existing Python assistant and HUD."""
 
-VERSION = "0.3.16"
+VERSION = "0.3.17"
 BUNDLE_ID = "ee.chushpan.desktop"

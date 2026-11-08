@@ -99,7 +99,11 @@ def test_resume_precedes_fullscreen_and_unverified_fullscreen_is_reported(auto_f
 
         async def confirm(self, nodes):
             actions.append("confirm")
-            return {"position": 100 if "seek" in actions else 1, "message": "Playing"}
+            return {
+                "position": 100 if "seek" in actions else 1,
+                "message": "Playing",
+                "playback_confirmed": True,
+            }
 
         async def seek(self, position):
             assert position == 100
@@ -128,6 +132,7 @@ def test_resume_precedes_fullscreen_and_unverified_fullscreen_is_reported(auto_f
     assert [action for action in actions if isinstance(action, str)] == [
         "confirm",
         "seek",
+        "confirm",
         "confirm",
         *(["fullscreen"] if auto_fullscreen else []),
     ]

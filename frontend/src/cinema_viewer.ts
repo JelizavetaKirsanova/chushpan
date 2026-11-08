@@ -5,7 +5,7 @@ export interface PlaybackSnapshot {
   state:string;code:string;message:string;revision:number;token:string;last_successful_at:number|null;pending_command?:string;
   source:{url:string;title_id:string;episode_id:string;source_id:string;link_id:string;adapter_id:string;content_type:string;voice:string;capabilities:Record<string,unknown>;validation:{content_verified?:boolean;live_player_verified?:boolean}}|null;
 }
-const labels:Record<string,string>={IDLE:'Просмотр закрыт',SEARCHING:'Ищу источник',VALIDATING_SOURCE:'Проверяю видео',CHECKING_REGION:'Проверяю доступность',CHECKING_PLAYER:'Проверяю плеер',READY:'Источник подготовлен',OPENING:'Открываю источник',WAITING_FOR_PLAYER:'Ожидаю плеер',STARTING:'Проверяю запуск',RESTORING_POSITION:'Восстанавливаю позицию',ENTERING_FULLSCREEN:'Включаю полный экран плеера',PLAYING:'Видео воспроизводится',PAUSED:'На паузе',BLOCKED:'Нужно действие',FAILED:'Не удалось подключиться'};
+const labels:Record<string,string>={IDLE:'Просмотр закрыт',SEARCHING:'Ищу источник',VALIDATING_SOURCE:'Проверяю видео',CHECKING_REGION:'Проверяю доступность',CHECKING_PLAYER:'Проверяю плеер',READY:'Источник подготовлен',OPENING:'Открываю источник',WAITING_FOR_PLAYER:'Ожидаю плеер',STARTING:'Проверяю запуск',RESTORING_POSITION:'Восстанавливаю позицию',ENTERING_FULLSCREEN:'Включаю полный экран плеера',PLAYING:'Видео воспроизводится',PAUSED:'На паузе',BLOCKED:'Нужно действие',FAILED:'Не удалось подключиться',BUFFERING:'Буферизация видео',RECOVERING:'Восстанавливаю текущий плеер'};
 function el<K extends keyof HTMLElementTagNameMap>(tag:K,text=''):HTMLElementTagNameMap[K]{const n=document.createElement(tag);n.textContent=text;return n;}
 
 /** Compact session screen outside poster cards. Updates never recreate the video. */
@@ -37,6 +37,10 @@ export class CinemaViewer {
     if(['PLAYING','PAUSED','IDLE','FAILED'].includes(p.state))this.requestId='';
     const item=data.items.find(i=>i.id===source?.title_id);const episode=item?.episodes.find(e=>e.id===source?.episode_id);
     this.time.textContent=item?`${item.title}${item.kind==='series'&&episode?` · ${episode.season} сезон, ${episode.episode} серия`:''} · сохранено ${playbackTime(episode?.position??0)}`:'';
+    const quality=source?.capabilities.quality as {selected?:string;maximum_confirmed?:boolean;status?:string}|undefined;
+    if(source?.voice)this.time.textContent+=` · ${source.voice}`;
+    if(quality?.selected&&['selected','fallback'].includes(quality.status??''))this.time.textContent+=` · ${quality.selected}${quality.maximum_confirmed?' · максимум подтверждён':''}`;
+    else if(quality&&quality.status!=='disabled')this.time.textContent+=' · качество не подтверждено';
     const signature=JSON.stringify([p.token,this.requestId,p.pending_command,data.session?.mode,data.preferences.allow_browser,source?.adapter_id,source?.validation.content_verified,source?.capabilities,source?.voice,episode?.links.map(l=>[l.id,l.source_name,l.voice]),item?.episodes.map(e=>[e.id,e.name]),this.online]);
     if(signature===this.signature)return;this.signature=signature;
     const pendingTime=this.controlToken===p.token?this.controls.querySelector<HTMLInputElement>('[aria-label="Перейти к таймкоду"]')?.value??'':'';
@@ -52,7 +56,7 @@ export class CinemaViewer {
     for(const link of episode.links){const o=el('option',`${link.source_name}${link.voice?` · ${link.voice}`:''}`);o.value=link.id;links.append(o);}links.value=source.link_id;links.disabled=!this.online;
     this.controls.append(links,this.button('Выбрать источник',()=>this.send({op:'playback_switch',token:p.token,link_id:links.value})));
     const voices=source.capabilities.audio_tracks;
-    if(Array.isArray(voices)&&voices.length){const select=el('select');select.setAttribute('aria-label','Дорожка плеера');for(const voice of voices){if(typeof voice!=='string')continue;const o=el('option',voice);o.value=voice;select.append(o);}select.value=source.voice;select.disabled=!this.online;select.onchange=()=>this.send({op:'playback_voice',token:p.token,voice:select.value});this.controls.append(select);}
+    if(Array.isArray(voices)&&voices.length>1){const select=el('select');select.setAttribute('aria-label','Дорожка плеера');for(const voice of voices){if(typeof voice!=='string')continue;const o=el('option',voice);o.value=voice;select.append(o);}select.value=source.voice;select.disabled=!this.online;select.onchange=()=>this.send({op:'playback_voice',token:p.token,voice:select.value});this.controls.append(select);}
     if(item.kind==='series'){
       const select=el('select');select.setAttribute('aria-label','Серия просмотра');for(const ep of item.episodes){const o=el('option',`${ep.season} сезон · ${ep.episode} серия${ep.name?` · ${ep.name}`:''}`);o.value=ep.id;select.append(o);}select.value=episode.id;select.disabled=!this.online;
       this.controls.append(select,this.button('Смотреть серию',()=>this.send({op:'watch',title_id:item.id,episode_id:select.value,request_id:`watch-viewer-${Date.now()}`})));

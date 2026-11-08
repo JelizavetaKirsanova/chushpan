@@ -17,6 +17,12 @@ from backend.cinema.adapters import HTML5Adapter
 from backend.cinema.browser_search import BrowserSearch, SearchSession
 from backend.cinema.models import web_url
 from backend.cinema.playback import playback_error
+from backend.cinema.player_options import (
+    QualityController,
+    preferred_voice,
+    quality_height,
+    russian_voice,
+)
 from backend.cinema.site_adapters import OwnedHTML5Bridge, page_adapter, player_engine
 from backend.cinema.sources import addresses
 from backend.media.safari import AccessibilityApp
@@ -151,6 +157,17 @@ def exact(nodes, pattern):
 
 
 def voice_option(nodes):
+    def audio_label(node):
+        value = label(node)
+        return bool(value) and not (
+            quality_height(value)
+            or re.search(
+                r"[:/]|^\d|^(?:Auto|Авто|Качество|Quality|Скорость|Speed|Масштаб|Scale)$",
+                value,
+                re.I,
+            )
+        )
+
     episode = exact(nodes, r"\d+ серия")
     if episode:
         return next(
@@ -160,7 +177,7 @@ def voice_option(nodes):
                 if node["path"][:-1] == episode["path"][:-1]
                 and node["path"][-1:] > episode["path"][-1:]
                 and node.get("role") == "AXStaticText"
-                and label(node)
+                and audio_label(node)
             ),
             None,
         )
@@ -170,8 +187,8 @@ def voice_option(nodes):
             node
             for node in nodes
             if node.get("role") == "AXStaticText"
-            and label(node).strip()
-            and not re.search(r"\d|/", label(node))
+            and audio_label(node)
+            and re.search(r"рус|ориг|original|lostfilm|newstudio|дубл|eng|кубик", label(node), re.I)
             and len(node.get("path", [])) >= 3
         ),
         None,
@@ -237,6 +254,8 @@ class LearnedPlayer:
         self.pending_next = None
         self.next_clock = None
         self.window_role = ""
+        self.original_language = ""
+        self.pipeline_phase = ""
 
     async def javascript(self, script):
         raw = await self.tabs._owned(
@@ -244,7 +263,17 @@ class LearnedPlayer:
             "return do JavaScript " + json.dumps(script, ensure_ascii=False) + " in ownedTab",
         )
         if raw == "unowned":
-            raise ToolError("Safari закрыл или перенаправил учебную вкладку.")
+            self.report["unexpected_navigation"] = {
+                "detected": True,
+                "initiator": "unknown",
+                "last_action": self.pipeline_phase,
+                "restored": False,
+            }
+            raise playback_error(
+                "page_changed",
+                "Safari закрыл или перенаправил страницу просмотра; "
+                "управление другой вкладкой отменено.",
+            )
         return json.loads(raw)
 
     async def page(self, **values):
@@ -262,7 +291,7 @@ class LearnedPlayer:
         if data.get("restricted"):
             raise ToolError("Страница требует входа, проверки браузера или ограничивает доступ.")
         if data.get("changed"):
-            raise ToolError("Адрес учебной страницы изменился.")
+            raise playback_error("page_changed", "Адрес страницы просмотра неожиданно изменился.")
         return data
 
     async def open_page(self, recipe, item, frame_hint=""):
@@ -412,6 +441,25 @@ class LearnedPlayer:
             large=large,
             repeat_count=repeat_count,
         )
+
+    async def press_settings(self, node):
+        caption = label(node)
+        if node.get("role") == "AXButton" and caption in {
+            "Настройки",
+            "Settings",
+            "Качество",
+            "Quality",
+        }:
+            await self.ax.cinema(
+                "cinema_label_press",
+                page=self.url,
+                frame_host=self.frame_host,
+                path=node["path"],
+                expected={"role": "AXButton"},
+                label=caption,
+            )
+        else:
+            raise ToolError("Плеер не подтвердил семантическую кнопку настроек.")
 
     async def seek_keys(self, position, before):
         # Reviewed shortcuts: arrows 5 s, Shift+arrows 20 s. Re-read the
@@ -691,29 +739,35 @@ class LearnedPlayer:
             nodes = await self.select(nodes, r"\d+ сезон", f"{episode['season']} сезон")
             nodes = await self.select(nodes, r"\d+ серия", f"{episode['episode']} серия")
         voice = voice_option(nodes)
-        if recipe.voice and not voice:
-            self.voice = ""
-            self.report["voice_note"] = (
-                "Плеер не предоставляет выбор озвучки; используется текущая дорожка."
-            )
-        elif recipe.voice and label(voice) != recipe.voice:
-            try:
-                nodes = await self.select(nodes, re.escape(label(voice)), recipe.voice)
-            except ToolError:
-                # Close the audio menu and retain the actual selected track.
-                nodes = await self.nodes()
-                current = voice_option(nodes)
-                if not current:
-                    raise
-                await self.press(current)
-                nodes = await self.nodes()
-                self.voice = label(voice_option(nodes) or current)
-                self.report["voice_note"] = (
-                    f"Озвучка «{recipe.voice}» недоступна; выбрана «{self.voice}»."
-                )
-        elif voice:
-            self.voice = label(voice)
+        self.voice = label(voice) if voice else ""
         self.audio_tracks = [self.voice] if self.voice else []
+        if not voice:
+            self.report["voice_note"] = "Меню озвучки отсутствует; используется дорожка видео."
+            return nodes
+        desired_hint = recipe.voice or "LostFilm"
+        if desired_hint != self.voice and not (
+            self.original_language == "ru" and russian_voice(self.voice, "ru")
+        ):
+            try:
+                async with asyncio.timeout(9):
+                    await self.discover_audio_tracks(nodes)
+                desired = preferred_voice(
+                    self.voice,
+                    self.audio_tracks,
+                    preferred=desired_hint,
+                    original_language=self.original_language,
+                )
+                if desired != self.voice:
+                    nodes = await self.select(await self.nodes(), re.escape(self.voice), desired)
+                    self.voice = desired
+                elif recipe.voice not in self.audio_tracks:
+                    self.report["voice_note"] = (
+                        f"Озвучка «{recipe.voice}» отсутствует; используется «{self.voice}»."
+                    )
+            except (ToolError, TimeoutError):
+                self.report["voice_note"] = (
+                    "Предпочтительная озвучка не подтверждена; запускаем текущую."
+                )
         return nodes
 
     async def discover_audio_tracks(self, nodes):
@@ -763,21 +817,45 @@ class LearnedPlayer:
             if before.get("observation_stale"):
                 raise ToolError("Плеер не показал свежую позицию перед сменой озвучки.")
         full = {}
+        previous = self.voice
+        candidates = list(
+            dict.fromkeys(
+                [
+                    voice,
+                    previous,
+                    *[v for v in self.audio_tracks if russian_voice(v, self.original_language)],
+                ]
+            )
+        )[:3]
+        result = None
+        last_error = None
         try:
-            await self.reveal(controls=True)
-            nodes = await self.nodes()
-            control = voice_option(nodes)
-            if not control:
-                raise ToolError("Плеер не показал меню озвучки.")
-            await self.select(nodes, re.escape(label(control)), voice)
-            self.voice = voice
-            self.last_sample = None
-            self.pending_next = self.next_clock = None
-            await self.reveal()
-            result = await self.confirm(await self.nodes())
-            if before["position"] > 3 and abs(result["position"] - before["position"]) > 3:
-                result = await self.seek(before["position"])
-            self.last_sample = result
+            for candidate in candidates:
+                try:
+                    await self.reveal(controls=True)
+                    tree = await self.nodes()
+                    control = voice_option(tree)
+                    if not control:
+                        raise ToolError("Плеер не показал меню озвучки.")
+                    await self.select(tree, re.escape(label(control)), candidate)
+                    self.voice = candidate
+                    self.last_sample = None
+                    self.pending_next = self.next_clock = None
+                    await self.reveal()
+                    candidate_result = await self.confirm(await self.nodes())
+                    if (
+                        before["position"] > 3
+                        and abs(candidate_result["position"] - before["position"]) > 3
+                    ):
+                        await self.seek(before["position"])
+                        candidate_result = await self.confirm(await self.nodes())
+                    result = candidate_result
+                    self.last_sample = result
+                    break
+                except ToolError as error:
+                    last_error = error
+            if result is None:
+                raise last_error or ToolError("Ни одна доступная дорожка не подтвердила запуск.")
         finally:
             if was_fullscreen and self.last_sample and self.playing:
                 try:
@@ -787,8 +865,13 @@ class LearnedPlayer:
         return {
             **result,
             **full,
-            "voice_confirmed": True,
-            "message": "Плеер подтвердил звуковую дорожку."
+            "voice_confirmed": self.voice == voice,
+            "selected_voice": self.voice,
+            "message": (
+                "Плеер подтвердил звуковую дорожку."
+                if self.voice == voice
+                else f"Озвучка «{voice}» не запустилась; восстановлена «{self.voice}»."
+            )
             + (
                 " Полный экран требует повторного включения."
                 if full.get("fullscreen_error")
@@ -898,6 +981,11 @@ class LearnedPlayer:
             # Identify that real control before pressing it; the middle of an
             # iframe can instead be a loading surface or an unrelated overlay.
             button = await self.action_button(nodes, PLAY)
+            if self.playing and not button:
+                raise playback_error(
+                    "buffering",
+                    "Плеер временно не продвигает таймер; ожидаем загрузку на этой странице.",
+                )
             if button:
                 await self.press(button, pointer=True)
             elif self.engine == "venom_ax":
@@ -914,22 +1002,64 @@ class LearnedPlayer:
             )
         raise ToolError("Таймер выбранной серии не пошёл после запуска плеера Safari.")
 
+    async def start_with_audio_fallback(self, nodes):
+        try:
+            return await self.confirm(nodes)
+        except ToolError as first_error:
+            if self.playing:
+                raise
+            try:
+                async with asyncio.timeout(9):
+                    await self.discover_audio_tracks(await self.nodes())
+            except (ToolError, TimeoutError):
+                raise first_error from None
+            choices = [
+                v
+                for v in self.audio_tracks
+                if v != self.voice and russian_voice(v, self.original_language)
+            ]
+            preferred = preferred_voice("", choices, original_language=self.original_language)
+            choices.sort(key=lambda v: v != preferred)
+            for candidate in choices[:2]:
+                tree = await self.nodes()
+                if self.episode["season"] and not (
+                    exact(tree, rf"{self.episode['season']} сезон")
+                    and exact(tree, rf"{self.episode['episode']} серия")
+                ):
+                    raise playback_error(
+                        "player_changed", "Серия изменилась; смена дорожки отменена."
+                    ) from first_error
+                control = voice_option(tree)
+                if not control:
+                    break
+                try:
+                    await self.select(tree, re.escape(label(control)), candidate)
+                    self.voice = candidate
+                    return await self.confirm(await self.nodes())
+                except ToolError:
+                    continue
+            raise first_error
+
     async def open(self, target):
         recipe = SiteRecipe.model_validate(target["recipe"])
         self.episode = target["episode"]
         self.voice = recipe.voice
+        self.original_language = (target["item"].get("metadata") or {}).get("original_language", "")
         runtime = (target["item"].get("metadata") or {}).get("runtime", 0)
         self.minimum = max(12 * 60 if self.episode["season"] else 45 * 60, runtime * 60 * 0.65)
         diagnostic = target.get("diagnostic")
 
         async def stage(name, status, message):
+            self.pipeline_phase = name
+            self.report["pipeline_phase"] = name
             if diagnostic:
                 await diagnostic(name, status, message)
 
         try:
-            async with asyncio.timeout(85):
+            async with asyncio.timeout(180):
                 await stage("OPEN_SAFARI", "running", "Открываем точную страницу произведения.")
                 await self.open_page(recipe, target["item"], target.get("frame_host", ""))
+                await stage("FOUND_PAGE", "success", "Точная страница найдена; остаёмся на ней.")
                 await stage("DETECT_PLAYER", "success", f"Обнаружен плеер: {self.engine}.")
                 if not target.get("autoplay", True):
                     raise ToolError("Автозапуск отключён в настройках медиатеки.")
@@ -949,12 +1079,18 @@ class LearnedPlayer:
                 else:
                     await self.reveal(controls=True)
                     nodes = await self.prepare(recipe, self.episode)
+                    await stage("EPISODE_SELECTED", "success", "Сезон и серия выбраны.")
+                    await stage(
+                        "AUDIO_SELECTED_OR_SKIPPED",
+                        "success",
+                        self.report.get("voice_note") or "Используем текущую дорожку плеера.",
+                    )
                     await self.reveal()
                     await stage(
                         "PLAY", "running", "Проверяем запуск полного видео по движению времени."
                     )
-                    result = await self.confirm(nodes)
-                    await self.discover_audio_tracks(await self.nodes())
+                    result = await self.start_with_audio_fallback(nodes)
+                    self.last_sample = result
                     self.capabilities = {
                         "play": True,
                         "pause": self.engine == "venom_ax",
@@ -963,6 +1099,21 @@ class LearnedPlayer:
                         "fullscreen_available": self.engine == "venom_ax",
                         "audio_tracks": self.audio_tracks,
                     }
+                    await stage(
+                        "PLAYING_CONFIRMED",
+                        "success",
+                        "Движение таймера подтверждено; повторный поиск не требуется.",
+                    )
+                    try:
+                        async with asyncio.timeout(9):
+                            await self.discover_audio_tracks(await self.nodes())
+                    except (ToolError, TimeoutError) as error:
+                        await stage(
+                            "AUDIO_OPTIONS",
+                            "limited",
+                            f"Видео запущено; список дорожек не определён. {error}",
+                        )
+                    self.capabilities["audio_tracks"] = self.audio_tracks
                 self.last_sample = result
                 position = float(target.get("position", self.episode.get("position", 0)))
                 resume = position > 2 or target.get("restart") is True or result["position"] > 10
@@ -1003,9 +1154,89 @@ class LearnedPlayer:
                         await stage("RESTORE_POSITION", "limited", result["message"])
                 else:
                     result["resume_confirmed"] = True
+                self.last_sample = result
+                quality = {"status": "disabled", "maximum_confirmed": False}
+                if target.get("auto_max_quality", True):
+                    await stage(
+                        "QUALITY", "running", "Проверяем доступное качество на этой странице."
+                    )
+                    try:
+                        if self.html5:
+                            quality = {"status": "unavailable", "maximum_confirmed": False}
+                        else:
+                            quality = await QualityController(self).select_maximum()
+                            if quality.get("playback_confirmed"):
+                                result.update(self.last_sample)
+                    except (ToolError, TimeoutError) as error:
+                        quality = {
+                            "status": "unverified",
+                            "maximum_confirmed": False,
+                            "error": str(error),
+                        }
+                    await stage(
+                        "QUALITY_SELECTED",
+                        "success" if quality.get("maximum_confirmed") else "limited",
+                        f"Качество: {quality.get('selected', 'не определено')}. "
+                        "Видео остаётся на выбранной странице.",
+                    )
+                self.capabilities["quality"] = quality
+                quality["stream_resolution_verified"] = False
+                try:
+                    if self.html5:
+                        before_quality = await self.html5.sample()
+                        await asyncio.sleep(1)
+                        after_quality = await self.html5.sample()
+                        if after_quality["position"] <= before_quality["position"]:
+                            raise playback_error(
+                                "buffering", "Ожидаем движение таймера HTML5-видео."
+                            )
+                        result.update(after_quality, playback_confirmed=True)
+                        quality["video_height"] = after_quality.get("video_height", 0)
+                        quality["video_width"] = after_quality.get("video_width", 0)
+                        quality["stream_resolution_verified"] = bool(
+                            quality["video_height"] and quality["video_width"]
+                        )
+                    else:
+                        result.update(await self.confirm(await self.nodes()))
+                    if (
+                        result.get("resume_confirmed") is False
+                        and abs(result["position"] - position) <= 10
+                    ):
+                        result["resume_confirmed"] = True
+                        result.pop("resume_error", None)
+                        await stage(
+                            "RESTORE_POSITION",
+                            "success",
+                            "Свежий таймер подтвердил сохранённую позицию после загрузки плеера.",
+                        )
+                    await stage(
+                        "PLAYING_CONFIRMED",
+                        "success",
+                        "Позиция и движение таймера повторно подтверждены.",
+                    )
+                except (ToolError, TimeoutError) as error:
+                    result.update(
+                        playback_confirmed=False,
+                        observation_stale=True,
+                        buffering=True,
+                        message="Плеер найден; ожидаем восстановление видео "
+                        f"на этой странице. {error}",
+                    )
+                    await stage("BUFFERING", "running", result["message"])
+                if result.get("playback_confirmed"):
+                    note = {
+                        "fallback": "Максимальное качество не запустилось; "
+                        f"используется {quality.get('selected', 'прежний вариант')}.",
+                        "auto": "Оставлено Auto; максимальное качество не подтверждено.",
+                        "unavailable": "Видео воспроизводится, качество определить не удалось.",
+                        "unverified": "Видео воспроизводится; выбор качества не подтверждён.",
+                    }.get(quality.get("status"), "")
+                    if note:
+                        result["message"] += " " + note
                 if (
                     target.get("auto_fullscreen", True)
                     and result.get("resume_confirmed") is not False
+                    and result.get("playback_confirmed") is True
                 ):
                     await stage("FULLSCREEN", "running", "Включаем полный экран видеоплеера.")
                     try:
@@ -1016,7 +1247,7 @@ class LearnedPlayer:
                         self.capabilities.update(full.get("capabilities", {}))
                         self.capabilities["fullscreen"] = result["fullscreen_confirmed"]
                         await stage(
-                            "FULLSCREEN",
+                            "FULLSCREEN_CONFIRMED",
                             "success",
                             "Полноэкранное состояние видеоплеера подтверждено.",
                         )
@@ -1029,6 +1260,23 @@ class LearnedPlayer:
             self.report.update(result)
             self.last_sample = result
             return result
+        except TimeoutError:
+            if self.last_sample and self.playing:
+                # Optional controls cannot discard a page whose full video was
+                # already confirmed. A fresh poll will distinguish buffering.
+                result = {
+                    **self.last_sample,
+                    "capabilities": self.capabilities,
+                    "observation_stale": True,
+                    "buffering": True,
+                    "playback_confirmed": False,
+                    "message": "Видео запускалось; проверка настроек превысила ожидание. "
+                    "Остаёмся на этой странице.",
+                }
+                self.report.update(result)
+                return result
+            await self.detach()
+            raise
         except BaseException:
             await self.detach()
             raise
@@ -1073,6 +1321,40 @@ class LearnedPlayer:
             )
         }
         return state
+
+    async def recover(self):
+        """Recover this page only. Never search, navigate, or toggle a playing video."""
+        page = await self.page()
+        frames = page.get("frames", [])
+        was_fullscreen = page.get("fullscreen") is True
+        frame_changed = False
+        if len(frames) == 1 and frames[0]["host"] != self.frame_host:
+            frame_changed = True
+            self.frame_host = frames[0]["host"]
+            self.engine = player_engine(self.frame_host)
+            self.report.update(frame_host=self.frame_host, engine=self.engine)
+        await self.reveal()
+        tree = await self.nodes()
+        current_voice = voice_option(tree)
+        if not current_voice:
+            self.voice = ""
+            self.audio_tracks = []
+        else:
+            self.voice = label(current_voice)
+            self.audio_tracks = list(dict.fromkeys([self.voice, *self.audio_tracks]))
+        result = await self.confirm(tree)
+        result.update(selected_voice=self.voice, capabilities={"audio_tracks": self.audio_tracks})
+        if frame_changed:
+            result["capabilities"]["quality"] = {"status": "unverified", "maximum_confirmed": False}
+        if was_fullscreen:
+            try:
+                full = await self.fullscreen()
+                result.update(fullscreen_confirmed=full.get("fullscreen_confirmed") is True)
+                result["capabilities"].update(full.get("capabilities") or {})
+            except ToolError:
+                result["capabilities"]["fullscreen"] = False
+        self.last_sample = result
+        return result
 
     async def exit_fullscreen(self):
         try:

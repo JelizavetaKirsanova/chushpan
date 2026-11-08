@@ -31,6 +31,8 @@ class PlaybackState(StrEnum):
     PAUSED = "PAUSED"
     BLOCKED = "BLOCKED"
     FAILED = "FAILED"
+    BUFFERING = "BUFFERING"
+    RECOVERING = "RECOVERING"
 
 
 def playback_error(code, message):
@@ -327,12 +329,29 @@ class PlaybackManager:
         PlaybackState.PAUSED: {"WAITING_FOR_PLAYER", "STARTING", "BLOCKED", "FAILED"},
         PlaybackState.BLOCKED: {"OPENING", "WAITING_FOR_PLAYER", "STARTING", "PAUSED", "FAILED"},
         PlaybackState.FAILED: {"OPENING", "WAITING_FOR_PLAYER", "STARTING", "PAUSED", "BLOCKED"},
+        PlaybackState.BUFFERING: {
+            "WAITING_FOR_PLAYER",
+            "STARTING",
+            "PAUSED",
+            "BLOCKED",
+            "FAILED",
+            "ENTERING_FULLSCREEN",
+        },
+        PlaybackState.RECOVERING: {
+            "WAITING_FOR_PLAYER",
+            "STARTING",
+            "PAUSED",
+            "BLOCKED",
+            "FAILED",
+            "ENTERING_FULLSCREEN",
+        },
     }
 
     def __init__(self):
         self.session = None
         self.state = PlaybackState.IDLE
         self.code = ""
+        self.pipeline_phase = ""
         self.message = ""
         self.revision = 0
         self.last_successful_at = None
@@ -354,6 +373,8 @@ class PlaybackManager:
                 PlaybackState.CHECKING_REGION,
                 PlaybackState.CHECKING_PLAYER,
                 PlaybackState.READY,
+                PlaybackState.BUFFERING,
+                PlaybackState.RECOVERING,
             }
             and state not in self.transitions[self.state]
         ):
@@ -368,6 +389,26 @@ class PlaybackManager:
         return self.session
 
     def stage(self, name, status, message):
+        phases = {
+            "FOUND_PAGE",
+            "PLAYER_DETECTED",
+            "EPISODE_SELECTED",
+            "AUDIO_SELECTED_OR_SKIPPED",
+            "QUALITY_SELECTED",
+            "PLAYING_CONFIRMED",
+            "FULLSCREEN_CONFIRMED",
+            "BUFFERING",
+            "RECOVERING",
+            "FAILED",
+        }
+        if name == "DETECT_PLAYER":
+            self.pipeline_phase = "PLAYER_DETECTED"
+        elif name in phases:
+            self.pipeline_phase = name
+        if name in phases or name in {"QUALITY", "AUDIO_OPTIONS"}:
+            self.message = message
+            self.revision += 1
+            return
         states = {
             "OPEN_SAFARI": PlaybackState.OPENING,
             "OPEN_NATIVE": PlaybackState.OPENING,
@@ -438,12 +479,14 @@ class PlaybackManager:
             stalled = time.monotonic() - self.session["last_advance"]
             if stalled > 30:
                 self.transition(
-                    PlaybackState.BLOCKED,
-                    "Видео не продвигается. Проверь загрузку в плеере.",
+                    PlaybackState.BUFFERING,
+                    "Видео загружается. Сохраняем текущую страницу и позицию.",
                     "playback_stalled",
                 )
             elif stalled > 10:
-                self.transition(PlaybackState.STARTING, "Ожидаю загрузки и движения времени видео.")
+                self.transition(
+                    PlaybackState.BUFFERING, "Ожидаю загрузки и движения времени видео."
+                )
         if sample.get("capabilities"):
             self.session.source.capabilities.update(sample["capabilities"])
 
@@ -477,11 +520,13 @@ class PlaybackManager:
     def clear(self, preserve_error=False):
         self.session = None
         if not preserve_error:
+            self.pipeline_phase = ""
             self.transition(PlaybackState.IDLE)
 
     def snapshot(self):
         return {
             "state": self.state.value,
+            "pipeline_phase": self.pipeline_phase,
             "code": self.code,
             "message": self.message,
             "revision": self.revision,

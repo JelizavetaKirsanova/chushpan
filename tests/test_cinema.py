@@ -635,14 +635,18 @@ def test_last_series_and_genre_requests_never_reach_llm_and_reuse_last_source(tm
         service.sources.http = HTTP()
         await service.db("progress", episode["id"], 66, 1000, "manual", preferred["id"])
         expected_position = 66
-        for text in (
-            "Чушпан, включи последнюю серию, которую я смотрела",
-            "Чушпан, продолжи мой сериал",
+        for index, text in enumerate(
+            (
+                "Чушпан, включи последнюю серию, которую я смотрела",
+                "Чушпан, продолжи мой сериал",
+            )
         ):
             answer = "".join([part async for part in conv.reply(text)])
             assert "Подтверждено" in answer
             assert player.opened[-1]["link"]["id"] == preferred["id"]
-            expected_position -= 3
+            if index == 0:
+                expected_position -= 3
+            assert len(player.opened) == 1
             assert player.opened[-1]["episode"]["position"] == expected_position
         answer = "".join(
             [part async for part in conv.reply("Чушпан, найди мне какой-нибудь триллер")]
