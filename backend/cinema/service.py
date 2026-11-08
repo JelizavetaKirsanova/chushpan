@@ -632,6 +632,11 @@ class Cinema:
                 if active and value.get("request_id", "") == active[0]:
                     self.watch_sequence += 1
                     await self.cancel_search_task(active[1])
+                    if self.hud_search is None:
+                        if not self.session:
+                            self.playback.clear()
+                        self.message = "Поиск и запуск отменены. Прогресс сохранён."
+                        await self.publish(watch_cancelled=active[0])
                 return
             elif op == "watch_confirm":
                 self.require_playback()
@@ -2169,6 +2174,9 @@ class Cinema:
                 candidate = {**fields, "player": attempts[index]}
                 if index:
                     candidate["engine"] = "auto"
+                    self.playback.transition(
+                        PlaybackState.READY, "Проверяем другой плеер источника."
+                    )
                 try:
                     result = await adapter.open(
                         {

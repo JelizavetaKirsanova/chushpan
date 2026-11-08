@@ -133,3 +133,21 @@ def test_resume_precedes_fullscreen_and_unverified_fullscreen_is_reported(auto_f
         assert ("FULLSCREEN", "limited") in actions
     else:
         assert "fullscreen_confirmed" not in result
+
+
+def test_fullscreen_controls_preserve_safari_video_window():
+    from unittest.mock import AsyncMock
+
+    async def run():
+        tabs = type("Tabs", (), {"_owned": AsyncMock(return_value="sent")})()
+        player = LearnedPlayer(None, None, tabs=tabs)
+        player.page = AsyncMock(return_value={"fullscreen": True})
+        await player.activate()
+        action = tabs._owned.call_args.args[1]
+        assert "activate" in action
+        assert "current tab" not in action and "set index" not in action
+        player.page.return_value = {"fullscreen": False}
+        await player.activate()
+        assert "set current tab" in tabs._owned.call_args.args[1]
+
+    asyncio.run(run())

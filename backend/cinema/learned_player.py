@@ -313,11 +313,19 @@ class LearnedPlayer:
         raise ToolError("Выбранная вкладка не показала один доступный iframe плеера.")
 
     async def activate(self):
+        fullscreen = (await self.page()).get("fullscreen")
+        action = (
+            'activate\nreturn "sent"'
+            if fullscreen
+            else (
+                "set current tab of window id (ownerID as integer) to ownedTab\n"
+                "try\nset index of window id (ownerID as integer) to 1\nend try\n"
+                'activate\nreturn "sent"'
+            )
+        )
         result = await self.tabs._owned(
             self.session,
-            "set current tab of window id (ownerID as integer) to ownedTab\n"
-            "try\nset index of window id (ownerID as integer) to 1\nend try\n"
-            'activate\nreturn "sent"',
+            action,
         )
         if result != "sent":
             raise ToolError("Учебная вкладка Safari закрыта или изменила адрес.")

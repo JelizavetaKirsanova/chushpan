@@ -311,9 +311,9 @@ def test_site_adapter_normal_watch_lifecycle_progress_and_fallback(tmp_path, mon
             self.report = {"player": target["recipe"]["player"], "players": ["Плеер 1", "Плеер 3"]}
             diagnostic = target["diagnostic"]
             await diagnostic("OPEN_SAFARI", "running", "Opening")
+            await diagnostic("DETECT_PLAYER", "success", "Found")
             if scenario == "fallback" and len(calls) == 1:
                 raise ToolError("First player failed")
-            await diagnostic("DETECT_PLAYER", "success", "Found")
             await diagnostic("PLAY", "running", "Playing")
             await diagnostic("RESTORE_POSITION", "running", "Restoring")
             restored = scenario != "seek_failure"
@@ -374,6 +374,38 @@ def test_site_adapter_normal_watch_lifecycle_progress_and_fallback(tmp_path, mon
             if scenario == "fallback":
                 assert [call["recipe"]["player"] for call in calls] == ["Плеер 1", "Плеер 3"]
                 assert any(row["stage"] == "SITE_PLAYER" for row in await service.db("diagnostics"))
+        finally:
+            await service.close()
+            memory.close()
+
+    asyncio.run(run())
+
+
+def test_cancel_pending_watch_clears_busy_state_and_keeps_progress(tmp_path):
+    from backend.cinema.playback import PlaybackState
+
+    async def run():
+        service, memory, _ = setup(tmp_path)
+        waiting = asyncio.Event()
+
+        async def pending(*args, **kwargs):
+            service.playback.transition(PlaybackState.SEARCHING)
+            waiting.set()
+            await asyncio.Event().wait()
+
+        try:
+            item = await service.db("add", {"title": "Title"})
+            await service.db("progress", item["current"]["id"], 90, 3500, "manual")
+            service.resume = pending
+            request = asyncio.create_task(
+                service.handle({"op": "watch", "title_id": item["id"], "request_id": "cancel-test"})
+            )
+            await waiting.wait()
+            await service.handle({"op": "watch_cancel", "request_id": "cancel-test"})
+            await asyncio.gather(request, return_exceptions=True)
+            assert service.hud_search is None
+            assert service.playback.state == PlaybackState.IDLE
+            assert (await service.db("detail", item["id"]))["current"]["position"] == 90
         finally:
             await service.close()
             memory.close()
