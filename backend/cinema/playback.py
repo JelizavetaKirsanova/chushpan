@@ -25,6 +25,8 @@ class PlaybackState(StrEnum):
     OPENING = "OPENING"
     WAITING_FOR_PLAYER = "WAITING_FOR_PLAYER"
     STARTING = "STARTING"
+    RESTORING_POSITION = "RESTORING_POSITION"
+    ENTERING_FULLSCREEN = "ENTERING_FULLSCREEN"
     PLAYING = "PLAYING"
     PAUSED = "PAUSED"
     BLOCKED = "BLOCKED"
@@ -349,7 +351,8 @@ class PlaybackManager:
             "OPEN_NATIVE": PlaybackState.OPENING,
             "DETECT_PLAYER": PlaybackState.WAITING_FOR_PLAYER,
             "VERIFY": PlaybackState.VALIDATING_SOURCE,
-            "RESTORE_POSITION": PlaybackState.STARTING,
+            "RESTORE_POSITION": PlaybackState.RESTORING_POSITION,
+            "FULLSCREEN": PlaybackState.ENTERING_FULLSCREEN,
             "PLAY": PlaybackState.STARTING,
         }
         if status in {"limited", "rejected", "failed"}:

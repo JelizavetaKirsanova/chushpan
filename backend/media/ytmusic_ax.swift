@@ -364,11 +364,18 @@ func cinemaPlayer(_ request: [String: Any], _ op: String, _ app: NSRunningApplic
         guard depth > 0 else { return [] }
         return children(element).flatMap { find($0, depth - 1, matches) }
     }
-    let pages = find(window as! AXUIElement, 10) {
-        text($0, "AXRole") == "AXWebArea" && text($0, "AXURL") == address
+    func markedPages(_ element: AXUIElement, _ depth: Int) -> [AXUIElement] {
+        if text(element, "AXRole") == "AXWebArea" {
+            return text(element, "AXURL") == address ? [element] : []
+        }
+        guard depth > 0 else { return [] }
+        return children(element).flatMap { markedPages($0, depth - 1) }
     }
+    let windows = op == "cinema_snapshot" ?
+        (attr(root, kAXWindowsAttribute) as? [AXUIElement] ?? [window as! AXUIElement]) : [window as! AXUIElement]
+    let pages = windows.flatMap { markedPages($0, 10) }
     guard pages.count == 1 else { fail("cinema_page_unavailable") }
-    let frames = find(pages[0], 18) {
+    let frames = frameHost == pageURL.host?.lowercased() ? [pages[0]] : find(pages[0], 18) {
         text($0, "AXRole") == "AXWebArea" &&
             URL(string: text($0, "AXURL"))?.host?.lowercased() == frameHost
     }
@@ -376,6 +383,40 @@ func cinemaPlayer(_ request: [String: Any], _ op: String, _ app: NSRunningApplic
     let frame = frames[0]
     func playerChildren(_ element: AXUIElement) -> [AXUIElement] {
         children(element).filter { text($0, "AXRole") != "AXWebArea" }
+    }
+    if op == "cinema_key" {
+        let codes: [String: CGKeyCode] = ["fullscreen": 3, "fullscreen_exit": 53, "play_pause": 49,
+                                         "seek_forward": 124, "seek_back": 123]
+        guard let action = request["key"] as? String, let code = codes[action], app.isActive
+        else { fail("invalid_request") }
+        // Focus only this already verified iframe. Never type into a field or browser chrome.
+        _ = AXUIElementSetAttributeValue(frame, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        func focusIsInsideFrame() -> Bool {
+            guard app.isActive, let focused = attr(root, kAXFocusedUIElementAttribute),
+                  CFGetTypeID(focused) == AXUIElementGetTypeID() else { return false }
+            var element = focused as! AXUIElement
+            for _ in 0..<18 {
+                if CFEqual(element, frame) { return true }
+                if ["AXWebArea", "AXTextField", "AXTextArea", "AXComboBox"].contains(text(element, "AXRole")) { return false }
+                guard let parent = attr(element, kAXParentAttribute), CFGetTypeID(parent) == AXUIElementGetTypeID() else { return false }
+                element = parent as! AXUIElement
+            }
+            return false
+        }
+        let repeats = request["repeat_count"] as? Int ?? 1
+        guard (1...12).contains(repeats), repeats == 1 || action.hasPrefix("seek_")
+        else { fail("invalid_request") }
+        for _ in 0..<repeats {
+            guard focusIsInsideFrame() else { fail("cinema_focus_unavailable") }
+            for down in [true, false] {
+                guard let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)
+                else { fail("cinema_control_unavailable") }
+                event.flags = down && request["large"] as? Bool == true && action.hasPrefix("seek_") ? .maskShift : []
+                event.post(tap: .cghidEventTap)
+            }
+            Thread.sleep(forTimeInterval: 0.035)
+        }
+        output(["ok": true])
     }
     if op == "cinema_snapshot" {
         var nodes: [[String: Any]] = []
@@ -386,6 +427,12 @@ func cinemaPlayer(_ request: [String: Any], _ op: String, _ app: NSRunningApplic
             for key in ["role", "title", "description", "value", "help"] {
                 if let value = properties[key] { node[key] = String(value.prefix(160)) }
             }
+            node["frame"] = windowFrame(element).map(frameArray) ?? []
+            node["value_settable"] = settable(element, kAXValueAttribute)
+            for key in ["AXMinValue", "AXMaxValue", "AXValueDescription", "AXDOMIdentifier"] {
+                let value = text(element, key)
+                if !value.isEmpty { node[key] = String(value.prefix(160)) }
+            }
             nodes.append(node)
             for (index, child) in playerChildren(element).enumerated() { visit(child, path + [index]) }
         }
@@ -394,7 +441,7 @@ func cinemaPlayer(_ request: [String: Any], _ op: String, _ app: NSRunningApplic
     }
     guard let path = request["path"] as? [Int], path.count < 12,
           let expected = request["expected"] as? [String: String],
-          let role = expected["role"], ["AXWebArea", "AXStaticText", "AXButton", "AXGroup"].contains(role)
+          let role = expected["role"], ["AXWebArea", "AXStaticText", "AXButton", "AXGroup", "AXSlider"].contains(role)
     else { fail("invalid_request") }
     var target = frame
     for index in path {
@@ -405,7 +452,17 @@ func cinemaPlayer(_ request: [String: Any], _ op: String, _ app: NSRunningApplic
     let actual = fields(target)
     guard expected.allSatisfy({ actual[$0.key, default: ""] == $0.value }),
           app.isActive else { fail("element_changed") }
-    if role == "AXButton", AXUIElementPerformAction(target, kAXPressAction as CFString) == .success {
+    if op == "cinema_set_value" {
+        guard role == "AXSlider", let value = request["value"] as? Double, value.isFinite,
+              let minimum = attr(target, "AXMinValue") as? NSNumber,
+              let maximum = attr(target, "AXMaxValue") as? NSNumber,
+              value >= minimum.doubleValue, value <= maximum.doubleValue,
+              settable(target, kAXValueAttribute),
+              AXUIElementSetAttributeValue(target, kAXValueAttribute as CFString, NSNumber(value: value)) == .success
+        else { fail("cinema_slider_unavailable") }
+        output(["ok": true])
+    }
+    if op == "cinema_press", request["force_pointer"] as? Bool != true, role == "AXButton", AXUIElementPerformAction(target, kAXPressAction as CFString) == .success {
         output(["ok": true])
     }
     guard let box = windowFrame(target), let area = windowFrame(frame),
@@ -426,6 +483,13 @@ func cinemaPlayer(_ request: [String: Any], _ op: String, _ app: NSRunningApplic
         element = parent as! AXUIElement
     }
     guard inside, app.isActive else { fail("cinema_hit_changed") }
+    if op == "cinema_hover" {
+        guard let event = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                                  mouseCursorPosition: point, mouseButton: .left)
+        else { fail("cinema_control_unavailable") }
+        event.post(tap: .cghidEventTap)
+        output(["ok": true])
+    }
     for kind in [CGEventType.leftMouseDown, .leftMouseUp] {
         guard let event = CGEvent(mouseEventSource: nil, mouseType: kind, mouseCursorPosition: point,
                                   mouseButton: .left) else { fail("cinema_control_unavailable") }
@@ -482,7 +546,7 @@ guard AXIsProcessTrusted() else { fail("accessibility_permission") }
 guard let app = running.first else { fail("app_closed") }
 let root = AXUIElementCreateApplication(app.processIdentifier)
 AXUIElementSetMessagingTimeout(root, 2)
-if ["cinema_snapshot", "cinema_press"].contains(op) {
+if ["cinema_snapshot", "cinema_press", "cinema_hover", "cinema_key", "cinema_set_value"].contains(op) {
     guard bundle == "com.apple.Safari" else { fail("invalid_request") }
     cinemaPlayer(request, op, app, root)
 }

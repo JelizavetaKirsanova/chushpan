@@ -40,8 +40,12 @@
     structured:documents.flatMap(doc=>[...doc.querySelectorAll('script[type="application/ld+json"]')].slice(0,8).flatMap(node=>{try{return [JSON.parse(node.textContent.slice(0,12000))];}catch{return [];}})).slice(0,16)});
   const fullscreen = () => {
     if(video.webkitDisplayingFullscreen===true||video.getRootNode().fullscreenElement===video)return true;
-    const full=video.ownerDocument.fullscreenElement;
-    for(let node=video;full&&node;node=node.parentNode||node.getRootNode?.().host)if(node===full)return true;
+    const doc=video.ownerDocument, full=doc.fullscreenElement;
+    if(!full||full===doc.body||full===doc.documentElement)return false;
+    for(let node=video;node;node=node.parentNode||node.getRootNode?.().host)if(node===full){
+      const screen=full.getBoundingClientRect(), media=video.getBoundingClientRect();
+      return screen.width>0&&screen.height>0&&media.width>=screen.width*.8&&media.height>=screen.height*.8;
+    }
     return false;
   };
   const tracks=()=>Array.from(video.audioTracks||[]);

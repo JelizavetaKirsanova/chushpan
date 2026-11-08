@@ -32,9 +32,11 @@ def test_player_requires_one_full_timer_with_matching_episode_and_voice():
 def test_prepare_waits_for_episode_controls_after_iframe_skeleton():
     class DynamicFrame:
         calls = 0
+        operations = []
 
         async def cinema(self, op, **kwargs):
             self.calls += 1
+            self.operations.append(op)
             loading = [{"role": "AXGroup", "path": [i]} for i in range(4)]
             ready = [
                 {**node, "path": [i]}
@@ -48,7 +50,7 @@ def test_prepare_waits_for_episode_controls_after_iframe_skeleton():
         player.frame_host = "player.example"
         recipe = SiteRecipe(url="https://some.example/show", voice="LostFilm")
         result = await player.prepare(recipe, {"season": 1, "episode": 1})
-        assert ax.calls == 2
+        assert ax.operations[:2] == ["cinema_snapshot", "cinema_snapshot"]
         assert result[0]["value"] == "1 сезон"
 
     asyncio.run(run())
@@ -76,3 +78,58 @@ def test_taught_recipe_uses_public_https_and_is_versioned_without_resetting_prog
     assert result["current"]["position"] == 37
     assert result["current"]["links"][0]["id"] == first
     store.close()
+
+
+@pytest.mark.parametrize("auto_fullscreen", [True, False])
+def test_resume_precedes_fullscreen_and_unverified_fullscreen_is_reported(auto_fullscreen):
+    actions = []
+
+    class Player(LearnedPlayer):
+        async def open_page(self, *args):
+            self.engine = "venom_ax"
+
+        async def prepare(self, *args):
+            return []
+
+        async def nodes(self):
+            return []
+
+        async def confirm(self, nodes):
+            actions.append("confirm")
+            return {"position": 100 if "seek" in actions else 1, "message": "Playing"}
+
+        async def seek(self, position):
+            assert position == 100
+            actions.append("seek")
+            return {"seek_confirmed": True, "message": "Restored"}
+
+        async def fullscreen(self):
+            actions.append("fullscreen")
+            return {"fullscreen_confirmed": False}
+
+    async def diagnostic(stage, status, message):
+        actions.append((stage, status))
+
+    result = asyncio.run(
+        Player(None, None).open(
+            {
+                "recipe": {"url": "https://example.org/title"},
+                "item": {"title": "Title"},
+                "episode": {"season": 1, "position": 100},
+                "auto_fullscreen": auto_fullscreen,
+                "diagnostic": diagnostic,
+            }
+        )
+    )
+    assert result["resume_confirmed"] is True
+    assert [action for action in actions if isinstance(action, str)] == [
+        "confirm",
+        "seek",
+        "confirm",
+        *(["fullscreen"] if auto_fullscreen else []),
+    ]
+    if auto_fullscreen:
+        assert result["fullscreen_confirmed"] is False
+        assert ("FULLSCREEN", "limited") in actions
+    else:
+        assert "fullscreen_confirmed" not in result

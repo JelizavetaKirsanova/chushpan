@@ -374,6 +374,13 @@ class HTML5Adapter:
                 "на странице или кнопку ▶ самого плеера. Сохранённый прогресс не изменён.",
             }
         await stage("PLAY", "success", "Воспроизведение подтверждено движением времени.")
+        if not target.get("auto_fullscreen", True):
+            return {
+                **result,
+                "mode": "html5",
+                "page_opened": True,
+                "message": result.get("message", "") + voice_note,
+            }
         await stage("FULLSCREEN", "running", "Запрашиваем полноэкранный режим у видеоплеера.")
         try:
             await self.control("fullscreen")

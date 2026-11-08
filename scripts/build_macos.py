@@ -15,7 +15,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from backend.desktop import VERSION
-from scripts.macos_release import BUILD_RECEIPT, new_build_directory, verify_bundle, write_receipt
+from scripts.macos_release import (
+    BUILD_RECEIPT,
+    new_build_directory,
+    update_state,
+    verify_bundle,
+    write_receipt,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_SOURCES = (
@@ -24,6 +30,7 @@ MANIFEST_SOURCES = (
     "backend/cinema/internet.py",
     "backend/cinema/browser_search.py",
     "backend/cinema/learned_player.py",
+    "backend/cinema/site_adapters.py",
     "backend/media/ytmusic_ax.swift",
     "backend/cinema/site_browser.py",
     "backend/cinema/browser_diagnostics.py",
@@ -106,9 +113,21 @@ def build_manifest(build_root: Path | None = None) -> Path:
 
 
 def build() -> Path:
-    signing_identity = os.environ.get("CHUSHPAN_CODESIGN_IDENTITY") or "-"
     if sys.platform != "darwin" or platform.machine() != "arm64":
         raise SystemExit("Сборка требует macOS на Apple Silicon и arm64 Python.")
+    identity_file = update_state() / "signing-identity"
+    signing_identity = os.environ.get("CHUSHPAN_CODESIGN_IDENTITY")
+    if not signing_identity and identity_file.exists():
+        signing_identity = identity_file.read_text().strip()
+        if not signing_identity or signing_identity == "-":
+            raise SystemExit("Некорректная сохранённая идентичность подписи Чушпана.")
+    signing_identity = signing_identity or "-"
+    if signing_identity != "-":
+        identities = subprocess.check_output(
+            ["/usr/bin/security", "find-identity", "-v", "-p", "codesigning"], text=True
+        )
+        if signing_identity.casefold() not in identities.casefold():
+            raise SystemExit("Сохранённый сертификат подписи Чушпана недоступен в Связке ключей.")
     for module in ("PyInstaller", "ServiceManagement", "AVFoundation", "CoreLocation"):
         if importlib.util.find_spec(module) is None:
             raise SystemExit(f"Нет {module}. Выполни uv sync --group macos-build --locked.")
@@ -215,7 +234,11 @@ def build() -> Path:
         "--distpath",
         str(build_root / "dist"),
         str(ROOT / "packaging/macos/Chushpan.spec"),
-        env={**os.environ, "CHUSHPAN_BUILD_ROOT": str(build_root)},
+        env={
+            **os.environ,
+            "CHUSHPAN_BUILD_ROOT": str(build_root),
+            "CHUSHPAN_CODESIGN_IDENTITY": signing_identity if signing_identity != "-" else "",
+        },
     )
     app = build_root / "dist/Чушпан.app"
     helpers = app / "Contents/Helpers"

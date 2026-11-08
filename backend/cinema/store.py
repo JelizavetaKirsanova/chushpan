@@ -125,6 +125,12 @@ MIGRATIONS = [
       title_id TEXT PRIMARY KEY REFERENCES cinema_titles(id) ON DELETE CASCADE,
       data TEXT NOT NULL);
     """,
+    """
+    CREATE TABLE cinema_site_templates (
+      id TEXT PRIMARY KEY, site_origin TEXT NOT NULL, frame_host TEXT NOT NULL,
+      engine TEXT NOT NULL, data TEXT NOT NULL,
+      UNIQUE(site_origin,frame_host,engine));
+    """,
 ]
 
 
@@ -818,8 +824,11 @@ class CinemaStore:
                 for row in ep["links"]
                 if row["source_id"] == source["id"] and row["voice"] == recipe["voice"]
             )
+            engine = recipe.get("engine", "auto")
+            template = self.save_site_template(base, frame_host, {**recipe, "engine": engine})
             data = {
                 **recipe,
+                "template_id": template["id"],
                 "frame_host": frame_host,
                 "source_id": source["id"],
                 "season": episode["season"],
@@ -832,6 +841,83 @@ class CinemaStore:
                 (item["id"], json.dumps(data, ensure_ascii=False)),
             )
             return link["id"]
+
+    def site_templates(self):
+        return [
+            json.loads(row[0])
+            for row in self.db.execute(
+                "SELECT data FROM cinema_site_templates ORDER BY site_origin,frame_host,engine"
+            )
+        ]
+
+    def save_site_template(self, base, frame_host, recipe):
+        engine = recipe.get("engine", "auto")
+        if engine not in {"auto", "html5", "venom_ax", "semantic_ax"}:
+            raise ValueError("Неизвестный тип плеера.")
+        if not re.fullmatch(r"[a-zA-Z0-9.-]{1,253}", frame_host):
+            raise ValueError("Некорректный домен плеера.")
+        current = self.db.execute(
+            "SELECT data FROM cinema_site_templates WHERE site_origin=? "
+            "AND frame_host=? AND engine=?",
+            (base, frame_host, engine),
+        ).fetchone()
+        old = json.loads(current[0]) if current else {}
+        caps = {
+            key: value
+            for key, value in recipe.get("capabilities", {}).items()
+            if key in {"play", "pause", "seek", "position", "fullscreen_available"}
+            and type(value) is bool
+        }
+        value = {
+            "id": old.get("id", uuid4().hex),
+            "name": old.get("name", base.removeprefix("https://")),
+            "site_origin": base,
+            "frame_host": frame_host,
+            "engine": engine,
+            "player": recipe.get("player", "")[:80],
+            "voice": recipe.get("voice", "")[:100],
+            "capabilities": caps,
+            "enabled": old.get("enabled", True),
+            "version": 1,
+            "verified_at": now(),
+        }
+        self.db.execute(
+            "INSERT INTO cinema_site_templates VALUES (?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+            (value["id"], base, frame_host, engine, json.dumps(value, ensure_ascii=False)),
+        )
+        return value
+
+    def update_site_template(self, identifier, values):
+        if not values or set(values) - {"name", "player", "voice", "enabled"}:
+            raise ValueError(
+                "Можно изменить название, вкладку плеера, озвучку или включение сценария."
+            )
+        template = next((t for t in self.site_templates() if t["id"] == identifier), None)
+        if not template:
+            raise ValueError("Сценарий не найден.")
+        for key, value in values.items():
+            if key == "enabled":
+                if type(value) is not bool:
+                    raise ValueError("Включение сценария должно быть логическим значением.")
+            elif not isinstance(value, str) or len(value) > (80 if key == "player" else 100):
+                raise ValueError("Слишком длинное или некорректное поле сценария.")
+            template[key] = value
+        with self.transaction():
+            self.db.execute(
+                "UPDATE cinema_site_templates SET data=? WHERE id=?",
+                (json.dumps(template, ensure_ascii=False), identifier),
+            )
+        return template
+
+    def delete_site_template(self, identifier):
+        with self.transaction():
+            self.db.execute("DELETE FROM cinema_site_templates WHERE id=?", (identifier,))
+
+    def delete_site_recipe(self, title_id):
+        self.title(title_id)
+        with self.transaction():
+            self.db.execute("DELETE FROM cinema_site_recipes WHERE title_id=?", (title_id,))
 
     def library(self, query=""):
         rows = self.db.execute("SELECT id FROM cinema_titles ORDER BY updated_at DESC").fetchall()
@@ -1142,4 +1228,5 @@ class CinemaStore:
             "sources": self.sources(),
             "history": history,
             "preferences": self.preferences().model_dump(),
+            "site_templates": self.site_templates(),
         }
