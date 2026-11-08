@@ -397,3 +397,61 @@ def test_initial_unlabelled_play_is_not_toggled_twice_while_loading():
     with pytest.raises(ToolError):
         asyncio.run(player.confirm([]))
     player.key.assert_awaited_once_with("play_pause")
+
+
+def test_restored_audio_reports_requested_failure_without_failing_working_session():
+    from types import SimpleNamespace
+
+    from backend.cinema.playback import PlaybackManager, PlaybackSource, PlaybackState
+    from backend.cinema.service import Cinema
+
+    async def run():
+        manager = PlaybackManager()
+        source = PlaybackSource(
+            "https://example.org/show",
+            "title",
+            "episode",
+            "source",
+            "link",
+            "safari",
+            "episode",
+            voice="LostFilm",
+            capabilities={"audio_tracks": ["LostFilm", "Рус. Другая"]},
+        )
+        adapter = SimpleNamespace(
+            set_voice=AsyncMock(
+                return_value={
+                    "voice_confirmed": False,
+                    "selected_voice": "LostFilm",
+                    "message": "Другая дорожка недоступна; восстановлена LostFilm.",
+                }
+            )
+        )
+        session = manager.bind(
+            source,
+            token="token",
+            mode="learned",
+            adapter=adapter,
+            target={"episode": {"id": "episode"}, "link": {"id": "link"}},
+        )
+        manager.confirmed(
+            {"position": 120, "duration": 1800, "paused": False, "playback_confirmed": True}
+        )
+        holder = SimpleNamespace(
+            require_playback=lambda: None,
+            tools=SimpleNamespace(enabled=lambda key: True),
+            session=session,
+            lock=asyncio.Lock(),
+            db=AsyncMock(),
+        )
+        result = await Cinema.viewer_control(
+            holder, {"op": "playback_voice", "voice": "Рус. Другая", "token": "token"}
+        )
+        assert (
+            result["error"]
+            and source.voice == "LostFilm"
+            and manager.state == PlaybackState.PLAYING
+        )
+        holder.db.assert_awaited_once_with("playback_voice", "episode", "link", "LostFilm")
+
+    asyncio.run(run())

@@ -3214,6 +3214,9 @@ class Cinema:
                 return {
                     **result,
                     "message": result.get("message", "Плеер подтвердил звуковую дорожку."),
+                    "error": result.get("message")
+                    if result.get("voice_confirmed") is False
+                    else None,
                 }
             action = value.get("action")
             if action == "fullscreen":
