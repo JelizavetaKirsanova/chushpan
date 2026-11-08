@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import getpass
 import hashlib
 import json
 import os
@@ -147,7 +148,7 @@ def open_paths() -> set[Path] | None:
     """Return lsof paths; None means inspection failed and cleanup must fail closed."""
     try:
         result = subprocess.run(
-            ["/usr/sbin/lsof", "-Fn", "-nP"],
+            ["/usr/sbin/lsof", "-Fn", "-nP", "-u", getpass.getuser()],
             capture_output=True,
             text=True,
             timeout=15,
@@ -155,9 +156,15 @@ def open_paths() -> set[Path] | None:
         )
         if result.returncode != 0:
             return None
-        return {
-            Path(line[1:]).resolve() for line in result.stdout.splitlines() if line.startswith("n/")
-        }
+        managed = [str(path.absolute()).rstrip("/") for path in roots().values()]
+        paths = set()
+        for line in result.stdout.splitlines():
+            if not line.startswith("n/"):
+                continue
+            name = line[1:]
+            if any(name == root or name.startswith(root + "/") for root in managed):
+                paths.add(Path(name))
+        return paths
     except (OSError, subprocess.TimeoutExpired):
         return None
 

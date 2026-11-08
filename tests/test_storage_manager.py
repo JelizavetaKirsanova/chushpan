@@ -178,3 +178,21 @@ def test_backup_cleanup_keeps_three_verified_and_every_pinned_copy(tmp_path, mon
     assert result["removed"][0]["path"] == str(snapshots[1])
     assert snapshots[0].exists()
     assert all(snapshot.exists() for snapshot in snapshots[2:])
+
+
+def test_active_backup_writer_disables_backup_cleanup(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    base = storage.roots(home)["backups"]
+    snapshots = [make_backup(base / f"snapshot-2026110{n}T000000Z") for n in range(4)]
+    monkeypatch.setattr(storage, "open_paths", lambda: set())
+    lock = (base / ".backup.lock").open("a")
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        preview = storage.preview_cleanup(home)
+        assert not preview["backup_scan_available"]
+        assert not preview["backup_candidates"]
+        with pytest.raises(ValueError, match="выполняется резервное копирование"):
+            storage.apply_cleanup(home, tmp_path / "absent.app", preview["token"])
+    finally:
+        lock.close()
+    assert all(snapshot.exists() for snapshot in snapshots)
