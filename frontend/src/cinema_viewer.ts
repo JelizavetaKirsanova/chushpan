@@ -30,7 +30,8 @@ export class CinemaViewer {
     this.data=data;const p=data.playback;
     this.root.hidden=!p||p.state==='IDLE';if(!p)return;
     this.status.textContent=labels[p.state]??'Подключение';this.root.dataset.state=p.state;
-    this.message.textContent=p.message;const source=p.source;
+    this.message.textContent=data.error??p.message;const source=p.source;
+    if(data.error&&source){const voice=this.controls.querySelector<HTMLSelectElement>('[aria-label="Дорожка плеера"]');if(voice)voice.value=source.voice;}
     if(data.watch_progress?.request_id)this.requestId=data.watch_progress.request_id;
     if(['PLAYING','PAUSED','IDLE','FAILED'].includes(p.state))this.requestId='';
     const item=data.items.find(i=>i.id===source?.title_id);const episode=item?.episodes.find(e=>e.id===source?.episode_id);

@@ -470,6 +470,8 @@ test('compact viewer binds controls to the session and only offers observed audi
     [...panel.querySelectorAll('button')].find((b:any)=>b.textContent==='Пауза')!.click();assert.equal(sent.at(-1).token,'session-one');assert.equal(sent.at(-1).action,'pause');
     initial.playback={...initial.playback,token:'session-two',source:{...initial.playback.source,voice:'Русский',capabilities:{audio_tracks:['Русский','English']}}};view.receive(initial);
     const voice=panel.querySelector('[aria-label="Дорожка плеера"]') as HTMLSelectElement;voice.value='English';voice.dispatchEvent(new f.window.Event('change'));assert.equal(sent.at(-1).voice,'English');assert.equal(sent.at(-1).token,'session-two');
+    const requests=sent.length;view.receive({...initial,error:'Плеер не подтвердил смену дорожки.'});
+    assert.equal(voice.value,'Русский');assert.match(panel.textContent,/Плеер не подтвердил смену дорожки/);assert.equal(sent.length,requests);
     view.connection(false);assert.ok([...panel.querySelectorAll('button,select')].every((n:any)=>n.disabled));
   }finally{f.window.happyDOM.abort();}
 });
