@@ -452,6 +452,11 @@ func cinemaPlayer(_ request: [String: Any], _ op: String, _ app: NSRunningApplic
     let actual = fields(target)
     guard expected.allSatisfy({ actual[$0.key, default: ""] == $0.value }),
           app.isActive else { fail("element_changed") }
+    if op == "cinema_hover", request["raise_window"] as? Bool == true {
+        // Leaving video fullscreen can keep another Safari window above the
+        // AX-focused window. Raise only the window containing our exact page.
+        _ = AXUIElementPerformAction(window as! AXUIElement, kAXRaiseAction as CFString)
+    }
     if op == "cinema_set_value" {
         guard role == "AXSlider", let value = request["value"] as? Double, value.isFinite,
               let minimum = attr(target, "AXMinValue") as? NSNumber,

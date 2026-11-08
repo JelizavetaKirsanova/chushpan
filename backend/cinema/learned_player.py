@@ -361,7 +361,7 @@ class LearnedPlayer:
             "nodes"
         ]
 
-    async def press(self, node, *, pointer=False, op="cinema_press"):
+    async def press(self, node, *, pointer=False, op="cinema_press", raise_window=False):
         expected = {
             k: node[k] for k in ("role", "title", "description", "value", "help") if k in node
         }
@@ -374,6 +374,7 @@ class LearnedPlayer:
                     path=node["path"],
                     expected=expected,
                     force_pointer=pointer,
+                    raise_window=raise_window,
                 )
                 return
             except ToolError as error:
@@ -384,7 +385,11 @@ class LearnedPlayer:
                     op != "cinema_press"
                     or attempt == 5
                     or getattr(error, "code", "")
-                    not in {"cinema_hit_changed", "cinema_hit_unavailable"}
+                    not in {
+                        "cinema_hit_changed",
+                        "cinema_hit_unavailable",
+                        "cinema_control_offscreen",
+                    }
                 ):
                     raise
                 await asyncio.sleep(0.2)
@@ -439,7 +444,7 @@ class LearnedPlayer:
 
     async def reveal(self, *, controls=False):
         await self.activate()
-        await self.page(
+        page = await self.page(
             player=self.report.get("player", ""), prepare=False, reveal=True, controls=controls
         )
         last_error = None
@@ -447,7 +452,9 @@ class LearnedPlayer:
             try:
                 nodes = await self.nodes()
                 if nodes:
-                    await self.press(nodes[0], op="cinema_hover")
+                    await self.press(
+                        nodes[0], op="cinema_hover", raise_window=page.get("fullscreen") is False
+                    )
                     return
             except ToolError as error:
                 if getattr(error, "code", "") not in {
@@ -617,8 +624,9 @@ class LearnedPlayer:
                 if predicate(nodes):
                     return nodes
             await asyncio.sleep(0.25)
-        raise ToolError(
-            "Плеер не показал ожидаемые элементы. Проверь выбранную вкладку и сценарий."
+        raise playback_error(
+            "cinema_controls_timeout",
+            "Плеер не показал ожидаемые элементы. Проверь выбранную вкладку и сценарий.",
         )
 
     async def select(self, nodes, menu, desired):
@@ -627,8 +635,21 @@ class LearnedPlayer:
             raise ToolError(f"Плеер не показал однозначный элемент выбора «{desired}».")
         if label(control) == desired:
             return nodes
-        await self.press(control)
-        nodes = await self.wait_nodes(lambda tree: exact(tree, re.escape(desired)))
+        for attempt in range(2):
+            await self.press(control)
+            try:
+                nodes = await self.wait_nodes(lambda tree: exact(tree, re.escape(desired)))
+                break
+            except ToolError as error:
+                if getattr(error, "code", "") != "cinema_controls_timeout" or attempt:
+                    raise
+                # Safari may consume the first click to focus a restored
+                # window. Retry only if the same menu control remains intact.
+                nodes = await self.nodes()
+                current = exact(nodes, menu)
+                if not current or current["path"] != control["path"]:
+                    raise ToolError("Меню плеера изменилось после нажатия.") from error
+                control = current
         await self.press(exact(nodes, re.escape(desired)))
         return await self.wait_nodes(
             lambda tree: any(

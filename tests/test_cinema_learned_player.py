@@ -317,7 +317,10 @@ def test_audio_tracks_wait_for_dynamic_menu_and_close_it(monkeypatch):
 
 
 @pytest.mark.parametrize("changed", [False, True])
-def test_press_waits_for_interactive_control_without_clicking_changed_target(monkeypatch, changed):
+@pytest.mark.parametrize("code", ["cinema_hit_changed", "cinema_control_offscreen"])
+def test_press_waits_for_interactive_control_without_clicking_changed_target(
+    monkeypatch, changed, code
+):
     from unittest.mock import AsyncMock
 
     from backend.cinema.playback import playback_error
@@ -336,7 +339,7 @@ def test_press_waits_for_interactive_control_without_clicking_changed_target(mon
             assert op == "cinema_press" and values["expected"]["value"] == "LostFilm"
             self.attempts += 1
             if self.attempts < 3:
-                raise playback_error("cinema_hit_changed", "Control is fading in")
+                raise playback_error(code, "Control is fading in")
             self.clicks += 1
 
     async def run():
@@ -350,5 +353,77 @@ def test_press_waits_for_interactive_control_without_clicking_changed_target(mon
         else:
             await player.press(node)
             assert ax.attempts == 3 and ax.clicks == 1
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_menu_retries_consumed_focus_click_only_for_same_control(monkeypatch, changed):
+    from unittest.mock import AsyncMock
+
+    from backend.tools.registry import ToolError
+
+    monkeypatch.setattr("backend.cinema.learned_player.asyncio.sleep", AsyncMock())
+
+    class Player(LearnedPlayer):
+        clicks = 0
+        expanded = False
+        selected = "LostFilm"
+
+        async def nodes(self):
+            return [
+                {"role": "AXStaticText", "value": self.selected, "path": [0, 1, 4]},
+                *(
+                    [{"role": "AXStaticText", "value": "Hurtom", "path": [0, 1, 5, 0]}]
+                    if self.expanded
+                    else []
+                ),
+            ]
+
+        async def press(self, node, **kwargs):
+            if node["path"] == [0, 1, 4]:
+                self.clicks += 1
+                if changed:
+                    self.selected = "Other"
+                elif self.clicks == 2:
+                    self.expanded = True
+            else:
+                assert self.expanded and node["value"] == "Hurtom"
+                self.selected, self.expanded = "Hurtom", False
+
+    async def run():
+        player = Player(None, None)
+        if changed:
+            with pytest.raises(ToolError, match="изменилось"):
+                await player.select(await player.nodes(), "LostFilm", "Hurtom")
+            assert player.clicks == 1
+        else:
+            await player.select(await player.nodes(), "LostFilm", "Hurtom")
+            assert player.clicks == 2 and player.selected == "Hurtom"
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("fullscreen", [False, True])
+def test_reveal_raises_owned_window_only_outside_video_fullscreen(fullscreen):
+    from unittest.mock import AsyncMock
+
+    class Player(LearnedPlayer):
+        async def activate(self):
+            pass
+
+        async def page(self, **values):
+            return {"fullscreen": fullscreen}
+
+        async def nodes(self):
+            return [{"role": "AXWebArea", "path": []}]
+
+    async def run():
+        ax = type("AX", (), {"cinema": AsyncMock(return_value={})})()
+        player = Player(None, ax)
+        await player.reveal()
+        ax.cinema.assert_awaited_once()
+        assert ax.cinema.call_args.args == ("cinema_hover",)
+        assert ax.cinema.call_args.kwargs["raise_window"] is not fullscreen
 
     asyncio.run(run())
