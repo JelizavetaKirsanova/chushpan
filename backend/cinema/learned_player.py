@@ -478,18 +478,11 @@ class LearnedPlayer:
         return None
 
     async def fullscreen(self):
-        await self.reveal()
-        state = await self.page()
-        if state.get("fullscreen") and state.get("fullscreen_host") in {"", self.frame_host}:
-            return {
-                "fullscreen": True,
-                "fullscreen_confirmed": True,
-                "capabilities": {"fullscreen": True, "fullscreen_available": True},
-            }
         if self.html5:
             try:
                 return await self.html5.control("fullscreen")
             except ToolError:
+                await self.reveal()
                 await self.html5.read("offer_gesture")
                 button = await self.action_button(
                     await self.nodes(), r"Чушпан: запустить видео на весь экран"
@@ -505,6 +498,14 @@ class LearnedPlayer:
                     if after.get("fullscreen") and not after.get("fullscreen_pending"):
                         return {**after, "fullscreen_confirmed": True}
                 raise ToolError("HTML5-плеер не подтвердил переход в полный экран.") from None
+        await self.reveal()
+        state = await self.page()
+        if state.get("fullscreen") and state.get("fullscreen_host") == self.frame_host:
+            return {
+                "fullscreen": True,
+                "fullscreen_confirmed": True,
+                "capabilities": {"fullscreen": True, "fullscreen_available": True},
+            }
         nodes = await self.nodes()
         button = await self.action_button(
             nodes,
@@ -520,14 +521,17 @@ class LearnedPlayer:
         for attempt in range(20):
             await asyncio.sleep(0.2)
             state = await self.page()
-            if state.get("fullscreen") and state.get("fullscreen_host") in {"", self.frame_host}:
+            if state.get("fullscreen") and state.get("fullscreen_host") == self.frame_host:
                 return {
                     "fullscreen": True,
                     "fullscreen_confirmed": True,
                     "capabilities": {"fullscreen": True, "fullscreen_available": True},
                     "message": "Полноэкранное состояние видеоплеера подтверждено Fullscreen API.",
                 }
-            if attempt == 8 and button and self.engine == "venom_ax":
+            if button and attempt == 6:
+                with contextlib.suppress(ToolError):
+                    await self.press(button, pointer=True)
+            if button and attempt == 12 and self.engine == "venom_ax":
                 await self.key("fullscreen")
         raise ToolError("Safari не подтвердил полноэкранное состояние видеоплеера.")
 
@@ -842,7 +846,12 @@ class LearnedPlayer:
                 state["paused"] = False
         self.last_sample = state
         state["ended"] = state["position"] >= state["duration"] - 1
-        state["capabilities"] = {"fullscreen": (await self.page()).get("fullscreen", False)}
+        page = await self.page()
+        state["capabilities"] = {
+            "fullscreen": bool(
+                page.get("fullscreen") and page.get("fullscreen_host") == self.frame_host
+            )
+        }
         return state
 
     async def control(self, action, position=0):

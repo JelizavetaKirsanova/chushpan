@@ -74,8 +74,15 @@ test('public video inside an open shadow root is detected and host fullscreen is
     const root=host.attachShadow({mode:'open'});const video=window.document.createElement('video');root.append(video);
     for(const [key,value]of Object.entries({readyState:4,duration:120,currentTime:35,paused:true}))Object.defineProperty(video,key,{value,configurable:true});
     Object.defineProperty(video,'getBoundingClientRect',{value:()=>({width:640,height:360})});
-    Object.defineProperty(window.document,'fullscreenElement',{get:()=>host});
+    let fullscreenElement:Element=host;
+    let hostWidth=640;
+    Object.defineProperty(host,'getBoundingClientRect',{value:()=>({width:hostWidth,height:360})});
+    Object.defineProperty(window.document,'fullscreenElement',{get:()=>fullscreenElement});
     const state=run(window,{});assert.equal(state.position,35);assert.equal(state.fullscreen,true);assert.equal(state.error,undefined);
+    hostWidth=1440;
+    assert.equal(run(window,{}).fullscreen,false);
+    fullscreenElement=window.document.body;
+    assert.equal(run(window,{}).fullscreen,false);
   }finally{await window.happyDOM.abort();}
 });
 

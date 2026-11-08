@@ -134,8 +134,8 @@ def test_player_verifies_play_and_fullscreen_independently():
             assert result["playback_confirmed"]
             assert result["fullscreen_confirmed"] is not blocked
             assert (
-                bridge.actions.index("seek")
-                < bridge.actions.index("play")
+                bridge.actions.index("play")
+                < bridge.actions.index("seek")
                 < bridge.actions.index("fullscreen")
             )
             assert ("offer_gesture" in bridge.actions) is blocked

@@ -2932,6 +2932,9 @@ class Cinema:
                     "error_code": getattr(exc, "code", "player_unavailable"),
                 }
             self.session["mode"] = result.get("mode", self.session["mode"])
+            if result.get("resume_confirmed") is False:
+                self.session["resume_floor"] = target["episode"]["position"]
+            self.session.source.capabilities.update(result.get("capabilities") or {})
             if result.get("content_verified") is False:
                 await self.db(
                     "verify_link",

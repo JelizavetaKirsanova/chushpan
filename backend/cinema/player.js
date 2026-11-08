@@ -108,12 +108,13 @@
   };
   const offerGesture = () => {
     if(!tracker||tracker.overlay)return;
-    const button=video.ownerDocument.createElement('button');button.type='button';button.textContent='Чушпан: запустить видео на весь экран';
+    const full=request.fullscreen!==false;
+    const button=video.ownerDocument.createElement('button');button.type='button';button.textContent=full?'Чушпан: запустить видео на весь экран':'Чушпан: запустить видео';
     button.setAttribute('aria-label',button.textContent);button.dataset.chushpanCinema='play-fullscreen';
     Object.assign(button.style,{position:'fixed',bottom:'24px',left:'50%',transform:'translateX(-50%)',zIndex:'2147483647',padding:'14px 22px',borderRadius:'14px',border:'1px solid #c29be5',background:'#5d3978',color:'white',font:'15px -apple-system,sans-serif',cursor:'pointer'});
     const offeredBinding=binding();
-    button.addEventListener('click',()=>{if(!video.isConnected||binding()!==offeredBinding){button.textContent='Плеер изменился — повтори выбор в Чушпане';return;}tracker.playError=null;tracker.fullscreenError=null;play();enterFullscreen();});
-    const hide=()=>{if(fullscreen()&&!video.paused){button.remove();tracker.overlay=null;}};
+    button.addEventListener('click',()=>{if(!video.isConnected||binding()!==offeredBinding){button.textContent='Плеер изменился — повтори выбор в Чушпане';return;}tracker.playError=null;tracker.fullscreenError=null;play();if(full)enterFullscreen();});
+    const hide=()=>{if((!full||fullscreen())&&!video.paused){button.remove();tracker.overlay=null;}};
     for(const [target,event]of [[video,'playing'],[video,'webkitbeginfullscreen'],[video.ownerDocument,'fullscreenchange']]){
       target.addEventListener(event,hide);tracker.gestureListeners.push(()=>target.removeEventListener(event,hide));
     }

@@ -184,8 +184,14 @@ class HTML5Adapter:
         self.content_verified = False
         self.direct_verification = None
 
-    async def read(self, action="status", position=0):
-        payload = {**self.context, "action": action, "position": position, "voice": self.voice}
+    async def read(self, action="status", position=0, **options):
+        payload = {
+            **self.context,
+            **options,
+            "action": action,
+            "position": position,
+            "voice": self.voice,
+        }
         if self.expected and action in {
             "play",
             "seek",
@@ -316,24 +322,7 @@ class HTML5Adapter:
                 "message": f"Сохранённый таймкод {position:.1f} с превышает длительность видео. "
                 "Возможно, это другое издание. Прежний прогресс сохранён; выбери позицию вручную.",
             }
-        if position or target.get("restart"):
-            await stage("RESTORE_POSITION", "running", f"Восстанавливаем {position:.1f} с.")
-            try:
-                await self.control("seek", position)
-            except ToolError as exc:
-                await stage("RESTORE_POSITION", "limited", str(exc))
-                return {
-                    "page_opened": True,
-                    "mode": "html5",
-                    "playback_confirmed": False,
-                    "message": "Safari не подтвердил восстановление. "
-                    f"Сохранённый таймкод: {position:.1f} с; установи его вручную.",
-                }
-            await stage(
-                "RESTORE_POSITION", "success", f"Плеер подтвердил позицию около {position:.1f} с."
-            )
-        else:
-            await stage("RESTORE_POSITION", "success", "Новый просмотр с начала.")
+        restore = position or target.get("restart")
         voice_note = ""
         if self.voice:
             voice_state = await self.read("voice")
@@ -347,11 +336,13 @@ class HTML5Adapter:
                 )
             )
             await stage(
-                "RESTORE_POSITION",
+                "AUDIO",
                 "success" if confirmed else "limited",
                 f"Озвучка «{self.voice}» подтверждена." if confirmed else voice_note.strip(),
             )
         if not target.get("autoplay", True):
+            if restore:
+                await self.control("seek", position)
             return {
                 "page_opened": True,
                 "mode": "html5",
@@ -364,15 +355,40 @@ class HTML5Adapter:
             result = await self.control("play")
         except ToolError as exc:
             await stage("PLAY", "limited", str(exc))
+            fullscreen = target.get("auto_fullscreen", True) and not restore
             with contextlib.suppress(ToolError):
-                await self.read("offer_gesture")
+                await self.read("offer_gesture", fullscreen=fullscreen)
+            button = (
+                "Чушпан: запустить видео на весь экран" if fullscreen else "Чушпан: запустить видео"
+            )
             return {
                 "page_opened": True,
                 "mode": "html5",
                 "playback_confirmed": False,
-                "message": str(exc) + " Нажми «Чушпан: запустить видео на весь экран» "
-                "на странице или кнопку ▶ самого плеера. Сохранённый прогресс не изменён.",
+                "message": str(exc)
+                + f" Нажми «{button}» на странице или кнопку ▶ самого плеера. "
+                + (f"Установи сохранённый таймкод {position:.1f} с. " if restore else "")
+                + "Сохранённый прогресс не изменён.",
+                "resume_confirmed": False if restore else None,
             }
+        if restore:
+            await stage("RESTORE_POSITION", "running", f"Восстанавливаем {position:.1f} с.")
+            try:
+                await self.control("seek", position)
+                result = {**await self.control("play"), "resume_confirmed": True}
+            except ToolError as exc:
+                await stage("RESTORE_POSITION", "limited", str(exc))
+                return {
+                    **result,
+                    "page_opened": True,
+                    "mode": "html5",
+                    "resume_confirmed": False,
+                    "message": "Safari не подтвердил восстановление. "
+                    f"Сохранённый таймкод: {position:.1f} с; установи его вручную.",
+                }
+            await stage(
+                "RESTORE_POSITION", "success", f"Плеер подтвердил позицию около {position:.1f} с."
+            )
         await stage("PLAY", "success", "Воспроизведение подтверждено движением времени.")
         if not target.get("auto_fullscreen", True):
             return {
@@ -383,10 +399,11 @@ class HTML5Adapter:
             }
         await stage("FULLSCREEN", "running", "Запрашиваем полноэкранный режим у видеоплеера.")
         try:
-            await self.control("fullscreen")
+            full = await self.control("fullscreen")
             await stage("FULLSCREEN", "success", "Плеер подтвердил полноэкранный режим.")
             return {
                 **result,
+                "capabilities": full.get("capabilities", {}),
                 "fullscreen_confirmed": True,
                 "mode": "html5",
                 "page_opened": True,
