@@ -365,14 +365,34 @@ class LearnedPlayer:
         expected = {
             k: node[k] for k in ("role", "title", "description", "value", "help") if k in node
         }
-        await self.ax.cinema(
-            op,
-            page=self.url,
-            frame_host=self.frame_host,
-            path=node["path"],
-            expected=expected,
-            force_pointer=pointer,
-        )
+        for attempt in range(6):
+            try:
+                await self.ax.cinema(
+                    op,
+                    page=self.url,
+                    frame_host=self.frame_host,
+                    path=node["path"],
+                    expected=expected,
+                    force_pointer=pointer,
+                )
+                return
+            except ToolError as error:
+                # AX can expose a fading control before it accepts pointer
+                # events. Retry only the unchanged target; every attempt still
+                # has to pass the native hit test before any click is sent.
+                if (
+                    op != "cinema_press"
+                    or attempt == 5
+                    or getattr(error, "code", "")
+                    not in {"cinema_hit_changed", "cinema_hit_unavailable"}
+                ):
+                    raise
+                await asyncio.sleep(0.2)
+                current = next((n for n in await self.nodes() if n["path"] == node["path"]), None)
+                if not current or any(current.get(k, "") != v for k, v in expected.items()):
+                    raise ToolError(
+                        "Элемент плеера изменился во время ожидания нажатия."
+                    ) from error
 
     async def key(self, key, *, large=False, repeat_count=1):
         if self.engine != "venom_ax":

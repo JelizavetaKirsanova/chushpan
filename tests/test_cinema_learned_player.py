@@ -314,3 +314,41 @@ def test_audio_tracks_wait_for_dynamic_menu_and_close_it(monkeypatch):
         assert player.reads == 3 and not player.menu_open
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_press_waits_for_interactive_control_without_clicking_changed_target(monkeypatch, changed):
+    from unittest.mock import AsyncMock
+
+    from backend.cinema.playback import playback_error
+    from backend.tools.registry import ToolError
+
+    monkeypatch.setattr("backend.cinema.learned_player.asyncio.sleep", AsyncMock())
+    node = {"role": "AXStaticText", "value": "LostFilm", "path": [0, 1, 4]}
+
+    class AX:
+        attempts = 0
+        clicks = 0
+
+        async def cinema(self, op, **values):
+            if op == "cinema_snapshot":
+                return {"nodes": [{**node, "value": "Other"} if changed else node]}
+            assert op == "cinema_press" and values["expected"]["value"] == "LostFilm"
+            self.attempts += 1
+            if self.attempts < 3:
+                raise playback_error("cinema_hit_changed", "Control is fading in")
+            self.clicks += 1
+
+    async def run():
+        ax = AX()
+        player = LearnedPlayer(None, ax)
+        player.frame_host = "player.example"
+        if changed:
+            with pytest.raises(ToolError, match="изменился"):
+                await player.press(node)
+            assert ax.attempts == 1 and ax.clicks == 0
+        else:
+            await player.press(node)
+            assert ax.attempts == 3 and ax.clicks == 1
+
+    asyncio.run(run())
