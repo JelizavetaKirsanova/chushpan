@@ -238,10 +238,26 @@ class Sync:
                 dest.write_bytes(self.git("cat-file", "blob", oid.decode()))
             self.scan("dir", Path(directory))
 
-    def backup(self) -> str:
+    def _backup_base(self) -> Path:
         base = Path(self.cfg["backups"]).expanduser().resolve()
+        # Adopt the no-index store used by Chushpan when older config still points
+        # at its empty pre-indexed sibling. Never merge or remove either directory.
+        indexed = base.with_name(base.name + ".noindex")
+        if base.name == "Backups" and indexed.is_dir():
+            base = indexed
         if base.is_relative_to(self.root):
             raise Blocked("Private backups must live outside the repository")
+        return base
+
+    def backup(self) -> str:
+        base = self._backup_base()
+        base.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with (base / ".backup.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return self._backup_locked()
+
+    def _backup_locked(self) -> str:
+        base = self._backup_base()
         base.mkdir(parents=True, exist_ok=True, mode=0o700)
         base.chmod(0o700)
         sources = {
@@ -266,6 +282,17 @@ class Sync:
             "Чушпан.app",
             "__pycache__",
             "node_modules",
+            "build",
+            ".pytest_cache",
+            ".ruff_cache",
+            "Backups",
+            "backups",
+            "Backups.noindex",
+            "Updates.noindex",
+            "Builds.noindex",
+            "Caches",
+            "Caches.noindex",
+            "swift-cache",
         }
         with tempfile.TemporaryDirectory(prefix=".pending-", dir=base) as directory:
             staging = Path(directory)
@@ -318,18 +345,87 @@ class Sync:
             final = base / ("snapshot-" + stamp)
             staging.rename(final)
             write_json(previous, {"digest": digest, "path": str(final)})
-        # Retention is a review list, never an automatic deletion of private backups.
+        # Validate before recording retention candidates. Automatic retention is opt-in
+        # and never considers a pinned or unverified copy.
         snapshots = sorted(base.glob("snapshot-*"), reverse=True)
-        days = set()
+        policy_path = base.parent / "storage-policy.json"
+        try:
+            policy = json.loads(policy_path.read_text())
+        except (OSError, ValueError):
+            policy = {"pinned": [], "auto_cleanup": False}
+        pins = set(policy.get("pinned", []))
+        verified = []
         candidates = []
-        for index, path in enumerate(snapshots):
-            day = path.name[9:17]
-            keep = index < 48 or (day not in days and len(days) < 30)
-            days.add(day)
-            if not keep:
-                candidates.append(str(path))
-        write_json(self.state / "backup-retention-candidates.json", {"candidates": candidates})
+        now = dt.datetime.now(dt.UTC)
+        try:
+            last_check = dt.datetime.fromisoformat(policy.get("last_retention_check", ""))
+            check_due = (now - last_check).total_seconds() >= float(
+                policy.get("retention_interval_s", 86400)
+            )
+        except (TypeError, ValueError):
+            check_due = True
+        if policy.get("auto_cleanup") is True and check_due:
+            for path in snapshots:
+                if self._backup_valid(path):
+                    verified.append(path)
+            candidates = [p for p in verified if p.name not in pins and p not in verified[:3]]
+            write_json(
+                self.state / "backup-retention-candidates.json",
+                {"candidates": [str(p) for p in candidates]},
+            )
+            # Re-verify the three retained copies immediately before any deletion.
+            retained = [p for p in verified if p.name in pins or p in verified[:3]]
+            retained_ok = all(self._backup_valid(p) for p in retained) and len(verified[:3]) >= min(
+                3, len(verified)
+            )
+            if retained_ok:
+                from backend.storage_manager import open_paths
+
+                opened = open_paths()
+                for path in candidates:
+                    if opened is None or any(
+                        item == path.resolve() or item.is_relative_to(path.resolve())
+                        for item in opened
+                    ):
+                        continue
+                    shutil.rmtree(path)
+            policy["last_retention_check"] = now.isoformat()
+            write_json(policy_path, policy)
+        else:
+            candidates = snapshots[3:]
+            write_json(
+                self.state / "backup-retention-candidates.json",
+                {"candidates": [str(p) for p in candidates], "review_only": True},
+            )
         return str(final)
+
+    @staticmethod
+    def _backup_valid(path: Path) -> bool:
+        try:
+            manifest = json.loads((path / "manifest.json").read_text())
+            checksums = manifest["sha256"]
+            if (
+                hashlib.sha256(json.dumps(checksums, sort_keys=True).encode()).hexdigest()
+                != manifest["digest"]
+            ):
+                return False
+            for relative, expected in checksums.items():
+                file = (path / relative).resolve()
+                if not file.is_relative_to(path.resolve()) or not file.is_file():
+                    return False
+                h = hashlib.sha256()
+                with file.open("rb") as stream:
+                    for block in iter(lambda: stream.read(1024 * 1024), b""):
+                        h.update(block)
+                if h.hexdigest() != expected:
+                    return False
+                if file.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+                    with sqlite3.connect(file.as_uri() + "?mode=ro", uri=True) as db:
+                        if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                            return False
+            return bool(checksums)
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
 
     def checkpoint(self) -> str:
         self.ready()

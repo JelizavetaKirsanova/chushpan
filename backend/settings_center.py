@@ -160,6 +160,53 @@ class SettingsCenter:
             "command_history": self.conv.controls.history,
         }
 
+    async def storage_action(self, value):
+        from backend import storage_manager
+
+        op = value.get("op")
+        if op == "storage_scan":
+            report = await asyncio.to_thread(storage_manager.storage_report)
+            self.publish(storage_report=report)
+        elif op == "storage_preview":
+            preview = await asyncio.to_thread(storage_manager.preview_cleanup)
+            self.publish(storage_preview=preview)
+        elif op == "storage_clean":
+            result = await asyncio.to_thread(
+                storage_manager.apply_cleanup, None, None, value.get("token")
+            )
+            report = await asyncio.to_thread(storage_manager.storage_report)
+            self.publish(
+                storage_result=result,
+                storage_report=report,
+                message="Безопасная очистка завершена.",
+            )
+        elif op == "storage_pin":
+            await asyncio.to_thread(
+                storage_manager.set_backup_pinned,
+                value.get("path", ""),
+                value.get("pinned") is True,
+            )
+            report = await asyncio.to_thread(storage_manager.storage_report)
+            self.publish(storage_report=report, message="Закрепление резервной копии обновлено.")
+        elif op == "storage_auto":
+            dirs = storage_manager.roots()
+            policy = dirs["backups"].parent / "storage-policy.json"
+            try:
+                doc = json.loads(policy.read_text())
+            except (OSError, ValueError):
+                doc = {"pinned": []}
+            doc["auto_cleanup"] = value.get("enabled") is True
+            temporary = policy.with_name(policy.name + ".tmp")
+            temporary.write_text(json.dumps(doc, indent=2))
+            temporary.chmod(0o600)
+            temporary.replace(policy)
+            report = await asyncio.to_thread(storage_manager.storage_report)
+            self.publish(
+                storage_report=report,
+                storage_auto_cleanup=doc["auto_cleanup"],
+                message="Настройка автоматической очистки сохранена.",
+            )
+
     def publish(self, **extra):
         self._publish_scheduled = False
         if self.closed:
@@ -357,6 +404,15 @@ class SettingsCenter:
                 return
             if op == "refresh":
                 self.publish()
+                return
+            if op in {
+                "storage_scan",
+                "storage_preview",
+                "storage_clean",
+                "storage_pin",
+                "storage_auto",
+            }:
+                await self.storage_action(value)
                 return
             if op in {"permissions", "permission_action"}:
                 self.permissions = await self.conv.tools.permission_center.report(

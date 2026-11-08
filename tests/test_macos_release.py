@@ -32,6 +32,9 @@ def bundle(path, build="19", payload=b"new", bundle_id=release.BUNDLE_ID):
 
 @pytest.fixture
 def installation(tmp_path, monkeypatch):
+    from backend import storage_manager
+
+    monkeypatch.setattr(storage_manager, "open_paths", lambda: set())
     applications = tmp_path / "Applications"
     applications.mkdir()
     main = bundle(applications / release.APP_NAME, "18", b"working-old")
@@ -85,6 +88,19 @@ def test_update_preserves_previous_and_registers_only_canonical_path(installatio
     assert any(part.endswith(".noindex") for part in i.copies[0].parts)
     assert json.loads((i.state / "last-install.json").read_text())["status"] == "installed"
     assert len(list(i.main.parent.glob("*.app"))) == 1
+
+
+def test_successful_update_prunes_older_verified_rollback_packages(installation):
+    i = installation
+    older = i.state / "20260101T000000Z-old"
+    previous = bundle(older / release.APP_NAME, "17", b"older")
+    release.write_receipt(
+        older / "receipt.json",
+        {"status": "installed", "build": "18", "previous": str(previous)},
+    )
+    result = release.install(i.source)
+    assert not older.exists()
+    assert Path(result["previous"]).exists()
 
 
 @pytest.mark.parametrize("failure", ["installed-check", "registration"])

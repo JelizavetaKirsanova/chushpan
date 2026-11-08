@@ -222,6 +222,76 @@ def test_backups_skip_renamed_app_bundles_and_never_prune_existing_snapshots(rep
     assert json.loads((sync.state / "backup-retention-candidates.json").read_text())["candidates"]
 
 
+def test_backup_retention_is_opt_in_keeps_three_verified_and_pins(repo):
+    sync, _ = repo
+    base = Path(sync.cfg["backups"])
+    policy = base.parent / "storage-policy.json"
+    policy.write_text(json.dumps({"auto_cleanup": True, "pinned": [], "retention_interval_s": 0}))
+    first = None
+    for index in range(5):
+        (sync.root / "config.yaml").write_text(f"revision: {index}\n")
+        current = Path(sync.backup())
+        if first is None:
+            first = current
+            policy.write_text(
+                json.dumps(
+                    {
+                        "auto_cleanup": True,
+                        "pinned": [first.name],
+                        "retention_interval_s": 0,
+                    }
+                )
+            )
+    snapshots = list(base.glob("snapshot-*"))
+    assert len(snapshots) == 4
+    assert first is not None and first.exists()
+    assert len([path for path in snapshots if Sync._backup_valid(path)]) == 4
+
+
+def test_backup_retention_never_deletes_a_corrupt_or_pinned_copy(repo):
+    sync, _ = repo
+    base = Path(sync.cfg["backups"])
+    policy = base.parent / "storage-policy.json"
+    policy.write_text(json.dumps({"auto_cleanup": False, "pinned": []}))
+    copies = []
+    for index in range(4):
+        (sync.root / "config.yaml").write_text(f"revision: {index}\n")
+        copies.append(Path(sync.backup()))
+    damaged = copies[0]
+    (damaged / "config.yaml").write_text("corrupted\n")
+    policy.write_text(json.dumps({"auto_cleanup": True, "pinned": [], "retention_interval_s": 0}))
+    (sync.root / "config.yaml").write_text("revision: 5\n")
+    sync.backup()
+    assert damaged.exists()
+
+
+def test_backups_skip_nested_backup_and_app_artifacts_but_keep_sqlite(repo):
+    sync, _ = repo
+    artifact = sync.root / "private/qa.noindex/Чушпан.app/Contents/MacOS/Chushpan"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"rebuildable app")
+    nested = sync.root / "private/qa.noindex/Backups.noindex/snapshot-old/old.db"
+    nested.parent.mkdir(parents=True)
+    nested.write_bytes(b"nested backup copy")
+    preserved = sync.root / "private/qa.noindex/user-data/jarvis.db"
+    preserved.parent.mkdir(parents=True)
+    with sqlite3.connect(preserved) as user_db:
+        user_db.execute("CREATE TABLE preserved (value TEXT)")
+        user_db.execute("INSERT INTO preserved VALUES ('user data')")
+    db = sync.root / "data/jarvis.db"
+    db.parent.mkdir()
+    with sqlite3.connect(db) as source:
+        source.execute("CREATE TABLE memory (value TEXT)")
+        source.execute("INSERT INTO memory VALUES ('retain')")
+    snapshot = Path(sync.backup())
+    assert not (snapshot / "private/qa.noindex/Чушпан.app").exists()
+    assert not (snapshot / "private/qa.noindex/Backups.noindex").exists()
+    with sqlite3.connect(snapshot / "private/qa.noindex/user-data/jarvis.db") as user_db:
+        assert user_db.execute("SELECT value FROM preserved").fetchone()[0] == "user data"
+    with sqlite3.connect(snapshot / "data/jarvis.db") as restored:
+        assert restored.execute("SELECT value FROM memory").fetchone()[0] == "retain"
+
+
 def test_checkpoint_keeps_index_and_worktree_unchanged_and_is_local(repo):
     sync, remote = repo
     (sync.root / "new.py").write_text("pass\n")

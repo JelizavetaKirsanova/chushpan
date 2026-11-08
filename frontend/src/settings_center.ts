@@ -7,7 +7,7 @@ import {permissionCenter, type PermissionReport, type PermissionFilters} from '.
 type Values = Record<string, unknown>;
 export interface PersonalityProfile {id:string; revision:number; name:string; description:string; builtin:boolean; traits:Record<string,number>; communication:Values; instructions:string; technical_detail:number}
 type Memory = {id:number; content:string; category:string; revision:number; status:string; source:string};
-export interface SettingsState {type:'settings_center'; version:number; values:Record<string,Values>; profiles:PersonalityProfile[];
+export interface SettingsState {type:'settings_center'; version:number; storage_report?:any; storage_preview?:any; storage_result?:any; storage_auto_cleanup?:boolean; values:Record<string,Values>; profiles:PersonalityProfile[];
   active:{id:string;reason:string;locked:boolean}; traits:Record<string,{name:string;group:string}>;
   memory:Memory[]; memory_pending:{id:string;content:string}[]; habits_opt_in:boolean;
   engine:string; voices:string[]; voice_support:{rate:boolean;pitch:boolean;expression:boolean};
@@ -39,6 +39,7 @@ const categories = [
   ['places','Места и контекст','Дом, общага и подходящие версии сценариев','pin'],
   ['integrations','Интеграции','Устройства и сервисы, которые уже подключены','link'],
   ['application','Приложение','Запуск, строка меню, разрешения и обновления','settings'],
+  ['storage','Хранилище','Размеры, резервные копии и безопасная очистка','settings'],
   ['advanced','Дополнительно','Тихие часы, резервные копии и диагностика','settings'],
 ];
 const el = (tag:string, text='', cls='') => {const n=document.createElement(tag);n.textContent=text;n.className=cls;return n;};
@@ -109,7 +110,7 @@ export class SettingsCenterUI {
     this.page=page;id('settings-home').hidden=!!page;id('settings-detail').hidden=!page;
     const data=categories.find(v=>v[0]===page);
     id('settings-title').textContent=data?.[1]??'';id('settings-description').textContent=data?.[2]??'';
-    this.render();if(this.online)this.send({op:'refresh'});
+    this.render();if(this.online){this.send({op:'refresh'});if(page==='storage')this.send({op:'storage_scan'});}
     if(page==='access'&&this.online){this.permissionCheckedAt=Date.now();this.send({op:'permissions'});}
   }
   receive(event:HudEvent):void {
@@ -164,6 +165,7 @@ export class SettingsCenterUI {
     content.replaceChildren();if(!this.page)return;
     if(this.page==='application'){void applicationSettings(content);return;}
     if(!this.state){content.append(el('p','Настройки появятся после подключения к Чушпану.','settings-empty'));return;}
+    if(this.page==='storage'){this.storage(content);return;}
     if(this.page==='personality')this.personality(content);
     if(this.page==='voice')this.voice(content);
     if(this.page==='commands')this.commands(content);
@@ -175,6 +177,24 @@ export class SettingsCenterUI {
     if(this.page==='advanced')this.advanced(content);
     for(const node of this.legacy.get(this.page)??[])content.append(node);
     this.root.querySelectorAll<HTMLInputElement|HTMLSelectElement|HTMLTextAreaElement>('input,select,textarea').forEach(n=>{if(!n.closest('#voice-settings,#dialogue-settings,#music-settings'))n.disabled=!this.online||n.dataset.unavailable==='true';});
+  }
+  private bytes(n:number):string {if(n<1024)return `${n} Б`;const units=['КБ','МБ','ГБ','ТБ'];let x=n/1024,i=0;while(x>=1024&&i<units.length-1){x/=1024;i++;}return `${x.toFixed(1)} ${units[i]}`;}
+  private storage(root:HTMLElement):void {
+    const state=this.state!,report=state.storage_report;
+    const controls=this.section('Хранение резервов','При включении во время периодической проверки останутся 3 последние проверенные копии и все закреплённые. По умолчанию эта политика выключена.');
+    const auto=this.input(!!(state.storage_auto_cleanup??report?.auto_cleanup),'checkbox');auto.onchange=()=>this.write({op:'storage_auto',enabled:auto.checked});controls.append(this.label('Автоматически хранить 3 проверенные копии',auto));
+    controls.append(this.button('Обновить измерения',()=>this.send({op:'storage_scan'}),true));root.append(controls);
+    if(report){const section=this.section('Занимаемое место','Размеры APFS могут отличаться от реального освобождения из-за snapshots, clones и hard links.');
+      const labels:Record<string,string>={application:'Приложение',builds:'Временные сборки',updates:'Сохранённые обновления',backups:'Резервные копии',cache:'Кеши'};
+      for(const key of Object.keys(labels)){const row=el('div','','settings-row');row.append(el('span',labels[key]),el('strong',this.bytes(report[key]?.logical_bytes??0)),el('small',`Блоки: ${this.bytes(report[key]?.allocated_bytes??0)}`));section.append(row);}
+      section.append(el('p',`Всего: ${this.bytes(report.total_logical_bytes)} · свободно: ${this.bytes(report.free_bytes)}`,'settings-help'));
+      for(const backup of report.backups_list??[]){const row=el('div','','settings-row');row.append(el('span',`${backup.path.split('/').pop()} · ${this.bytes(backup.size)} · ${backup.verified?'проверена':'не проверена'}`));const pin=this.button(backup.pinned?'Открепить':'Закрепить',()=>this.write({op:'storage_pin',path:backup.path,pinned:!backup.pinned}),true);pin.disabled=!backup.verified;row.append(pin);section.append(row);}
+      root.append(section);
+    } else root.append(el('p','Полное измерение выполняется только по запросу, без фонового сканирования.','settings-empty'));
+    const preview=state.storage_preview,cleanup=this.section('Безопасная очистка','Сначала получите предварительный список. Данные пользователя и единственная копия для отката исключаются.');
+    cleanup.append(this.button('Предварительный просмотр',()=>this.send({op:'storage_preview'}),true));
+    if(preview){cleanup.append(el('p',`Кандидатов: ${preview.candidates.length} · логически: ${this.bytes(preview.estimated_logical_bytes)} · выделено: ${this.bytes(preview.estimated_allocated_bytes)}`));for(const item of preview.candidates)cleanup.append(el('p',`${item.kind}: ${item.path} · ${this.bytes(item.size)}`));for(const path of preview.protected_active_paths??[])cleanup.append(el('p',`Защищено: файл открыт активным процессом · ${path}`));if(!preview.process_scan_available)cleanup.append(el('p','Не удалось проверить открытые процессы: очистка пакетов обновления будет заблокирована.'));if(!preview.backup_scan_available)cleanup.append(el('p','Резервные копии заняты или не проверены; очистка резервов недоступна.'));cleanup.append(el('small',preview.message));cleanup.append(this.button('Освободить место',()=>{if(window.confirm(`Удалить только перечисленные ${preview.candidates.length} кандидата?`))this.write({op:'storage_clean',token:preview.token});},true));}
+    if(state.storage_result)cleanup.append(el('p',`Удалено: ${state.storage_result.removed.length} · ${this.bytes(state.storage_result.freed_logical_bytes)}`));root.append(cleanup);
   }
   private label(title:string,input:HTMLElement,description=''):HTMLElement {const label=el('label','','settings-field');label.append(el('span',title),input);if(description)label.append(el('small',description));return label;}
   private input(value:unknown,type='text'):HTMLInputElement {const input=document.createElement('input');input.type=type;if(type==='checkbox')input.checked=value===true;else input.value=String(value??'');return input;}

@@ -63,6 +63,29 @@ def test_build_manifest_hashes_shipped_code_and_records_revision(tmp_path, monke
     assert "build-info.json" in spec
 
 
+def test_verified_build_removes_only_rebuildable_temporaries(tmp_path, monkeypatch):
+    from backend import storage_manager
+
+    monkeypatch.setattr(storage_manager, "open_paths", lambda: set())
+    build = tmp_path / "release-current"
+    app = build / "dist/Чушпан.app"
+    app.mkdir(parents=True)
+    (app / "Contents").write_text("keep the verified installer source")
+    for name in ("native", "pyinstaller"):
+        path = build / name
+        path.mkdir()
+        (path / "generated.bin").write_bytes(b"rebuildable")
+    swift = tmp_path / "build/macos/swift-cache"
+    swift.mkdir(parents=True)
+    (swift / "generated.bin").write_bytes(b"rebuildable")
+    monkeypatch.setattr(build_macos, "ROOT", tmp_path)
+    build_macos.clean_build_temporaries(build)
+    assert app.exists()
+    assert not (build / "native").exists()
+    assert not (build / "pyinstaller").exists()
+    assert not swift.exists()
+
+
 def test_diagnostic_launch_suppresses_autolistening_without_editing_preferences(
     tmp_path, monkeypatch
 ):

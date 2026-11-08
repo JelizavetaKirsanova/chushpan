@@ -74,7 +74,7 @@ def install(scanner: Path, *, load_service: bool = True) -> dict:
         "origin": ORIGIN,
         "branch": "main",
         "gitleaks": str(binary),
-        "backups": str(Path.home() / "Library/Application Support/Chushpan/Backups"),
+        "backups": str(Path.home() / "Library/Application Support/Chushpan/Backups.noindex"),
         "original_notify": original,
     }
     # Include configured external data/persona/auth paths as private backup inputs.

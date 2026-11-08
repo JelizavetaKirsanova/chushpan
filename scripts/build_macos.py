@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -115,7 +116,28 @@ def build_manifest(build_root: Path | None = None) -> Path:
     return path
 
 
-def build() -> Path:
+def clean_build_temporaries(build_root: Path) -> None:
+    """Remove rebuildable compiler work after the signed app has passed verification."""
+    from backend.storage_manager import open_paths
+
+    opened = open_paths()
+    if opened is None:
+        return
+    for target in (
+        build_root / "native",
+        build_root / "pyinstaller",
+        ROOT / "build/macos/swift-cache",
+    ):
+        resolved = target.resolve()
+        if (
+            target.is_dir()
+            and not target.is_symlink()
+            and not any(path == resolved or path.is_relative_to(resolved) for path in opened)
+        ):
+            shutil.rmtree(target)
+
+
+def _build() -> Path:
     if sys.platform != "darwin" or platform.machine() != "arm64":
         raise SystemExit("Сборка требует macOS на Apple Silicon и arm64 Python.")
     identity_file = update_state() / "signing-identity"
@@ -280,8 +302,38 @@ def build() -> Path:
     if receipt["version"] != VERSION:
         raise SystemExit("Версия пакета macOS отличается от версии исходников.")
     write_receipt(BUILD_RECEIPT, receipt)
+    write_receipt(build_root / "build-complete.json", {"app": str(app), **receipt})
+    clean_build_temporaries(build_root)
+    from backend.storage_manager import open_paths
+
+    opened = open_paths()
+    for older in build_root.parent.glob("release-*"):
+        if older == build_root or not (older / "build-complete.json").is_file():
+            continue
+        if opened is None or any(
+            path == older.resolve() or path.is_relative_to(older.resolve()) for path in opened
+        ):
+            continue
+        try:
+            previous = json.loads((older / "build-complete.json").read_text())
+            bundle = Path(previous["app"])
+            if bundle.is_relative_to(older.resolve()) and bundle.is_dir():
+                verify_bundle(bundle)
+                shutil.rmtree(older)
+        except (OSError, ValueError, KeyError):
+            continue
     print(f"Сборка проверена: {app}. Для обновления: python -m scripts.install_macos")
     return app
+
+
+def build() -> Path:
+    from scripts.macos_release import build_cache
+
+    base = build_cache()
+    base.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (base.parent / "build.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return _build()
 
 
 def main():

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import plistlib
+import shutil
 import subprocess
 import tempfile
 import uuid
@@ -248,13 +249,86 @@ def trash_build(app: Path, installed_receipt: dict) -> str:
 
 def install(app: Path, *, cleanup: bool = False, allow_downgrade: bool = False) -> dict:
     state = update_state()
+    if state.is_symlink():
+        raise ValueError("Каталог обновлений является символической ссылкой.")
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (state / "update.lock").open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise ValueError("Другое обновление уже выполняется.") from exc
-        return _install(app, cleanup=cleanup, allow_downgrade=allow_downgrade)
+        build_guard = (build_cache().parent / "build.lock").open("a")
+        try:
+            fcntl.flock(build_guard, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            build_guard.close()
+            raise ValueError("Выполняется сборка; обновление подождёт её завершения.") from exc
+        try:
+            result = _install(app, cleanup=cleanup, allow_downgrade=allow_downgrade)
+            if not allow_downgrade:
+                prune_update_history(result)
+            return result
+        finally:
+            build_guard.close()
+
+
+def prune_update_history(installed_receipt: dict) -> list[str]:
+    """Keep the successful transaction and its one verified rollback bundle."""
+    if installed_receipt.get("status") != "installed":
+        return []
+    state = update_state()
+    if state.is_symlink():
+        return []
+    current_record = (
+        Path(installed_receipt.get("previous", "")).parent
+        if installed_receipt.get("previous")
+        else None
+    )
+    keep_previous = (
+        Path(installed_receipt["previous"]).resolve() if installed_receipt.get("previous") else None
+    )
+    if keep_previous:
+        try:
+            verify_bundle(keep_previous)
+        except (OSError, ValueError, subprocess.CalledProcessError):
+            return []
+    from backend.storage_manager import open_paths
+
+    opened = open_paths()
+    if opened is None:
+        return []
+    removed = []
+    for receipt_path in state.glob("*/receipt.json"):
+        folder = receipt_path.parent
+        if folder == current_record or folder.name.startswith(".chushpan-"):
+            continue
+        try:
+            data = json.loads(receipt_path.read_text())
+        except (OSError, ValueError):
+            continue
+        if data.get("status") != "installed":
+            continue
+        previous = Path(data.get("previous") or "")
+        if not previous.is_absolute() or not previous.resolve().is_relative_to(folder.resolve()):
+            continue
+        if previous.resolve() == keep_previous:
+            continue
+        current_opened = open_paths()
+        if current_opened is None or any(
+            p == folder.resolve() or p.is_relative_to(folder.resolve()) for p in current_opened
+        ):
+            continue
+        if previous.exists():
+            try:
+                info = read_info(previous)
+                if info.get("CFBundleIdentifier") != BUNDLE_ID:
+                    continue
+            except (OSError, ValueError):
+                continue
+        # Only this installer-owned transaction directory and its former app are removed.
+        shutil.rmtree(folder)
+        removed.append(str(folder))
+    return removed
 
 
 def _install(app: Path, *, cleanup: bool = False, allow_downgrade: bool = False) -> dict:

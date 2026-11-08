@@ -179,7 +179,7 @@ test('YouTube Music settings expose persisted application and explicit browser f
 test('all settings links keep the established icon text chevron grid structure',async()=>{
   const f=fixture();try{
     const links=[...f.window.document.querySelectorAll('#settings-categories .settings-category')];
-    assert.equal(links.length,14);
+    assert.equal(links.length,15);
     for(const link of links){
       assert.equal(link.children.length,3,link.textContent!);
       assert.ok(link.children[0].matches('.settings-category-icon'));
@@ -188,6 +188,17 @@ test('all settings links keep the established icon text chevron grid structure',
       assert.ok(link.children[1].querySelector('small'));
       assert.ok(link.children[2].matches('.settings-chevron'));
     }
+  }finally{await f.window.happyDOM.close();}
+});
+
+test('storage settings show a preview and require explicit confirmation for its exact plan',async()=>{
+  const f=fixture();try{
+    f.view.open('storage');
+    f.button('Предварительный просмотр');assert.deepEqual(f.requests.at(-1),{op:'storage_preview'});
+    f.view.receive({...f.state,storage_preview:{token:'plan-1',candidates:[{path:'/tmp/old',size:2048,kind:'старая сборка'}],estimated_logical_bytes:2048,estimated_allocated_bytes:1024,message:'APFS snapshots may affect the result.'}});
+    assert.match(f.window.document.querySelector('#settings-content')!.textContent!,/старая сборка: \/tmp\/old/);
+    f.window.confirm=()=>false;f.button('Освободить место');assert.equal(f.requests.at(-1)!.op,'storage_preview');
+    f.window.confirm=()=>true;f.button('Освободить место');assert.deepEqual(f.requests.at(-1),{op:'storage_clean',token:'plan-1'});
   }finally{await f.window.happyDOM.close();}
 });
 
