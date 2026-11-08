@@ -301,7 +301,13 @@ class PlaybackManager:
             "FAILED",
         },
         PlaybackState.OPENING: {"WAITING_FOR_PLAYER", "STARTING", "PAUSED", "BLOCKED", "FAILED"},
-        PlaybackState.WAITING_FOR_PLAYER: {"STARTING", "PAUSED", "BLOCKED", "FAILED"},
+        PlaybackState.WAITING_FOR_PLAYER: {
+            "RESTORING_POSITION",
+            "STARTING",
+            "PAUSED",
+            "BLOCKED",
+            "FAILED",
+        },
         PlaybackState.STARTING: {
             "WAITING_FOR_PLAYER",
             "RESTORING_POSITION",

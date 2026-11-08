@@ -235,6 +235,22 @@ def test_failed_resume_does_not_suppress_fullscreen_of_freshly_confirmed_video()
     player.detach.assert_not_awaited()
 
 
+def test_native_resume_after_loading_can_seek_before_play_without_claiming_playback():
+    from backend.cinema.playback import PlaybackManager, PlaybackState
+
+    manager = PlaybackManager()
+    manager.transition(PlaybackState.READY)
+    manager.stage("OPEN_NATIVE", "running", "Open AVPlayer")
+    manager.stage("DETECT_PLAYER", "running", "Wait for the asset duration")
+    manager.stage("RESTORE_POSITION", "running", "Restore saved position after asset readiness")
+    assert manager.state == PlaybackState.RESTORING_POSITION
+    manager.stage("PLAY", "running", "Wait for actual time progression")
+    manager.stage("FULLSCREEN", "running", "Wait for video fullscreen")
+    assert manager.state == PlaybackState.ENTERING_FULLSCREEN
+    assert not manager.confirmed({"playback_confirmed": False})
+    assert manager.state != PlaybackState.PLAYING
+
+
 @pytest.mark.parametrize("quality_status", ["selected", "unavailable", "error"])
 def test_audio_change_rechecks_quality_and_never_reuses_previous_maximum(
     monkeypatch, quality_status
