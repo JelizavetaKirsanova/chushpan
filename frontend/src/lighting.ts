@@ -700,6 +700,7 @@ export class LightingView {
     form: HTMLElement,
     initial: Action = {},
     allowPrograms = true,
+    presetRgb = false,
   ): () => Action {
     const options: [string, string][] = [["set", "Цвет / яркость / питание"]];
     if (allowPrograms)
@@ -712,13 +713,60 @@ export class LightingView {
     const fields = el("div");
     form.append(fields);
     const colorEnabled = this.input(fields, "Изменить цвет", "checkbox", "");
+    colorEnabled.setAttribute("aria-label", "Изменить цвет");
     colorEnabled.checked = initial.color != null;
-    const color = this.input(
-      fields,
-      "Цвет HEX",
-      "color",
-      initial.color ?? "#FF00C8",
-    );
+    const rgb = (initial.color ?? "#FF00C8").match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+    const rgbValues = rgb ? rgb.slice(1).map((part) => parseInt(part, 16)) : [255, 0, 200];
+    const color = presetRgb ? null : this.input(fields, "Цвет HEX", "color", initial.color ?? "#FF00C8");
+    let rgbInputs: HTMLInputElement[] = [];
+    let palette: HTMLInputElement | null = null;
+    let preview: HTMLElement | null = null;
+    if (presetRgb) {
+      const picker = el("div", "", "preset-color-picker");
+      const channels = el("div", "", "preset-rgb");
+      rgbInputs = ["R", "G", "B"].map((channel, i) => {
+        const input = this.input(channels, channel, "number", String(rgbValues[i]));
+        input.setAttribute("aria-label", channel);
+        input.min = "0"; input.max = "255"; input.step = "1"; input.required = true;
+        input.dataset.rgb = channel.toLowerCase();
+        return input;
+      });
+      const swatches = el("div", "", "preset-swatches");
+      const quick = [
+        ["Тёплый белый", "#FFD6A1"], ["Холодный белый", "#E8F2FF"],
+        ["Красный", "#FF0000"], ["Зелёный", "#00FF00"], ["Синий", "#0000FF"],
+        ["Розовый", "#FF69B4"], ["Фиолетовый", "#A020F0"],
+      ];
+      for (const [label, hex] of quick) {
+        const button = el("button", label); button.type = "button";
+        button.style.setProperty("--swatch", hex);
+        button.onclick = () => setHex(hex);
+        swatches.append(button);
+      }
+      const pickerLabel = el("label", "Палитра");
+      palette = document.createElement("input"); palette.type = "color";
+      palette.setAttribute("aria-label", "Палитра цвета");
+      pickerLabel.append(palette);
+      preview = el("div", "", "preset-color-preview"); preview.setAttribute("aria-label", "Предпросмотр цвета");
+      const random = el("button", "Случайный цвет"); random.type = "button";
+      random.onclick = () => setHex(`#${Array.from({length:3}, () => Math.floor(Math.random()*256).toString(16).padStart(2,"0")).join("")}`);
+      picker.append(channels, pickerLabel, preview, swatches, random);
+      fields.append(picker);
+      function currentHex() { return `#${rgbInputs.map((input) => Number(input.value).toString(16).padStart(2,"0")).join("")}`.toUpperCase(); }
+      function setHex(hex: string) {
+        const values = hex.replace("#", "").match(/.{2}/g)!.map((part) => parseInt(part,16));
+        rgbInputs.forEach((input, i) => { input.value = String(values[i]); });
+        updatePreview();
+      }
+      function updatePreview() {
+        const hex = currentHex();
+        if (preview) preview.style.backgroundColor = hex;
+        if (palette) palette.value = hex;
+      }
+      rgbInputs.forEach((input) => input.addEventListener("input", updatePreview));
+      palette!.addEventListener("input", () => setHex(palette!.value));
+      updatePreview();
+    }
     const brightnessEnabled = this.input(
       fields,
       "Изменить яркость",
@@ -791,6 +839,11 @@ export class LightingView {
     );
     const visibility = () => {
       fields.hidden = !["set", "fade"].includes(kind.value);
+      if (presetRgb && colorEnabled.parentElement) colorEnabled.parentElement.hidden = fields.hidden;
+      if (presetRgb && colorEnabled.checked && !fields.hidden) {
+        const picker = fields.querySelector<HTMLElement>(".preset-color-picker");
+        if (picker) picker.hidden = false;
+      }
       programs.hidden = !["fade", "effect"].includes(kind.value);
       preset.parentElement!.hidden = kind.value !== "preset";
       effect.parentElement!.hidden =
@@ -799,6 +852,14 @@ export class LightingView {
           kind.value !== "effect";
     };
     kind.onchange = visibility;
+    if (presetRgb) colorEnabled.onchange = () => {
+      const picker = fields.querySelector<HTMLElement>(".preset-color-picker");
+      if (picker) picker.hidden = !colorEnabled.checked;
+    };
+    if (presetRgb) {
+      const picker = fields.querySelector<HTMLElement>(".preset-color-picker");
+      if (picker) picker.hidden = !colorEnabled.checked;
+    }
     visibility();
     return () => {
       if (kind.value === "preset") {
@@ -814,7 +875,9 @@ export class LightingView {
           colors: colors.value.trim().split(/\s+/),
         };
       const action: Action = { kind: kind.value };
-      if (colorEnabled.checked) action.color = color.value.toUpperCase();
+      if (colorEnabled.checked) action.color = presetRgb
+        ? `#${rgbInputs.map((input) => Number(input.value).toString(16).padStart(2,"0")).join("")}`.toUpperCase()
+        : color!.value.toUpperCase();
       if (brightnessEnabled.checked)
         action.brightness = Number(brightness.value);
       if (power.value !== "keep") action.power = power.value === "on";
@@ -832,9 +895,10 @@ export class LightingView {
   private presetDialog(preset?: Preset): void {
     const { form } = this.modal(preset ? "Изменить пресет" : "Новый пресет");
     const name = this.input(form, "Название", "text", preset?.name ?? "");
+    name.setAttribute("aria-label", "Название");
     name.required = true;
     name.maxLength = 80;
-    const action = this.actionFields(form, preset?.action, false);
+    const action = this.actionFields(form, preset?.action, false, true);
     this.submit(form, "Сохранить", () =>
       this.command("preset_save", {
         value: {

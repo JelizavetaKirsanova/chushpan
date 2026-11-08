@@ -176,11 +176,15 @@ test("preset dialog saves locally and timer dialog submits a durable document", 
   try {
     f.button("Создать пресет");
     let form = f.window.document.querySelector("dialog form")!;
-    const inputs = form.querySelectorAll<HTMLInputElement>("input");
-    inputs[0].value = "Мой вечер";
-    inputs[1].checked = true;
+    const name = form.querySelector<HTMLInputElement>('[aria-label="Название"]')!;
+    name.value = "Мой вечер";
+    form.querySelector<HTMLInputElement>('[aria-label="Изменить цвет"]')!.checked = true;
+    form.querySelector<HTMLInputElement>('[data-rgb="r"]')!.value = "17";
+    form.querySelector<HTMLInputElement>('[data-rgb="g"]')!.value = "34";
+    form.querySelector<HTMLInputElement>('[data-rgb="b"]')!.value = "51";
     form.dispatchEvent(new f.window.Event("submit", { cancelable: true }));
     assert.equal(f.events.at(-1).operation, "preset_save");
+    assert.equal(f.events.at(-1).value.action.color, "#112233");
     f.select();
     f.button("Таймер", f.window.document.querySelector(".lighting-panel")!);
     form = f.window.document.querySelector("dialog form")!;
@@ -248,6 +252,10 @@ test("nullable saved preset fields stay absent when reopening and saving", async
     );
     assert.equal(checkboxes[0].checked, true);
     assert.equal(checkboxes[1].checked, false);
+    assert.deepEqual(
+      ["r", "g", "b"].map((channel) => form.querySelector<HTMLInputElement>(`[data-rgb="${channel}"]`)!.value),
+      ["255", "0", "0"],
+    );
     const power = [...form.querySelectorAll("label")]
       .find((label) => label.textContent?.startsWith("Питание"))!
       .querySelector("select")!;
@@ -262,6 +270,31 @@ test("nullable saved preset fields stay absent when reopening and saving", async
       f.events.some((event) => event.operation === "apply"),
       false,
     );
+  } finally {
+    await f.close();
+  }
+});
+
+test("preset RGB palette updates channels and preview, and out-of-range values cannot save", async () => {
+  const f = fixture();
+  try {
+    f.button("Создать пресет");
+    const form = f.window.document.querySelector<HTMLFormElement>("dialog form")!;
+    const palette = form.querySelector<HTMLInputElement>('[aria-label="Палитра цвета"]')!;
+    palette.value = "#123456";
+    palette.dispatchEvent(new f.window.Event("input"));
+    assert.deepEqual(["r", "g", "b"].map((c) => form.querySelector<HTMLInputElement>(`[data-rgb="${c}"]`)!.value), ["18", "52", "86"]);
+    assert.equal(form.querySelector<HTMLElement>(".preset-color-preview")!.style.backgroundColor, "#123456");
+    const channels = ["r", "g", "b"].map((c) => form.querySelector<HTMLInputElement>(`[data-rgb="${c}"]`)!);
+    form.querySelector<HTMLInputElement>('[aria-label="Название"]')!.value = "Проверка";
+    form.querySelector<HTMLInputElement>('[aria-label="Изменить цвет"]')!.checked = true;
+    channels[0].value = "256";
+    assert.equal(channels[0].checkValidity(), false);
+    form.dispatchEvent(new f.window.Event("submit", { cancelable: true }));
+    assert.equal(f.events.some((event) => event.operation === "preset_save"), false);
+    channels[0].value = "18";
+    form.dispatchEvent(new f.window.Event("submit", { cancelable: true }));
+    assert.equal(f.events.at(-1).value.action.color, "#123456");
   } finally {
     await f.close();
   }
