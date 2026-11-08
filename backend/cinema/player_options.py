@@ -49,6 +49,7 @@ class QualityController:
         self.owner = owner
         self.button = None
         self.previous = ""
+        self.applied_path = None
 
     @staticmethod
     def choices(nodes):
@@ -69,6 +70,8 @@ class QualityController:
     async def menu(self):
         import re
 
+        from backend.tools.registry import ToolError
+
         p = self.owner
         await p.reveal()
         nodes = await p.nodes()
@@ -84,13 +87,29 @@ class QualityController:
         )
         values = self.choices(nodes)
         current = next(iter(values), "") if len(values) == 1 else ""
-        if current and any(
-            re.fullmatch(r"Качество|Quality", n.get("value", ""), re.I) for n in nodes
+        self.applied_path = values[current].get("path") if current else None
+        if current and (
+            getattr(p, "engine", "") == "venom_ax"
+            or any(re.fullmatch(r"Качество|Quality", n.get("value", ""), re.I) for n in nodes)
         ):
+            fingerprint = [(v, n.get("path")) for v, n in values.items()]
             await p.press(values[current])
-            nodes = await p.wait_nodes(lambda tree: bool(self.choices(tree)))
+            nodes = await p.wait_nodes(
+                lambda tree: (
+                    bool(self.choices(tree))
+                    and [(v, n.get("path")) for v, n in self.choices(tree).items()] != fingerprint
+                )
+            )
             values = self.choices(nodes)
+        elif current and quality_height(current):
+            raise ToolError("Плеер показал текущее качество, но не подтвердил список вариантов.")
         return values, current
+
+    def applied(self, nodes, wanted):
+        rows = self.choices(nodes)
+        return list(rows) == [wanted] and (
+            self.applied_path is None or rows[wanted].get("path") == self.applied_path
+        )
 
     async def apply(self, wanted):
         import asyncio
@@ -104,8 +123,7 @@ class QualityController:
         # In the reviewed settings panel a single displayed resolution is the
         # applied value. A menu merely containing the option proves nothing.
         for _ in range(15):
-            rows = self.choices(await self.owner.nodes())
-            if list(rows) == [wanted]:
+            if self.applied(await self.owner.nodes(), wanted):
                 return current
             await asyncio.sleep(0.2)
         raise ToolError("Плеер не подтвердил применение выбранного качества.")
@@ -154,9 +172,7 @@ class QualityController:
                         }
                     if current != wanted:
                         await p.press(values[wanted])
-                        await p.wait_nodes(
-                            lambda tree, value=wanted: list(self.choices(tree)) == [value]
-                        )
+                        await p.wait_nodes(lambda tree, value=wanted: self.applied(tree, value))
                     await self.close()
                     result = await p.confirm(await p.nodes())
                     if position_changed(result):

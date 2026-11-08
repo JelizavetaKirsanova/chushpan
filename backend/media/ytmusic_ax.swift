@@ -584,7 +584,9 @@ func cinemaPlayer(_ request: [String: Any], _ op: String, _ app: NSRunningApplic
         guard let event = CGEvent(mouseEventSource: nil, mouseType: kind, mouseCursorPosition: point,
                                   mouseButton: .left) else { fail("cinema_control_unavailable") }
         event.post(tap: .cghidEventTap)
-        if labelPress { Thread.sleep(forTimeInterval:0.06) }
+        // Keep an ordinary pointer click alive long enough for WebKit to
+        // consume both events before this short-lived helper exits.
+        Thread.sleep(forTimeInterval:0.06)
     }
     output(["ok": true])
 }

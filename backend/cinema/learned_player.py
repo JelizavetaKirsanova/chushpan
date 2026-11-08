@@ -759,12 +759,42 @@ class LearnedPlayer:
                 if not current or current["path"] != control["path"]:
                     raise ToolError("Меню плеера изменилось после нажатия.") from error
                 control = current
-        await self.press(exact(nodes, re.escape(desired)))
-        return await self.wait_nodes(
-            lambda tree: any(
-                node["path"] == control["path"] and label(node) == desired for node in tree
+
+        def selected(tree):
+            current = exact(tree, re.escape(desired))
+            return bool(
+                current
+                and current.get("role") == control.get("role")
+                and current["path"][:-1] == control["path"][:-1]
             )
-        )
+
+        option = exact(nodes, re.escape(desired))
+        for attempt in range(2):
+            await self.press(option)
+            try:
+                return await self.wait_nodes(selected)
+            except ToolError as error:
+                if getattr(error, "code", "") != "cinema_controls_timeout" or attempt:
+                    raise
+                tree = await self.nodes()
+                if selected(tree):
+                    return tree
+                old = [
+                    node
+                    for node in tree
+                    if node.get("role") == control.get("role")
+                    and node["path"][:-1] == control["path"][:-1]
+                    and label(node) == label(control)
+                ]
+                current = exact(tree, re.escape(desired))
+                if (
+                    len(old) != 1
+                    or not current
+                    or current.get("role") != option.get("role")
+                    or current["path"][:-1] != option["path"][:-1]
+                ):
+                    raise ToolError("Меню изменилось; повторный выбор отменён.") from error
+                option = current
 
     async def prepare(self, recipe, episode):
         nodes = await self.wait_nodes(

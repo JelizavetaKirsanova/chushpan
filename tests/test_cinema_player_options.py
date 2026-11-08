@@ -39,6 +39,8 @@ def test_resolution_and_speed_are_never_audio_tracks():
 
 
 class MenuPlayer:
+    engine = "venom_ax"
+
     def __init__(self, options, *, fail_max=False, reload=False, menu=True):
         self.options = options
         self.selected = options[0]
@@ -66,7 +68,17 @@ class MenuPlayer:
             if self.screen == "options"
             else []
         )
-        return [{"role": "AXStaticText", "value": value} for value in ["Качество", *values]]
+        return [
+            {"role": "AXStaticText", "value": "Качество", "path": [0, 3, 0]},
+            *[
+                {
+                    "role": "AXStaticText",
+                    "value": value,
+                    "path": [0, 4, 0] if self.screen == "root" else [0, 4, index, 0],
+                }
+                for index, value in enumerate(values)
+            ],
+        ]
 
     async def sample(self):
         return {"position": self.position, "duration": 2000, "paused": False}
@@ -158,6 +170,81 @@ def test_quality_controls_appearing_after_reload_get_one_discovery_retry():
     result = asyncio.run(QualityController(player).select_maximum())
     assert result["selected"] == "720p" and result["maximum_confirmed"]
     assert player.action_button.await_count == 2 and player.screen == "closed"
+
+
+def test_current_quality_is_not_mistaken_for_the_complete_available_list():
+    class MissingHeading(MenuPlayer):
+        async def nodes(self):
+            return [n for n in await super().nodes() if n["value"] != "Качество"]
+
+    player = MissingHeading(["720p", "1080p"])
+    result = asyncio.run(QualityController(player).select_maximum())
+    assert result["selected"] == "1080p" and result["available"] == ["720p", "1080p"]
+
+
+def test_ignored_quality_submenu_click_does_not_claim_current_value_as_maximum():
+    class IgnoredSubmenu(MenuPlayer):
+        async def press(self, node):
+            pass
+
+    player = IgnoredSubmenu(["720p", "1080p"])
+    result = asyncio.run(QualityController(player).select_maximum())
+    assert result["status"] == "unverified" and not result["maximum_confirmed"]
+    assert player.requested == [] and player.screen == "closed"
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_episode_selection_retries_only_an_unchanged_menu_and_accepts_header_rerender(changed):
+    from backend.cinema.playback import playback_error
+
+    class Selector(LearnedPlayer):
+        value = "1 серия"
+        opened = False
+        attempts = 0
+
+        async def nodes(self):
+            return [
+                {
+                    "role": "AXStaticText",
+                    "path": [0, 1, 0 if self.value == "1 серия" else 2],
+                    "value": self.value,
+                },
+                *(
+                    [{"role": "AXStaticText", "path": [0, 1, 3, 0], "value": "2 серия"}]
+                    if self.opened
+                    else []
+                ),
+            ]
+
+        async def press(self, node, **kwargs):
+            if node["value"] == "1 серия":
+                self.opened = True
+            else:
+                self.attempts += 1
+                if changed:
+                    self.value = "3 серия"
+                elif self.attempts == 2:
+                    self.value, self.opened = "2 серия", False
+
+        async def wait_nodes(self, predicate):
+            for _ in range(4):
+                rows = await self.nodes()
+                if predicate(rows):
+                    return rows
+            raise playback_error("cinema_controls_timeout", "Selection not observed")
+
+    async def run():
+        player = Selector(None, None)
+        if changed:
+            with pytest.raises(ToolError, match="Меню изменилось"):
+                await player.select(await player.nodes(), r"\d+ серия", "2 серия")
+            assert player.attempts == 1
+        else:
+            rows = await player.select(await player.nodes(), r"\d+ серия", "2 серия")
+            assert rows[0]["value"] == "2 серия" and player.attempts == 2
+            assert rows[0]["path"] == [0, 1, 2]
+
+    asyncio.run(run())
 
 
 def test_controls_are_observed_until_animation_is_inside_frame_and_stable():
