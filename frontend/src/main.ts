@@ -20,6 +20,7 @@ import { Workspace } from "./workspace";
 import { PerformancePanel } from './performance';
 import {StatisticsDashboard} from './statistics';
 import './statistics.css';
+import './neon_design_system.css';
 
 import type { Mode } from "./core";
 import { Character } from './character';
