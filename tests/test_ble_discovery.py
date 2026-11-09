@@ -130,7 +130,7 @@ def test_gatt_checks_write_and_notify_without_granting_command_permissions(rig):
         result = await rig.strip.inspect(listen_s=0)
         assert result["compatibility"] == "gatt_match"
         assert result["connection"] == "disconnected"
-        assert "ещё не подтверждены" in result["message"]
+        assert "Состояние питания не считывается" in result["message"]
         assert rig.strip._load().confirmed == set()
         rig.clients[0].write_gatt_char.assert_not_awaited()
         rig.clients[0].disconnect.assert_awaited_once()
@@ -158,7 +158,7 @@ def test_gatt_mismatch_is_not_reported_as_compatible_and_always_disconnects(rig,
         report = await rig.strip.inspect(listen_s=0)
         assert report["compatibility"] == "gatt_mismatch"
         assert report["control_packets_sent"] == 0
-        assert "команды не отправлял" in report["message"]
+        assert "канал команд не совпадает" in report["message"]
         rig.clients[0].disconnect.assert_awaited_once()
         rig.clients[0].write_gatt_char.assert_not_awaited()
 
@@ -216,7 +216,7 @@ def test_ui_scan_metadata_multiple_strips_and_restore_are_independent(devices, m
         assert new_strip._load().confirmed == set()
         assert r.strip._load().confirmed == {"rgb", "on", "off", "brightness"}
         assert new_strip.path != r.strip.path
-        with pytest.raises(ToolError, match="ещё не проверен"):
+        with pytest.raises(ToolError, match="Канал команд не проверен"):
             await new_strip.execute(action="on")
         assert all(not c.write_gatt_char.await_count for c in r.clients)
         assert all(c.disconnect.await_count for c in r.clients)
@@ -369,7 +369,7 @@ def test_readonly_connection_check_handles_native_constructor_failure(rig):
     result = asyncio.run(rig.strip.inspect(listen_s=0))
     assert result["result_status"] == "failed"
     assert result["errors"][0]["type"] == "RuntimeError"
-    assert "команды не отправлял" in result["message"]
+    assert "Не удалось подключиться по Bluetooth" in result["message"]
 
 
 def test_generic_colour_followup_retains_existing_authenticated_strip_selection(devices):

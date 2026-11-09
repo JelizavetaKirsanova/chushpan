@@ -71,7 +71,7 @@ def test_stalled_player_recovers_only_on_movement(monkeypatch):
     assert m.state == PlaybackState.PLAYING
     now[0] += 31
     m.observe(sample)
-    assert m.state == PlaybackState.BLOCKED and m.code == "playback_stalled"
+    assert m.state == PlaybackState.BUFFERING and m.code == "playback_stalled"
     m.observe({**sample, "position": 14})
     assert m.state == PlaybackState.PLAYING
     m.session["counted"] = True

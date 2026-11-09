@@ -47,6 +47,14 @@ test('overview shows four honest KPIs, real charts and compact empty states',()=
   }finally{f.window.happyDOM.abort();}
 });
 
+test('empty statistics explains timing history and links straight to collection settings',()=>{
+  let opened=0;const window=new Window({settings:{disableJavaScriptEvaluation:true,disableCSSFileLoading:true,disableJavaScriptFileLoading:true}});
+  window.document.write(readFileSync(new URL('../index.html',import.meta.url),'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'').replace(/<link\b[^>]*>/gi,''));
+  const code=stripTypeScriptTypes(readFileSync(new URL('../src/statistics.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'')+'\nexports.StatisticsDashboard=StatisticsDashboard;';
+  const sandbox={exports:{} as Record<string,any>,document:window.document,window,icon:()=>'<svg></svg>',seconds,URL:window.URL,Blob:window.Blob,setTimeout:()=>0};vm.runInNewContext(code,sandbox);
+  try{const view=new sandbox.exports.StatisticsDashboard(()=>{},()=>{},()=>opened++);view.loading();const button=window.document.querySelector<HTMLButtonElement>('#statistics-root .statistics-empty button');assert.ok(button);assert.match(window.document.querySelector('#statistics-root .statistics-empty')!.textContent,/локальных диагностических таймингов/);button.click();assert.equal(opened,1);view.connection(true);view.receive(data(0));const current=window.document.querySelector<HTMLButtonElement>('#statistics-root .statistics-card button');assert.ok(current);assert.equal(current.textContent,'Настроить сбор событий');current.click();assert.equal(opened,2);}finally{window.happyDOM.abort();}
+});
+
 test('every tab is reachable, traces open and diagnostics remain disclosed',()=>{
   const f=fixture();try{
     const snapshot=data();snapshot.scenarios=[{id:'run',name:'Вечер <script>',status:'failed',started_at:snapshot.start,error:'Тестовая ошибка',steps:[{path:'1',status:'failed',duration_s:2,result:{sent:false}}]}];

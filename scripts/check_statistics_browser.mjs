@@ -8,9 +8,32 @@ try {
   page.on('pageerror',error=>errors.push(error.message));
   page.on('console',message=>{if(message.type()==='warning'&&message.text().startsWith('Bad HUD event'))errors.push(message.text());});
   await page.goto(process.argv[4]);
+  await page.locator('.workspace-nav [data-view=home]').click();
+  const resume=page.locator('.home-resume-item').filter({hasText:'Закрытая школа'});
+  await resume.waitFor();
+  assert.match(await resume.innerText(),/Сезон 1 · серия 1/);
+  assert.match(await resume.innerText(),/2:02 из 1:12:04/);
+  assert.ok(await resume.locator('img').getAttribute('src'));
+  await resume.getByRole('button',{name:'Изменить прогресс'}).click();
+  await page.getByLabel('Минуты',{exact:true}).fill('3');
+  await page.getByLabel('Секунды',{exact:true}).fill('0');
+  await page.getByRole('button',{name:'Сохранить прогресс',exact:true}).click();
+  await page.locator('.workspace-nav [data-view=home]').click();
+  await page.waitForFunction(()=>[...document.querySelectorAll('.home-resume-item')].some(n=>n.textContent.includes('Закрытая школа')&&n.textContent.includes('3:00 из')));
+  await page.screenshot({path:process.argv[5].replace('.png','-home-resume.png')});
+  await page.reload();
+  await page.locator('.home-resume-item').filter({hasText:'Закрытая школа'}).waitFor();
+  assert.match(await page.locator('.home-resume-item').filter({hasText:'Закрытая школа'}).innerText(),/3:00 из 1:12:04/);
+  await page.locator('.home-resume-item').filter({hasText:'Закрытая школа'}).getByRole('button',{name:'Продолжить'}).click();
+  await page.locator('.cinema-loading').waitFor();
+  assert.match(await page.locator('.cinema-loading').innerText(),/Ищем сериал/);
+  await page.locator('dialog button[aria-label="Закрыть"]').click();
   await page.locator('.workspace-nav [data-view=performance]').click();
-  await page.locator('.statistics-periods').getByRole('button',{name:'Год',exact:true}).click();
-  await page.waitForFunction(()=>document.querySelector('.statistics-status')?.textContent.includes('сохранённые события'));
+  await page.locator('.workspace-nav [data-view=performance]').click();
+  for(const label of ['7 дней','30 дней','90 дней','Всё время']) {
+    await page.locator('.statistics-periods').getByRole('button',{name:label,exact:true}).click();
+    await page.waitForFunction(()=>!document.querySelector('#statistics-root')?.hasAttribute('aria-busy'));
+  }
   assert.equal(await page.locator('.statistics-kpi').count(),4);
   const requests=Number(await page.locator('.statistics-kpi').first().locator('strong').textContent());
   assert.ok(Number.isFinite(requests));
@@ -77,7 +100,7 @@ try {
   assert.equal(await page.locator('.cinema-tabs').evaluate(n=>getComputedStyle(n).position),'static');
   await page.screenshot({path:process.argv[5].replace('.png','-cinema-bottom.png')});
   await scroller.evaluate(n=>{n.scrollTop=0;});
-  await page.locator('.cinema-catalogue-grid .cinema-card').first().waitFor({state:'visible'});
+  if(count)await page.locator('.cinema-catalogue-grid .cinema-card').first().waitFor({state:'visible'});
   await page.screenshot({path:process.argv[5].replace('.png','-cinema.png')});
   for(const width of [900,600,390]) {
     await page.setViewportSize({width,height:900});
@@ -88,5 +111,5 @@ try {
     await page.locator('.workspace-nav [data-view=cinema]').click();
   }
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({browser:true,real_saved_requests:requests,catalogue_cards:count,all_tabs:true,custom_empty:true,filters:true,search:true,favorite:count>0,escape:true,no_overlays:true,widths:[1440,900,600,390],errors}));
+  console.log(JSON.stringify({browser:true,saved_requests:requests,periods:['7 дней','30 дней','90 дней','Всё время','Произвольный период'],catalogue_cards:count,all_tabs:true,filters:true,search:true,favorite:count>0,escape:true,no_overlays:true,widths:[1440,900,600,390],errors}));
 } finally {await browser.close();}

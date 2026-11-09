@@ -37,7 +37,7 @@ export class StatisticsDashboard {
   private custom=el('form','','statistics-custom');
   private start=el('input');
   private end=el('input');
-  constructor(private query:(days:number,start?:string,end?:string)=>void,private trace:(id:string)=>void) {
+  constructor(private query:(days:number,start?:string,end?:string)=>void,private trace:(id:string)=>void,private openCollection:()=>void=()=>{}) {
     const heading=el('header','','statistics-heading');const title=el('div','','page-heading');title.append(el('h1','Статистика Чушпана'),el('p','Аналитика использования, активности и эффективности'));
     const name=el('div','','statistics-title');name.append(glyph('chart'),title);heading.append(name,this.periods);
     this.periods.setAttribute('aria-label','Период статистики');
@@ -71,9 +71,9 @@ export class StatisticsDashboard {
   private renderContent():void {
     if(this.tab==='performance')return;
     this.content.replaceChildren();
-    if(!this.data){this.content.append(empty('Статистика ждёт первых событий','Обращения, команды и время ответа появятся после подключения и использования Чушпана.'));return;}
+    if(!this.data){const state=empty('Статистика ждёт первых событий','Показатели обращений используют журнал аналитики, который выключен по умолчанию. Время ответа, этапы и результаты сценариев показываются отдельно из локальных диагностических таймингов.');state.append(button('Настроить сбор событий',this.openCollection,'primary'));this.content.append(state);return;}
     if(this.tab==='overview'){
-      if(!this.data.metrics.requests){const card=this.card('Пока нет данных за выбранный период','Обращения, распределение операций и задержки появятся после использования Чушпана.');card.append(empty('Начни с разговора или команды','Выбери другой период, чтобы посмотреть ранее сохранённую активность. История запусков доступна во вкладке «Сценарии».'));this.content.append(card);return;}
+      if(!this.data.metrics.requests){const card=this.card('Пока нет данных за выбранный период','Обращения и распределение операций появятся, если включить сбор событий и использовать Чушпана. Время ответов и этапов всё равно доступно во вкладке «Производительность» по локальным диагностическим таймингам.');card.append(empty('Начни с разговора или команды','Выбери другой период, чтобы посмотреть ранее сохранённую активность. История запусков доступна во вкладке «Сценарии».'));card.append(button('Настроить сбор событий',this.openCollection,'primary'));this.content.append(card);return;}
       const grid=el('div','','statistics-grid');grid.append(this.activity(),this.distribution(),this.latency());this.content.append(grid);
     }else if(this.tab==='scenarios')this.renderScenarios();
     else if(this.tab==='apps')this.renderApps();

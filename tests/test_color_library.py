@@ -104,9 +104,10 @@ def test_single_observed_color_grants_rgb_only_and_survives_restart(rig):
         assert restarted._load().confirmed == {"rgb", "color:180,80,255"}
         for rgb in ([0, 0, 0], [255, 255, 255], [12, 23, 34]):
             assert (await restarted.execute(action="color", rgb=rgb))["physical_confirmed"] is False
-        for args in ({"action": "on"}, {"action": "off"}, {"action": "brightness", "level": 50}):
-            with pytest.raises(ToolError, match="не проверен"):
-                await restarted.execute(**args)
+        for args in ({"action": "on"}, {"action": "off"}):
+            assert (await restarted.execute(**args))["physical_confirmed"] is False
+        with pytest.raises(ToolError, match="не проверен"):
+            await restarted.execute(action="brightness", level=50)
 
     asyncio.run(run())
 
@@ -177,7 +178,7 @@ def test_pending_observation_is_recoverable_after_service_restart_and_features_u
         assert confirmed["result"]["result_status"] == "success"
         features = r.service.features(r.service.store.get("led-configured"))
         assert features["color"] is True and features["color_block_reason"] == ""
-        assert not features["power_on"] and not features["power_off"] and not features["brightness"]
+        assert features["power_on"] and features["power_off"] and not features["brightness"]
         r.service.strips.pop("led-configured")
         assert r.service.features(r.service.store.get("led-configured"))["color"] is True
         before = len(r.clients)

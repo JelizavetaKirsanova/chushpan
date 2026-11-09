@@ -42,7 +42,7 @@ let mode: Mode = "offline";
 let microphone = "unknown";
 let dialogue:Extract<HudEvent,{type:"session"}>|null=null;
 let toolTimer = 0;
-const statistics = new StatisticsDashboard((days,start,end)=>performancePanel.period(days,start,end),id=>performancePanel.open(id));
+const statistics = new StatisticsDashboard((days,start,end)=>performancePanel.period(days,start,end),id=>performancePanel.open(id),()=>personalModules.openAnalyticsCollection());
 const performancePanel = new PerformancePanel((days, filters) => link.performance(days, filters), id => link.trace(id),statistics);
 const workspace = new Workspace(id => link.history(id), value => link.dialogue(value), () => link.send("sleep"), value => link.music(value), id => id ? performancePanel.open(id) : performancePanel.refresh());
 let latestTrace: string | null = null;

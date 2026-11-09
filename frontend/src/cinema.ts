@@ -462,6 +462,7 @@ export class CinemaView {
     const item=this.data?.items.find(value=>value.id===titleId);
     const episode=item?.episodes.find(value=>value.id===episodeId);
     if(!item||!episode)return;
+    this.navigate();
     if(edit){this.editProgress(item,episode);return;}
     this.open(item,episode);
   }

@@ -67,6 +67,7 @@ def test_events_metadata_percentiles_export_filters_retention_and_clear(tmp_path
                 "assistant.request", at=time.time() - 86400 * 100, metadata={"kind": "text"}
             )
             await service.flush()
+            assert store.db.execute("SELECT COUNT(*) FROM analytics_events").fetchone()[0] == 5
             data = service.snapshot()["summary"]
             assert data["count"] == 4 and data["mean_s"] == 3
             assert data["p50_s"] == 1 and data["p95_s"] == 8
@@ -84,6 +85,7 @@ def test_events_metadata_percentiles_export_filters_retention_and_clear(tmp_path
                 await service.handle({"op": "clear"})
             await service.handle({"op": "clear", "confirmed": True})
             assert service.snapshot()["summary"]["events"] == 0
+            assert store.db.execute("SELECT COUNT(*) FROM analytics_events").fetchone()[0] == 0
         finally:
             await service.close()
             store.close()

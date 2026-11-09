@@ -88,6 +88,22 @@ test('seven tabs keep lists separate and watch starts automatic discovery',()=>{
   }finally{f.window.happyDOM.abort();}
 });
 
+test('dashboard continue and manual progress navigate to the visible cinema flow',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];let navigations=0;const root=f.window.document.getElementById('cinema-root')!;const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{navigations++;root.style.display='';},()=>{});view.connection(true);
+    const item={...movie('Закрытая школа','watching'),kind:'series'};item.current.season=1;item.current.episode=1;
+    view.receive(snapshot([item]));root.style.display='none';
+    view.resumeFromDashboard(item.id,item.current.id,true);
+    assert.equal(navigations,1);assert.equal(root.style.display,'');
+    const dialog=f.window.document.querySelector('dialog')!;assert.ok(dialog.querySelector('[aria-label="Минуты"]'));assert.ok([...dialog.querySelectorAll('button')].some(b=>b.textContent==='Сохранить прогресс'));
+    [...dialog.querySelectorAll('button')].find(b=>b.textContent==='Сохранить прогресс')!.click();
+    assert.equal(sent.at(-1).op,'manual_progress');
+    view.resumeFromDashboard(item.id,item.current.id);
+    assert.equal(navigations,2);assert.equal(sent.at(-1).op,'watch');
+    assert.match(f.window.document.querySelector('dialog')!.textContent,/Ищем сериал/);
+  }finally{f.window.happyDOM.abort();}
+});
+
 test('catalogue displays metadata and applies filters in app',()=>{
   const f=fixture();try{
     const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);

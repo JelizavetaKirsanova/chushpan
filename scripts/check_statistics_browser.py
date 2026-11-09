@@ -87,6 +87,17 @@ async def check(args):
             elif op == "update":
                 library.update_title(value["id"], value["values"])
                 snapshot()
+            elif op == "manual_progress":
+                library.manual_progress(
+                    value["title_id"],
+                    value["season"],
+                    value["episode"],
+                    value["position"],
+                    value["duration"],
+                    value["status"],
+                    value.get("last_viewed"),
+                )
+                snapshot(saved=value["title_id"])
             elif op == "preferences":
                 # UI drafts are enough for this read-only acceptance fixture.
                 snapshot()

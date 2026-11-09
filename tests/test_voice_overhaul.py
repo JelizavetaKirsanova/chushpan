@@ -328,7 +328,9 @@ def test_history_attributes_failed_primary_and_fallback_separately_and_filters_a
     anchor = datetime(2026, 11, 5, 10, tzinfo=UTC)
     monkeypatch.setattr(
         "backend.performance.period_range",
-        lambda days, timezone, filters: period_range(days, timezone, filters, now=anchor),
+        lambda days, timezone, filters, oldest=None: period_range(
+            days, timezone, filters, now=anchor, oldest=oldest
+        ),
     )
     store = MemoryStore(":memory:")
     try:
