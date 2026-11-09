@@ -64,11 +64,12 @@ function tap(): void {
 
 const voiceSettings = new VoiceSettingsPanel(value => link.voice(value));
 const core = new Character(byId('character'), tap);
-const dashboard = new DashboardView(value => link.dashboard(value), value => link.chat(value), view => workspace.navigate(view), value => link.historySearch(value), core, value => panels.weather(value));
+let cinema: CinemaView;
+const dashboard = new DashboardView(value => link.dashboard(value), value => link.chat(value), view => workspace.navigate(view), value => link.historySearch(value), core, value => panels.weather(value), (titleId, episodeId, edit) => cinema?.resumeFromDashboard(titleId, episodeId, edit));
 const automations = new AutomationsView(value => link.automations(value), view => workspace.navigate(view), () => link.send('wake'), text => link.chat({text}));
 const devices = new DevicesView(value=>link.devices(value),text=>link.chat({text}),()=>tap(),view=>workspace.navigate(view));
 const lighting = new LightingView(value=>link.devices(value),view=>workspace.navigate(view));
-const cinema = new CinemaView(value=>link.cinema(value),text=>link.chat({text}),()=>workspace.navigate('cinema'),()=>byId('listen-control').click());
+cinema = new CinemaView(value=>link.cinema(value),text=>link.chat({text}),()=>workspace.navigate('cinema'),()=>byId('listen-control').click());
 const settingsCenter = new SettingsCenterUI(value => link.settings(value), value => link.automations(value), view => workspace.navigate(view));
 const personalModules = new PersonalModules((channel,value)=>link.module(channel,value),view=>workspace.navigate(view));
 

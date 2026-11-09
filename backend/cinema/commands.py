@@ -9,6 +9,87 @@ def command(text, active=False):
     value = command_text(text).strip(".!? ")
     if any(char in value for char in ('"', "«", "»", ";", "\n")) or re.search(r"\bне\b", value):
         return None
+    ordinal = {
+        "перв": 1,
+        "втор": 2,
+        "трет": 3,
+        "четверт": 4,
+        "четвёрт": 4,
+        "пят": 5,
+        "шест": 6,
+        "седьм": 7,
+        "восьм": 8,
+        "девят": 9,
+        "десят": 10,
+    }
+
+    def number(raw):
+        if raw.isdigit():
+            return int(raw)
+        return next((n for stem, n in ordinal.items() if raw.startswith(stem)), None)
+
+    quantity = (
+        r"(?:\d+|перв\w+|втор\w+|трет\w+|четверт\w+|четвёрт\w+|"
+        r"пят\w+|шест\w+|седьм\w+|восьм\w+|девят\w+|десят\w+)"
+    )
+    resume_title = re.fullmatch(r"продолжи (.{1,200})", value)
+    if (
+        resume_title
+        and resume_title[1]
+        not in {
+            "мой сериал",
+            "мой фильм",
+            "мою сериал",
+            "то, что я смотрела",
+            "последний сериал",
+        }
+        and " и " not in resume_title[1]
+    ):
+        return {"action": "continue_title", "title": resume_title[1]}
+    set_progress = re.fullmatch(
+        rf"(?:чушпан,? )?запомни,? что я остановилась на ({quantity}) сезоне?,? "
+        rf"({quantity}) сери(?:и|ю),? на (\d+) минут(?:е|ы)?"
+        r"(?: (\d+) секунд(?:ы|у)?)?",
+        value,
+    )
+    if set_progress:
+        title = ""
+        season, episode = number(set_progress[1]), number(set_progress[2])
+        if season and episode:
+            return {
+                "action": "set_progress",
+                "title": title,
+                "season": season,
+                "episode": episode,
+                "position": int(set_progress[3]) * 60 + int(set_progress[4] or 0),
+            }
+    set_named = re.fullmatch(
+        rf"поставь (.+?) на ({quantity}) сезон(?:а|е)?,? "
+        rf"({quantity}) сери(?:и|ю),? (\d+) минуты? (\d+) секунд(?:ы|у)?",
+        value,
+    )
+    if set_named and number(set_named[2]) and number(set_named[3]):
+        return {
+            "action": "set_progress",
+            "title": set_named[1].strip(),
+            "season": number(set_named[2]),
+            "episode": number(set_named[3]),
+            "position": int(set_named[4]) * 60 + int(set_named[5]),
+        }
+    completed = re.fullmatch(
+        rf"(?:я )?досмотрела ({quantity}) серию ({quantity}) сезон(?:а|е)?",
+        value,
+    )
+    if completed and number(completed[1]) and number(completed[2]):
+        return {
+            "action": "complete_episode",
+            "episode": number(completed[1]),
+            "season": number(completed[2]),
+        }
+    if value in {"на каком моменте я остановилась", "на каком моменте остановилась"}:
+        return {"action": "info"}
+    if value in {"сбрось прогресс этого сериала", "сбрось прогресс"}:
+        return {"action": "reset_progress"}
     tv = bool(re.search(r"(?: и (?:включи|покажи))? на телевизоре$", value))
     if tv:
         value = re.sub(r"(?: и (?:включи|покажи))? на телевизоре$", "", value)

@@ -1221,6 +1221,90 @@ class CinemaStore:
             )
         return self.detail(ep["title_id"])
 
+    def manual_progress(
+        self, title_id, season, episode, position, duration, status, last_viewed=None
+    ):
+        """Persist an explicit user position in the existing per-episode progress rows."""
+        item = self.title(title_id)
+        if item["kind"] == "movie":
+            season, episode = 0, 0
+        elif (
+            type(season) is not int
+            or not 1 <= season <= 999
+            or type(episode) is not int
+            or not 1 <= episode <= 9999
+        ):
+            raise ValueError("Укажи корректные сезон и серию.")
+        if status not in {"unwatched", "watching", "watched"}:
+            raise ValueError("Неизвестный статус просмотра.")
+        if any(
+            type(v) not in (float, int) or not math.isfinite(v) or v < 0
+            for v in (position, duration)
+        ):
+            raise ValueError("Время должно быть конечным неотрицательным числом секунд.")
+        if duration and position > duration + 2:
+            raise ValueError("Позиция превышает длительность.")
+        row = self.db.execute(
+            "SELECT id,last_viewed FROM cinema_episodes "
+            "WHERE title_id=? AND season=? AND episode=?",
+            (title_id, season, episode),
+        ).fetchone()
+        if last_viewed:
+            try:
+                date = datetime.fromisoformat(last_viewed).date()
+                stamp = datetime.combine(date, datetime.min.time(), UTC).isoformat()
+            except (TypeError, ValueError):
+                raise ValueError("Укажи корректную дату последнего просмотра.") from None
+        else:
+            stamp = row["last_viewed"] if row and row["last_viewed"] else now()
+        identifier = row["id"] if row else str(uuid4())
+        watched = int(status == "watched")
+        position = 0 if status == "unwatched" else min(position, duration) if duration else position
+        if status == "unwatched":
+            stamp = None
+        with self.transaction():
+            if row:
+                self.db.execute(
+                    "UPDATE cinema_episodes SET position=?,duration=?,watched=?,last_viewed=? "
+                    "WHERE id=?",
+                    (position, duration, watched, stamp, identifier),
+                )
+            else:
+                self.db.execute(
+                    "INSERT INTO cinema_episodes"
+                    "(id,title_id,season,episode,position,duration,watched,last_viewed) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (identifier, title_id, season, episode, position, duration, watched, stamp),
+                )
+            self.db.execute(
+                "UPDATE cinema_titles SET last_episode_id=?,updated_at=? WHERE id=?",
+                (identifier, now(), title_id),
+            )
+            library_status = (
+                "planned"
+                if status == "unwatched"
+                else "watched"
+                if status == "watched"
+                else "watching"
+            )
+            self.db.execute(
+                "UPDATE cinema_library SET status=?,manual_watched=?,watchlist=?,completed_at=? "
+                "WHERE title_id=?",
+                (
+                    library_status,
+                    int(status == "watched") if status == "watched" else None,
+                    int(status == "unwatched"),
+                    now() if status == "watched" else None,
+                    title_id,
+                ),
+            )
+            self.db.execute(
+                "INSERT INTO cinema_history"
+                "(episode_id,position,duration,event,created_at) VALUES(?,?,?,?,?)",
+                (identifier, position, duration, "manual", stamp or now()),
+            )
+        return self.detail(title_id)
+
     def history(self):
         return [
             dict(row)

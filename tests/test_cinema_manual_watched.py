@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from backend.cinema.commands import command
 from backend.cinema.service import Cinema
 from backend.cinema.store import MIGRATIONS, CinemaStore
 from backend.config import Settings
@@ -15,6 +16,44 @@ from backend.hud.bus import HudBus
 from backend.mac_agent import LocalMacAgent
 from backend.memory.store import MemoryStore
 from backend.tools.registry import ToolRegistry
+
+
+def test_manual_progress_is_per_episode_persistent_and_resettable(tmp_path):
+    path = tmp_path / "manual.sqlite"
+    store = CinemaStore(path)
+    item = store.add({"title": "Последнее королевство", "kind": "series"})
+    saved = store.manual_progress(item["id"], 2, 5, 1965, 2700, "watching", "2026-11-08")
+    assert (saved["current"]["season"], saved["current"]["episode"]) == (2, 5)
+    assert saved["current"]["position"] == 1965
+    assert saved["current"]["last_viewed"].startswith("2026-11-08")
+    store.close()
+    store = CinemaStore(path)
+    assert store.detail(item["id"])["current"]["position"] == 1965
+    store.manual_progress(item["id"], 2, 5, 0, 2700, "unwatched")
+    assert store.detail(item["id"])["current"]["position"] == 0
+    assert store.detail(item["id"])["current"]["last_viewed"] is None
+    store.close()
+
+
+def test_progress_voice_routes():
+    assert command(
+        "Чушпан, запомни, что я остановилась на третьем сезоне, пятой серии, на 24 минуте"
+    ) == {"action": "set_progress", "title": "", "season": 3, "episode": 5, "position": 1440}
+    assert command(
+        "Поставь Последнее королевство на второй сезон, пятую серию, 32 минуты 45 секунд"
+    ) == {
+        "action": "set_progress",
+        "title": "последнее королевство",
+        "season": 2,
+        "episode": 5,
+        "position": 1965,
+    }
+    assert command("Я досмотрела вторую серию первого сезона") == {
+        "action": "complete_episode",
+        "episode": 2,
+        "season": 1,
+    }
+    assert command("Продолжи Последнее королевство")["action"] == "continue_title"
 
 
 @pytest.mark.parametrize("kind", ["movie", "series"])

@@ -1,3 +1,21 @@
+import type { CinemaTitle } from './cinema';
+
+export function continueWatchingItems<T extends Pick<CinemaTitle, 'status'|'kind'|'current'|'episodes'>>(items:T[]):{item:T;episode:NonNullable<T['current']>;updatedAt:string}[] {
+  return items.flatMap(item=>{
+    const recent=item.episodes.filter(ep=>ep.last_viewed||ep.position>0).sort((a,b)=>(b.last_viewed??'').localeCompare(a.last_viewed??''));
+    const last=recent[0];
+    if(item.status!=='watching'||!last)return [];
+    let episode=item.current;
+    if(!episode||episode.watched){
+      if(item.kind!=='series')return [];
+      const at=item.episodes.findIndex(ep=>ep.id===last.id);
+      episode=item.episodes.slice(at+1).find(ep=>!ep.watched)??null;
+    }
+    if(!episode||episode.watched)return [];
+    return [{item,episode,updatedAt:last.last_viewed??''}];
+  }).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)).slice(0,8);
+}
+
 export interface AmbientSettings {
   ambient_enabled: boolean; ambient_minutes: number; ambient_display: 'primary' | 'external';
   ambient_fullscreen: boolean; reduce_on_battery: boolean;

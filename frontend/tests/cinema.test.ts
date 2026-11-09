@@ -114,6 +114,21 @@ test('source-less manual title can be saved and failed progress stays reviewable
   }finally{f.window.happyDOM.abort();}
 });
 
+test('card progress editor saves exact movie time, status and optional date',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);
+    const film=movie('Manual film','watching');view.receive(snapshot([film]));button(f,'✎ Изменить прогресс').click();
+    const hours=f.window.document.querySelector('[aria-label="Часы"]') as HTMLInputElement;
+    const minutes=f.window.document.querySelector('[aria-label="Минуты"]') as HTMLInputElement;
+    const seconds=f.window.document.querySelector('[aria-label="Секунды"]') as HTMLInputElement;
+    const date=f.window.document.querySelector('[aria-label^="Дата последнего просмотра"]') as HTMLInputElement;
+    hours.value='0';minutes.value='32';seconds.value='45';date.value='2026-11-08';
+    f.window.document.querySelector('dialog form')!.dispatchEvent(new f.window.Event('submit',{cancelable:true}));
+    assert.equal(sent.at(-1).op,'manual_progress');assert.equal(sent.at(-1).position,1965);
+    assert.equal(sent.at(-1).season,0);assert.equal(sent.at(-1).episode,0);assert.equal(sent.at(-1).last_viewed,'2026-11-08');
+  }finally{f.window.happyDOM.abort();}
+});
+
 test('unavailable sources explain limits and do not issue open requests',()=>{
   const f=fixture();try{
     const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);

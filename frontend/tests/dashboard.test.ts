@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {dayKey, eventTime, measured, monthDays, safeColor, shouldAmbient} from '../src/dashboard_state.ts';
+import {continueWatchingItems,dayKey, eventTime, measured, monthDays, safeColor, shouldAmbient} from '../src/dashboard_state.ts';
 
 test('calendar uses Monday weeks and includes leap day without duplicate dates', () => {
   const days = monthDays(2028, 1);
@@ -26,4 +26,15 @@ test('missing statistics and calendar color input never become fabricated values
   assert.equal(measured(0), '0.00 с');
   assert.equal(safeColor('url(https://example.com)'), '#a990da');
   assert.equal(safeColor('#a1B2c3'), '#a1B2c3');
+});
+test('home resume rail sorts saved progress, skips completed movies and advances completed series',()=>{
+  const episode=(id:string,watched:number,last_viewed:string|null,position=122)=>({id,title_id:'t',season:1,episode:1,position,duration:4324,watched,last_viewed,last_link_id:null,links:[]});
+  const title=(id:string,kind:'movie'|'series',current:ReturnType<typeof episode>|null,episodes:ReturnType<typeof episode>[],status:'watching'|'planned'|'watched'='watching')=>({id,title:id,kind,year:0,poster_url:'',description:'',status,favorite:0,episodes,current});
+  const old=episode('old',0,'2026-11-07T10:00:00Z');
+  const finished=episode('finished',1,'2026-11-08T10:00:00Z',4324);
+  const next={...episode('next',0,null,0),season:1,episode:2};
+  const recent=episode('recent',0,'2026-11-09T10:00:00Z');
+  const rows=continueWatchingItems([title('old-title','movie',old,[old]),title('completed','movie',finished,[finished],'watched'),title('series','series',finished,[finished,next]),title('recent-title','movie',recent,[recent])] as any[]);
+  assert.deepEqual(rows.map(row=>row.item.id),['recent-title','series','old-title']);
+  assert.equal(rows[1].episode.id,'next');
 });

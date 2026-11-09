@@ -43,7 +43,7 @@ export function parsePlaybackTime(value:string):number {
   return value.trim().split(':').reduce((total,part)=>total*60+Number(part),0);
 }
 export function viewingProgress(episode:CinemaEpisode|null):number {return episode&&episode.duration>0?Math.min(100,Math.max(0,episode.position/episode.duration*100)):0;}
-export function episodeCaption(item:CinemaTitle,ep=item.current):string {return item.kind==='series'&&ep?`Сезон ${ep.season} · Серия ${ep.episode}`:'Фильм';}
+export function episodeCaption(item:CinemaTitle,ep=item.current):string {return item.kind==='series'&&ep?`Сезон ${ep.season} · Серия ${ep.episode} · ${playbackTime(ep.position)}`:'Фильм';}
 
 function el<K extends keyof HTMLElementTagNameMap>(tag:K,text='',className=''):HTMLElementTagNameMap[K] {const node=document.createElement(tag);node.textContent=text;node.className=className;return node;}
 const statuses={watching:'Смотрю',planned:'Хочу посмотреть',watched:'Просмотрено'};
@@ -84,8 +84,8 @@ export class CinemaView {
   private relatedSequence=0;
   private pendingDetailKey='';
   private sourceRequest='';
-  private dialog:HTMLDialogElement|null=null;
   private selectedLink:string|null=null;
+  private dialog:HTMLDialogElement|null=null;
   private search:HTMLInputElement;
   private sourceFilter='all';
   private dateFilter='';
@@ -212,6 +212,7 @@ export class CinemaView {
     const sort=this.select([['recent',this.tab==='watching'?'По последнему просмотру':'По дате добавления'],['rating','По моей оценке'],['title','По названию'],['year','По году выпуска']],this.librarySort);sort.onchange=()=>{this.librarySort=sort.value;this.render();};
     const layout=this.button(this.list?'Карточки':'Список',()=>{this.list=!this.list;this.render();});
     toolbar.append(types,this.field('Сортировка медиатеки',sort),layout,this.button('+ Добавить',()=>this.addForm()));section.append(toolbar);
+    if(this.tab==='watching')section.append(this.sectionHeading('Продолжить просмотр'));
     const filters=el('details','','cinema-display');filters.open=this.content.querySelector<HTMLDetailsElement>('.cinema-display')?.open??false;filters.append(el('summary','Поиск и фильтры'));
     const search=this.input(this.libraryQuery,'search');search.placeholder='Название в этом списке';search.onchange=()=>{this.libraryQuery=search.value;this.render();};filters.append(this.field('Поиск в списке',search));
     if(this.tab==='watched'){
@@ -414,6 +415,30 @@ export class CinemaView {
   private empty(message:string,label?:string,action?:()=>void):HTMLElement {const n=el('div','','cinema-empty');const symbol=el('span');symbol.innerHTML=icon('film');n.append(symbol,el('p',message));if(label&&action)n.append(this.button(label,action,'primary'));return n;}
   private poster(item:{title:string;poster_url:string;kind:string}):HTMLElement {const n=el('div','','cinema-poster');n.style.setProperty('--poster-hue',String([...item.title].reduce((sum,c)=>sum+c.charCodeAt(0),0)%360));if(item.poster_url){const image=el('img');image.src=item.poster_url;image.alt=`Постер: ${item.title}`;image.loading='lazy';image.decoding='async';image.referrerPolicy='no-referrer';image.onerror=()=>image.remove();n.append(image);}const placeholder=el('div','','cinema-poster-placeholder');const glyph=el('span');glyph.innerHTML=icon('film');placeholder.append(glyph,el('strong',item.title),el('small',item.kind==='series'?'СЕРИАЛ':'ФИЛЬМ'));n.append(placeholder);return n;}
   private progress(ep:CinemaEpisode|null):HTMLElement {const n=el('div','','cinema-progress');const p=el('progress');p.max=100;p.value=viewingProgress(ep);p.setAttribute('aria-label','Прогресс просмотра');n.append(p,el('span',`${Math.round(p.value)}%`));return n;}
+  private editProgress(item:CinemaTitle,ep=item.current):void {
+    const current=ep??item.episodes[0]??null;
+    const dialog=this.showDialog('Изменить прогресс');
+    const form=el('form');dialog.dataset.form='true';
+    const season=this.input(String(item.kind==='movie'?0:current?.season??1),'number');season.min='1';season.max='999';
+    const episode=this.input(String(item.kind==='movie'?0:current?.episode??1),'number');episode.min='1';episode.max='9999';
+    const hours=this.input(String(Math.floor((current?.position??0)/3600)),'number');hours.min='0';hours.max='999';
+    const minutes=this.input(String(Math.floor((current?.position??0)%3600/60)),'number');minutes.min='0';minutes.max='59';
+    const seconds=this.input(String(Math.floor((current?.position??0)%60)),'number');seconds.min='0';seconds.max='59';
+    const date=this.input(current?.last_viewed?.slice(0,10)??'','date');
+    const status=this.select([['unwatched','Не смотрела'],['watching','Смотрю'],['watched','Просмотрено']],current?.watched?'watched':current?.position?'watching':'unwatched');
+    if(item.kind==='series')form.append(this.field('Номер сезона',season),this.field('Номер серии',episode));
+    const time=el('div','','cinema-detail-choices');time.append(this.field('Часы',hours),this.field('Минуты',minutes),this.field('Секунды',seconds));
+    form.append(time,this.field('Статус',status),this.field('Дата последнего просмотра · необязательно',date));
+    const send=(reset=false)=>{
+      const pos=reset?0:Number(hours.value)*3600+Number(minutes.value)*60+Number(seconds.value);
+      const savedDate=reset?'':date.value;
+      this.request({op:'manual_progress',title_id:item.id,season:item.kind==='movie'?0:Number(season.value),episode:item.kind==='movie'?0:Number(episode.value),position:pos,duration:current?.duration??0,status:reset?'unwatched':status.value,last_viewed:savedDate});
+    };
+    const actions=el('div','','cinema-actions');const save=this.button('Сохранить прогресс',()=>{},'primary');save.type='submit';
+    actions.append(save,this.button('Сбросить прогресс',()=>send(true)),this.button('Отмена',()=>this.closeDialog()));form.append(actions);
+    form.onsubmit=e=>{e.preventDefault();if(!form.reportValidity())return;try{send();}catch(error){form.append(el('p',String((error as Error).message),'cinema-form-error'));}};
+    dialog.append(el('p',item.title,'cinema-muted'),form);
+  }
   private card(item:CinemaTitle,wide=false):HTMLElement {
     const card=el('article','',wide?'cinema-card cinema-wide':'cinema-card');card.dataset.titleId=item.id;
     const poster=this.button(`Открыть ${item.title}`,()=>this.detail(item.id),'cinema-poster-button');poster.replaceChildren(this.poster(item));poster.setAttribute('aria-label',`Открыть ${item.title}`);
@@ -422,7 +447,8 @@ export class CinemaView {
     const ratings=el('div','','cinema-ratings');ratings.append(el('span',item.metadata?.rating?`★ ${item.metadata.rating.toFixed(1)}`:'TMDB —','cinema-tmdb-rating'));
     if(item.user_rating)ratings.append(el('span',`★ ${item.user_rating.toFixed(1)}`,'cinema-personal-rating'));body.append(ratings,el('small',item.status==='planned'&&item.watchlist===0?'':statuses[item.status],'cinema-library-badge'));
     if(wide||item.kind==='series')body.append(el('small',episodeCaption(item)));
-    if(wide||item.status==='watching'){body.append(this.progress(item.current),el('small',`${playbackTime(item.current?.position??0)} из ${item.current?.duration?playbackTime(item.current.duration):'—'}`));}
+    if(wide||item.kind==='series'||item.status==='watching'||(item.current?.position??0)>0){body.append(this.progress(item.current),el('small',`${playbackTime(item.current?.position??0)} из ${item.current?.duration?playbackTime(item.current.duration):'—'}`));}
+    body.append(this.button('✎ Изменить прогресс',()=>this.editProgress(item,item.current)));
     card.append(artwork,body);return card;
   }
 
@@ -431,6 +457,13 @@ export class CinemaView {
     if(linkId||device==='airplay'){this.request({op:'open',title_id:item.id,episode_id:ep?.id,link_id:linkId,device});return;}
     const target=this.watchTarget(item,`Смотреть · ${item.title}`);if(target.tagName==='DIALOG')target.classList.add('cinema-compact-search');const progress=el('p',item.kind==='series'?'Ищем сериал…':'Ищем фильм…','cinema-loading');progress.dataset.watchProgress='';progress.setAttribute('role','status');target.append(progress,el('p',episodeCaption(item,ep),'cinema-muted'),this.button('Карточка и прогресс',()=>this.detail(item.id,ep?.id)));
     this.sourceRequest=`watch-${++this.sourceSequence}`;this.request({op:'watch',title_id:item.id,episode_id:ep?.id,request_id:this.sourceRequest});
+  }
+  resumeFromDashboard(titleId:string,episodeId:string,edit=false):void {
+    const item=this.data?.items.find(value=>value.id===titleId);
+    const episode=item?.episodes.find(value=>value.id===episodeId);
+    if(!item||!episode)return;
+    if(edit){this.editProgress(item,episode);return;}
+    this.open(item,episode);
   }
   private showDialog(title:string,form=false):HTMLDialogElement {
     this.closeDialog();this.sourceRequest='';
@@ -494,7 +527,7 @@ export class CinemaView {
   private detail(id:string,episodeId?:string,linkId?:string):void {
     const item=this.data?.items.find(v=>v.id===id);if(!item)return;
     const ep=item.episodes.find(v=>v.id===episodeId)??item.current;if(!ep)return;
-    const link=ep.links.find(v=>v.id===(linkId??ep.last_link_id))??ep.links[0];this.selectedLink=link?.id??null;
+    const link=ep.links.find(v=>v.id===(linkId??ep.last_link_id))??ep.links[0];
     const dialog=this.showDialog(item.title);dialog.dataset.titleId=id;dialog.dataset.episodeId=ep.id;this.request({op:'focus',id});const summary=el('div','','cinema-detail-summary');summary.append(this.poster(item),el('p',item.description||`${item.kind==='series'?'Сериал':'Фильм'}${item.year?` · ${item.year}`:''}. Прогресс сохраняется отдельно для каждой серии.`));dialog.append(summary,el('p',this.metadata(item),'cinema-muted'));const ratings=el('div','','cinema-ratings');ratings.append(el('span',`TMDB: ${item.metadata?.rating?.toFixed(1)??'—'}/10`,'cinema-tmdb-rating'),el('span',`Моя оценка: ${item.user_rating??'—'}/10`,'cinema-personal-rating'));dialog.append(ratings,this.detailFavorite(item));const rating=this.select([['','Без оценки'],...Array.from({length:19},(_,i)=>[String(1+i*.5),`${1+i*.5}/10`] as [string,string])],String(item.user_rating??''));rating.dataset.personalRating='';rating.onchange=()=>this.request({op:'update',id,values:{user_rating:rating.value?Number(rating.value):null}});dialog.append(this.field('Моя оценка',rating));
     const choices=el('div','','cinema-detail-choices');const seasons=[...new Set([...item.episodes.map(v=>v.season),...(item.metadata?.seasons.map(v=>v.season)??[])])].sort((a,b)=>a-b);
     if(item.kind==='series'){
@@ -502,12 +535,13 @@ export class CinemaView {
       const episode=this.select(item.episodes.filter(v=>v.season===ep.season).map(v=>[v.id,`Серия ${v.episode}${v.name?` · ${v.name}`:''}${v.watched?' · ✓':''}`]),ep.id);episode.onchange=()=>this.detail(id,episode.value);choices.append(this.field('Сезон',season),this.field('Серия',episode));if(item.catalogue_key?.startsWith('tmdb:'))choices.append(this.button('Загрузить серии сезона',()=>this.request({op:'season',id,season:Number(season.value)})));
     }
     const source=this.select([...new Map(ep.links.map(v=>[v.source_id,v.source_name])).entries()],link?.source_id??'');source.onchange=()=>this.detail(id,ep.id,ep.links.find(v=>v.source_id===source.value)?.id);
-    const voice=this.select(ep.links.filter(v=>v.source_id===link?.source_id).map(v=>[v.id,v.voice||'Озвучка сайта']),link?.id??'');voice.onchange=()=>{this.selectedLink=voice.value;};choices.append(this.field('Источник',source),this.field('Озвучка',voice));dialog.append(choices);
+    const voice=this.select(ep.links.filter(v=>v.source_id===link?.source_id).map(v=>[v.id,v.voice||'Озвучка сайта']),link?.id??'');choices.append(this.field('Источник',source),this.field('Озвучка',voice));dialog.append(choices);
     const status=this.select(Object.entries(statuses),item.status);status.dataset.status='';status.onchange=()=>this.request({op:'update',id,values:{status:status.value}});dialog.append(this.button('Удалить из медиатеки',()=>this.deleteTitle(item)),this.field('Статус',status),this.progress(ep),el('p',`${episodeCaption(item,ep)} · ${playbackTime(ep.position)} из ${ep.duration?playbackTime(ep.duration):'—'}`));
     const devices=this.select((this.data?.devices??[]).filter(d=>d.id==='mac'||d.id==='airplay').map(d=>[d.id,d.name+(d.available?'':' · недоступно')]),this.data?.preferences.devices[this.data.location]??'mac');const location=this.data?.location??'general';
     devices.onchange=()=>{this.request({op:'preferences',values:{devices:{...this.data?.preferences.devices,[location]:devices.value}}});reason.textContent=this.data?.devices.find(d=>d.id===devices.value)?.reason??'';};const reason=el('p',this.data?.devices.find(d=>d.id===devices.value)?.reason??'','cinema-muted');dialog.append(this.field(`Устройство · ${{home:'Дом',dorm:'Общага',general:'Общий'}[location]??location}`,devices),reason);
     const actions=el('div','','cinema-actions');actions.append(this.button('Найти и смотреть',()=>this.findSources(item,ep),'primary'),this.button('▶ Продолжить просмотр',()=>this.open(item,ep,undefined,devices.value)),this.button('Следующая серия',()=>{const next=item.episodes[item.episodes.findIndex(v=>v.id===ep.id)+1];if(next){this.detail(item.id,next.id);this.open(item,next);}else this.feedback.textContent='Следующая серия ещё не добавлена. Укажи её страницу.';}),this.button('Добавить серию / источник',()=>this.addForm(item,undefined,ep)));dialog.append(actions);
-    const manual=el('details');manual.append(el('summary','Изменить прогресс вручную'));const form=el('form','','cinema-detail-choices');const position=this.input(playbackTime(ep.position));const duration=this.input(playbackTime(ep.duration));const watched=this.input('','checkbox');watched.checked=!!ep.watched;form.append(this.field('Позиция · мин:сек',position),this.field('Длительность · мин:сек',duration),this.field('Серия просмотрена',watched));const save=this.button('Сохранить прогресс',()=>{});save.type='submit';form.append(save);form.onsubmit=e=>{e.preventDefault();try{dialog.dataset.form='true';this.request({op:'progress',episode_id:ep.id,position:parsePlaybackTime(position.value),duration:parsePlaybackTime(duration.value),watched:watched.checked,link_id:this.selectedLink});}catch(error){const message=el('p',String((error as Error).message),'cinema-form-error');form.append(message);}};manual.append(form);dialog.append(manual);
+    const resume=el('section','','cinema-resume-detail');resume.append(this.sectionHeading('Продолжить просмотр'),el('p',episodeCaption(item,ep),'cinema-muted'),this.progress(ep));const resumeActions=el('div','','cinema-actions');resumeActions.append(this.button('▶ Продолжить просмотр',()=>this.open(item,ep,undefined,devices.value),'primary'),this.button('✎ Быстро изменить позицию',()=>this.editProgress(item,ep)));resume.append(resumeActions);dialog.append(resume);
+    const manual=el('details');manual.append(el('summary','Быстро скорректировать позицию'));const form=el('form','','cinema-detail-choices');const position=this.input(playbackTime(ep.position));const duration=this.input(playbackTime(ep.duration));const watched=this.input('','checkbox');watched.checked=!!ep.watched;form.append(this.field('Позиция · мин:сек',position),this.field('Длительность · мин:сек',duration),this.field('Серия просмотрена',watched));const save=this.button('Сохранить прогресс',()=>{});save.type='submit';form.append(save);form.onsubmit=e=>{e.preventDefault();try{dialog.dataset.form='true';this.request({op:'progress',episode_id:ep.id,position:parsePlaybackTime(position.value),duration:parsePlaybackTime(duration.value),watched:watched.checked,link_id:this.selectedLink});}catch(error){form.append(el('p',String((error as Error).message),'cinema-form-error'));}};manual.append(form);dialog.append(manual);
     dialog.append(el('p','HTML5: доступное видео на странице или в iframe того же сайта. Чужие iframe, защита и запрет автоматизации могут потребовать ручного режима.','cinema-muted'));
     this.richDetail(dialog,item);
     if(item.catalogue_key?.startsWith('tmdb:')&&this.data?.tmdb?.configured&&!this.detailRequests.has(item.id)){this.detailRequests.add(item.id);this.request({op:'title_details',id:item.id});}

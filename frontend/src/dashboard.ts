@@ -1,6 +1,7 @@
 import type { HudEvent, WeatherEvent } from './types';
 import type { Character } from './character';
-import { eventTime, measured, monthDays, safeColor, shouldAmbient, type AmbientSettings, type CalendarCard, type ConversationItem, type DashboardData, type DashboardStats } from './dashboard_state';
+import type { CinemaTitle } from './cinema';
+import { continueWatchingItems, eventTime, measured, monthDays, safeColor, shouldAmbient, type AmbientSettings, type CalendarCard, type ConversationItem, type DashboardData, type DashboardStats } from './dashboard_state';
 import { phaseLabels } from './workspace_state';
 
 const node = (id: string) => document.getElementById(id)!;
@@ -65,11 +66,13 @@ export class DashboardView {
   private editSave: ((value: string) => void) | null = null;
   private nativeBusy = false;
   private battery = false;
+  private cinemaItems: CinemaTitle[] = [];
   hasLocation = false;
 
   constructor(private post: (value: object) => void, private chat: (value: {text: string; speak?: boolean}) => void,
     private navigate: (view: string) => void, private search: (value: object) => void, private character: Character,
-    private weather: (value: WeatherEvent) => void) {
+    private weather: (value: WeatherEvent) => void,
+    private resumeCinema: (titleId: string, episodeId: string, edit?: boolean) => void) {
     this.icons();
     document.querySelectorAll<HTMLButtonElement>('.workspace-nav button[data-view]').forEach(control => { const label = control.querySelector('span:not([data-icon])')?.textContent ?? control.textContent ?? 'Раздел'; control.setAttribute('aria-label', label.trim()); control.title = label.trim(); });
     document.addEventListener('click', event => this.click(event));
@@ -134,6 +137,7 @@ export class DashboardView {
     if (event.type === 'voice_settings') {this.microphone=event.microphone;this.status(this.currentStatus);}
     else if(event.type==='session' && event.active && event.listening && !this.busy){this.status(event.recording===false?'Ожидает продолжение':'Слушает');}
     else if (event.type === 'dashboard') { this.data = event; this.hasLocation = !!event.location.city; this.render(); }
+    else if (event.type === 'cinema') { this.cinemaItems = event.items; this.renderCinemaProgress(); }
     else if (event.type === 'dashboard_stats') this.renderStats(event);
     else if (event.type === 'dashboard_calendar') { this.selected = event.date; this.renderEvents(node('calendar-events'), event); node('calendar-selected-title').textContent = this.dateLabel(event.date); this.renderMonth(); }
     else if (event.type === 'history') this.renderRecent(event.conversations);
@@ -197,6 +201,36 @@ export class DashboardView {
       (node('ambient-battery') as HTMLInputElement).checked = data.settings.reduce_on_battery;
     }
     this.controls();
+    this.renderCinemaProgress();
+  }
+  private renderCinemaProgress(): void {
+    const target = document.querySelector<HTMLElement>('.home-resume');
+    if (!target) return;
+    const items = continueWatchingItems(this.cinemaItems);
+    const heading = target.querySelector('.home-card-title');
+    if (!heading) return;
+    let rail = target.querySelector<HTMLElement>('.home-resume-items');
+    if (!rail) { rail = el('div', '', 'home-resume-items'); target.append(rail); }
+    rail.replaceChildren();
+    if (!items.length) {
+      const empty = el('p', 'Прогресс появится здесь после просмотра из медиатеки.');
+      const open = button('Открыть медиатеку ›', () => this.navigate('cinema'), 'text-button');
+      rail.append(empty, open); return;
+    }
+    for (const {item, episode} of items) {
+      const card = el('article', '', 'home-resume-item');
+      const poster = el('img') as HTMLImageElement; poster.alt = ''; poster.loading = 'lazy';
+      if (item.poster_url) poster.src = item.poster_url;
+      const details = el('div', '', 'home-resume-details');
+      details.append(el('strong', item.title), el('small', item.kind === 'series' ? `Сезон ${episode.season} · серия ${episode.episode}` : 'Фильм'));
+      const percent = episode.duration > 0 ? Math.min(100, episode.position / episode.duration * 100) : 0;
+      const progress = document.createElement('progress'); progress.max = 100; progress.value = percent; progress.setAttribute('aria-label', `Просмотрено ${Math.round(percent)}%`);
+      const playbackTime = (seconds: number) => { const total=Math.max(0,Math.floor(seconds)); const tail=`${String(Math.floor(total/60)%60).padStart(2,'0')}:${String(total%60).padStart(2,'0')}`; return total>=3600?`${Math.floor(total/3600)}:${tail}`:`${Math.floor(total/60)}:${String(total%60).padStart(2,'0')}`; };
+      details.append(progress, el('small', `${playbackTime(episode.position)} из ${playbackTime(episode.duration)}`));
+      const actions = el('div', '', 'home-resume-actions');
+      actions.append(button('Продолжить', () => this.resumeCinema(item.id, episode.id), 'primary'), button('Изменить прогресс', () => this.resumeCinema(item.id, episode.id, true), 'text-button'));
+      card.append(poster, details, actions); rail.append(card);
+    }
   }
   private renderRecent(conversations: ConversationItem[]): void {
     const target = node('recent-conversations');

@@ -9,6 +9,7 @@ import secrets
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -810,6 +811,26 @@ class Cinema:
                         "manual",
                         value.get("link_id"),
                         value.get("watched"),
+                    )
+            elif op == "manual_progress":
+                async with self.lock:
+                    if self.session:
+                        active = self.session["target"]
+                        same = active["item"]["id"] == value["title_id"] and (
+                            active["episode"]["season"],
+                            active["episode"]["episode"],
+                        ) == (value.get("season", 0), value.get("episode", 0))
+                        if same:
+                            await self.stop_tracking(flush=False)
+                    result = await self.db(
+                        "manual_progress",
+                        value["title_id"],
+                        value.get("season", 0),
+                        value.get("episode", 0),
+                        value["position"],
+                        value.get("duration", 0),
+                        value["status"],
+                        value.get("last_viewed") or None,
                     )
             elif op == "preferences":
                 prefs = value["values"]
@@ -1683,6 +1704,74 @@ class Cinema:
         if parsed is None:
             raise ToolError("Уточни команду кинотеки.")
         action = parsed["action"]
+        if action in {"set_progress", "complete_episode", "reset_progress", "continue_title"}:
+            library = await self.db("library")
+            title = parsed.get("title", "").strip()
+            if title:
+                matches = [item for item in library if item["title"].casefold() == title.casefold()]
+            else:
+                identifier = self.session["target"]["item"]["id"] if self.session else self.focused
+                matches = (
+                    [item for item in library if item["id"] == identifier] if identifier else []
+                )
+            if len(matches) != 1:
+                raise ToolError(
+                    "Уточни название сериала: не удалось однозначно определить открытую карточку."
+                )
+            item = matches[0]
+            if action == "continue_title":
+                return await self.resume(item["id"])
+            season, episode_number = (
+                (item["current"]["season"], item["current"]["episode"])
+                if item.get("current")
+                else (1, 1)
+            )
+            if action in {"set_progress", "complete_episode"}:
+                season, episode_number = parsed["season"], parsed["episode"]
+            existing = next(
+                (
+                    ep
+                    for ep in item["episodes"]
+                    if (ep["season"], ep["episode"]) == (season, episode_number)
+                ),
+                None,
+            )
+            status = (
+                "watching"
+                if action == "set_progress"
+                else "watched"
+                if action == "complete_episode"
+                else "unwatched"
+            )
+            position = parsed.get("position", (existing or {}).get("position", 0))
+            if status == "watched":
+                position = (existing or {}).get("duration", 0) or (existing or {}).get(
+                    "position", 0
+                )
+            if self.session and self.session["target"]["item"]["id"] == item["id"]:
+                if (
+                    self.session["target"]["episode"]["season"],
+                    self.session["target"]["episode"]["episode"],
+                ) == (season, episode_number):
+                    await self.stop_tracking(flush=False)
+            saved = await self.db(
+                "manual_progress",
+                item["id"],
+                season,
+                episode_number,
+                position,
+                (existing or {}).get("duration", 0),
+                status,
+                datetime.now(UTC).date().isoformat() if status != "unwatched" else None,
+            )
+            await self.publish(saved=saved["id"])
+            return {
+                "message": (
+                    f"Прогресс «{item['title']}»: сезон {season}, серия {episode_number}, "
+                    f"{int(position // 60)} мин {int(position % 60)} с."
+                ),
+                "result_status": "success",
+            }
         if action == "trailer":
             if parsed.get("title"):
                 matches = [
