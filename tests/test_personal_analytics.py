@@ -102,6 +102,14 @@ def test_tallinn_midnight_and_dst_are_calendar_based():
     )
     assert datetime.fromtimestamp(start, __import__("zoneinfo").ZoneInfo("Europe/Tallinn")).day == 5
     assert end - start == 86400
+    start, end, previous = period_bounds(
+        {"period": "90days"}, "Europe/Tallinn", datetime.fromisoformat("2026-11-09T12:00:00+02:00")
+    )
+    zone = __import__("zoneinfo").ZoneInfo("Europe/Tallinn")
+    assert (
+        datetime.fromtimestamp(end, zone).date() - datetime.fromtimestamp(start, zone).date()
+    ).days == 90
+    assert start - previous == 90 * 86400
 
 
 def test_bounded_queue_drops_instead_of_blocking_voice(tmp_path):

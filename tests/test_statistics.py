@@ -172,3 +172,20 @@ def test_month_and_year_bucket_resolution_and_all_requests_available(tmp_path):
         assert filtered["dashboard"]["metrics"]["requests"] == 0
     finally:
         store.close()
+
+
+def test_ninety_day_and_all_time_ranges_include_saved_history(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    try:
+        save_trace(store, "old", "2024-01-02T12:00:00+00:00")
+        save_trace(store, "recent", "2026-11-09T10:00:00+00:00")
+        ninety = store.performance.statistics(90, "UTC")
+        assert ninety["dashboard"]["unit"] == "day"
+        assert len(ninety["dashboard"]["buckets"]) == 90
+        all_time = store.performance.statistics(-2, "UTC")
+        assert all_time["dashboard"]["unit"] == "month"
+        assert all_time["dashboard"]["metrics"]["requests"] == 2
+        assert all_time["dashboard"]["buckets"][0]["key"] == "2024-01"
+        assert all_time["dashboard"]["previous"]["requests"] == 0
+    finally:
+        store.close()

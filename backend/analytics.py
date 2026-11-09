@@ -52,14 +52,18 @@ def percentile(values, quantile):
     return values[max(0, math.ceil(len(values) * quantile) - 1)] if values else None
 
 
-def period_bounds(value, timezone, now=None):
+def period_bounds(value, timezone, now=None, oldest=None):
     zone = ZoneInfo(timezone)
     now = now or datetime.now(zone)
     today = now.astimezone(zone).date()
-    days = {"today": 1, "week": 7, "month": 30}
+    days = {"today": 1, "week": 7, "month": 30, "90days": 90}
     if value.get("period", "today") in days:
         count = days[value.get("period", "today")]
         start_day, end_day = today - timedelta(days=count - 1), today + timedelta(days=1)
+    elif value.get("period") == "all":
+        start_day = datetime.fromtimestamp(oldest, zone).date() if oldest is not None else today
+        end_day = today + timedelta(days=1)
+        count = (end_day - start_day).days
     elif value.get("period") == "custom":
         start_day = datetime.strptime(value.get("start", ""), "%Y-%m-%d").date()
         end_day = datetime.strptime(value.get("end", ""), "%Y-%m-%d").date() + timedelta(days=1)
@@ -70,6 +74,8 @@ def period_bounds(value, timezone, now=None):
         raise ValueError("Неизвестный период.")
     start = datetime.combine(start_day, wall_time(), zone).timestamp()
     end = datetime.combine(end_day, wall_time(), zone).timestamp()
+    if value.get("period") == "all":
+        return start, end, start
     previous = datetime.combine(start_day - timedelta(days=count), wall_time(), zone).timestamp()
     return start, end, previous
 
@@ -343,6 +349,12 @@ class Analytics(Center):
             )
         return result
 
+    def oldest_event(self):
+        if self.query.get("period") != "all":
+            return None
+        row = self.store.db.execute("SELECT MIN(timestamp) FROM analytics_events").fetchone()
+        return row[0] if row else None
+
     def aggregate(self, events):
         requests = [r for r in events if r["event_type"] == "assistant.request"]
         latencies = [
@@ -425,7 +437,9 @@ class Analytics(Center):
         }
 
     def snapshot(self):
-        start, end, previous = period_bounds(self.query, self.s.location.tz_name)
+        start, end, previous = period_bounds(
+            self.query, self.s.location.tz_name, oldest=self.oldest_event()
+        )
         device = self.query.get("device", "")
         result = self.aggregate(self.events(start, end, device))
         before = self.aggregate(self.events(previous, start, device))
@@ -484,7 +498,12 @@ class Analytics(Center):
                 )
         elif op == "query":
             query = {k: value[k] for k in ("period", "start", "end", "device") if k in value}
-            period_bounds(query, self.s.location.tz_name)
+            oldest = (
+                self.store.db.execute("SELECT MIN(timestamp) FROM analytics_events").fetchone()[0]
+                if query.get("period") == "all"
+                else None
+            )
+            period_bounds(query, self.s.location.tz_name, oldest=oldest)
             self.query = query
         elif op == "clear":
             self.store._require_memory()
@@ -496,7 +515,9 @@ class Analytics(Center):
         elif op == "export":
             if value.get("format", "json") not in {"csv", "json"}:
                 raise ValueError("Доступен экспорт CSV или JSON.")
-            start, end, _ = period_bounds(self.query, self.s.location.tz_name)
+            start, end, _ = period_bounds(
+                self.query, self.s.location.tz_name, oldest=self.oldest_event()
+            )
             events = self.events(start, end, self.query.get("device", ""))
             if value.get("format") == "csv":
                 output = io.StringIO()

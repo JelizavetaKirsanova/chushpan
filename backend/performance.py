@@ -150,7 +150,11 @@ class PerformanceHistory:
 
     def statistics(self, days, timezone, filters=None):
         filters = filters or {}
-        bounds = period_range(days, timezone, filters)
+        oldest = None
+        if days == -2:
+            row = self.store.db.execute("SELECT MIN(created_at) FROM request_traces").fetchone()
+            oldest = row[0] if row else None
+        bounds = period_range(days, timezone, filters, oldest=oldest)
         start, end, before_start, before_end = bounds
         since, until = start.astimezone(UTC).isoformat(), end.astimezone(UTC).isoformat()
         rows = [

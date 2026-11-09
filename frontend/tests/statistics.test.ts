@@ -66,11 +66,11 @@ test('every tab is reachable, traces open and diagnostics remain disclosed',()=>
 
 test('global periods include validated custom dates and reset stale visible numbers',()=>{
   const f=fixture();try{
-    f.view.connection(true);f.view.receive(data());f.click('Год');assert.equal(f.queries.at(-1)[0],365);
+    f.view.connection(true);f.view.receive(data());f.click('90 дней');assert.equal(f.queries.at(-1)[0],90);f.click('Всё время');assert.equal(f.queries.at(-1)[0],-2);
     assert.doesNotMatch(f.window.document.querySelector('.statistics-kpis')!.textContent,/1[,.]20/);
     f.click('Произвольный период');
     const start=f.window.document.querySelector<HTMLInputElement>('[aria-label="Начало периода"]')!;const end=f.window.document.querySelector<HTMLInputElement>('[aria-label="Конец периода"]')!;
-    start.value='2026-11-05';end.value='2026-11-01';f.click('Применить');assert.equal(f.queries.length,1);assert.match(f.window.document.querySelector('.statistics-status')!.textContent,/раньше конца/);
+    start.value='2026-11-05';end.value='2026-11-01';f.click('Применить');assert.equal(f.queries.length,2);assert.match(f.window.document.querySelector('.statistics-status')!.textContent,/раньше конца/);
     start.value='2026-11-01';end.value='2026-11-05';f.click('Применить');assert.deepEqual(f.queries.at(-1),[-1,'2026-11-01','2026-11-05']);
     f.view.connection(false);assert.ok([...f.window.document.querySelectorAll<HTMLButtonElement>('.statistics-periods button')].every(b=>b.disabled));
   }finally{f.window.happyDOM.abort();}

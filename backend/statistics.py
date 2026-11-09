@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 
-def period_range(days, timezone, filters=None, now=None):
+def period_range(days, timezone, filters=None, now=None, oldest=None):
     zone = ZoneInfo(timezone)
     now = (now or datetime.now(UTC)).astimezone(zone)
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -18,16 +18,30 @@ def period_range(days, timezone, filters=None, now=None):
             raise ValueError("Выбери от 1 до 366 дней.")
     elif days == 0:
         start, end = now - timedelta(hours=1), now
-    elif days in {1, 7, 30, 365}:
+    elif days in {1, 7, 30, 90, 365}:
         start, end = midnight - timedelta(days=days - 1), now
+    elif days == -2:
+        if oldest:
+            start = (
+                datetime.fromisoformat(oldest)
+                .astimezone(zone)
+                .replace(hour=0, minute=0, second=0, microsecond=0)
+            )
+        else:
+            start = midnight
+        end = now
     else:
         raise ValueError("Неизвестный период.")
     # Compare equal local-calendar windows (including DST), up to the same time of day.
     shift = (
         timedelta(hours=1)
         if days == 0
+        else timedelta(0)
+        if days == -2
         else timedelta(days=((end.date() - start.date()).days if days == -1 else days))
     )
+    if days == -2:
+        return start, end, end, end
     return start, end, start - shift, end - shift
 
 
@@ -129,7 +143,7 @@ def dashboard(db, traces, previous, bounds, timezone):
         }
 
     span = ((end - timedelta(microseconds=1)).date() - start.date()).days + 1
-    unit = "hour" if span <= 1 else "month" if span > 62 else "day"
+    unit = "hour" if span <= 1 else "month" if span > 90 else "day"
 
     def key(at):
         return at.strftime({"hour": "%Y-%m-%dT%H", "day": "%Y-%m-%d", "month": "%Y-%m"}[unit])
