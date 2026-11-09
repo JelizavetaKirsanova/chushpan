@@ -14,12 +14,13 @@
   <body>
     <div class="hud" data-state="offline" data-view="home">
       <p id="dashboard-feedback" class="dashboard-feedback" role="status" hidden></p>
-      <nav class="workspace-nav" aria-label="Разделы приложения"><div class="nav-brand"><span class="nav-avatar"><img src="/assets/chushpan-icon.png" width="39" height="39" alt="Логотип Чушпана"></span><strong>Мой Чушпан <i>♡</i></strong></div>
-      <button data-view="home" aria-current="page"><span data-icon="chat"></span><span>Чат</span><kbd>⌘1</kbd></button>
+      <nav class="workspace-nav" aria-label="Разделы приложения"><div class="nav-brand"><span class="nav-avatar" data-icon="activity" aria-hidden="true"></span><strong>Чушпан<small>Твой голосовой ассистент</small></strong></div>
+      <button data-view="home" aria-current="page"><span data-icon="grid"></span><span>Главная</span><kbd>⌘1</kbd></button>
+      <button data-go="history"><span data-icon="chat"></span><span>Чат</span><kbd>⌘2</kbd></button>
       <button data-view="automations"><span data-icon="sparkles"></span><span>Сценарии</span></button>
       <button data-view="devices"><span data-icon="lamp"></span><span>Устройства</span></button>
       <button data-view="lighting"><span data-icon="lamp"></span><span>Освещение</span></button>
-      <button data-view="cinema"><span data-icon="film"></span><span>Кино</span></button>
+      <button data-view="cinema"><span data-icon="film"></span><span>Медиатека</span></button>
       <button data-view="memory"><span data-icon="note"></span><span>Память</span></button>
       <button data-view="mac-control"><span data-icon="monitor"></span><span>Управление Mac</span></button>
       <button data-view="my-devices"><span data-icon="link"></span><span>Мои устройства</span></button>
@@ -30,7 +31,24 @@
 
       <div class="backdrop" aria-hidden="true"></div><header class="top"><div class="brand"><b id="name">ЧУШПАН</b><span id="model"></span></div><div class="clock"><span id="time">--:--</span><span id="date"></span></div><div class="status" role="status" aria-live="polite"><span class="dot"></span><span id="state-label">Подключение</span></div></header>
       <nav class="chat-navigation" aria-label="Разговоры и день"><button data-go="history">История</button><button data-go="calendar">Календарь</button><button data-go="day">Новости</button><button data-action="new-chat" aria-label="Новый разговор">+</button></nav>
-      <main class="stage"><div class="room-art" role="img" aria-label="Уютная комната с видом на вечерний Таллин"></div><canvas id="core" hidden></canvas><div class="caption"><p id="greeting">Привет ♡</p><h1 id="caption-state" class="caption-state">Я рядом</h1><p id="caption-hint"></p><p id="session-status" class="session-meta"></p><p id="session-interrupted" hidden>Предыдущий ответ прерван.</p><p id="recipient-status" class="sr-only"></p><div id="tool" class="tool"></div></div><div id="character" class="character"></div><div class="ambient-glance"><div id="ambient-weather"></div><div id="ambient-event"></div></div><button id="ambient-exit" class="ambient-exit" data-action="ambient-exit">Вернуться к разговору</button><small class="room-signature">МАЛЕНЬКИЙ УГОЛОК СПОКОЙСТВИЯ</small></main>
+      <main class="stage"><div class="room-art" role="img" aria-label="Уютная комната с видом на вечерний Таллин"></div><canvas id="core" hidden></canvas><div class="caption"><p id="greeting">Привет ♡</p><h1 class="home-invitation">Чем займёмся?</h1><p id="caption-state" class="caption-state">Я рядом</p><p id="caption-hint"></p><p id="session-status" class="session-meta"></p><p id="session-interrupted" hidden>Предыдущий ответ прерван.</p><p id="recipient-status" class="sr-only"></p><div id="tool" class="tool"></div></div><div id="character" class="character"></div>
+        <section class="home-dashboard" aria-label="Быстрый доступ и обзор">
+          <div class="home-shortcuts" aria-label="Быстрые действия">
+            <button data-go="cinema"><span data-icon="film"></span><span>Медиатека</span></button>
+            <button data-go="lighting"><span data-icon="lamp"></span><span>Освещение</span></button>
+            <button data-go="automations"><span data-icon="sparkles"></span><span>Сценарии</span></button>
+            <button data-go="mac-control"><span data-icon="monitor"></span><span>Управление Mac</span></button>
+            <button data-go="devices"><span data-icon="led"></span><span>Устройства</span></button>
+            <button data-go="memory"><span data-icon="note"></span><span>Память</span></button>
+            <button data-go="settings"><span data-icon="grid"></span><span>Ещё</span></button>
+          </div>
+          <article class="home-resume dashboard-card"><div class="home-card-title"><span data-icon="play"></span><h2>Продолжить просмотр</h2></div><p>Прогресс появится здесь после просмотра из медиатеки.</p><button data-go="cinema" class="text-button">Открыть медиатеку <span aria-hidden="true">›</span></button></article>
+          <div class="home-feature-pair">
+            <article class="home-feature dashboard-card"><div class="home-card-title"><span data-icon="led"></span><h2>Мои устройства</h2></div><p>Показываются только подтверждённые подключения и состояния.</p><button data-go="devices" class="text-button">Перейти к устройствам <span aria-hidden="true">›</span></button></article>
+            <article class="home-feature dashboard-card"><div class="home-card-title"><span data-icon="bolt"></span><h2>Быстрые сценарии</h2></div><p>Запускай сохранённые сценарии из их раздела.</p><button data-go="automations" class="text-button">Открыть сценарии <span aria-hidden="true">›</span></button></article>
+          </div>
+        </section>
+        <div class="ambient-glance"><div id="ambient-weather"></div><div id="ambient-event"></div></div><button id="ambient-exit" class="ambient-exit" data-action="ambient-exit">Вернуться к разговору</button><small class="room-signature">МАЛЕНЬКИЙ УГОЛОК СПОКОЙСТВИЯ</small></main>
       <section class="talk"><div class="talk-tools"><span id="talk-note" role="status"></span><button id="export" class="tool-button"></button></div><div class="transcript" id="transcript" aria-live="polite"></div></section>
       <form id="chat-composer" class="chat-composer"><button id="listen-control" type="button" class="mic-button" aria-label="Начать разговор"><span data-icon="mic"></span><span id="listen-control-label" class="sr-only">Начать разговор</span></button><button type="button" id="stop-response" class="tool-button" aria-label="Остановить ответ" disabled>■<span class="sr-only">Остановить ответ</span></button><textarea id="chat-input" rows="1" maxlength="4000" placeholder="Напиши мне что-нибудь…" aria-label="Сообщение Чушпану"></textarea><label class="speak-toggle" title="Озвучить ответ"><input id="chat-speak" type="checkbox"><span data-icon="volume"></span><span class="sr-only">Озвучить ответ</span></label><button type="submit" id="chat-send" class="send-button" aria-label="Отправить сообщение"><span data-icon="send"></span></button></form>
       <aside class="col right" aria-label="Мой день">
