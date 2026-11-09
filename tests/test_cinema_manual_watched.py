@@ -56,6 +56,47 @@ def test_progress_voice_routes():
     assert command("Продолжи Последнее королевство")["action"] == "continue_title"
 
 
+def test_manual_edit_invalidates_old_active_player_samples(tmp_path):
+    async def run():
+        memory = MemoryStore(tmp_path / "assistant.sqlite")
+        registry = ToolRegistry()
+        registry.mac_agent = LocalMacAgent()
+        cinema = Cinema(registry, Settings(data_dir=tmp_path / "data"), memory)
+        cinema.bind(HudBus(), SimpleNamespace(device=DeviceContext.local_mac()))
+        cinema.tavily_credentials.status = lambda: {"configured": False}
+        item = await cinema.db("add", {"title": "Сериал", "kind": "series"})
+        await cinema.db("season", item["id"], [{"season": 1, "episode": 1}])
+        episode = (await cinema.db("detail", item["id"]))["current"]
+        from backend.cinema.playback import PlaybackSource
+
+        cinema.playback.bind(
+            PlaybackSource("", item["id"], episode["id"], "", "", "safari", "unknown"),
+            target={"item": item, "episode": episode},
+            mode="html5",
+            token="old-session",
+            adapter=SimpleNamespace(),
+        )
+        cinema.stop_tracking = AsyncMock()
+        await cinema.handle(
+            {
+                "op": "manual_progress",
+                "title_id": item["id"],
+                "season": 1,
+                "episode": 1,
+                "position": 1965,
+                "duration": 2700,
+                "status": "watching",
+                "last_viewed": "2026-11-08",
+            }
+        )
+        cinema.stop_tracking.assert_awaited_once_with(flush=False)
+        assert (await cinema.db("detail", item["id"]))["current"]["position"] == 1965
+        await cinema.close()
+        memory.close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("kind", ["movie", "series"])
 def test_manual_toggle_survives_restart_and_keeps_episode_evidence(tmp_path, kind):
     path = tmp_path / "cinema.sqlite"
