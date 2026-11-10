@@ -36,15 +36,23 @@ try {
     await page.locator('.statistics-periods').getByRole('button',{name:label,exact:true}).click();
     await page.waitForFunction(()=>!document.querySelector('#statistics-root')?.hasAttribute('aria-busy'));
   }
-  assert.equal(await page.locator('.statistics-kpi').count(),4);
-  const requests=Number(await page.locator('.statistics-kpi').first().locator('strong').textContent());
-  assert.ok(Number.isFinite(requests));
+  await page.locator('.statistics-periods').getByRole('button',{name:'7 дней',exact:true}).click();
+  await page.waitForFunction(()=>!document.querySelector('#statistics-root')?.hasAttribute('aria-busy'));
+  assert.equal(await page.locator('.statistics-kpi').count(),1);
+  assert.match(await page.locator('.statistics-kpis').innerText(),/Средняя задержка ответа/);
+  assert.doesNotMatch(await page.locator('.statistics-kpis').innerText(),/Обращения к Чушпану|Выполненные команды|Успешные операции/);
+  const timing=(await page.locator('.statistics-kpi strong').textContent()).trim();
+  assert.match(timing,/\d+(?:[.,]\d+)?\s*с/);
   await page.screenshot({path:process.argv[5]});
   for(const label of ['Производительность','Разговоры','Команды','Сценарии','Приложения','Отчёты','Обзор']) {
     await page.locator('.statistics-tabs').getByRole('tab',{name:label,exact:true}).click();
     assert.equal(await page.locator('.statistics-tabs [aria-selected=true]').textContent(),label);
     assert.equal(await page.locator('#statistics-pane-performance').count(),1);
     assert.equal(await page.locator('#statistics-pane-performance').isVisible(),label==='Производительность');
+    if(label==='Обзор') {
+      assert.match(await page.locator('.statistics-content').innerText(),/Сбор событий выключен/);
+      assert.equal(await page.getByRole('button',{name:'Настроить сбор событий',exact:true}).count(),1);
+    }
   }
   await page.locator('.statistics-tabs').getByRole('tab',{name:'Производительность',exact:true}).click();
   await page.locator('#performance-sort').selectOption('slow');
@@ -58,7 +66,8 @@ try {
   await page.getByLabel('Конец периода',{exact:true}).fill('1901-01-01');
   await page.locator('.statistics-custom').getByRole('button',{name:'Применить',exact:true}).click();
   await page.locator('.statistics-tabs').getByRole('tab',{name:'Обзор',exact:true}).click();
-  await page.waitForFunction(()=>document.querySelector('.statistics-kpi strong')?.textContent==='0');
+  await page.waitForFunction(()=>!document.querySelector('#statistics-root')?.hasAttribute('aria-busy'));
+  assert.equal(await page.locator('.statistics-kpi').count(),1);
   assert.equal(await page.locator('.statistics-bars,.statistics-line-chart,.statistics-donut').count(),0);
   await page.screenshot({path:process.argv[5].replace('.png','-empty.png')});
   await page.locator('.workspace-nav [data-view=cinema]').click();
@@ -113,5 +122,5 @@ try {
     await page.locator('.workspace-nav [data-view=cinema]').click();
   }
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({browser:true,saved_requests:requests,periods:['7 дней','30 дней','90 дней','Всё время','Произвольный период'],catalogue_cards:count,all_tabs:true,filters:true,search:true,favorite:count>0,escape:true,no_overlays:true,widths:[1440,900,600,390],errors}));
+  console.log(JSON.stringify({browser:true,saved_timing:timing,periods:['7 дней','30 дней','90 дней','Всё время','Произвольный период'],catalogue_cards:count,all_tabs:true,filters:true,search:true,favorite:count>0,escape:true,no_overlays:true,widths:[1440,900,600,390],errors}));
 } finally {await browser.close();}
