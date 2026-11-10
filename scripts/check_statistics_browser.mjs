@@ -11,6 +11,8 @@ try {
   await page.locator('.workspace-nav [data-view=home]').click();
   const resume=page.locator('.home-resume-item').filter({hasText:'Закрытая школа'});
   await resume.waitFor();
+  assert.equal(await page.locator('.home-resume > p').filter({hasText:'Прогресс появится здесь'}).count(),0);
+  assert.equal(await page.locator('.home-resume > button').filter({hasText:'Открыть медиатеку'}).count(),0);
   assert.match(await resume.innerText(),/Сезон 1 · серия 1/);
   assert.match(await resume.innerText(),/2:02 из 1:12:04/);
   assert.ok(await resume.locator('img').getAttribute('src'));

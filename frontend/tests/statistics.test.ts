@@ -17,9 +17,9 @@ function fixture() {
   const click=(name:string)=>{const b=[...window.document.querySelectorAll('#statistics-root button')].find(b=>b.textContent===name);assert.ok(b,`Missing button: ${name}`);b.click();};
   return {window,view,queries,traces,click};
 }
-function data(count=2):any {
+function data(count=2,enabled=true):any {
   const times={stt:.3,llm:.7,tools:null,tts:1,total:3};
-  return {start:'2026-11-05T00:00:00+02:00',end:'2026-11-05T12:00:00+02:00',timezone:'Europe/Tallinn',unit:'hour',
+  return {start:'2026-11-05T00:00:00+02:00',end:'2026-11-05T12:00:00+02:00',timezone:'Europe/Tallinn',unit:'hour',collection_enabled:enabled,
     metrics:{requests:count,response_s:count?1.2:null,executed:count?1:0,success_pct:count?100:null,known_operations:count?1:0,unconfirmed_operations:0},
     previous:{requests:0,response_s:null,executed:0,success_pct:null,known_operations:0,unconfirmed_operations:0},
     buckets:[{key:'2026-11-05T10',label:'10:00',requests:count,latency:count?times:{stt:null,llm:null,tools:null,tts:null,total:null}}],
@@ -44,6 +44,21 @@ test('overview shows four honest KPIs, real charts and compact empty states',()=
     const series=[...f.window.document.querySelectorAll('.statistics-series button')];
     for(const b of series){const current=[...f.window.document.querySelectorAll('.statistics-series button')].find(n=>n.textContent===b.textContent)!;current.click();}
     assert.match(f.window.document.querySelector('.statistics-latency')!.textContent,/Все серии скрыты/);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('disabled event collection leaves timing KPI visible and hides usage summaries',()=>{
+  const f=fixture();try{
+    f.view.connection(true);f.view.receive(data(2,false));
+    assert.equal(f.window.document.querySelectorAll('.statistics-kpi').length,1);
+    assert.match(f.window.document.querySelector('.statistics-kpis')!.textContent,/Средняя задержка ответа/);
+    assert.doesNotMatch(f.window.document.querySelector('.statistics-kpis')!.textContent,/Обращения к Чушпану|Выполненные команды|Успешные операции/);
+    assert.match(f.window.document.querySelector('.statistics-content')!.textContent,/Сбор событий выключен/);
+    assert.match(f.window.document.querySelector('.statistics-content')!.textContent,/Настроить сбор событий/);
+    f.click('Сценарии');
+    assert.match(f.window.document.querySelector('.statistics-content')!.textContent,/Сбор событий выключен/);
+    f.click('Производительность');
+    assert.equal(f.window.document.getElementById('statistics-pane-performance')!.hidden,false);
   }finally{f.window.happyDOM.abort();}
 });
 

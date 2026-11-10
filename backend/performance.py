@@ -219,9 +219,15 @@ class PerformanceHistory:
             )
         ]
         previous = [trace for trace in previous if matches(trace)]
+        collection_enabled = bool(
+            (self.store.preference("analytics", "policy") or {}).get("enabled", False)
+        )
+        dashboard_data = dashboard(self.store.db, traces, previous, bounds, timezone)
+        dashboard_data["collection_enabled"] = collection_enabled
         return {
-            "dashboard": dashboard(self.store.db, traces, previous, bounds, timezone),
+            "dashboard": dashboard_data,
             "type": "performance_stats",
+            "collection_enabled": collection_enabled,
             "days": days,
             "filters": filters,
             "filter_options": options,

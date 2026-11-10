@@ -88,7 +88,14 @@ def test_trace_survives_restart_and_crash_stays_interrupted(tmp_path):
     try:
         assert reopened.performance.detail(p.request_id)["status"] == "completed"
         assert reopened.performance.detail(pending.request_id)["status"] == "interrupted"
-        assert reopened.performance.statistics(7, "Europe/Tallinn")["summary"]["count"] == 2
+        statistics = reopened.performance.statistics(7, "Europe/Tallinn")
+        assert statistics["summary"]["count"] == 2
+        assert statistics["collection_enabled"] is False
+        assert statistics["dashboard"]["collection_enabled"] is False
+        reopened.set_preference("analytics", "policy", {"enabled": True})
+        statistics = reopened.performance.statistics(7, "Europe/Tallinn")
+        assert statistics["collection_enabled"] is True
+        assert statistics["dashboard"]["collection_enabled"] is True
     finally:
         reopened.close()
 

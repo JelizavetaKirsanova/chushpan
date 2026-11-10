@@ -209,6 +209,8 @@ export class DashboardView {
     const items = continueWatchingItems(this.cinemaItems);
     const heading = target.querySelector('.home-card-title');
     if (!heading) return;
+    target.querySelector(':scope > p')?.remove();
+    target.querySelector(':scope > button')?.remove();
     let rail = target.querySelector<HTMLElement>('.home-resume-items');
     if (!rail) { rail = el('div', '', 'home-resume-items'); target.append(rail); }
     rail.replaceChildren();
