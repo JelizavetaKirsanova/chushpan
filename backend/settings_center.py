@@ -407,11 +407,20 @@ class SettingsCenter:
     async def openai_models(self, *, check=False):
         from backend.brain.openai_provider import OpenAIClient
 
-        client = OpenAIClient(self.s.openai, self.openai_keychain().read())
         try:
-            models = await client.check_connection() if check else await client.models()
-        finally:
-            await client.aclose()
+            client = OpenAIClient(self.s.openai, self.openai_keychain().read())
+            try:
+                models = await client.check_connection() if check else await client.models()
+            finally:
+                await client.aclose()
+        except Exception as exc:
+            self.model_status["openai"] = {
+                "status": "error",
+                "models": self.model_status.get("openai", {}).get("models", []),
+            }
+            message = str(exc)
+            self.publish(error=message if not contains_secret(message) else "Проверь настройки OpenAI.")
+            return
         self.model_status["openai"] = {
             "status": "connected",
             "models": models,

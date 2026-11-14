@@ -166,6 +166,11 @@ class OpenAIClient:
         except Exception as exc:
             status = getattr(exc, "status_code", None)
             param = getattr(getattr(exc, "body", None), "param", None)
+            body = getattr(exc, "body", None)
+            detail = body.get("error", {}) if isinstance(body, dict) else {}
+            error_code = getattr(exc, "code", None) or (
+                detail.get("code") if isinstance(detail, dict) else None
+            )
             message = str(exc).lower()
             if "temperature" in payload and (
                 param == "temperature"
@@ -173,14 +178,17 @@ class OpenAIClient:
             ):
                 payload = {k: v for k, v in payload.items() if k != "temperature"}
                 return await self._sdk().responses.create(**payload)
-            transient = status in {429, 500, 502, 503, 504} or isinstance(
+            no_credits = error_code in {"insufficient_quota", "billing_not_active", "credits_exhausted"}
+            transient = not no_credits and (status in {429, 500, 502, 503, 504} or isinstance(
                 exc, (httpx.TimeoutException, httpx.NetworkError, TimeoutError)
-            )
+            ))
             reason = (
                 "проверь API-ключ"
                 if status in {401, 403}
                 else "недостаточно средств или исчерпан лимит API"
-                if status == 402 or status == 429
+                if status == 402 or no_credits
+                else "временно превышен лимит запросов"
+                if status == 429
                 else "временная сетевая ошибка"
                 if transient
                 else "запрос не поддержан выбранной моделью"
@@ -256,9 +264,25 @@ class OpenAIClient:
             raise
         except Exception as exc:
             status = getattr(exc, "status_code", None)
-            transient = status in {429, 500, 502, 503, 504} or isinstance(
-                exc, (httpx.TimeoutException, httpx.NetworkError, TimeoutError)
+            body = getattr(exc, "body", None)
+            detail = body.get("error", {}) if isinstance(body, dict) else {}
+            error_code = getattr(exc, "code", None) or (
+                detail.get("code") if isinstance(detail, dict) else None
             )
-            reason = "проверь API-ключ" if status in {401, 403} else "временная сетевая ошибка" if transient else "ошибка обработки запроса"
+            no_credits = error_code in {
+                "insufficient_quota", "billing_not_active", "credits_exhausted"
+            }
+            transient = not no_credits and (status in {429, 500, 502, 503, 504} or isinstance(
+                exc, (httpx.TimeoutException, httpx.NetworkError, TimeoutError)
+            ))
+            reason = (
+                "проверь API-ключ"
+                if status in {401, 403}
+                else "недостаточно средств или исчерпан лимит API"
+                if status == 402 or no_credits
+                else "временная сетевая ошибка"
+                if transient
+                else "ошибка обработки запроса"
+            )
             log.warning("OpenAI stream failed status=%s transient=%s", status, transient)
             raise OpenAIRequestError(status, transient=transient, reason=reason) from None
