@@ -81,9 +81,15 @@ struct ContentView: View {
 
     private var tabletNavigation: some View {
         NavigationSplitView {
-            List(selection: $selection) {
+            List {
                 ForEach(AppSection.allCases) { section in
-                    Label(section.title, systemImage: section.symbol).tag(section)
+                    Button {
+                        selection = section
+                    } label: {
+                        Label(section.title, systemImage: section.symbol)
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(selection == section ? Color.accentPurple.opacity(0.16) : Color.clear)
                 }
             }
             .listStyle(.sidebar)

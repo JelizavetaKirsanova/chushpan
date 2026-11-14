@@ -8,7 +8,10 @@ struct OpenChushpanChatIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & OpensIntent {
         let url = URL(string: "chushpan://chat")!
-        return .result(opensIntent: OpenURLIntent(url))
+        if #available(iOS 18.0, *) {
+            return .result(opensIntent: OpenURLIntent(url))
+        }
+        return .result()
     }
 }
 

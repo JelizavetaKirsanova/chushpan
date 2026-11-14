@@ -6,8 +6,8 @@ struct KeychainVault {
 
     func read(_ account: String) throws -> Data? {
         var query = baseQuery(account)
-        query[kSecReturnData] = true
-        query[kSecMatchLimit] = kSecMatchLimitOne
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }

@@ -67,7 +67,7 @@ struct MediaLibraryView: View {
                     }
 
                     if !model.database.macMediaCache.isEmpty {
-                        Section("Прогресс, скопированный с Mac") {
+                        Section {
                             ForEach(model.database.macMediaCache) { item in
                                 VStack(alignment: .leading, spacing: 8) {
                                     Text(item.title).font(.headline)
@@ -78,6 +78,8 @@ struct MediaLibraryView: View {
                                 }
                                 .padding(.vertical, 4)
                             }
+                        } header: {
+                            Text("Прогресс, скопированный с Mac")
                         } footer: {
                             Text("Это локальная копия с Mac. Запрос данных выполняется отдельно в настройках и подчиняется разрешениям Mac.")
                         }
@@ -219,7 +221,7 @@ private struct MediaItemEditor: View {
         _year = State(initialValue: item?.year.map(String.init) ?? "")
         _status = State(initialValue: item?.status ?? .planned)
         _favorite = State(initialValue: item?.favorite ?? false)
-        _rating = State(initialValue: item?.rating.map(String.init) ?? "")
+        _rating = State(initialValue: item?.rating.map { String($0) } ?? "")
         _season = State(initialValue: item?.season ?? 0)
         _episode = State(initialValue: item?.episode ?? 0)
         _minutes = State(initialValue: item.map { String(Int($0.positionSeconds) / 60) } ?? "0")

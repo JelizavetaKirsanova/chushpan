@@ -236,19 +236,19 @@ extension MobileDatabase {
                 if item.deletedAt != nil {
                     if let index = facts.firstIndex(where: { $0.id == item.id }) { facts[index].deletedAt = item.deletedAt }
                 } else if let fact = try? decoder.decode(MobileMemoryFact.self, from: item.payload) {
-                    replaceOrAppend(fact, in: &facts, id: item.id)
+                    Self.replaceOrAppend(fact, in: &facts, id: item.id)
                 }
             case "media":
                 if item.deletedAt != nil {
                     if let index = media.firstIndex(where: { $0.id == item.id }) { media[index].deletedAt = item.deletedAt }
                 } else if let value = try? decoder.decode(MobileMediaItem.self, from: item.payload) {
-                    replaceOrAppend(value, in: &media, id: item.id)
+                    Self.replaceOrAppend(value, in: &media, id: item.id)
                 }
             case "lightPreset":
                 if item.deletedAt != nil {
                     if let index = lightPresets.firstIndex(where: { $0.id == item.id }) { lightPresets[index].deletedAt = item.deletedAt }
                 } else if let value = try? decoder.decode(MobileLightPreset.self, from: item.payload) {
-                    replaceOrAppend(value, in: &lightPresets, id: item.id)
+                    Self.replaceOrAppend(value, in: &lightPresets, id: item.id)
                 }
             case "settings":
                 if item.updatedAt >= sharedSettings.updatedAt,
@@ -261,7 +261,7 @@ extension MobileDatabase {
         }
     }
 
-    private mutating func replaceOrAppend<T: Identifiable & Codable>(
+    private static func replaceOrAppend<T: Identifiable & Codable>(
         _ value: T, in list: inout [T], id: String
     ) where T.ID == String {
         if let index = list.firstIndex(where: { $0.id == id }) { list[index] = value }

@@ -96,7 +96,7 @@ struct SettingsView: View {
             Section("Подключение к Mac") {
                 HStack {
                     Label(model.macStatus == nil ? "Mac недоступен" : "Mac на связи", systemImage: model.macStatus == nil ? "wifi.slash" : "wifi")
-                        .foregroundStyle(model.macStatus == nil ? .secondary : .green)
+                        .foregroundStyle(model.macStatus == nil ? Color.gray : Color.green)
                     Spacer()
                     Button("Проверить") { Task { await model.refreshMac() } }
                         .disabled(model.macBaseURL.isEmpty)

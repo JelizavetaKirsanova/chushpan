@@ -73,16 +73,19 @@ final class AppModel: ObservableObject {
         macBaseURL = UserDefaults.standard.string(forKey: "mobile.macBaseURL") ?? ""
         macFingerprint = UserDefaults.standard.string(forKey: "mobile.macFingerprint") ?? ""
         macTrusted = UserDefaults.standard.bool(forKey: "mobile.macTrusted")
+        let resolvedStore: MobileStore
         do {
-            store = try MobileStore.applicationDefault()
-            database = try store.load()
+            let applicationStore = try MobileStore.applicationDefault()
+            database = try applicationStore.load()
+            resolvedStore = applicationStore
         } catch {
             storageError = error.localizedDescription
             let fallback = FileManager.default.temporaryDirectory
                 .appendingPathComponent("chushpan-storage-unavailable.json")
-            store = MobileStore(fileURL: fallback)
+            resolvedStore = MobileStore(fileURL: fallback)
             database = MobileDatabase()
         }
+        store = resolvedStore
         hasAPIKey = (try? keychain.read("gemini-api-key")) != nil
         if cloudSyncEnabled {
             cloudSyncStatus = "Синхронизация iCloud включена. Проверяю доступность…"
