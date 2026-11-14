@@ -61,12 +61,21 @@ for package in (
     "livekit",
     "bleak",
     "google.genai",
+    "openai",
 ):
     data, binary, imports = collect_all(package)
     datas += data
     binaries += binary
     hiddenimports += imports
-for package in ("mlx", "mlx-whisper", "piper-tts", "pysilero-vad", "pywebview", "google-genai"):
+for package in (
+    "mlx",
+    "mlx-whisper",
+    "piper-tts",
+    "pysilero-vad",
+    "pywebview",
+    "google-genai",
+    "openai",
+):
     datas += copy_metadata(package)
 a = Analysis(
     [str(root / "packaging/macos/entrypoint.py")],
