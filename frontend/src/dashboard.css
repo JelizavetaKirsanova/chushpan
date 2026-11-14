@@ -1,4 +1,4 @@
-:root { --bg:#15121f; --bg-2:#201a2e; --white:#f4eefb; --text:#e6deee; --dim:#afa2c3; --accent:#bb93f6; --cyan:#bb93f6; --ice:#ddc4ff; --line:#493b60; --panel:#282137; --amber:#d6b9e7; --green:#b5ceba; --red:#ed9da9; }
+/* Shared visual tokens live in neon_design_system.css. */
 body { color:var(--text); background:var(--bg); font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif; }
 button,input,textarea,select { font:inherit; } button { cursor:pointer; } button:disabled { cursor:default; opacity:.4; }
 button,input,select,textarea { -webkit-tap-highlight-color:transparent; } button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible { outline:2px solid #c39df8; outline-offset:3px; }

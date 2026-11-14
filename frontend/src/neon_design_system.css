@@ -1,17 +1,38 @@
-/* Shared neon violet system for the existing Chushpan workspace. */
+/* Shared visual system for the Chushpan workspace. */
 :root {
-  --bg: #0a0611;
-  --bg-2: #13091c;
-  --panel: #1c1028;
-  --text: #f7f0fb;
-  --white: #fff8ff;
-  --dim: #c1accd;
-  --accent: #db4cff;
-  --cyan: #db4cff;
-  --ice: #f0a0ff;
-  --line: #67377a;
-  --red: #ff9baa;
-  --green: #63e69b;
+  color-scheme: dark;
+  --bg: #100d19;
+  --bg-2: #171324;
+  --panel: #1b1628;
+  --surface: #1b1628;
+  --surface-raised: #262036;
+  --text: #f3edf9;
+  --white: var(--text);
+  --dim: #b5aac5;
+  --accent: #a970e8;
+  --accent-hover: #be91f1;
+  --cyan: var(--accent);
+  --ice: #d7c6ec;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --red: #ee9ca6;
+  --green: #94c7a6;
+  --amber: #e3c47d;
+  --grey: #8e829b;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --gutter: clamp(16px, 2vw, 32px);
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --radius-control: 10px;
+  --radius-card: 16px;
+  --radius-panel: 20px;
+  --shadow-surface: 0 8px 24px rgba(0, 0, 0, 0.18);
   color-scheme: dark;
 }
 
@@ -33,11 +54,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .hud {
   color: var(--text);
   background:
-    radial-gradient(ellipse at 87% 0%, #68128236 0, transparent 43%),
-    radial-gradient(ellipse at 46% 100%, #43104a2e 0, transparent 46%),
-    #0a0611;
+    radial-gradient(ellipse at 87% 0%, #a970e81a 0, transparent 43%),
+    radial-gradient(ellipse at 46% 100%, #a970e80d 0, transparent 46%),
+    var(--bg);
 }
-.hud[data-state] { --accent: #db4cff; --line: #67377a; }
+.hud[data-state] { --accent: #a970e8; --line: rgba(255, 255, 255, 0.08); }
 .hud[data-view="home"] {
   grid-template-columns: minmax(230px, 15.7vw) minmax(350px, 1fr) minmax(330px, 30vw);
 }
@@ -383,17 +404,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .hud[data-view="home"] .caption { top: 27px; left: 23px; right: min(36%, 360px); bottom: auto; transform: none; padding: 0; border: 0; background: none; box-shadow: none; z-index: 3; }
 .hud[data-view="home"] .caption::after { display: none; }
 .hud[data-view="home"] #greeting { margin-bottom: 3px; color: #f1bdff; font-size: 18px; }
-:root {
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-6: 24px;
-  --space-8: 32px;
-  --space-10: 40px;
-  --space-12: 48px;
-}
-
 .home-invitation { margin: 0; color: #fff8ff; font-size: clamp(25px, 2.4vw, 38px); font-weight: 650; letter-spacing: -1px; }
 .hud[data-view="home"] .caption-state { margin-top: 11px; color: #e6c9f0; font-size: 12px; }
 .hud[data-view="home"] #caption-hint { max-width: 430px; color: #c8b3d1; font-size: 11px; }

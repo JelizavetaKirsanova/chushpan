@@ -1,21 +1,4 @@
-:root {
-  --bg: #02050a;
-  --bg-2: #061827;
-  --cyan: #00e5ff;
-  --ice: #7af4ff;
-  --white: #eafcff;
-  --amber: #ffb340;
-  --green: #3dffb0;
-  --red: #ff5a6e;
-  --grey: #546878;
-  --accent: var(--cyan);
-  --line: rgba(0, 229, 255, 0.18);
-  --panel: rgba(0, 229, 255, 0.035);
-  --dim: rgba(234, 252, 255, 0.5);
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
-  --gutter: clamp(12px, 1.6vw, 24px);
-}
+/* Shared visual tokens live in neon_design_system.css. */
 
 * {
   box-sizing: border-box;
