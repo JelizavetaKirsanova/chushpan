@@ -76,7 +76,10 @@ def test_tokens_per_second_none_without_stats():
 
 def test_simple_routine_requests_use_a_bounded_completion_budget():
     settings = Settings()
-    client = OllamaClient(settings.llm.model_copy(update={"think": True}), client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200))))
+    client = OllamaClient(
+        settings.llm.model_copy(update={"think": True}),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200))),
+    )
     payload = client._payload([{"role": "user", "content": "Как дела?"}], stream=True, tools=[])
     complex_payload = client._payload(
         [{"role": "user", "content": "Составь подробный план бюджета"}],

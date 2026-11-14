@@ -221,10 +221,11 @@ def test_sleep_command_cuts_a_reply_short():
     asyncio.run(scenario())
 
 
-def test_hud_commands_ignored_without_wake_word():
+def test_sleep_command_turns_off_always_listening_without_wake_word():
     h = Harness(wake=False)
     h.loop.bus.command("sleep")
-    assert h.state is State.LISTENING
+    assert h.state is State.SLEEPING
+    assert h.loop.use_wake
 
 
 class FakeWindow:

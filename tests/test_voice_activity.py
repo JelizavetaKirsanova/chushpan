@@ -215,29 +215,41 @@ def test_voice_controls_apply_to_actual_gates_processor_and_sqlite():
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("mode,timeout", [("name_only", 15), ("dialogue", 30), ("continuous", 60), ("name_only", 0)])
+@pytest.mark.parametrize(
+    "mode,timeout", [("name_only", 15), ("dialogue", 30), ("continuous", 60), ("name_only", 0)]
+)
 def test_voice_modes_keep_sessions_without_repeating_the_wake_phrase(mode, timeout):
     async def run():
-        h=custom_harness("")
-        store=MemoryStore(":memory:")
-        h.loop.conv.store=store
-        h.loop.input_processor=SimpleNamespace(noise_suppression=False,configure_noise=Mock())
-        selected=VoiceControls(mode=mode,continuation_s=timeout,noise_suppression=False).model_dump()
+        h = custom_harness("")
+        store = MemoryStore(":memory:")
+        h.loop.conv.store = store
+        h.loop.input_processor = SimpleNamespace(noise_suppression=False, configure_noise=Mock())
+        selected = VoiceControls(
+            mode=mode, continuation_s=timeout, noise_suppression=False
+        ).model_dump()
         h.loop.configure_voice(selected)
-        assert controls(h.s).mode==mode
-        assert h.s.dialogue.enabled and h.s.dialogue.duration_s==timeout
-        assert h.loop.use_wake is (mode!="continuous")
-        if mode=="continuous":
-            assert h.loop.session_active and h.loop._session_indefinite and h.loop.session_deadline is None
+        assert controls(h.s).mode == mode
+        assert h.s.dialogue.enabled and h.s.dialogue.duration_s == timeout
+        assert h.loop.use_wake is (mode != "continuous")
+        if mode == "continuous":
+            assert (
+                h.loop.session_active
+                and h.loop._session_indefinite
+                and h.loop.session_deadline is None
+            )
             h.loop.command("sleep")
             assert h.loop.use_wake and h.state is State.SLEEPING
-            assert store.preference("voice","controls")["mode"]=="name_only"
+            assert store.preference("voice", "controls")["mode"] == "name_only"
         else:
             h.loop._wake_up(None)
             h.loop._open_session()
             assert h.loop.session_active
-            assert h.loop._session_indefinite is (timeout==0)
-            assert h.loop.session_deadline is None if timeout==0 else h.loop.session_deadline==timeout
+            assert h.loop._session_indefinite is (timeout == 0)
+            assert (
+                h.loop.session_deadline is None
+                if timeout == 0
+                else h.loop.session_deadline == timeout
+            )
         store.close()
 
     asyncio.run(run())
@@ -245,12 +257,14 @@ def test_voice_modes_keep_sessions_without_repeating_the_wake_phrase(mode, timeo
 
 def test_continuous_mode_does_not_store_unaddressed_background_conversation():
     async def run():
-        h=custom_harness("Мой Чушпан опять что-то сломал")
-        h.loop.use_wake=False
+        h = custom_harness("Мой Чушпан опять что-то сломал")
+        h.loop.use_wake = False
         h.loop.state.to(State.LISTENING)
-        h.loop.conv.reply=AsyncMock(side_effect=AssertionError("unaddressed speech must not reach the model"))
-        await h.loop.handle(SPEECH,time.perf_counter(),transcript=h.stt.text,session_input=True)
-        assert h.loop.conv.notes==[] and not h.loop.conv.reply.called
+        h.loop.conv.reply = AsyncMock(
+            side_effect=AssertionError("unaddressed speech must not reach the model")
+        )
+        await h.loop.handle(SPEECH, time.perf_counter(), transcript=h.stt.text, session_input=True)
+        assert h.loop.conv.notes == [] and not h.loop.conv.reply.called
 
     asyncio.run(run())
 

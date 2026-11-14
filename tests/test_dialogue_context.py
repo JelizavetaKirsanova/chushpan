@@ -409,7 +409,7 @@ def test_two_voice_turns_keep_same_conversation_and_execute_pending_offer():
     import numpy as np
 
     from backend.state import State
-    from tests.test_voice_loop import Harness
+    from tests.test_voice_loop import FRAME, Harness
 
     async def scenario():
         store = MemoryStore(":memory:")
@@ -418,14 +418,11 @@ def test_two_voice_turns_keep_same_conversation_and_execute_pending_offer():
         h.s.language = "ru-RU"
         h.loop.conv, h.loop.speaker = conv, FakeSpeaker()
         identity = conv.id
+        audio = np.tile(FRAME, 32)[:16000]
         for text in ("Открой мой любимый плейлист", "Давай, посмотри"):
             h.loop.state.to(State.THINKING)
             h.loop.task = asyncio.create_task(
-                h.loop._bounded_turn(
-                    lambda text=text: h.loop.handle(
-                        np.zeros(16000, dtype=np.int16), 0, transcript=text
-                    )
-                )
+                h.loop._bounded_turn(lambda text=text: h.loop.handle(audio, 0, transcript=text))
             )
             await h.loop.task
             h.loop._after_turn(h.loop.task)

@@ -697,9 +697,7 @@ class VoiceLoop:
             control_context = True
         # Wake activation arms the first request for the full session window. The
         # follow-up classifier still rejects noise, uncertain STT and unrelated chatter.
-        prompted = not topic and (
-            self.clock() < self._prompted_until or self.session_active
-        )
+        prompted = not topic and (self.clock() < self._prompted_until or self.session_active)
         with measure("intent_detection"):
             decision = decide(
                 text,
@@ -709,9 +707,7 @@ class VoiceLoop:
                 signals=SpeechSignals(evidence(audio).usable, decoder_confident(self.stt), echo),
                 task=choose_task(text, self._recent_tasks()),
                 strictness=(
-                    "contextual"
-                    if self.session_active
-                    else self.s.dialogue.addressee_strictness
+                    "contextual" if self.session_active else self.s.dialogue.addressee_strictness
                 ),
                 confirmation_pending=pending,
                 followup_pending=bool(
@@ -785,9 +781,7 @@ class VoiceLoop:
         if phase == self.session_phase:
             return
         if phase not in _PHASE_TRANSITIONS[self.session_phase]:
-            log.warning(
-                "VOICE_PHASE_REJECT from=%s to=%s", self.session_phase.value, phase.value
-            )
+            log.warning("VOICE_PHASE_REJECT from=%s to=%s", self.session_phase.value, phase.value)
             return
         self.session_phase = phase
         if publish:
@@ -871,9 +865,7 @@ class VoiceLoop:
         if not self.session_active or self._session_paused_at is not None:
             return
         self._session_remaining = (
-            max(0, self.session_deadline - self.clock())
-            if self.session_deadline is not None
-            else 0
+            max(0, self.session_deadline - self.clock()) if self.session_deadline is not None else 0
         )
         self._session_paused_at = self.clock()
         self.listen_deadline = None

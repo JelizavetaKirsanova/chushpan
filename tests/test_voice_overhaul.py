@@ -316,6 +316,8 @@ def test_stage_relations_are_separate_from_model_latency(monkeypatch):
         "stt_to_first_token_s": 2,
         "first_token_to_audio_s": 1,
         "speech_end_to_audio_s": 4,
+        "speech_end_to_first_audio_s": None,
+        "speech_end_to_first_content_audio_s": 4,
         "speech_end_to_completed_s": 9,
     }
 
