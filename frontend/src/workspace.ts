@@ -6,6 +6,14 @@ function text(tag: string, value: string, className = ""): HTMLElement {
   const element = document.createElement(tag); element.textContent = value; element.className = className;
   return element;
 }
+function selectDuration(value:number):void {
+  const select=node("dialogue-duration") as HTMLSelectElement;
+  const selected=String(value);
+  if(![...select.options].some(option=>option.value===selected)){
+    const option=document.createElement("option");option.value=selected;option.textContent=`Сохранённое значение: ${value} с`;select.append(option);
+  }
+  select.value=selected;
+}
 
 export class Workspace {
   private selected = 0;
@@ -28,7 +36,7 @@ export class Workspace {
     node("dialogue-settings").addEventListener("submit", event => {
       event.preventDefault();
       if (!this.online || !this.hasSession) return;
-      const duration = node("dialogue-duration") as HTMLInputElement;
+      const duration = node("dialogue-duration") as HTMLSelectElement;
       if (!duration.reportValidity()) return;
       this.saving = true;
       node("dialogue-feedback").textContent = "Применяю…";
@@ -101,7 +109,7 @@ export class Workspace {
       node("dialogue-reason").textContent = event.reason;
       if (this.saving || document.activeElement?.closest("#dialogue-settings") == null) {
         (node("dialogue-enabled") as HTMLInputElement).checked = event.enabled;
-        (node("dialogue-duration") as HTMLInputElement).value = String(event.duration_s);
+        selectDuration(event.duration_s);
         (node("dialogue-nameless") as HTMLInputElement).checked = event.nameless_interruptions;
         (node("dialogue-addressee") as HTMLSelectElement).value = event.addressee_strictness;
       }

@@ -137,7 +137,26 @@ def test_dashboard_uses_complete_selected_history_previous_period_and_receipts(t
 
 
 def test_stage_series_preserves_missing_values_and_parallel_spans():
-    assert stage_times({}) == dict.fromkeys(["stt", "llm", "tools", "tts", "total"])
+    assert stage_times({}) == {
+        "vad_detection": None,
+        "recording": None,
+        "stt": None,
+        "wake_word": None,
+        "intent": None,
+        "memory": None,
+        "context": None,
+        "llm": None,
+        "llm_first_token": None,
+        "llm_generation": None,
+        "tools": None,
+        "tts": None,
+        "first_sound": None,
+        "response_complete": None,
+        "tokens_per_second": None,
+        "context_tokens": None,
+        "model_load": None,
+        "total": None,
+    }
     times = stage_times(
         {
             "stages": [
@@ -149,7 +168,31 @@ def test_stage_series_preserves_missing_values_and_parallel_spans():
             "total_s": 8,
         }
     )
-    assert times == {"stt": None, "llm": 0.25, "tools": None, "tts": 3, "total": 8}
+    assert times["stt"] is None and times["llm"] == 0.25
+    assert times["llm_first_token"] == 0.25 and times["llm_generation"] == 6
+    assert times["tools"] is None and times["tts"] == 3 and times["total"] == 8
+
+
+def test_voice_pipeline_reports_first_sound_and_full_completion_separately():
+    times = stage_times(
+        {
+            "kind": "voice",
+            "stages": [
+                {"stage": "audio_recording", "start_s": -2.0, "end_s": 0.0, "seconds": 2.0},
+                {"stage": "stt", "start_s": 0.0, "end_s": 0.4, "seconds": 0.4},
+                {"stage": "model_total", "start_s": 0.5, "end_s": 4.0, "seconds": 3.5},
+                {"stage": "tts_generation", "start_s": 2.0, "end_s": 3.0, "seconds": 1.0},
+            ],
+            "marks": {"user_speech_end": 0.0, "first_llm_token": 0.8, "first_audio": 3.2},
+            "metrics": {"speech_end_to_completed_s": 5.0, "speech_end_to_first_audio_s": 3.2},
+            "metadata": {"tokens_per_second": 24.0, "context_estimated_tokens": 2048, "load_duration": 1_000_000_000},
+            "total_s": 5.0,
+        }
+    )
+    assert times["recording"] == 2.0
+    assert times["first_sound"] == 3.2 and times["response_complete"] == 5.0
+    assert times["tokens_per_second"] == 24.0
+    assert times["context_tokens"] == 2048 and times["model_load"] == 1.0
 
 
 def test_month_and_year_bucket_resolution_and_all_requests_available(tmp_path):

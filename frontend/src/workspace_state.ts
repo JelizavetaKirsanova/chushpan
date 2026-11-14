@@ -14,10 +14,12 @@ export const recipientLabels = {
   task_running: "Выполняется предыдущая задача",
 };
 
-export function sessionCaption(session: {active: boolean; listening: boolean; requires_wake: boolean; recording?:boolean; paused?:boolean}): string {
-  if (session.active && session.listening && session.recording === false) return "Ожидает продолжение без имени";
-  if (session.active) return session.listening ? "Слушаю продолжение без имени" : "Диалоговая сессия активна";
-  return session.requires_wake ? "Для обращения нужен wake-word: «Эй, Чушпан»" : "Свободное прослушивание включено";
+export function sessionCaption(session: {active: boolean; listening: boolean; requires_wake: boolean; phase?:string; recording?:boolean; paused?:boolean}): string {
+  const phases:Record<string,string>={idle:"Ожидает активации",wake_detected:"Проверяет ключевую фразу",listening:"Слушает",processing:"Думает",speaking:"Говорит",follow_up_listening:"Ждёт продолжения"};
+  if(session.phase)return phases[session.phase]??"Ожидает активации";
+  if (session.active && session.listening && session.recording === false) return "Ждёт продолжения";
+  if (session.active) return session.listening ? "Слушает" : "Сессия активна";
+  return session.requires_wake ? "Ожидает активации фразой «Эй, Чушпан»" : "Свободный диалог включён";
 }
 
 export class RequestEvents {

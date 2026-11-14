@@ -121,7 +121,7 @@ class MacConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    provider: Literal["gemini", "ollama"] = "gemini"
+    provider: Literal["gemini", "ollama", "openai"] = "gemini"
     fallback: bool = True
     host: str = "http://localhost:11434"
     model: str = "qwen3.5:9b-q4_K_M"
@@ -154,6 +154,20 @@ class GeminiConfig(BaseModel):
     thinking_level: Literal["auto", "low", "medium", "high"] = "auto"
     simple_thinking_level: Literal["low", "medium", "high"] = "low"
     max_output_tokens: int = Field(default=2048, ge=128, le=8192)
+    context_messages: int = Field(default=24, ge=0, le=30)
+    context_chars: int = Field(default=24000, ge=4000, le=100000)
+
+
+class OpenAIConfig(BaseModel):
+    model: str = "gpt-4.1-mini"
+    temperature: float = Field(default=0.6, ge=0, le=2)
+    max_output_tokens: int = Field(default=2048, ge=16, le=32768)
+    timeout_s: float = Field(default=60, ge=5, le=180)
+    first_result_budget_s: float = Field(default=20, ge=1, le=120)
+    attempt_timeout_s: float = Field(default=20, ge=1, le=120)
+    simple_timeout_s: float = Field(default=8, ge=1, le=30)
+    stream_idle_timeout_s: float = Field(default=30, ge=1, le=120)
+    fallback: bool = False
     context_messages: int = Field(default=24, ge=0, le=30)
     context_chars: int = Field(default=24000, ge=4000, le=100000)
 
@@ -242,7 +256,8 @@ class VADConfig(BaseModel):
 
 class DialogueConfig(BaseModel):
     enabled: bool = True
-    duration_s: int = Field(default=20, ge=10, le=300)
+    mode: Literal["name_only", "dialogue", "continuous"] | None = None
+    duration_s: int = Field(default=20, ge=0, le=300)  # 0 = no inactivity timeout
     nameless_interruptions: bool = False
     addressee_strictness: Literal["contextual", "addressed"] = "contextual"
     max_session_s: float = Field(default=180, ge=30, le=900)
@@ -422,6 +437,7 @@ class Settings(BaseSettings):
     location: LocationConfig = Field(default_factory=LocationConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     gemini: GeminiConfig = Field(default_factory=GeminiConfig)
+    openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
     shortcuts: ShortcutsConfig = Field(default_factory=ShortcutsConfig)
     night: NightConfig = Field(default_factory=NightConfig)
     led: LEDConfig = Field(default_factory=LEDConfig)

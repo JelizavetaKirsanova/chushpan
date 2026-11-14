@@ -18,11 +18,12 @@ function fixture() {
   return {window,view,queries,traces,click};
 }
 function data(count=2,enabled=true):any {
-  const times={stt:.3,llm:.7,tools:null,tts:1,total:3};
+  const times={stt:.3,llm:.7,tools:null,tts:1,total:3,vad_detection:.1,recording:1,wake_word:.2,intent:.01,memory:.04,context:.1,llm_first_token:.7,llm_generation:1.5,first_sound:.9,response_complete:3,tokens_per_second:24,context_tokens:2048,model_load:0};
+  const pipeline={...times};
   return {start:'2026-11-05T00:00:00+02:00',end:'2026-11-05T12:00:00+02:00',timezone:'Europe/Tallinn',unit:'hour',collection_enabled:enabled,
-    metrics:{requests:count,response_s:count?1.2:null,executed:count?1:0,success_pct:count?100:null,known_operations:count?1:0,unconfirmed_operations:0},
-    previous:{requests:0,response_s:null,executed:0,success_pct:null,known_operations:0,unconfirmed_operations:0},
-    buckets:[{key:'2026-11-05T10',label:'10:00',requests:count,latency:count?times:{stt:null,llm:null,tools:null,tts:null,total:null}}],
+    metrics:{requests:count,response_s:count?1.2:null,first_sound_s:count?0.9:null,response_complete_s:count?3:null,pipeline,executed:count?1:0,success_pct:count?100:null,known_operations:count?1:0,unconfirmed_operations:0},
+    previous:{requests:0,response_s:null,first_sound_s:null,response_complete_s:null,pipeline,executed:0,success_pct:null,known_operations:0,unconfirmed_operations:0},
+    buckets:[{key:'2026-11-05T10',label:'10:00',requests:count,latency:count?times:Object.fromEntries(Object.keys(times).map(key=>[key,null]))}],
     distribution:{conversations:count?1:0,devices:count?1:0,scenarios:0,search:0,other:0},
     requests:count?[{request_id:'talk',created_at:'2026-11-05T08:00:00Z',kind:'voice',category:'conversations',model:'Local',status:'completed',times,errors:[]},{request_id:'device',created_at:'2026-11-05T09:00:00Z',kind:'text',category:'devices',model:null,status:'completed',times:{...times,total:10},errors:[]}]:[],
     scenarios:[],apps:[]};
@@ -31,7 +32,7 @@ function data(count=2,enabled=true):any {
 test('overview shows four honest KPIs, real charts and compact empty states',()=>{
   const f=fixture();try{
     f.view.connection(true);f.view.receive(data(0));
-    assert.equal(f.window.document.querySelectorAll('.statistics-kpi').length,4);
+    assert.equal(f.window.document.querySelectorAll('.statistics-kpi').length,6);
     assert.equal(f.window.document.querySelectorAll('.statistics-bars,.statistics-line-chart,.statistics-donut').length,0);
     assert.equal(f.window.document.querySelectorAll('.statistics-empty').length,1);
     assert.equal(f.window.document.getElementById('statistics-pane-performance')!.hidden,true);
@@ -39,6 +40,8 @@ test('overview shows four honest KPIs, real charts and compact empty states',()=
     assert.equal(f.window.document.querySelectorAll('.statistics-bars').length,1);
     assert.equal(f.window.document.querySelectorAll('.statistics-line-chart').length,1);
     assert.equal(f.window.document.querySelectorAll('.statistics-donut').length,1);
+    assert.match(f.window.document.querySelector('.statistics-pipeline-grid')!.textContent,/Полная генерация LLM/);
+    assert.match(f.window.document.querySelector('.statistics-pipeline-grid')!.textContent,/Длина контекста/);
     assert.doesNotMatch(f.window.document.querySelector('.statistics-kpis')!.textContent,/Infinity|NaN|\+100/);
     assert.match(f.window.document.querySelector('.statistics-kpis')!.textContent,/Первые события/);
     const series=[...f.window.document.querySelectorAll('.statistics-series button')];
@@ -50,8 +53,8 @@ test('overview shows four honest KPIs, real charts and compact empty states',()=
 test('disabled event collection leaves timing KPI visible and hides usage summaries',()=>{
   const f=fixture();try{
     f.view.connection(true);f.view.receive(data(2,false));
-    assert.equal(f.window.document.querySelectorAll('.statistics-kpi').length,1);
-    assert.match(f.window.document.querySelector('.statistics-kpis')!.textContent,/Средняя задержка ответа/);
+    assert.equal(f.window.document.querySelectorAll('.statistics-kpi').length,3);
+    assert.match(f.window.document.querySelector('.statistics-kpis')!.textContent,/До первого звука/);
     assert.doesNotMatch(f.window.document.querySelector('.statistics-kpis')!.textContent,/Обращения к Чушпану|Выполненные команды|Успешные операции/);
     assert.match(f.window.document.querySelector('.statistics-content')!.textContent,/Сбор событий выключен/);
     assert.match(f.window.document.querySelector('.statistics-content')!.textContent,/Настроить сбор событий/);

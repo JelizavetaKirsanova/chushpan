@@ -65,6 +65,10 @@ class SettingsCenter:
                 provider=settings.llm.provider,
                 local_model=settings.llm.model,
                 cloud_model=settings.gemini.model,
+                openai_model=settings.openai.model,
+                openai_temperature=settings.openai.temperature,
+                openai_max_output_tokens=settings.openai.max_output_tokens,
+                openai_fallback=settings.openai.fallback,
                 cloud_fallback=settings.gemini.fallback_model or "",
                 fallback=settings.llm.fallback,
                 streaming=settings.llm.streaming and settings.gemini.streaming,
@@ -128,7 +132,13 @@ class SettingsCenter:
             if getattr(self.conv.tools, "media", None)
             else None,
             "input_devices": self.input_devices,
-            "models": self.model_status,
+            "models": {
+                **self.model_status,
+                "openai": {
+                    **self.model_status.get("openai", {}),
+                    "credentials": self.openai_keychain().status(),
+                },
+            },
             "location": automations.locations.current() if automations else {},
             "places": [p.model_dump() for p in automations.locations.list()] if automations else [],
             "signals": automations.locations.signal_observation if automations else {},
@@ -388,6 +398,29 @@ class SettingsCenter:
         if not self.conv.device.authenticated:
             raise ValueError("Настройки доступны только авторизованной сессии.")
 
+    @staticmethod
+    def openai_keychain():
+        from backend.brain.openai_keychain import OpenAIKeychain
+
+        return OpenAIKeychain()
+
+    async def openai_models(self, *, check=False):
+        from backend.brain.openai_provider import OpenAIClient
+
+        client = OpenAIClient(self.s.openai, self.openai_keychain().read())
+        try:
+            models = await client.check_connection() if check else await client.models()
+        finally:
+            await client.aclose()
+        self.model_status["openai"] = {
+            "status": "connected",
+            "models": models,
+            "checked_at": time.time(),
+        }
+        self.publish(
+            message="Соединение с OpenAI проверено." if check else "Список моделей OpenAI обновлён."
+        )
+
     async def handle(self, value):
         try:
             if not self.conv.device.authenticated:
@@ -441,6 +474,21 @@ class SettingsCenter:
             self.require_idle()
             if op == "music_application":
                 await self.music_application(value)
+                return
+            elif op == "openai_key":
+                key = value.get("key", "")
+                self.openai_keychain().save(key)
+                if self.s.llm.provider == "openai":
+                    await self.save("models", self.value("models"))
+                self.publish(
+                    message="Ключ сохранён в macOS Keychain." if key else "Ключ удалён из macOS Keychain."
+                )
+                return
+            elif op == "openai_check":
+                await self.openai_models(check=True)
+                return
+            elif op == "openai_models":
+                await self.openai_models()
                 return
             if op == "save":
                 await self.save(value["category"], value["value"])
@@ -656,6 +704,10 @@ class SettingsCenter:
                             provider=fresh.llm.provider,
                             local_model=fresh.llm.model,
                             cloud_model=fresh.gemini.model,
+                        openai_model=fresh.openai.model,
+                        openai_temperature=fresh.openai.temperature,
+                        openai_max_output_tokens=fresh.openai.max_output_tokens,
+                        openai_fallback=fresh.openai.fallback,
                             cloud_fallback=fresh.gemini.fallback_model or "",
                             fallback=fresh.llm.fallback,
                         ).model_dump(),

@@ -28,9 +28,9 @@ test("zero latency and absent measurements stay distinct", () => {
 });
 
 test("session captions distinguish follow-up listening from a mandatory wake word", () => {
-  assert.match(sessionCaption({active: true, listening: true, requires_wake: false}), /продолжение без имени/);
-  assert.match(sessionCaption({active: true, listening: false, requires_wake: false}), /активна/);
-  assert.match(sessionCaption({active: false, listening: false, requires_wake: true}), /wake-word/);
+  assert.equal(sessionCaption({active: true, listening: true, requires_wake: false,phase:'follow_up_listening'}),'Ждёт продолжения');
+  assert.equal(sessionCaption({active: true, listening: false, requires_wake: false,phase:'processing'}),'Думает');
+  assert.equal(sessionCaption({active: false, listening: false, requires_wake: true,phase:'idle'}),'Ожидает активации');
 });
 
 test("recipient states have plain labels and stale task updates are rejected", () => {

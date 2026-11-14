@@ -11,6 +11,7 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextvars import ContextVar
+from enum import StrEnum
 
 import numpy as np
 from rich.console import Console
@@ -84,6 +85,54 @@ FOOTPRINT_SETTLE_S = 2  # after an unload or reload, before measuring it for the
 ECHO_TAIL_S = 0.4  # ignore the mic briefly after speaking so the room echo dies down
 STT_TIMEOUT_S = 20
 TURN_TIMEOUT_S = 180
+
+
+class VoiceSessionPhase(StrEnum):
+    IDLE = "idle"
+    WAKE_DETECTED = "wake_detected"
+    LISTENING = "listening"
+    PROCESSING = "processing"
+    SPEAKING = "speaking"
+    FOLLOW_UP_LISTENING = "follow_up_listening"
+
+
+_PHASE_TRANSITIONS = {
+    VoiceSessionPhase.IDLE: {
+        VoiceSessionPhase.WAKE_DETECTED,
+        VoiceSessionPhase.LISTENING,
+        VoiceSessionPhase.SPEAKING,
+    },
+    VoiceSessionPhase.WAKE_DETECTED: {
+        VoiceSessionPhase.IDLE,
+        VoiceSessionPhase.LISTENING,
+        VoiceSessionPhase.PROCESSING,
+    },
+    VoiceSessionPhase.LISTENING: {
+        VoiceSessionPhase.IDLE,
+        VoiceSessionPhase.WAKE_DETECTED,
+        VoiceSessionPhase.PROCESSING,
+        VoiceSessionPhase.SPEAKING,
+        VoiceSessionPhase.FOLLOW_UP_LISTENING,
+    },
+    VoiceSessionPhase.PROCESSING: {
+        VoiceSessionPhase.IDLE,
+        VoiceSessionPhase.LISTENING,
+        VoiceSessionPhase.SPEAKING,
+        VoiceSessionPhase.FOLLOW_UP_LISTENING,
+    },
+    VoiceSessionPhase.SPEAKING: {
+        VoiceSessionPhase.IDLE,
+        VoiceSessionPhase.LISTENING,
+        VoiceSessionPhase.PROCESSING,
+        VoiceSessionPhase.FOLLOW_UP_LISTENING,
+    },
+    VoiceSessionPhase.FOLLOW_UP_LISTENING: {
+        VoiceSessionPhase.IDLE,
+        VoiceSessionPhase.LISTENING,
+        VoiceSessionPhase.PROCESSING,
+        VoiceSessionPhase.SPEAKING,
+    },
+}
 
 
 def write_as_spoken(bus: HudBus) -> Callable[[str, float], None]:
@@ -542,11 +591,15 @@ class VoiceLoop:
         self._session_timer: asyncio.TimerHandle | None = None
         self._session_paused_at: float | None = None
         self._session_remaining = 0.0
+        self._session_indefinite = False
         self._wake_pending = deque(maxlen=round(STT_TIMEOUT_S / 0.032))
         self._last_segment = None
         self._session_accepted = -1
         self._session_recording = False
         self._follow_up_ready = False
+        self.session_phase = (
+            VoiceSessionPhase.IDLE if self.use_wake else VoiceSessionPhase.LISTENING
+        )
         self.echo_ready = False
         self.headset_verified = False
         self.last_interrupted = False
@@ -642,26 +695,34 @@ class VoiceLoop:
             control_context = True
         if not control_context and automations and automations.recognize(text)["scenario_id"]:
             control_context = True
-        # A separately spoken wake word grants just the first request in its short window.
-        prompted = not topic and self.clock() < self._prompted_until
-        decision = decide(
-            text,
-            addressed=addressed,
-            active=self.session_active if active is None else active,
-            topic=topic,
-            signals=SpeechSignals(evidence(audio).usable, decoder_confident(self.stt), echo),
-            task=choose_task(text, self._recent_tasks()),
-            strictness=self.s.dialogue.addressee_strictness,
-            confirmation_pending=pending,
-            followup_pending=bool(
-                self.conv
-                and hasattr(self.conv, "pending_followup")
-                and self.conv.pending_followup()
-            ),
-            control_context=control_context,
-            continuation_window=self._follow_up_ready and self.session_active,
-            background_filter=self.s.dialogue.background_filter,
+        # Wake activation arms the first request for the full session window. The
+        # follow-up classifier still rejects noise, uncertain STT and unrelated chatter.
+        prompted = not topic and (
+            self.clock() < self._prompted_until or self.session_active
         )
+        with measure("intent_detection"):
+            decision = decide(
+                text,
+                addressed=addressed,
+                active=self.session_active if active is None else active,
+                topic=topic,
+                signals=SpeechSignals(evidence(audio).usable, decoder_confident(self.stt), echo),
+                task=choose_task(text, self._recent_tasks()),
+                strictness=(
+                    "contextual"
+                    if self.session_active
+                    else self.s.dialogue.addressee_strictness
+                ),
+                confirmation_pending=pending,
+                followup_pending=bool(
+                    self.conv
+                    and hasattr(self.conv, "pending_followup")
+                    and self.conv.pending_followup()
+                ),
+                control_context=control_context,
+                continuation_window=self._follow_up_ready and self.session_active,
+                background_filter=self.s.dialogue.background_filter,
+            )
         if (
             prompted
             and not decision.accepted
@@ -669,13 +730,14 @@ class VoiceLoop:
             and follow_up(text)
             and decoder_confident(self.stt)
         ):
-            decision = decide(
-                text,
-                addressed=True,
-                active=self.session_active,
-                topic=topic,
-                signals=SpeechSignals(evidence(audio).usable, True, echo),
-            )
+            with measure("intent_detection"):
+                decision = decide(
+                    text,
+                    addressed=True,
+                    active=self.session_active,
+                    topic=topic,
+                    signals=SpeechSignals(evidence(audio).usable, True, echo),
+                )
         if profile := current.get():
             profile.update(
                 session_active=self.session_active, continuation_window=self._follow_up_ready
@@ -708,11 +770,28 @@ class VoiceLoop:
 
     @property
     def session_active(self) -> bool:
+        if not self.use_wake:
+            return True
+        if not self.s.dialogue.enabled:
+            return False
         return bool(
-            self.s.dialogue.enabled
-            and self.session_deadline is not None
+            self._session_indefinite
+            or self.session_deadline is not None
             and (self._session_paused_at is not None or self.clock() < self.session_deadline)
         )
+
+    def _set_session_phase(self, phase: VoiceSessionPhase | str, *, publish=True) -> None:
+        phase = VoiceSessionPhase(phase)
+        if phase == self.session_phase:
+            return
+        if phase not in _PHASE_TRANSITIONS[self.session_phase]:
+            log.warning(
+                "VOICE_PHASE_REJECT from=%s to=%s", self.session_phase.value, phase.value
+            )
+            return
+        self.session_phase = phase
+        if publish:
+            self._publish_session()
 
     @property
     def nameless_ready(self) -> bool:
@@ -737,9 +816,7 @@ class VoiceLoop:
                 else max(0, (self.session_deadline or self.clock()) - self.clock()),
                 "paused": self._session_paused_at is not None,
                 "recording": self.segmenter.in_speech,
-                "phase": "follow_up_listening"
-                if self.session_active and self.state.state is State.LISTENING
-                else self.state.state.value,
+                "phase": self.session_phase.value,
                 "enabled": self.s.dialogue.enabled,
                 "duration_s": self.s.dialogue.duration_s,
                 "nameless_interruptions": self.s.dialogue.nameless_interruptions,
@@ -754,11 +831,25 @@ class VoiceLoop:
         )
 
     def _open_session(self) -> None:
-        if not self.s.dialogue.enabled or not self.use_wake:
+        if not self.s.dialogue.enabled:
             return
         if self._session_started_at is None:
             self._session_started_at = self.clock()
         self._session_paused_at = None
+        if not self.use_wake or self.s.dialogue.duration_s == 0:
+            self._session_indefinite = True
+            self.session_deadline = None
+            self.listen_deadline = None
+            if self._session_timer:
+                self._session_timer.cancel()
+                self._session_timer = None
+            log.info(
+                "SESSION_ACTIVE request=%s duration_s=none",
+                self.state.request_id,
+            )
+            self._publish_session()
+            return
+        self._session_indefinite = False
         self.session_deadline = min(
             self.clock() + self.s.dialogue.duration_s,
             self._session_started_at + self.s.dialogue.max_session_s,
@@ -779,7 +870,11 @@ class VoiceLoop:
     def _pause_session(self, reason: str) -> None:
         if not self.session_active or self._session_paused_at is not None:
             return
-        self._session_remaining = max(0, self.session_deadline - self.clock())
+        self._session_remaining = (
+            max(0, self.session_deadline - self.clock())
+            if self.session_deadline is not None
+            else 0
+        )
         self._session_paused_at = self.clock()
         self.listen_deadline = None
         if self._session_timer:
@@ -789,9 +884,15 @@ class VoiceLoop:
         self._publish_session()
 
     def _resume_session(self) -> None:
-        if self._session_paused_at is None or self.session_deadline is None:
+        if self._session_paused_at is None:
             return
         self._session_paused_at = None
+        if self._session_indefinite or not self.use_wake:
+            self.listen_deadline = None
+            self._publish_session()
+            return
+        if self.session_deadline is None:
+            return
         self.session_deadline = min(
             self.clock() + self._session_remaining,
             self._session_started_at + self.s.dialogue.max_session_s,
@@ -817,8 +918,10 @@ class VoiceLoop:
         self.session_deadline = None
         self._session_paused_at = None
         self._session_remaining = 0
+        self._session_indefinite = False
         self._follow_up_ready = False
         self._session_started_at = None
+        self._session_accepted = -1
         self.last_accepted_topic = ""
         if close := getattr(self.conv, "close_interaction", None):
             close()
@@ -849,6 +952,7 @@ class VoiceLoop:
                     else "stopped"
                 ),
                 "state": self.state.state.value,
+                "session_phase": self.session_phase.value,
             }
         )
 
@@ -863,13 +967,10 @@ class VoiceLoop:
                 raise ValueError("Дождись завершения ответа или останови его.")
             updated = self.s.model_copy(deep=True)
             selected = apply_controls(updated, value)
-            if (
-                selected.mode != "continuous"
-                and not self.use_wake
-                and not self.wake
-                and not updated.wakeword.phrase
-            ):
-                raise ValueError("Для включения ONNX-активации нужен перезапуск приложения.")
+            if selected.mode != "continuous" and not self.wake and not updated.wakeword.phrase:
+                updated.wakeword = updated.wakeword.model_copy(
+                    update={"phrase": f"эй {self.s.assistant_name}"}
+                )
             if selected.noise_suppression and self.input_processor is None:
                 raise ValueError("Шумоподавление недоступно: модуль WebRTC не загружен.")
             if self.input_processor:
@@ -899,6 +1000,10 @@ class VoiceLoop:
                 self.vad.reset()
                 if self.state.state is State.SLEEPING:
                     self.state.to(State.LISTENING)
+                self._session_started_at = self.clock()
+                self._follow_up_ready = True
+                self._open_session()
+                self._set_session_phase(VoiceSessionPhase.LISTENING)
             self._publish_voice()
             self.bus.publish(
                 {
@@ -964,7 +1069,7 @@ class VoiceLoop:
             self._close_session()
             if not self.busy and self.use_wake:
                 self._go_to_sleep()
-        elif self.session_deadline is not None:
+        elif self.session_active:
             self._open_session()
         self._publish_session()
         self._publish_voice()
@@ -972,6 +1077,17 @@ class VoiceLoop:
 
     def _publish_state(self, old: State | None, new: State) -> None:
         log.info("VOICE_STATE from=%s to=%s", old.value if old else "startup", new.value)
+        phase = {
+            State.SLEEPING: VoiceSessionPhase.IDLE,
+            State.LISTENING: (
+                VoiceSessionPhase.FOLLOW_UP_LISTENING
+                if self.session_active and self._follow_up_ready
+                else VoiceSessionPhase.LISTENING
+            ),
+            State.THINKING: VoiceSessionPhase.PROCESSING,
+            State.SPEAKING: VoiceSessionPhase.SPEAKING,
+        }[new]
+        self._set_session_phase(phase, publish=False)
         self.bus.publish({"type": "state", "state": new.value, "request_id": self.state.request_id})
         self._publish_session()
         self._publish_voice()
@@ -994,7 +1110,9 @@ class VoiceLoop:
         self._last_activation = self.clock()
         self._session_started_at = self.clock()
         log.info("WAKE_DETECTED")
+        self._set_session_phase(VoiceSessionPhase.WAKE_DETECTED)
         self.last_accepted_topic = ""
+        self._session_accepted = -1
         self._follow_up_ready = False
         self._prompted_until = self.clock() + self.s.wakeword.listen_timeout_s
         if self.wake_task and self.wake_task is not asyncio.current_task():
@@ -1038,8 +1156,29 @@ class VoiceLoop:
 
     def request_sleep(self) -> None:
         """Go to sleep once the current reply ends (the `go_to_sleep` tool)."""
-        if self.use_wake:
-            self._sleep_requested = True
+        self._sleep_requested = True
+
+    def _return_to_wake_mode(self) -> None:
+        """Turn off persistent listening and restore an explicit wake phrase mode."""
+        selected = controls(self.s).model_copy(update={"mode": "name_only"})
+        updated = self.s.model_copy(deep=True)
+        apply_controls(updated, selected.model_dump())
+        if not updated.wakeword.phrase and not self.wake:
+            updated.wakeword = updated.wakeword.model_copy(
+                update={"phrase": f"эй {self.s.assistant_name}"}
+            )
+        self.s.audio, self.s.wakeword, self.s.dialogue, self.s.vad = (
+            updated.audio,
+            updated.wakeword,
+            updated.dialogue,
+            updated.vad,
+        )
+        self.use_wake = True
+        self.wake_phrase = self.s.wakeword.phrase
+        self._close_session()
+        if store := getattr(self.conv, "store", None):
+            store.set_preference("voice", "controls", selected.model_dump())
+        self._publish_voice()
 
     def command(self, name: str) -> None:
         """A HUD button: wake up as if called, or go to sleep, cutting any reply short."""
@@ -1049,10 +1188,16 @@ class VoiceLoop:
                 self.speaker.interrupt()
                 self.task.cancel()
             return
-        if not self.use_wake:
-            return
         if name == "wake" and self.state.state is State.SLEEPING:
             self._wake_up(None)
+        elif name == "sleep" and not self.use_wake:
+            self._return_to_wake_mode()
+            if self.busy:
+                self._sleep_requested = True
+                self.speaker.interrupt()
+                self.task.cancel()
+            else:
+                self._go_to_sleep()
         elif name == "sleep" and self.state.state is not State.SLEEPING:
             if self.busy:
                 self._sleep_requested = True
@@ -1311,13 +1456,16 @@ class VoiceLoop:
             self._barged_in = False
             return
         self.mute_until = self.clock() + ECHO_TAIL_S
-        if self.s.dialogue.enabled and self.session_deadline is not None:
+        if (self.s.dialogue.enabled or not self.use_wake) and self.session_active:
             if self._session_accepted == self.state.request_id:
                 self._follow_up_ready = True
                 self._open_session()
+                self._set_session_phase(VoiceSessionPhase.FOLLOW_UP_LISTENING)
             else:
                 self._resume_session()
                 self._session_timeout()
+                if self._follow_up_ready and self.session_active:
+                    self._set_session_phase(VoiceSessionPhase.FOLLOW_UP_LISTENING)
         else:
             if self.use_wake:
                 self._go_to_sleep()
@@ -1475,14 +1623,15 @@ class VoiceLoop:
                     and decoder_confident(self.stt)
                 ):
                     request, nameless = text, True
-
             if not decoder_confident(self.stt, self.s.wakeword):
                 log.info("BARGE_SKIP reason=uncertain_stt")
                 return
             echo = echoes_output(text, self.speaker, now=time.perf_counter())
             if stop_only and (request is None or not stop_requested(request)):
                 return
-            decision = self._recipient(text, audio, addressed=request is not None, echo=echo)
+            decision = self._recipient(
+                text, audio, addressed=request is not None and not nameless, echo=echo
+            )
             if (
                 decision.accepted
                 and decision.kind == "task"
@@ -1538,6 +1687,7 @@ class VoiceLoop:
                             started,
                             transcript=request,
                             stt_elapsed=time.perf_counter() - started,
+                            session_input=nameless,
                             from_barge=True,
                             wake_validated=not nameless,
                         )
@@ -1560,6 +1710,7 @@ class VoiceLoop:
         self._next_wake_check = now + self.s.wakeword.check_interval_s
         if not evidence(audio).usable:
             return
+        self._set_session_phase(VoiceSessionPhase.WAKE_DETECTED)
         profile = Profile(kind="activation", origin=speech_end)
         store = getattr(self.conv, "store", None)
         if store is not None:
@@ -1667,6 +1818,7 @@ class VoiceLoop:
             profile.finish("cancelled" if asyncio.current_task().cancelling() else status)
             current.reset(token)
             if self.state.state is State.SLEEPING:
+                self._set_session_phase(VoiceSessionPhase.IDLE)
                 self._phase("idle")
 
     async def _say_by_code(self, user_text: str, signing_off: bool) -> None:
@@ -1718,6 +1870,12 @@ class VoiceLoop:
         profile.mark("user_speech_end", speech_end)
         if self.vad_started_at is not None:
             profile.mark("vad_start", self.vad_started_at, allow_before_origin=True)
+            profile.interval(
+                "audio_recording",
+                self.vad_started_at,
+                speech_end,
+                allow_before_origin=True,
+            )
         profile.mark("vad_end", speech_end)
         store = getattr(self.conv, "store", None)
         if store is not None:
@@ -1844,7 +2002,7 @@ class VoiceLoop:
             log.info("STT_REJECT request=%s reason=empty_or_filtered", request_context.get())
             return
         decision = None
-        if self.use_wake and s.dialogue.enabled and s.locale.lang == "ru":
+        if (s.dialogue.enabled or not self.use_wake) and s.locale.lang == "ru":
             decision = self._recipient(
                 text, audio, addressed=addressed, active=self.session_active or session_input
             )
@@ -1892,11 +2050,7 @@ class VoiceLoop:
         signing_off = is_sign_off(text, s.assistant_name)
         if close_requested(text):
             if not self.use_wake:
-                # An explicit close ends continuous listening too; resume only on wake.
-                self.use_wake = self.s.wakeword.enabled = True
-                if not self.wake and not self.wake_phrase:
-                    self.wake_phrase = f"эй {self.s.assistant_name}"
-                    self.s.wakeword.phrase = self.wake_phrase
+                self._return_to_wake_mode()
             answer = "Хорошо. Позови, когда понадоблюсь."
             self.conv.add_exchange(text, answer)
             self.bus.publish({"type": "user", "text": text})
@@ -1966,9 +2120,9 @@ class VoiceLoop:
                 or "model_total" in totals
                 or any("_attempt_" in name for name in totals)
             )
-            response = first_audio - speech_end if first_audio is not None else None
-            if isinstance(self.speaker, PiperSpeaker):
-                response = profile.marks.get("first_content_audio")
+            response = profile.marks.get("first_audio")
+            if response is None and first_audio is not None:
+                response = first_audio - speech_end
             self.bus.publish(
                 {
                     "type": "stats",

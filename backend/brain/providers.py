@@ -51,6 +51,7 @@ def api_key() -> str:
 
 class GeminiClient:
     cloud_context = True
+    provider = "gemini"
 
     def __init__(self, cfg: GeminiConfig, key: str, client: Any = None) -> None:
         self.cfg = cfg
@@ -366,13 +367,14 @@ class FallbackClient:
         for candidate in [self.primary, self.secondary, self.local]:
             if candidate is None:
                 continue
-            cloud = isinstance(candidate, GeminiClient)
+            cloud = getattr(candidate, "cloud_context", False)
+            provider = getattr(candidate, "provider", "ollama")
             health = self._health.get(candidate, {})
             remaining = max(0, self._cooldown_until.get(candidate, 0) - time.perf_counter())
             models.append(
                 {
                     "model": self._model_label(candidate),
-                    "provider": "gemini" if cloud else "ollama",
+                    "provider": getattr(candidate, "provider", "ollama"),
                     "status": "open"
                     if remaining
                     else "probing"
@@ -390,9 +392,7 @@ class FallbackClient:
             "phase": self.phase,
             "provider": self.last_provider
             or (
-                "gemini"
-                if isinstance(self._active_candidate, GeminiClient)
-                else "ollama"
+                getattr(self._active_candidate, "provider", "ollama")
                 if self._active_candidate
                 else None
             ),
@@ -426,6 +426,8 @@ class FallbackClient:
         if self.needs_local_warmup:
             await self.local.prime(system_prompt, tools, history)
         elif not self.primary.available:
+            if getattr(self.primary, "provider", None) == "openai":
+                raise LLMError("OpenAI не настроен. Добавь ключ в настройках Чушпана.")
             raise LLMError(SETUP)
 
     async def warmup(self) -> None:
@@ -459,8 +461,13 @@ class FallbackClient:
         if pinned is not None:
             candidates = [pinned]
         elif not self.primary.available and self.enabled:
-            self.last_error = SETUP
-            log.warning(SETUP)
+            setup = (
+                "OpenAI не настроен. Добавь ключ в настройках Чушпана."
+                if getattr(self.primary, "provider", None) == "openai"
+                else SETUP
+            )
+            self.last_error = setup
+            log.warning(setup)
             candidates = [self.local]  # explicit unconfigured mode, not a masked API failure
             self.switch_reason = "Gemini не настроен; используется локальная Ollama"
         elif self.enabled:
@@ -485,8 +492,8 @@ class FallbackClient:
             succeeded = False
             attempt_reason = None
             code = None
-            cloud = isinstance(candidate, GeminiClient)
-            provider = "gemini" if cloud else "ollama"
+            cloud = getattr(candidate, "cloud_context", False)
+            provider = getattr(candidate, "provider", "ollama")
             model = self._model_label(candidate)
             if (
                 cloud
@@ -501,7 +508,7 @@ class FallbackClient:
                 and pinned is None
                 and time.perf_counter() < self._cooldown_until.get(candidate, 0)
             ):
-                record(f"gemini_cooldown_skipped_{index + 1}", 0)
+                record(f"{provider}_cooldown_skipped_{index + 1}", 0)
                 self.switch_reason = "Облачная модель временно исключена после сбоя"
                 continue
             if cloud and index > 0 and time.perf_counter() >= cloud_deadline:
@@ -626,8 +633,11 @@ class FallbackClient:
                 self.last_provider = self.last_model = None
                 if request_id:
                     self._routes.pop(request_id, None)
-                transient = isinstance(exc, GeminiRequestError) and exc.transient
-                code = exc.status_code if isinstance(exc, GeminiRequestError) else None
+                from backend.brain.openai_provider import OpenAIRequestError
+
+                request_error = isinstance(exc, (GeminiRequestError, OpenAIRequestError))
+                transient = request_error and exc.transient
+                code = exc.status_code if request_error else None
                 attempt_reason = (
                     "rate_limit"
                     if code == 429
@@ -664,7 +674,7 @@ class FallbackClient:
                     transient,
                 )
                 if cloud:
-                    self.last_error = str(exc) if isinstance(exc, LLMError) else "Ошибка Gemini."
+                    self.last_error = str(exc) if isinstance(exc, LLMError) else f"Ошибка {provider}."
                     if not transient or emitted:
                         raise
                     self._cooldown_until[candidate] = time.perf_counter() + 30
@@ -672,7 +682,7 @@ class FallbackClient:
                         self._cooldown_until[candidate] = time.perf_counter() + 60
                     if after_tool:
                         raise LLMError(
-                            "Gemini недоступен после вызова инструмента. Часть запроса могла "
+                            f"{provider} недоступен после вызова инструмента. Часть запроса могла "
                             "выполниться; резервную цепочку автоматически не повторяю."
                         ) from None
                     if index + 1 < len(candidates):
@@ -687,7 +697,7 @@ class FallbackClient:
                     elif "лимита длины" in str(exc):
                         detail = " Локальная модель достигла лимита длины; ответ не завершён."
                 raise LLMError(
-                    "Gemini недоступен; резервная Ollama тоже не выполнила запрос." + detail
+                    f"{provider} недоступен; резервная Ollama тоже не выполнила запрос." + detail
                 ) from None
             finally:
                 elapsed = time.perf_counter() - attempt_started
@@ -734,7 +744,7 @@ class FallbackClient:
 
 def create_llm(s: Settings) -> LLMClient:
     # A cloud fallback must actually be local. Existing explicit Ollama mode stays compatible.
-    if s.llm.provider == "gemini" and urlparse(s.llm.host).hostname not in {
+    if s.llm.provider in {"gemini", "openai"} and urlparse(s.llm.host).hostname not in {
         "localhost",
         "127.0.0.1",
         "::1",
@@ -743,6 +753,19 @@ def create_llm(s: Settings) -> LLMClient:
     local = OllamaClient(s.llm)
     if s.llm.provider == "ollama":
         return local
+    if s.llm.provider == "openai":
+        from backend.brain.openai_keychain import OpenAIKeychain
+        from backend.brain.openai_provider import OpenAIClient
+
+        keychain = OpenAIKeychain()
+        key = ""
+        if keychain.status().get("configured"):
+            try:
+                key = keychain.read()
+            except Exception:
+                log.warning("OpenAI key is present but unavailable from macOS Keychain")
+        cloud = OpenAIClient(s.openai, key)
+        return FallbackClient(cloud, local, s.openai.fallback)
     cloud = GeminiClient(s.gemini, api_key())
     if not cloud.available:
         log.warning(SETUP)
@@ -757,6 +780,9 @@ def create_llm(s: Settings) -> LLMClient:
 def configured_label(s: Settings, client: LLMClient) -> str:
     if s.llm.provider == "ollama":
         return f"Ollama {s.llm.model}"
+    if s.llm.provider == "openai":
+        fallback = " → Ollama" if s.openai.fallback else ""
+        return f"OpenAI {s.openai.model}{fallback}"
     if isinstance(client, FallbackClient) and not client.primary.available:
         return f"Ollama {s.llm.model} (Gemini не настроен)"
     chain = f" → {s.gemini.fallback_model}" if s.gemini.fallback_model else ""

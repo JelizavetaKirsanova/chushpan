@@ -17,7 +17,8 @@ class VoiceControls(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     sensitivity: Literal["conservative", "balanced", "sensitive"] = "balanced"
     mode: Literal["name_only", "dialogue", "continuous"] = "dialogue"
-    continuation_s: int = Field(default=20, ge=10, le=300)
+    # 0 means the dialogue remains open until the user closes it.
+    continuation_s: int = Field(default=20, ge=0, le=300)
     allow_barge_in: bool = False
     noise_suppression: bool = True
     vad_threshold: float | None = Field(default=None, ge=0.1, le=0.95)
@@ -41,11 +42,12 @@ def controls(settings):
     )
     return VoiceControls(
         sensitivity=sensitivity,
-        mode="continuous"
-        if not settings.wakeword.enabled
-        else "dialogue"
-        if settings.dialogue.enabled
-        else "name_only",
+        mode=(
+            "continuous"
+            if not settings.wakeword.enabled
+            else settings.dialogue.mode
+            or ("dialogue" if settings.dialogue.enabled else "name_only")
+        ),
         continuation_s=settings.dialogue.duration_s,
         allow_barge_in=settings.audio.barge_in,
         noise_suppression=settings.audio.noise_suppression,
@@ -71,7 +73,8 @@ def apply_controls(settings, value):
     )
     settings.dialogue = settings.dialogue.model_copy(
         update={
-            "enabled": config.mode == "dialogue",
+            "enabled": True,
+            "mode": config.mode,
             "duration_s": config.continuation_s,
             "background_filter": config.background_filter,
         }

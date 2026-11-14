@@ -10,10 +10,18 @@ export interface VoiceControls {
 export type VoiceSettingsEvent = ({type: 'voice_settings'} & VoiceControls & {
   activation_enabled: boolean; wake_source: string; wake_threshold: number;
   min_avg_logprob: number; max_no_speech_prob: number; noise_available: boolean;
-  noise_active: boolean; microphone: string; state: string; max_session_s: number;
+  noise_active: boolean; microphone: string; state: string; session_phase:string; max_session_s: number;
 }) | {type: 'voice_settings_result'; ok: boolean; message: string};
 
 const node = (id: string) => document.getElementById(id)!;
+function selectDuration(id:string,value:number):void {
+  const select=node(id) as HTMLSelectElement;
+  const stringValue=String(value);
+  if(![...select.options].some(option=>option.value===stringValue)){
+    const option=document.createElement('option');option.value=stringValue;option.textContent=`Сохранённое значение: ${value} с`;select.append(option);
+  }
+  select.value=stringValue;
+}
 export class VoiceSettingsPanel {
   private online = false;
   private ready = false;
@@ -23,7 +31,7 @@ export class VoiceSettingsPanel {
       const value: VoiceControls = {
         sensitivity: (node('voice-sensitivity') as HTMLSelectElement).value as VoiceControls['sensitivity'],
         mode: (node('voice-mode') as HTMLSelectElement).value as VoiceControls['mode'],
-        continuation_s: Number((node('voice-duration') as HTMLInputElement).value),
+        continuation_s: Number((node('voice-duration') as HTMLSelectElement).value),
         allow_barge_in: (node('voice-barge') as HTMLInputElement).checked,
         noise_suppression: (node('voice-noise') as HTMLInputElement).checked,
         vad_threshold:Number((node('voice-vad') as HTMLInputElement).value),
@@ -46,7 +54,7 @@ export class VoiceSettingsPanel {
     if (!node('voice-settings').contains(document.activeElement)) {
       (node('voice-sensitivity') as HTMLSelectElement).value = event.sensitivity;
       (node('voice-mode') as HTMLSelectElement).value = event.mode;
-      (node('voice-duration') as HTMLInputElement).value = String(event.continuation_s);
+      selectDuration('voice-duration',event.continuation_s);
       (node('voice-barge') as HTMLInputElement).checked = event.allow_barge_in;
       (node('voice-noise') as HTMLInputElement).checked = event.noise_available && event.noise_suppression;
       (node('voice-vad') as HTMLInputElement).value=String(event.vad_threshold??0.5);
@@ -58,12 +66,12 @@ export class VoiceSettingsPanel {
     node('voice-thresholds').textContent = event.wake_source === 'whisper'
       ? `Whisper: средний logprob ≥ ${event.min_avg_logprob}; no_speech_prob ≤ ${event.max_no_speech_prob}. Это метрики декодера, не вероятность обращения.`
       : `Порог ONNX detector: ${event.wake_threshold}.`;
+    const phases:Record<string,string>={idle:'Ожидает активации',wake_detected:'Проверяет ключевую фразу',listening:'Слушает',processing:'Думает',speaking:'Говорит',follow_up_listening:'Ждёт продолжения'};
     node('microphone-status').textContent = event.microphone === 'starting' ? 'Подготовка распознавания и голоса · микрофон ещё выключен'
       : event.microphone === 'stopped' ? 'Микрофон не запущен'
-      : !event.activation_enabled ? 'Внимание: включено постоянное прослушивание без обращения'
-      : event.state === 'sleeping' ? 'Микрофон ждёт обращения «Эй, Чушпан»'
-      : event.state === 'speaking' ? 'Идёт озвучка · проверяются только разрешённые перебивания'
-      : 'Микрофон активен · окно разговора ограничено по времени';
+      : event.mode === 'continuous' ? `Постоянный диалог включён · ${phases[event.session_phase]??'Слушает'} · нажми кнопку микрофона, чтобы немедленно выключить`
+      : event.session_phase === 'idle' ? 'Ожидает активации фразой «Эй, Чушпан»'
+      : phases[event.session_phase]??(event.state === 'speaking' ? 'Говорит' : 'Слушает');
     node('voice-noise-status').textContent = !event.noise_available ? 'Модуль шумоподавления недоступен.' : event.noise_active ? 'Локальное шумоподавление WebRTC работает.' : 'Шумоподавление выключено.';
   }
 }

@@ -37,6 +37,7 @@ def test_wake_follow_up_and_expiry_use_same_conversation():
         await h.loop.wake_task
         await finish(h)
         assert h.loop.session_active
+        assert h.loop.session_phase.value == "follow_up_listening"
         h.now += 1
         first_deadline = h.loop.session_deadline
         h.stt.text = "А в воскресенье?"
@@ -44,6 +45,7 @@ def test_wake_follow_up_and_expiry_use_same_conversation():
         await h.frames(30)
         await finish(h)
         assert heard == ["какая завтра погода?", "А в воскресенье?"]
+        assert h.loop.session_phase.value == "follow_up_listening"
         assert h.loop.session_deadline > first_deadline
         h.now = h.loop.session_deadline + 1
         h.loop._session_timeout()
@@ -236,12 +238,12 @@ def test_runtime_settings_validate_and_acknowledge_over_websocket(tmp_path):
     with client.websocket_connect("/ws", headers={"origin": "http://127.0.0.1:8765"}) as ws:
         while ws.receive_json()["type"] != "transcript":
             pass
-        for duration, ok in [(60, True), (0, False), ("120", False)]:
+        for duration, ok in [(60, True), (0, True), ("120", False)]:
             ws.send_json({"type": "dialogue_settings", "value": {"duration_s": duration}})
             while (event := ws.receive_json())["type"] != "dialogue_settings_result":
                 pass
             assert event["ok"] is ok
-            assert h.s.dialogue.duration_s == 60
+            assert h.s.dialogue.duration_s == (duration if ok else 0)
 
 
 @pytest.mark.parametrize(
@@ -292,7 +294,12 @@ def test_follow_up_gate_preserves_short_russian_questions_and_explicit_commands(
     for text in [
         "А завтра?",
         "А в воскресенье?",
+        "И почему море солёное?",
+        "И как это объяснить?",
         "Какая погода?",
+        "Чушпан, закончили",
+        "Хватит слушать",
+        "Вернись в обычный режим",
         "я спать",
         "подтверждаю 1234",
         "подтверждаю один два три четыре",

@@ -1250,8 +1250,9 @@ class Conversation:
         from backend.audio.waiting import trace as voice_trace
 
         voice_trace("REQUEST_ROUTE", route="model", provider=type(self.llm).__name__)
-        history = self._model_history()
-        messages: list[dict[str, Any]] = self._messages(user_text, history)
+        with measure("context_preparation"):
+            history = self._model_history()
+            messages: list[dict[str, Any]] = self._messages(user_text, history)
         if profile:
             profile.end(context_interval)
         earlier = self._earlier_replies(user_text, history)

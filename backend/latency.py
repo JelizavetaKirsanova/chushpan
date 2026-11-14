@@ -190,13 +190,15 @@ class Profile:
             if changed:
                 self.publish()
 
-    def interval(self, stage, start, end, outcome="ok"):
+    def interval(self, stage, start, end, outcome="ok", *, allow_before_origin=False):
         identity = self.begin(stage)
         row = next((r for r in self.stages if r["id"] == identity), None)
         if row:
             row.update(
-                start_s=max(0, start - self.origin),
-                end_s=max(0, end - self.origin),
+                start_s=(start - self.origin)
+                if allow_before_origin
+                else max(0, start - self.origin),
+                end_s=(end - self.origin) if allow_before_origin else max(0, end - self.origin),
                 seconds=max(0, end - start),
                 outcome=outcome,
             )
@@ -270,14 +272,7 @@ class Profile:
             "total_s": self.elapsed() if self.ended is not None else None,
             "first_content_s": first,
             "waiting_to_content_gap_s": first - waiting_end if waiting_end is not None else None,
-            "first_audio_s": min(
-                (
-                    self.marks[name]
-                    for name in ("waiting_audio", "first_content_audio")
-                    if name in self.marks
-                ),
-                default=None,
-            ),
+            "first_audio_s": self.marks.get("first_audio"),
             "marks": dict(self.marks),
             "pipeline_metrics": self.summary(),
             "metrics": {
@@ -285,6 +280,10 @@ class Profile:
                 "stt_to_first_token_s": between("stt_completed", "first_llm_token"),
                 "first_token_to_audio_s": between("first_llm_token", "first_content_audio"),
                 "speech_end_to_audio_s": between("user_speech_end", "first_content_audio"),
+                "speech_end_to_first_audio_s": between("user_speech_end", "first_audio"),
+                "speech_end_to_first_content_audio_s": between(
+                    "user_speech_end", "first_content_audio"
+                ),
                 "speech_end_to_completed_s": max(0, self.elapsed() - self.marks["user_speech_end"])
                 if self.ended is not None and "user_speech_end" in self.marks
                 else None,
@@ -322,7 +321,12 @@ class Profile:
             else None,
             "vad_onset_s": first("vad_onset"),
             "vad_endpoint_s": totals.get("vad_wait"),
+            "recording_s": first("audio_recording"),
             "routing_s": totals.get("local_routing"),
+            "wake_word_s": totals.get("wake_detection"),
+            "intent_detection_s": totals.get("intent_detection"),
+            "memory_retrieval_s": totals.get("memory_retrieval"),
+            "context_preparation_s": totals.get("context_preparation"),
             "stt_s": totals.get("stt"),
             "llm_first_token_s": max(0, first_token - model_start)
             if model_start is not None and first_token is not None
@@ -338,6 +342,19 @@ class Profile:
             "tool_execution_s": totals.get("tool_execution"),
             "tts_first_audio_s": first("tts_first_audio"),
             "tts_first_pcm_s": first("tts_first_pcm"),
+            "first_sound_s": self.marks.get("first_audio"),
+            "response_complete_s": max(
+                0, self.elapsed() - self.marks["user_speech_end"]
+            )
+            if self.ended is not None and "user_speech_end" in self.marks
+            else None,
+            "tokens_per_second": self.info.get("tokens_per_second"),
+            "context_tokens": self.info.get(
+                "context_estimated_tokens", self.info.get("prompt_eval_count")
+            ),
+            "model_load_s": self.info.get("load_duration", 0) / 1e9
+            if self.info.get("load_duration") is not None
+            else None,
             "total_response_s": totals.get(
                 "response_total", self.elapsed() if self.ended is not None else None
             ),

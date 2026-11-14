@@ -142,19 +142,19 @@
         <form id="voice-settings" class="settings-card"><h2>Голос и обращение</h2>
           <p id="microphone-status" role="status">Состояние микрофона неизвестно.</p>
           <label>Чувствительность активации<select id="voice-sensitivity" disabled><option value="conservative">Консервативная</option><option value="balanced">Сбалансированная</option><option value="sensitive">Повышенная</option></select></label><p id="voice-thresholds" class="muted"></p>
-          <label>Режим общения<select id="voice-mode" disabled><option value="name_only">Только по имени</option><option value="dialogue">Диалог в пределах окна</option><option value="continuous">Постоянное прослушивание без имени</option></select></label>
-          <label>Ожидание продолжения, секунд<input id="voice-duration" type="number" min="10" max="300" step="1" required disabled></label>
+          <label>Режим общения<select id="voice-mode" disabled><option value="name_only">По ключевой фразе</option><option value="dialogue">Свободный разговор</option><option value="continuous">Постоянный диалог</option></select></label>
+          <label>Ожидание следующей реплики<select id="voice-duration" required disabled><option value="15">15 секунд</option><option value="30">30 секунд</option><option value="60">60 секунд</option><option value="0">Без тайм-аута</option></select></label>
           <label class="check-label"><input id="voice-barge" type="checkbox" disabled> Разрешить перебивание ассистента</label>
           <label class="check-label"><input id="voice-noise" type="checkbox" disabled> Подавление фонового шума</label><p id="voice-noise-status" class="muted"></p>
           <details><summary>Речь и фоновые звуки</summary><label>Фильтрация фоновой речи<select id="voice-background" disabled><option value="balanced">Связанные реплики и вопросы</option><option value="strict">Строгая: вопросы и однозначные команды</option></select></label><label>Порог VAD<input id="voice-vad" type="number" min="0.1" max="0.95" step="0.05" required disabled></label><label>Минимум речи, мс<input id="voice-min-speech" type="number" min="80" max="1000" step="1" required disabled></label><p class="muted">Высокий VAD может пропускать тихую речь; короткий минимум пропускает больше шумов. Начни со стандартных значений и проверь в своей комнате. Микрофон можно вручную отключить в настройках приложения → Система.</p></details>
-          <p class="muted">Режимы по имени и диалога требуют первого обращения. Постоянное прослушивание может принимать постороннюю речь — выбирай его осознанно. Окно диалога закрывается по тишине. <span id="voice-session-limit"></span> «Чушпан, стоп» и кнопка остановки доступны отдельно.</p>
+          <p class="muted">В режимах по ключевой фразе и свободного разговора wake-word нужен только для начала сессии; следующие реплики можно говорить без него. Постоянный диалог включён, пока выбран. В историю попадают только реплики, прошедшие локальную проверку адресата. Текущий статус виден на главном экране; кнопка микрофона сразу выключает прослушивание. <span id="voice-session-limit"></span></p>
           <button type="submit" disabled>Применить настройки голоса</button><p id="voice-feedback" role="status"></p>
         </form>
         <details class="settings-card"><summary>Дополнительные ограничения диалога</summary>
         <form id="dialogue-settings" class="dialogue-settings">
           <h2>Диалоговая сессия</h2>
           <label><input id="dialogue-enabled" type="checkbox" disabled> Продолжать разговор без повторного обращения</label>
-          <label>Ожидание продолжения, секунд <input id="dialogue-duration" type="number" min="10" max="300" step="1" required disabled></label>
+          <label>Ожидание следующей реплики <select id="dialogue-duration" required disabled><option value="15">15 секунд</option><option value="30">30 секунд</option><option value="60">60 секунд</option><option value="0">Без тайм-аута</option></select></label>
           <label><input id="dialogue-nameless" type="checkbox" disabled> Разрешить перебивания без имени в гарнитуре с AEC в тихой комнате</label>
           <label>Определение адресата <select id="dialogue-addressee" disabled><option value="contextual">Только связанное продолжение</option><option value="addressed">Каждый запрос с обращением</option></select></label>
           <p id="dialogue-reason">Параметры появятся после подключения.</p>

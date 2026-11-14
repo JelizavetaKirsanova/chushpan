@@ -82,6 +82,10 @@ class OllamaClient:
             user = context.text
         if isinstance(user, str) and simple_request(user) and not self.cfg.think_for_simple:
             payload["think"] = False
+        if isinstance(user, str) and simple_request(user) and not payload["think"] and not tools:
+            # Keep the established routine allowlist bounded without affecting explanations,
+            # actions, tool requests, or complex answers.
+            payload["options"]["num_predict"] = 128
         if profile := current.get():
             from backend.brain.followups import estimated_tokens
 

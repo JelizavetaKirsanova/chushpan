@@ -74,6 +74,20 @@ def test_tokens_per_second_none_without_stats():
     assert ChatChunk().tokens_per_second is None
 
 
+def test_simple_routine_requests_use_a_bounded_completion_budget():
+    settings = Settings()
+    client = OllamaClient(settings.llm.model_copy(update={"think": True}), client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200))))
+    payload = client._payload([{"role": "user", "content": "Как дела?"}], stream=True, tools=[])
+    complex_payload = client._payload(
+        [{"role": "user", "content": "Составь подробный план бюджета"}],
+        stream=True,
+        tools=[],
+    )
+    assert payload["options"]["num_predict"] == 128 and payload["think"] is False
+    assert "num_predict" not in complex_payload["options"] and complex_payload["think"] is True
+    asyncio.run(client.aclose())
+
+
 def test_prime_sends_only_the_system_prompt(tmp_path):
     captured: dict = {}
 

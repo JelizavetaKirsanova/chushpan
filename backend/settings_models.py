@@ -81,11 +81,15 @@ class CommandControls(Strict):
 
 
 class Models(Strict):
-    provider: Literal["ollama", "gemini"] = "gemini"
+    provider: Literal["ollama", "gemini", "openai"] = "gemini"
     local_model: str = Field(default="qwen3:8b", pattern=r"^[a-zA-Z0-9_.:/-]{1,120}$")
     cloud_model: Literal[
         "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"
     ] = "gemini-3.8-flash"
+    openai_model: str = Field(default="gpt-4.1-mini", pattern=r"^[A-Za-z0-9_.:/-]{1,120}$")
+    openai_temperature: float = Field(default=0.6, ge=0, le=2)
+    openai_max_output_tokens: int = Field(default=2048, ge=16, le=32768)
+    openai_fallback: bool = False
     fallback: bool = True
     cloud_fallback: Literal["", "gemini-3.5-flash"] = ""
     mode: Literal["fast", "balanced", "quality"] = "balanced"
@@ -211,6 +215,10 @@ def apply_persisted(settings, store):
         )
         settings.gemini.model = model.cloud_model
         settings.gemini.fallback_model = model.cloud_fallback or None
+        settings.openai.model = model.openai_model
+        settings.openai.temperature = model.openai_temperature
+        settings.openai.max_output_tokens = model.openai_max_output_tokens
+        settings.openai.fallback = model.openai_fallback
         base = settings._ui_performance_base
         for name, value in base["local_controls"].items():
             setattr(settings.llm, name, value)

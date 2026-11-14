@@ -1,8 +1,9 @@
 import {icon} from './dashboard';
 import {seconds} from './workspace_state';
 
-type Times = Record<'stt'|'llm'|'tools'|'tts'|'total',number|null>;
-type Metrics = {requests:number;response_s:number|null;executed:number;success_pct:number|null;known_operations:number;unconfirmed_operations:number};
+type Times = Record<'stt'|'llm'|'tools'|'tts'|'total'|'vad_detection'|'recording'|'wake_word'|'intent'|'memory'|'context'|'llm_first_token'|'llm_generation'|'first_sound'|'response_complete'|'tokens_per_second'|'context_tokens'|'model_load',number|null>;
+type Metrics = {requests:number;response_s:number|null;first_sound_s:number|null;response_complete_s:number|null;pipeline:Times;executed:number;success_pct:number|null;known_operations:number;unconfirmed_operations:number};
+type KpiMetric='requests'|'response_s'|'executed'|'success_pct';
 type Diagnostic = {request_id:string;created_at:string;kind:string;category:string;model:string|null;status:string;times:Times;errors:string[]};
 export interface StatisticsData {
   start:string;end:string;timezone:string;unit:string;collection_enabled:boolean;metrics:Metrics;previous:Metrics;
@@ -14,7 +15,7 @@ export interface StatisticsData {
 const el=<K extends keyof HTMLElementTagNameMap>(tag:K,text='',cls=''):HTMLElementTagNameMap[K]=>{const n=document.createElement(tag);n.textContent=text;n.className=cls;return n;};
 const categories:Record<string,string>={conversations:'Обычные разговоры',devices:'Управление устройствами',scenarios:'Сценарии',search:'Поиск информации',other:'Другие команды'};
 const statuses:Record<string,string>={completed:'Завершено',success:'Успешно',failed:'Ошибка',partial_success:'Частично',running:'В работе',cancelled:'Отменено',interrupted:'Прервано',unknown:'Не подтверждено',unverified:'Не подтверждено',awaiting_confirmation:'Ждёт подтверждения',rejected:'Отклонено'};
-const series:[keyof Times,string,string][]=[['stt','Распознавание речи','#d49df4'],['llm','Первый токен LLM','#b05df2'],['tools','Инструменты','#eea0c8'],['tts','Генерация речи','#8b9df5'],['total','Полное время','#78d9ca']];
+const series:[keyof Times,string,string][]=[['stt','Распознавание речи','#d49df4'],['llm_first_token','Первый токен LLM','#b05df2'],['tts','Синтез речи','#8b9df5'],['first_sound','Первый звук','#e88cbd'],['response_complete','Ответ завершён','#78d9ca']];
 const colors=['#ac50ed','#ce94ef','#e88cbd','#8251ae','#54406e'];
 const tabs=[['overview','Обзор','grid'],['performance','Производительность','activity'],['conversations','Разговоры','chat'],['commands','Команды','bolt'],['scenarios','Сценарии','sparkles'],['apps','Приложения','monitor'],['reports','Отчёты','file']];
 function button(text:string,action:()=>void,cls=''):HTMLButtonElement {const n=el('button',text,cls);n.type='button';n.onclick=action;return n;}
@@ -61,10 +62,18 @@ export class StatisticsDashboard {
   showPerformance():void {this.selectTab('performance');}
   private changePeriod(days:number,start?:string,end?:string):void {for(const b of this.periods.querySelectorAll<HTMLButtonElement>('button'))b.setAttribute('aria-pressed',String(Number(b.dataset.days)===days));this.custom.hidden=true;this.periods.querySelector('[data-days="-1"]')?.setAttribute('aria-expanded','false');this.data=null;this.loading();this.render();this.query(days,start,end);}
   private selectTab(tab:string):void {this.tab=tab;for(const b of this.navigation.querySelectorAll<HTMLButtonElement>('button')){const active=b.dataset.tab===tab;b.setAttribute('aria-selected',String(active));b.tabIndex=active?0:-1;}document.getElementById('statistics-pane-performance')!.hidden=tab!=='performance';this.content.hidden=tab==='performance';this.content.id=tab==='performance'?'statistics-secondary-content':`statistics-pane-${tab}`;this.content.setAttribute('role','tabpanel');this.content.setAttribute('aria-labelledby',`statistics-tab-${tab}`);this.renderContent();}
-  private render():void {this.renderCards();this.renderContent();}
+  private render():void {this.renderCards();this.renderTimingCards();this.renderContent();}
+  private renderTimingCards():void {
+    const metrics=this.data?.metrics;if(!metrics)return;
+    const cards:[string,string,string][]=[
+      ['До первого звука',seconds(metrics.first_sound_s),'Звук может включать короткую реплику ожидания.'],
+      ['До полного завершения',seconds(metrics.response_complete_s),'От конца речи до окончания ответа; не смешивается с первым звуком.'],
+    ];
+    for(const [label,value,hint]of cards){const card=el('article','','statistics-kpi');const body=el('div');body.append(el('small',label),el('strong',value));card.title=hint;card.append(glyph('activity'),body);this.cards.append(card);}
+  }
   private renderCards():void {
     const m=this.data?.metrics,previous=this.data?.previous;
-    const values:[keyof Metrics,string,string,string][]=[...(this.data?.collection_enabled===false?[]:[['requests','Обращения к Чушпану','chat',m?String(m.requests):'—'] as [keyof Metrics,string,string,string]]),['response_s','Средняя задержка ответа','activity',seconds(m?.response_s)],...(this.data?.collection_enabled===false?[]:[['executed','Выполненные команды и сценарии','bolt',m?String(m.executed):'—'] as [keyof Metrics,string,string,string],['success_pct','Успешные операции','check',m?.success_pct==null?'—':`${m.success_pct.toFixed(0)} %`] as [keyof Metrics,string,string,string]])];
+    const values:[KpiMetric,string,string,string][]=[...(this.data?.collection_enabled===false?[]:[['requests','Обращения к Чушпану','chat',m?String(m.requests):'—'] as [KpiMetric,string,string,string]]),['response_s','До содержательного ответа','activity',seconds(m?.response_s)],...(this.data?.collection_enabled===false?[]:[['executed','Выполненные команды и сценарии','bolt',m?String(m.executed):'—'] as [KpiMetric,string,string,string],['success_pct','Успешные операции','check',m?.success_pct==null?'—':`${m.success_pct.toFixed(0)} %`] as [KpiMetric,string,string,string]])];
     this.cards.replaceChildren(...values.map(([key,label,name,value])=>{const card=el('article','','statistics-kpi');const body=el('div');body.append(el('small',label),el('strong',value));const foot=el('div','','statistics-kpi-foot');let delta='Нет сравнения';const before=previous?.[key],after=m?.[key];if(before!=null&&after!=null&&before>0){const change=(after-before)/before*100;delta=`${change>0?'+':''}${change.toFixed(0)} %`;foot.dataset.trend=change===0?'neutral':((key==='response_s'?change<0:change>0)?'good':'bad');}else if(before===0&&after!=null&&after>0)delta='Первые события';foot.append(el('span',delta));const bars=el('span','','statistics-mini');bars.setAttribute('aria-hidden','true');const recent=key==='requests'&&this.data?.metrics.requests?this.data.buckets.slice(-12):[];const max=Math.max(1,...recent.map(b=>b.requests));for(const b of recent){const bar=el('i');bar.style.height=`${b.requests?3+17*b.requests/max:0}px`;bars.append(bar);}foot.append(bars);body.append(foot);card.append(glyph(name),body);if(key==='response_s')card.title='До содержательного звука для голоса, до текста для чата. Только завершённые измеренные ответы.';if(key==='success_pct'||key==='executed')card.title=`Подтверждённые результаты команд и сценариев. Без подтверждения: ${m?.unconfirmed_operations??0}. Разговоры в процент не входят.`;return card;}));
   }
   private card(title:string,note:string):HTMLElement {const card=el('section','','statistics-card');card.append(el('h2',title),el('p',note,'statistics-caption'));return card;}
@@ -75,7 +84,7 @@ export class StatisticsDashboard {
     if(!this.data.collection_enabled){const card=this.card('Сбор событий выключен','Счётчики обращений и операций, история, категории и отчёты скрыты, пока сбор не включён в настройках. Сохранённые тайминги остаются доступны во вкладке «Производительность».');card.append(button('Настроить сбор событий',this.openCollection,'primary'));this.content.append(card);return;}
     if(this.tab==='overview'){
       if(!this.data.metrics.requests){const card=this.card('Пока нет данных за выбранный период','Обращения и распределение операций появятся, если включить сбор событий и использовать Чушпана. Время ответов и этапов всё равно доступно во вкладке «Производительность» по локальным диагностическим таймингам.');card.append(empty('Начни с разговора или команды','Выбери другой период, чтобы посмотреть ранее сохранённую активность. История запусков доступна во вкладке «Сценарии».'));card.append(button('Настроить сбор событий',this.openCollection,'primary'));this.content.append(card);return;}
-      const grid=el('div','','statistics-grid');grid.append(this.activity(),this.distribution(),this.latency());this.content.append(grid);
+      const grid=el('div','','statistics-grid');grid.append(this.activity(),this.distribution(),this.latency(),this.pipelineBreakdown());this.content.append(grid);
     }else if(this.tab==='scenarios')this.renderScenarios();
     else if(this.tab==='apps')this.renderApps();
     else if(this.tab==='reports')this.renderReports();
@@ -102,6 +111,22 @@ export class StatisticsDashboard {
     for(let i=0;i<4;i++){const value=max*i/3;chart.append(svg('line',{x1:'55',x2:'880',y1:String(y(value)),y2:String(y(value)),class:'statistics-gridline'}));const label=svg('text',{x:'43',y:String(y(value)+4),'text-anchor':'end'});label.textContent=value.toFixed(1);chart.append(label);}
     for(const [i,b]of data.buckets.entries())if(i%Math.max(1,Math.ceil(data.buckets.length/9))===0){const label=svg('text',{x:String(x(i)),y:'185','text-anchor':'middle'});label.textContent=b.label;chart.append(label);}
     for(const [key,label,color]of selected){let path='',connected=false;for(const [i,b]of data.buckets.entries()){const v=b.latency[key];if(v==null){connected=false;continue;}path+=`${connected?'L':'M'}${x(i)},${y(v)} `;connected=true;const dot=svg('circle',{cx:String(x(i)),cy:String(y(v)),r:'3',fill:color});const title=svg('title',{});title.textContent=`${b.label} · ${label}: ${seconds(v)}`;dot.append(title);chart.append(dot);}chart.append(svg('path',{d:path,fill:'none',stroke:color,'stroke-width':'2.5','stroke-linejoin':'round'}));}card.append(chart);return card;
+  }
+  private pipelineBreakdown():HTMLElement {
+    const metrics=this.data!.metrics.pipeline;
+    const card=this.card('Голосовой pipeline','Средние измерения по завершённым запросам. Отсутствующие этапы показаны прочерком.');
+    const rows:[keyof Times,string,string][]=[
+      ['vad_detection','Обнаружение речи','s'],['recording','Запись аудио','s'],['stt','Распознавание STT','s'],
+      ['wake_word','Проверка wake-word','s'],['intent','Определение намерения','s'],['memory','Поиск памяти','s'],
+      ['context','Подготовка контекста','s'],['llm_first_token','Ожидание первого токена LLM','s'],
+      ['llm_generation','Полная генерация LLM','s'],['tts','Синтез TTS','s'],['first_sound','Время до первого звука','s'],
+      ['response_complete','Время до полного завершения','s'],['tokens_per_second','Токенов в секунду','rate'],
+      ['context_tokens','Длина контекста, оценка токенов','count'],['model_load','Загрузка модели Ollama','s'],
+    ];
+    const table=el('div','','statistics-pipeline-grid');
+    for(const [key,label,unit]of rows){const row=el('div','','statistics-pipeline-row');const value=metrics[key];
+      row.append(el('span',label),el('strong',value==null?'—':unit==='s'?seconds(value):unit==='rate'?`${value.toFixed(1)} ток/с`:`${Math.round(value)} ток.`));table.append(row);}
+    card.append(table);return card;
   }
   private renderRequests(allowed:string[]):void {
     const card=this.card(this.tab==='conversations'?'История обращений':'Команды и операции','Сохранённые запросы за выбранный период. Нажми на строку для подробной трассы.');const sort=el('select');sort.setAttribute('aria-label','Сортировка запросов');for(const [value,label]of [['recent','Сначала новые'],['slow','Самые медленные']]){const option=el('option',label);option.value=value;sort.append(option);}sort.value=this.sort;sort.onchange=()=>{this.sort=sort.value;this.renderContent();};card.append(sort);const rows=this.data!.requests.filter(r=>allowed.includes(r.category)).sort((a,b)=>this.sort==='slow'?(b.times.total??-1)-(a.times.total??-1):b.created_at.localeCompare(a.created_at));

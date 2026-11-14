@@ -68,11 +68,40 @@ def stage_times(trace):
 
     model = next((s for s in stages if s["stage"] == "model_total"), None)
     token = trace.get("marks", {}).get("first_llm_token")
+    marks = trace.get("marks", {})
+    meta = trace.get("metadata", {})
+    measures = trace.get("metrics", {})
+
+    def since_speech(mark):
+        end = marks.get(mark)
+        start = marks.get("user_speech_end")
+        return max(0, end - start) if end is not None and start is not None else None
+
+    def model_elapsed():
+        return max(0, token - model["start_s"]) if token is not None and model else None
+
     return {
+        "vad_detection": duration({"vad_onset"}),
+        "recording": duration({"audio_recording"}),
         "stt": duration({"stt"}),
-        "llm": max(0, token - model["start_s"]) if token is not None and model else None,
+        "wake_word": duration({"wake_detection"}),
+        "intent": duration({"intent_detection"}),
+        "memory": duration({"memory_retrieval"}),
+        "context": duration({"context_preparation"}),
+        "llm": model_elapsed(),
+        "llm_first_token": model_elapsed(),
+        "llm_generation": duration({"model_total"}),
         "tools": duration({"tool_execution", "local_execution"}),
         "tts": duration({"tts_generation"}),
+        "first_sound": measures.get("speech_end_to_first_audio_s", since_speech("first_audio")),
+        "response_complete": measures.get("speech_end_to_completed_s")
+        if measures.get("speech_end_to_completed_s") is not None
+        else trace.get("total_s")
+        if trace.get("kind") == "voice"
+        else None,
+        "tokens_per_second": meta.get("tokens_per_second"),
+        "context_tokens": meta.get("context_estimated_tokens", meta.get("prompt_eval_count")),
+        "model_load": (meta["load_duration"] / 1e9 if meta.get("load_duration") is not None else None),
         "total": trace.get("total_s"),
     }
 
@@ -133,9 +162,34 @@ def dashboard(db, traces, previous, bounds, timezone):
             for r in rows
             if r["status"] == "completed" and r.get("first_content_s") is not None
         ]
+        pipeline_names = tuple(stage_times({}))
+        pipeline = {}
+        for name in pipeline_names:
+            values = [
+                times[name]
+                for row in rows
+                if row["status"] == "completed"
+                and (times := stage_times(row)).get(name) is not None
+            ]
+            pipeline[name] = sum(values) / len(values) if values else None
+        first_sound = [
+            stage_times(row)["first_sound"]
+            for row in rows
+            if row["kind"] == "voice" and row["status"] == "completed"
+            and stage_times(row)["first_sound"] is not None
+        ]
+        full_voice = [
+            stage_times(row)["response_complete"]
+            for row in rows
+            if row["kind"] == "voice" and row["status"] == "completed"
+            and stage_times(row)["response_complete"] is not None
+        ]
         return {
             "requests": len(rows),
             "response_s": sum(latency) / len(latency) if latency else None,
+            "first_sound_s": sum(first_sound) / len(first_sound) if first_sound else None,
+            "response_complete_s": sum(full_voice) / len(full_voice) if full_voice else None,
+            "pipeline": pipeline,
             "executed": success,
             "success_pct": 100 * success / len(known) if known else None,
             "known_operations": len(known),
