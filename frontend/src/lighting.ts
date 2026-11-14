@@ -370,7 +370,22 @@ export class LightingView {
         "lighting-muted",
       ),
     );
-    const actions = el("div", "", "lighting-toolbar");
+    const primaryControls = el("div", "", "lighting-primary-controls");
+    const powerToggle = this.button(
+      power === true ? "Выключить" : "Включить",
+      () => this.apply({ power: power !== true }, [device.id]),
+      power === true ? !!offBlock : !!onBlock,
+    );
+    powerToggle.className = "lighting-power-toggle";
+    powerToggle.setAttribute("role", "switch");
+    powerToggle.setAttribute("aria-checked", String(power === true));
+    powerToggle.setAttribute("aria-label", "Питание " + device.name);
+    primaryControls.append(powerToggle);
+    card.append(primaryControls);
+
+    const secondary = el("details", "", "lighting-extra-actions");
+    secondary.append(el("summary", "Дополнительные действия"));
+    const actions = el("div", "", "lighting-toolbar lighting-extra-toolbar");
     actions.append(
       this.button(
         "Вкл",
@@ -403,7 +418,12 @@ export class LightingView {
     const value = el("output", brightness.value + "%");
     brightness.oninput = () => (value.textContent = brightness.value + "%");
     if (device.features.brightness) {
-      actions.append(
+      const brightnessControl = el("div", "", "lighting-brightness-control");
+      const brightnessLabel = el("label", "Яркость");
+      brightnessLabel.htmlFor = `lighting-brightness-${device.id}`;
+      brightness.id = brightnessLabel.htmlFor;
+      brightnessControl.append(
+        brightnessLabel,
         brightness,
         value,
         this.button(
@@ -413,8 +433,8 @@ export class LightingView {
           brightness.disabled,
         ),
       );
+      card.append(brightnessControl);
     }
-    card.append(actions);
     const quick = el("div", "", "lighting-quick");
     for (const [name, color] of builtins) {
       const button = this.button(
@@ -426,7 +446,7 @@ export class LightingView {
       quick.append(button);
     }
     card.append(quick);
-    card.append(
+    actions.append(
       this.button("Таймер", () =>
         this.jobDialog(undefined, false, [device.id]),
       ),
@@ -438,7 +458,8 @@ export class LightingView {
         this.render();
       }),
     );
-    const details = el("details");
+    secondary.append(actions);
+    const details = el("details", "", "lighting-capability-details");
     details.append(
       el("summary", "Возможности и проверка протокола"),
       el("p", device.ble?.driver ?? "WLED JSON API"),
@@ -518,7 +539,7 @@ export class LightingView {
         );
       }
     }
-    card.append(details);
+    card.append(secondary, details);
     return card;
   }
   private probe(device: DeviceRecord, parameters: object): void {

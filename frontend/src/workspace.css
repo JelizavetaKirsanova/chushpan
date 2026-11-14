@@ -1,11 +1,5 @@
-:root {
-  --mono: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-  --bg: #101114; --panel: #181a1f; --white: #eeeef2; --text: #d1d3db;
-  --dim: #989ca8; --accent: #adbcdf; --cyan: #adbcdf; --ice: #d0dafa;
-  --amber: #bcb0d8; --green: #a0c3b5; --line: #30333c; --gutter: 22px;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-}
-body { margin: 0; background: #101114; color: var(--text); font-family: inherit; }
+/* Shared design tokens are defined once in neon_design_system.css. */
+body { margin: 0; }
 button { font: inherit; cursor: pointer; }
 button:disabled { cursor: default; opacity: .5; }
 button:focus-visible, canvas:focus-visible { outline: 2px solid #b4c8f7; outline-offset: 4px; }
