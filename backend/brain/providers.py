@@ -367,8 +367,6 @@ class FallbackClient:
         for candidate in [self.primary, self.secondary, self.local]:
             if candidate is None:
                 continue
-            cloud = getattr(candidate, "cloud_context", False)
-            provider = getattr(candidate, "provider", "ollama")
             health = self._health.get(candidate, {})
             remaining = max(0, self._cooldown_until.get(candidate, 0) - time.perf_counter())
             models.append(
@@ -420,6 +418,8 @@ class FallbackClient:
     async def wait_ready(self, timeout_s: float, interval_s: float = 1.0) -> bool:
         if self.primary.available:
             return True
+        if getattr(self.primary, "provider", None) == "openai":
+            return True  # The application and settings remain usable before key entry.
         return self.enabled and await self.local.wait_ready(timeout_s, interval_s)
 
     async def prime(self, system_prompt: str, tools=None, history=None) -> None:
@@ -427,7 +427,7 @@ class FallbackClient:
             await self.local.prime(system_prompt, tools, history)
         elif not self.primary.available:
             if getattr(self.primary, "provider", None) == "openai":
-                raise LLMError("OpenAI не настроен. Добавь ключ в настройках Чушпана.")
+                return  # The key can be entered later without restarting the app.
             raise LLMError(SETUP)
 
     async def warmup(self) -> None:
@@ -656,11 +656,11 @@ class FallbackClient:
                         else type(exc).__name__
                     )
                 self.switch_reason = {
-                    429: "Достигнут лимит запросов Gemini",
-                    503: "Gemini временно недоступен",
-                    504: "Gemini не ответил вовремя",
+                    429: "Временно превышен лимит запросов API",
+                    503: f"{provider} временно недоступен",
+                    504: f"{provider} не ответил вовремя",
                     401: "Нужно проверить API-ключ",
-                    403: "Доступ к Gemini запрещён",
+                    403: f"Доступ к {provider} запрещён",
                     404: "Настроенная модель недоступна",
                 }.get(
                     code,
@@ -674,7 +674,9 @@ class FallbackClient:
                     transient,
                 )
                 if cloud:
-                    self.last_error = str(exc) if isinstance(exc, LLMError) else f"Ошибка {provider}."
+                    self.last_error = (
+                        str(exc) if isinstance(exc, LLMError) else f"Ошибка {provider}."
+                    )
                     if not transient or emitted:
                         raise
                     self._cooldown_until[candidate] = time.perf_counter() + 30

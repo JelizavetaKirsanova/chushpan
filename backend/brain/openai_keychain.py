@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from backend.permission_policy import requests_allowed
 from backend.tools.registry import ToolError
 
 
@@ -79,10 +80,11 @@ class OpenAIKeychain:
 
     def read(self) -> str:
         security = self.security()
+        query = {**self.query(), security.kSecReturnData: True}
+        if not requests_allowed.get():
+            query[security.kSecUseAuthenticationUI] = security.kSecUseAuthenticationUIFail
         try:
-            code, data = security.SecItemCopyMatching(
-                {**self.query(), security.kSecReturnData: True}, None
-            )
+            code, data = security.SecItemCopyMatching(query, None)
         except Exception:
             raise ToolError("Не удалось прочитать ключ OpenAI из macOS Keychain.") from None
         if code == security.errSecItemNotFound:

@@ -52,6 +52,10 @@ _META = {
     "timeout_s",
     "eval_count",
     "prompt_eval_count",
+    "input_tokens",
+    "output_tokens",
+    "estimated_cost_usd",
+    "price_unknown",
     "eval_duration",
     "prompt_eval_duration",
     "load_duration",
@@ -343,9 +347,7 @@ class Profile:
             "tts_first_audio_s": first("tts_first_audio"),
             "tts_first_pcm_s": first("tts_first_pcm"),
             "first_sound_s": self.marks.get("first_audio"),
-            "response_complete_s": max(
-                0, self.elapsed() - self.marks["user_speech_end"]
-            )
+            "response_complete_s": max(0, self.elapsed() - self.marks["user_speech_end"])
             if self.ended is not None and "user_speech_end" in self.marks
             else None,
             "tokens_per_second": self.info.get("tokens_per_second"),

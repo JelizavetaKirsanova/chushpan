@@ -138,6 +138,14 @@ export class Workspace {
         row.title = `${model.successes} успешных · ${model.failures} ошибок · ${seconds(model.latency_s)}`;
         return row;
       }));
+    } else if (event.type === "openai_budget") {
+      if (event.warning && event.message) {
+        node("ai-reason").textContent = event.message;
+        node("ai-reason").dataset.activity = "warning";
+      } else if (node("ai-reason").dataset.activity === "warning") {
+        delete node("ai-reason").dataset.activity;
+        node("ai-reason").textContent = "Месячный лимит расходов OpenAI не достигнут.";
+      }
     } else if (event.type === "stats") {
       node("summary-response").textContent = seconds(event.response_s ?? event.voice_s);
       node("summary-model").textContent = event.model_used === false ? "Локально" : seconds(event.stages?.model_total ?? event.first_token_s);

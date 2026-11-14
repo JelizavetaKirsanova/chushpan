@@ -168,6 +168,7 @@ class OpenAIConfig(BaseModel):
     simple_timeout_s: float = Field(default=8, ge=1, le=30)
     stream_idle_timeout_s: float = Field(default=30, ge=1, le=120)
     fallback: bool = False
+    monthly_limit_usd: float = Field(default=0, ge=0, le=100000)
     context_messages: int = Field(default=24, ge=0, le=30)
     context_chars: int = Field(default=24000, ge=4000, le=100000)
 

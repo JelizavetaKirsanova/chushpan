@@ -27,12 +27,25 @@ class OpenAIRequestError(LLMError):
 
 
 def text_models(models) -> list[str]:
-    excluded = ("codex", "audio", "realtime", "transcribe", "tts", "embedding", "moderation", "search", "deep-research", "image")
+    excluded = (
+        "codex",
+        "audio",
+        "realtime",
+        "transcribe",
+        "tts",
+        "embedding",
+        "moderation",
+        "search",
+        "deep-research",
+        "image",
+    )
     ids = []
     for model in models:
         identifier = getattr(model, "id", "")
-        if isinstance(identifier, str) and identifier.startswith(("gpt-", "chat-")) and not any(
-            part in identifier.lower() for part in excluded
+        if (
+            isinstance(identifier, str)
+            and identifier.startswith(("gpt-", "chat-"))
+            and not any(part in identifier.lower() for part in excluded)
         ):
             ids.append(identifier)
     return sorted(set(ids))
@@ -44,6 +57,7 @@ class OpenAIClient:
 
     def __init__(self, cfg: OpenAIConfig, key: str, *, client: Any = None):
         self.cfg, self._key, self._client = cfg, key, client
+        self.on_usage = None
 
     @property
     def available(self):
@@ -121,7 +135,10 @@ class OpenAIClient:
                     )
                 elif content:
                     items.append(
-                        {"role": "user", "content": "Предыдущий результат инструмента (данные): " + str(content)}
+                        {
+                            "role": "user",
+                            "content": "Предыдущий результат инструмента (данные): " + str(content),
+                        }
                     )
             elif role == "assistant" and message.get("tool_calls"):
                 if content:
@@ -165,23 +182,40 @@ class OpenAIClient:
             return await self._sdk().responses.create(**payload)
         except Exception as exc:
             status = getattr(exc, "status_code", None)
-            param = getattr(getattr(exc, "body", None), "param", None)
             body = getattr(exc, "body", None)
             detail = body.get("error", {}) if isinstance(body, dict) else {}
+            param = getattr(exc, "param", None) or (
+                detail.get("param") if isinstance(detail, dict) else None
+            )
             error_code = getattr(exc, "code", None) or (
                 detail.get("code") if isinstance(detail, dict) else None
             )
             message = str(exc).lower()
-            if "temperature" in payload and (
-                param == "temperature"
-                or "temperature" in message and ("unsupported" in message or "not support" in message)
-            ):
-                payload = {k: v for k, v in payload.items() if k != "temperature"}
+            unsupported = (
+                param
+                if param in {"temperature", "max_output_tokens"}
+                else next(
+                    (
+                        name
+                        for name in ("temperature", "max_output_tokens")
+                        if name in message
+                        and ("unsupported" in message or "not support" in message)
+                    ),
+                    None,
+                )
+            )
+            if unsupported and unsupported in payload:
+                payload = {k: v for k, v in payload.items() if k != unsupported}
                 return await self._sdk().responses.create(**payload)
-            no_credits = error_code in {"insufficient_quota", "billing_not_active", "credits_exhausted"}
-            transient = not no_credits and (status in {429, 500, 502, 503, 504} or isinstance(
-                exc, (httpx.TimeoutException, httpx.NetworkError, TimeoutError)
-            ))
+            no_credits = error_code in {
+                "insufficient_quota",
+                "billing_not_active",
+                "credits_exhausted",
+            }
+            transient = not no_credits and (
+                status in {429, 500, 502, 503, 504}
+                or isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, TimeoutError))
+            )
             reason = (
                 "проверь API-ключ"
                 if status in {401, 403}
@@ -229,6 +263,7 @@ class OpenAIClient:
                 stream = await self._stream(payload)
                 calls = []
                 usage = None
+                completed = False
                 async for event in stream:
                     event_type = getattr(event, "type", "")
                     if event_type == "response.output_text.delta":
@@ -237,7 +272,9 @@ class OpenAIClient:
                         try:
                             arguments = json.loads(event.arguments)
                         except (TypeError, ValueError):
-                            raise LLMError("OpenAI вернул некорректные аргументы инструмента.") from None
+                            raise LLMError(
+                                "OpenAI вернул некорректные аргументы инструмента."
+                            ) from None
                         calls.append(
                             {
                                 "id": event.call_id,
@@ -247,19 +284,39 @@ class OpenAIClient:
                     elif event_type == "response.completed":
                         response = getattr(event, "response", None)
                         usage = getattr(response, "usage", None)
+                        completed = True
                     elif event_type in {"response.failed", "error"}:
                         raise LLMError("OpenAI не завершил генерацию. Команды не выполнялись.")
+                if not completed:
+                    raise LLMError("OpenAI прервал поток. Ответ неполный, команды не выполнялись.")
+                duration_ns = int((time.perf_counter() - started) * 1e9)
                 stats = {
                     "model": self.cfg.model,
                     "prompt_eval_count": getattr(usage, "input_tokens", None),
                     "eval_count": getattr(usage, "output_tokens", None),
-                    "total_duration": time.perf_counter() - started,
+                    "total_duration": duration_ns,
+                    "eval_duration": duration_ns,
                 }
+                from backend.brain.pricing import estimate
+
+                stats["input_tokens"] = stats["prompt_eval_count"]
+                stats["output_tokens"] = stats["eval_count"]
+                stats["estimated_cost_usd"] = estimate(
+                    self.cfg.model, stats["input_tokens"], stats["output_tokens"]
+                )
+                stats["price_unknown"] = stats["estimated_cost_usd"] is None
+                if self.on_usage:
+                    try:
+                        self.on_usage(dict(stats))
+                    except Exception:
+                        log.warning("OpenAI usage subscriber unavailable")
                 yield ChatChunk(done=True, tool_calls=calls, stats=stats)
         except OpenAIRequestError:
             raise
         except TimeoutError:
-            raise OpenAIRequestError(None, transient=True, reason="превышено время ожидания") from None
+            raise OpenAIRequestError(
+                None, transient=True, reason="превышено время ожидания"
+            ) from None
         except LLMError:
             raise
         except Exception as exc:
@@ -270,11 +327,14 @@ class OpenAIClient:
                 detail.get("code") if isinstance(detail, dict) else None
             )
             no_credits = error_code in {
-                "insufficient_quota", "billing_not_active", "credits_exhausted"
+                "insufficient_quota",
+                "billing_not_active",
+                "credits_exhausted",
             }
-            transient = not no_credits and (status in {429, 500, 502, 503, 504} or isinstance(
-                exc, (httpx.TimeoutException, httpx.NetworkError, TimeoutError)
-            ))
+            transient = not no_credits and (
+                status in {429, 500, 502, 503, 504}
+                or isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, TimeoutError))
+            )
             reason = (
                 "проверь API-ключ"
                 if status in {401, 403}

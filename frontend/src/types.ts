@@ -138,6 +138,7 @@ type HudPayload =
   | {type:"voice_recognition";text:string;result:string;reason:string;request_id:number;trace_id:string|null}
   | {type: "session"; phase?:string; paused?:boolean; recording?:boolean; active: boolean; listening: boolean; requires_wake: boolean; remaining_s: number; enabled: boolean; duration_s: number; nameless_interruptions: boolean; nameless_ready: boolean; interrupted: boolean; reason: string; addressee_strictness: "contextual" | "addressed"}
   | {type: "ai_status"; phase: string; provider: string | null; model: string | null; reason?: string | null; models: {model: string; provider: string; status: string; retry_in_s: number; successes: number; failures: number; latency_s: number | null; error: string | null}[]}
+  | {type: "openai_budget"; estimated_spend_usd: number | null; unknown_price_requests: number; limit_usd: number; warning: boolean; message?: string | null}
   | {type: "settings_info"; items: Record<string, string>}
   | {type: "activity"; phase: string}
   | {type: "notice"; message: string; error: boolean}

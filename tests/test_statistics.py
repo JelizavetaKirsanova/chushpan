@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 import pytest
 
 from backend.memory.store import MemoryStore
-from backend.statistics import period_range, stage_times
+from backend.statistics import dashboard, period_range, stage_times
 
 
 def save_trace(
@@ -62,6 +62,52 @@ def test_calendar_ranges_validate_custom_and_respect_dst():
     assert today[0].hour == 0 and today[1].hour == 12
     assert today[2].hour == 0 and today[3].hour == 12
     assert (period_range(365, "UTC")[1] - period_range(365, "UTC")[0]).days == 364
+
+
+def test_dashboard_sums_openai_usage_and_keeps_unpriced_requests_unknown(tmp_path):
+    store = MemoryStore(tmp_path / "usage.db")
+    try:
+        priced = {
+            "request_id": "priced",
+            "created_at": "2026-11-14T09:00:00+00:00",
+            "kind": "text",
+            "status": "completed",
+            "metadata": {
+                "provider": "openai",
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "estimated_cost_usd": 0.002,
+            },
+            "first_content_s": 0.4,
+            "total_s": 1.2,
+            "marks": {},
+            "stages": [],
+            "errors": [],
+        }
+        unknown = {
+            **priced,
+            "request_id": "unknown",
+            "created_at": "2026-11-14T10:00:00+00:00",
+            "metadata": {
+                "provider": "openai",
+                "input_tokens": 50,
+                "output_tokens": 10,
+                "price_unknown": True,
+            },
+        }
+        start = datetime(2026, 11, 14, tzinfo=UTC)
+        end = datetime(2026, 11, 15, tzinfo=UTC)
+        result = dashboard(store.db, [priced, unknown], [], (start, end, start, end), "UTC")
+        assert result["metrics"]["input_tokens"] == 1050
+        assert result["metrics"]["output_tokens"] == 210
+        assert result["metrics"]["estimated_cost_usd"] == 0.002
+        assert result["metrics"]["unknown_cost_requests"] == 1
+        priced_bucket = next(b for b in result["buckets"] if b["key"].endswith("T09"))
+        unknown_bucket = next(b for b in result["buckets"] if b["key"].endswith("T10"))
+        assert priced_bucket["cost_usd"] == 0.002
+        assert unknown_bucket["unknown_cost_requests"] == 1
+    finally:
+        store.close()
 
 
 def test_dashboard_uses_complete_selected_history_previous_period_and_receipts(tmp_path):
@@ -185,7 +231,11 @@ def test_voice_pipeline_reports_first_sound_and_full_completion_separately():
             ],
             "marks": {"user_speech_end": 0.0, "first_llm_token": 0.8, "first_audio": 3.2},
             "metrics": {"speech_end_to_completed_s": 5.0, "speech_end_to_first_audio_s": 3.2},
-            "metadata": {"tokens_per_second": 24.0, "context_estimated_tokens": 2048, "load_duration": 1_000_000_000},
+            "metadata": {
+                "tokens_per_second": 24.0,
+                "context_estimated_tokens": 2048,
+                "load_duration": 1_000_000_000,
+            },
             "total_s": 5.0,
         }
     )

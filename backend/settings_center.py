@@ -8,6 +8,8 @@ import hashlib
 import json
 import sqlite3
 import time
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from backend.brain.privacy import contains_secret
 from backend.context import RequestContext, request_scope
@@ -44,9 +46,11 @@ class SettingsCenter:
         self.input_devices = None
         self.pending_import = None
         self.original_client = conv.llm
+        self.attach_openai_usage(conv.llm)
         self._publish_scheduled = False
         self.closed = False
         self.clients = []
+        self._openai_pending_usage = {}
         self.defaults = {
             "commands": CommandControls(
                 context_s=settings.tools.control_context_s,
@@ -67,8 +71,9 @@ class SettingsCenter:
                 cloud_model=settings.gemini.model,
                 openai_model=settings.openai.model,
                 openai_temperature=settings.openai.temperature,
-                openai_max_output_tokens=settings.openai.max_output_tokens,
+                openai_max_output=settings.openai.max_output_tokens,
                 openai_fallback=settings.openai.fallback,
+                openai_monthly_limit_usd=settings.openai.monthly_limit_usd,
                 cloud_fallback=settings.gemini.fallback_model or "",
                 fallback=settings.llm.fallback,
                 streaming=settings.llm.streaming and settings.gemini.streaming,
@@ -138,6 +143,7 @@ class SettingsCenter:
                     **self.model_status.get("openai", {}),
                     "credentials": self.openai_keychain().status(),
                 },
+                "openai_usage": self.openai_monthly_usage(),
             },
             "location": automations.locations.current() if automations else {},
             "places": [p.model_dump() for p in automations.locations.list()] if automations else [],
@@ -398,6 +404,74 @@ class SettingsCenter:
         if not self.conv.device.authenticated:
             raise ValueError("Настройки доступны только авторизованной сессии.")
 
+    def openai_monthly_usage(self, extra_cost=None):
+        now = datetime.now(ZoneInfo(self.s.location.tz_name))
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
+        try:
+            rows = self.store.db.execute(
+                "SELECT data FROM request_traces WHERE created_at>=? AND kind!='activation'",
+                (start.isoformat(),),
+            )
+        except sqlite3.Error:
+            rows = []
+        known, unknown = 0.0, 0
+        for row in rows:
+            try:
+                metadata = json.loads(row[0]).get("metadata", {})
+            except (ValueError, TypeError):
+                continue
+            if metadata.get("provider") != "openai":
+                continue
+            cost = metadata.get("estimated_cost_usd")
+            if isinstance(cost, (int, float)):
+                known += cost
+            elif metadata.get("price_unknown"):
+                unknown += 1
+        if isinstance(extra_cost, (int, float)):
+            known += extra_cost
+        limit = self.s.openai.monthly_limit_usd
+        return {
+            "estimated_spend_usd": round(known, 6) if known or not unknown else None,
+            "unknown_price_requests": unknown,
+            "limit_usd": limit,
+            "warning": bool(limit and known >= limit * 0.8),
+        }
+
+    def attach_openai_usage(self, llm):
+        client = getattr(llm, "primary", llm)
+        if getattr(client, "provider", None) == "openai":
+            client.on_usage = self.openai_usage_event
+
+    def openai_usage_event(self, usage):
+        from backend.latency import current
+
+        profile = current.get()
+        request_id = profile.request_id if profile else ""
+        if request_id:
+            if request_id not in self._openai_pending_usage:
+                self._openai_pending_usage.clear()
+                self._openai_pending_usage[request_id] = {"cost": 0.0, "unknown": False}
+            pending = self._openai_pending_usage[request_id]
+            if isinstance(usage.get("estimated_cost_usd"), (int, float)):
+                pending["cost"] += usage["estimated_cost_usd"]
+            else:
+                pending["unknown"] = True
+        else:
+            pending = {"cost": usage.get("estimated_cost_usd") or 0.0, "unknown": False}
+        summary = self.openai_monthly_usage(pending["cost"] if not pending["unknown"] else None)
+        if pending["unknown"]:
+            summary["estimated_spend_usd"] = None
+            summary["unknown_price_requests"] += 1
+        self.bus.publish(
+            {
+                "type": "openai_budget",
+                **summary,
+                "message": "Расходы OpenAI приближаются к месячному лимиту."
+                if summary["warning"]
+                else None,
+            }
+        )
+
     @staticmethod
     def openai_keychain():
         from backend.brain.openai_keychain import OpenAIKeychain
@@ -419,7 +493,9 @@ class SettingsCenter:
                 "models": self.model_status.get("openai", {}).get("models", []),
             }
             message = str(exc)
-            self.publish(error=message if not contains_secret(message) else "Проверь настройки OpenAI.")
+            self.publish(
+                error=message if not contains_secret(message) else "Проверь настройки OpenAI."
+            )
             return
         self.model_status["openai"] = {
             "status": "connected",
@@ -490,7 +566,9 @@ class SettingsCenter:
                 if self.s.llm.provider == "openai":
                     await self.save("models", self.value("models"))
                 self.publish(
-                    message="Ключ сохранён в macOS Keychain." if key else "Ключ удалён из macOS Keychain."
+                    message="Ключ сохранён в macOS Keychain."
+                    if key
+                    else "Ключ удалён из macOS Keychain."
                 )
                 return
             elif op == "openai_check":
@@ -498,6 +576,13 @@ class SettingsCenter:
                 return
             elif op == "openai_models":
                 await self.openai_models()
+                return
+            elif op == "openai_pricing":
+                from backend.brain.pricing import refresh
+
+                result = await asyncio.to_thread(refresh)
+                self.model_status["openai_pricing"] = result
+                self.publish(message=f"Тарифы OpenAI обновлены: {result['models']} моделей.")
                 return
             if op == "save":
                 await self.save(value["category"], value["value"])
@@ -713,10 +798,11 @@ class SettingsCenter:
                             provider=fresh.llm.provider,
                             local_model=fresh.llm.model,
                             cloud_model=fresh.gemini.model,
-                        openai_model=fresh.openai.model,
-                        openai_temperature=fresh.openai.temperature,
-                        openai_max_output_tokens=fresh.openai.max_output_tokens,
-                        openai_fallback=fresh.openai.fallback,
+                            openai_model=fresh.openai.model,
+                            openai_temperature=fresh.openai.temperature,
+                            openai_max_output=fresh.openai.max_output_tokens,
+                            openai_fallback=fresh.openai.fallback,
+                            openai_monthly_limit_usd=fresh.openai.monthly_limit_usd,
                             cloud_fallback=fresh.gemini.fallback_model or "",
                             fallback=fresh.llm.fallback,
                         ).model_dump(),
@@ -764,6 +850,7 @@ class SettingsCenter:
 
             await self.conv.settle()
             client = create_llm(self.s)
+            self.attach_openai_usage(client)
             if hasattr(client, "on_status"):
                 client.on_status = self.bus.publish
             self.clients.append(client)

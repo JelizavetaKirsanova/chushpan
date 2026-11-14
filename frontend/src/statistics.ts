@@ -2,12 +2,12 @@ import {icon} from './dashboard';
 import {seconds} from './workspace_state';
 
 type Times = Record<'stt'|'llm'|'tools'|'tts'|'total'|'vad_detection'|'recording'|'wake_word'|'intent'|'memory'|'context'|'llm_first_token'|'llm_generation'|'first_sound'|'response_complete'|'tokens_per_second'|'context_tokens'|'model_load',number|null>;
-type Metrics = {requests:number;response_s:number|null;first_sound_s:number|null;response_complete_s:number|null;pipeline:Times;executed:number;success_pct:number|null;known_operations:number;unconfirmed_operations:number};
-type KpiMetric='requests'|'response_s'|'executed'|'success_pct';
+type Metrics = {requests:number;response_s:number|null;first_sound_s:number|null;response_complete_s:number|null;pipeline:Times;executed:number;success_pct:number|null;known_operations:number;unconfirmed_operations:number;input_tokens?:number;output_tokens?:number;estimated_cost_usd?:number|null;unknown_cost_requests?:number};
+type KpiMetric='requests'|'response_s'|'executed'|'success_pct'|'estimated_cost_usd';
 type Diagnostic = {request_id:string;created_at:string;kind:string;category:string;model:string|null;status:string;times:Times;errors:string[]};
 export interface StatisticsData {
   start:string;end:string;timezone:string;unit:string;collection_enabled:boolean;metrics:Metrics;previous:Metrics;
-  buckets:{key:string;label:string;requests:number;latency:Times}[];
+  buckets:{key:string;label:string;requests:number;latency:Times;cost_usd?:number|null;input_tokens?:number;output_tokens?:number;unknown_cost_requests?:number}[];
   distribution:Record<string,number>;requests:Diagnostic[];
   scenarios:{id:string;name:string;status:string;started_at:string;duration_s?:number;error?:string;steps:{path:string;status:string;duration_s?:number;error?:string;reason?:string;result?:unknown}[]}[];
   apps:{name:string;seconds:number}[];
@@ -73,7 +73,7 @@ export class StatisticsDashboard {
   }
   private renderCards():void {
     const m=this.data?.metrics,previous=this.data?.previous;
-    const values:[KpiMetric,string,string,string][]=[...(this.data?.collection_enabled===false?[]:[['requests','Обращения к Чушпану','chat',m?String(m.requests):'—'] as [KpiMetric,string,string,string]]),['response_s','До содержательного ответа','activity',seconds(m?.response_s)],...(this.data?.collection_enabled===false?[]:[['executed','Выполненные команды и сценарии','bolt',m?String(m.executed):'—'] as [KpiMetric,string,string,string],['success_pct','Успешные операции','check',m?.success_pct==null?'—':`${m.success_pct.toFixed(0)} %`] as [KpiMetric,string,string,string]])];
+    const spend=m?.estimated_cost_usd==null?(m?.unknown_cost_requests?'Стоимость неизвестна':'—'):`$${m.estimated_cost_usd.toFixed(4)}${m.unknown_cost_requests?` · ещё ${m.unknown_cost_requests} без тарифа`:''}`;const values:[KpiMetric,string,string,string][]=[...(this.data?.collection_enabled===false?[]:[['requests','Обращения к Чушпану','chat',m?String(m.requests):'—'] as [KpiMetric,string,string,string]]),['response_s','До содержательного ответа','activity',seconds(m?.response_s)],...(this.data?.collection_enabled===false?[]:[['executed','Выполненные команды и сценарии','bolt',m?String(m.executed):'—'] as [KpiMetric,string,string,string],['success_pct','Успешные операции','check',m?.success_pct==null?'—':`${m.success_pct.toFixed(0)} %`] as [KpiMetric,string,string,string]]),...(m?.input_tokens||m?.output_tokens||m?.unknown_cost_requests?[['estimated_cost_usd','Расход OpenAI за период','chart',spend] as [KpiMetric,string,string,string]]:[])];
     this.cards.replaceChildren(...values.map(([key,label,name,value])=>{const card=el('article','','statistics-kpi');const body=el('div');body.append(el('small',label),el('strong',value));const foot=el('div','','statistics-kpi-foot');let delta='Нет сравнения';const before=previous?.[key],after=m?.[key];if(before!=null&&after!=null&&before>0){const change=(after-before)/before*100;delta=`${change>0?'+':''}${change.toFixed(0)} %`;foot.dataset.trend=change===0?'neutral':((key==='response_s'?change<0:change>0)?'good':'bad');}else if(before===0&&after!=null&&after>0)delta='Первые события';foot.append(el('span',delta));const bars=el('span','','statistics-mini');bars.setAttribute('aria-hidden','true');const recent=key==='requests'&&this.data?.metrics.requests?this.data.buckets.slice(-12):[];const max=Math.max(1,...recent.map(b=>b.requests));for(const b of recent){const bar=el('i');bar.style.height=`${b.requests?3+17*b.requests/max:0}px`;bars.append(bar);}foot.append(bars);body.append(foot);card.append(glyph(name),body);if(key==='response_s')card.title='До содержательного звука для голоса, до текста для чата. Только завершённые измеренные ответы.';if(key==='success_pct'||key==='executed')card.title=`Подтверждённые результаты команд и сценариев. Без подтверждения: ${m?.unconfirmed_operations??0}. Разговоры в процент не входят.`;return card;}));
   }
   private card(title:string,note:string):HTMLElement {const card=el('section','','statistics-card');card.append(el('h2',title),el('p',note,'statistics-caption'));return card;}
@@ -81,10 +81,10 @@ export class StatisticsDashboard {
     if(this.tab==='performance')return;
     this.content.replaceChildren();
     if(!this.data){const state=empty('Статистика ждёт первых событий','Показатели обращений используют журнал аналитики, который выключен по умолчанию. Время ответа, этапы и результаты сценариев показываются отдельно из локальных диагностических таймингов.');state.append(button('Настроить сбор событий',this.openCollection,'primary'));this.content.append(state);return;}
-    if(!this.data.collection_enabled){const card=this.card('Сбор событий выключен','Счётчики обращений и операций, история, категории и отчёты скрыты, пока сбор не включён в настройках. Сохранённые тайминги остаются доступны во вкладке «Производительность».');card.append(button('Настроить сбор событий',this.openCollection,'primary'));this.content.append(card);return;}
+    if(!this.data.collection_enabled){const card=this.card('Сбор событий выключен','Счётчики обращений и операций, история, категории и отчёты скрыты, пока сбор не включён в настройках. Сохранённые тайминги остаются доступны во вкладке «Производительность».');card.append(button('Настроить сбор событий',this.openCollection,'primary'));this.content.append(card);if(this.tab==='overview')this.content.append(this.spending());return;}
     if(this.tab==='overview'){
       if(!this.data.metrics.requests){const card=this.card('Пока нет данных за выбранный период','Обращения и распределение операций появятся, если включить сбор событий и использовать Чушпана. Время ответов и этапов всё равно доступно во вкладке «Производительность» по локальным диагностическим таймингам.');card.append(empty('Начни с разговора или команды','Выбери другой период, чтобы посмотреть ранее сохранённую активность. История запусков доступна во вкладке «Сценарии».'));card.append(button('Настроить сбор событий',this.openCollection,'primary'));this.content.append(card);return;}
-      const grid=el('div','','statistics-grid');grid.append(this.activity(),this.distribution(),this.latency(),this.pipelineBreakdown());this.content.append(grid);
+      const grid=el('div','','statistics-grid');grid.append(this.activity(),this.distribution(),this.latency(),this.pipelineBreakdown(),this.spending());this.content.append(grid);
     }else if(this.tab==='scenarios')this.renderScenarios();
     else if(this.tab==='apps')this.renderApps();
     else if(this.tab==='reports')this.renderReports();
@@ -127,6 +127,12 @@ export class StatisticsDashboard {
     for(const [key,label,unit]of rows){const row=el('div','','statistics-pipeline-row');const value=metrics[key];
       row.append(el('span',label),el('strong',value==null?'—':unit==='s'?seconds(value):unit==='rate'?`${value.toFixed(1)} ток/с`:`${Math.round(value)} ток.`));table.append(row);}
     card.append(table);return card;
+  }
+  private spending():HTMLElement {
+    const metrics=this.data!.metrics;const card=this.card('Расходы API OpenAI','Локальная оценка по опубликованным тарифам и токенам ответа. Не является биллингом OpenAI. Выбери период выше: день, 7 дней или 30 дней.');
+    card.append(el('p',`Вход: ${metrics.input_tokens??0} ток. · выход: ${metrics.output_tokens??0} ток. · ${metrics.estimated_cost_usd==null?'Стоимость неизвестна':`оценка $${metrics.estimated_cost_usd.toFixed(4)}`}${metrics.unknown_cost_requests?` · неизвестно для ${metrics.unknown_cost_requests} запросов`:''}`,'statistics-caption'));
+    const rows=this.data!.buckets.filter(bucket=>bucket.input_tokens||bucket.output_tokens||bucket.unknown_cost_requests);if(!rows.length)card.append(empty('Расходов OpenAI пока нет','После обновления тарифов и первого ответа OpenAI здесь появятся дневные суммы.'));
+    for(const row of rows){const line=el('div','','statistics-pipeline-row');line.append(el('span',row.label),el('strong',row.cost_usd==null?(row.unknown_cost_requests?'Стоимость неизвестна':'—'):`$${row.cost_usd.toFixed(4)}`));card.append(line);}return card;
   }
   private renderRequests(allowed:string[]):void {
     const card=this.card(this.tab==='conversations'?'История обращений':'Команды и операции','Сохранённые запросы за выбранный период. Нажми на строку для подробной трассы.');const sort=el('select');sort.setAttribute('aria-label','Сортировка запросов');for(const [value,label]of [['recent','Сначала новые'],['slow','Самые медленные']]){const option=el('option',label);option.value=value;sort.append(option);}sort.value=this.sort;sort.onchange=()=>{this.sort=sort.value;this.renderContent();};card.append(sort);const rows=this.data!.requests.filter(r=>allowed.includes(r.category)).sort((a,b)=>this.sort==='slow'?(b.times.total??-1)-(a.times.total??-1):b.created_at.localeCompare(a.created_at));

@@ -543,7 +543,21 @@ class Conversation:
                     messages, tools=[] if self._text_only_request() else self._schemas
                 ):
                     if profile:
-                        profile.update(**chunk.stats)
+                        usage = dict(chunk.stats)
+                        if (
+                            usage.get("provider") == "openai"
+                            or profile.info.get("provider") == "openai"
+                        ):
+                            for key in ("input_tokens", "output_tokens"):
+                                if isinstance(usage.get(key), int):
+                                    usage[key] += profile.info.get(key, 0) or 0
+                            if usage.get("price_unknown") is True:
+                                usage["estimated_cost_usd"] = None
+                            elif isinstance(usage.get("estimated_cost_usd"), (int, float)):
+                                usage["estimated_cost_usd"] += (
+                                    profile.info.get("estimated_cost_usd", 0) or 0
+                                )
+                        profile.update(**usage)
                     if first_text and chunk.content:
                         record("model_first_text", time.perf_counter() - started)
                         if profile:

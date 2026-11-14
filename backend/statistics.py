@@ -101,7 +101,9 @@ def stage_times(trace):
         else None,
         "tokens_per_second": meta.get("tokens_per_second"),
         "context_tokens": meta.get("context_estimated_tokens", meta.get("prompt_eval_count")),
-        "model_load": (meta["load_duration"] / 1e9 if meta.get("load_duration") is not None else None),
+        "model_load": (
+            meta["load_duration"] / 1e9 if meta.get("load_duration") is not None else None
+        ),
         "total": trace.get("total_s"),
     }
 
@@ -172,16 +174,26 @@ def dashboard(db, traces, previous, bounds, timezone):
                 and (times := stage_times(row)).get(name) is not None
             ]
             pipeline[name] = sum(values) / len(values) if values else None
+        usage = [
+            r.get("metadata", {}) for r in rows if r.get("metadata", {}).get("provider") == "openai"
+        ]
+        priced = [
+            u["estimated_cost_usd"]
+            for u in usage
+            if isinstance(u.get("estimated_cost_usd"), (int, float))
+        ]
         first_sound = [
             stage_times(row)["first_sound"]
             for row in rows
-            if row["kind"] == "voice" and row["status"] == "completed"
+            if row["kind"] == "voice"
+            and row["status"] == "completed"
             and stage_times(row)["first_sound"] is not None
         ]
         full_voice = [
             stage_times(row)["response_complete"]
             for row in rows
-            if row["kind"] == "voice" and row["status"] == "completed"
+            if row["kind"] == "voice"
+            and row["status"] == "completed"
             and stage_times(row)["response_complete"] is not None
         ]
         return {
@@ -194,6 +206,10 @@ def dashboard(db, traces, previous, bounds, timezone):
             "success_pct": 100 * success / len(known) if known else None,
             "known_operations": len(known),
             "unconfirmed_operations": len(outcomes) - len(known),
+            "input_tokens": sum(u.get("input_tokens", 0) or 0 for u in usage),
+            "output_tokens": sum(u.get("output_tokens", 0) or 0 for u in usage),
+            "estimated_cost_usd": sum(priced) if priced else None,
+            "unknown_cost_requests": sum(u.get("price_unknown") is True for u in usage),
         }
 
     span = ((end - timedelta(microseconds=1)).date() - start.date()).days + 1
@@ -213,6 +229,10 @@ def dashboard(db, traces, previous, bounds, timezone):
                 "label": cursor.strftime({"hour": "%H:00", "day": "%d.%m", "month": "%m.%Y"}[unit]),
                 "requests": 0,
                 "values": {name: [] for name in stage_times({})},
+                "cost_usd": [],
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "unknown_cost_requests": 0,
             },
         )
         cursor += timedelta(hours=1) if unit == "hour" else timedelta(days=1)
@@ -225,6 +245,14 @@ def dashboard(db, traces, previous, bounds, timezone):
         bucket = buckets.get(key(datetime.fromisoformat(trace["created_at"]).astimezone(zone)))
         if bucket:
             bucket["requests"] += 1
+            metadata = trace.get("metadata", {})
+            if metadata.get("provider") == "openai":
+                bucket["input_tokens"] += metadata.get("input_tokens", 0) or 0
+                bucket["output_tokens"] += metadata.get("output_tokens", 0) or 0
+                if isinstance(metadata.get("estimated_cost_usd"), (int, float)):
+                    bucket["cost_usd"].append(metadata["estimated_cost_usd"])
+                elif metadata.get("price_unknown"):
+                    bucket["unknown_cost_requests"] += 1
             if trace["status"] == "completed":
                 for name, value in times.items():
                     if value is not None:
@@ -242,6 +270,7 @@ def dashboard(db, traces, previous, bounds, timezone):
             }
         )
     for bucket in buckets.values():
+        bucket["cost_usd"] = sum(bucket["cost_usd"]) if bucket["cost_usd"] else None
         bucket["latency"] = {
             k: sum(v) / len(v) if v else None for k, v in bucket.pop("values").items()
         }
