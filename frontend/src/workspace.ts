@@ -64,8 +64,11 @@ export class Workspace {
     if (!document.dispatchEvent(new CustomEvent("workspace:navigate", {detail: view, cancelable: true}))) return;
     document.querySelector<HTMLElement>(".hud")!.dataset.view = view;
     const parent = ({history: 'home', calendar: 'home', day: 'home', notes: 'memory', privacy: 'settings', diagnostics: 'performance'} as Record<string, string>)[view] ?? view;
-    document.querySelectorAll<HTMLButtonElement>(".workspace-nav button[data-view]").forEach(button => {
-      if (button.dataset.view === parent) button.setAttribute("aria-current", "page");
+    document.querySelectorAll<HTMLButtonElement>(".workspace-nav button[data-view], .chat-navigation button[data-go]").forEach(button => {
+      const selected = button.closest(".workspace-nav")
+        ? button.dataset.view === parent
+        : button.dataset.go === view;
+      if (selected) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     });
     if (view === "history") {

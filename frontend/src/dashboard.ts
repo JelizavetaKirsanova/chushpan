@@ -235,12 +235,15 @@ export class DashboardView {
     }
   }
   private renderRecent(conversations: ConversationItem[]): void {
-    const target = node('recent-conversations');
-    target.replaceChildren(...conversations.filter(c => !c.deleted_at).slice(0, 7).map(c => {
-      const control = button(c.title || c.preview || `Разговор ${c.id}`, () => { this.navigate('history'); this.search({query: (node('recent-search') as HTMLInputElement).value, selected: c.id}); }, 'recent-conversation');
-      const mark = el('span', c.pinned ? '⌁' : '♡'); control.prepend(mark); control.title = c.title || c.preview || `Разговор ${c.id}`; return control;
-    }));
-    if (!target.children.length) target.append(el('p', 'Пока нет разговоров', 'muted'));
+    const items = conversations.filter(c => !c.deleted_at).slice(0, 7);
+    for (const target of [node('recent-conversations'), node('home-recent-conversations')]) {
+      target.replaceChildren(...items.map(c => {
+        const title = c.title || c.preview || `Разговор ${c.id}`;
+        const control = button(title, () => { this.navigate('history'); this.search({query: (node('recent-search') as HTMLInputElement).value, selected: c.id}); }, 'recent-conversation');
+        const mark = el('span', c.pinned ? '⌁' : '♡'); control.prepend(mark); control.title = title; return control;
+      }));
+      if (!target.children.length) target.append(el('p', 'Пока нет разговоров', 'muted'));
+    }
   }
   private dateLabel(day: string): string { return new Date(`${day}T12:00:00Z`).toLocaleDateString('ru-RU', {weekday: 'short', day: 'numeric', month: 'long', timeZone: 'UTC'}); }
   private time(value: string): string { return new Date(value).toLocaleTimeString('ru-RU', {timeZone: this.data?.timezone, hour: '2-digit', minute: '2-digit'}); }
