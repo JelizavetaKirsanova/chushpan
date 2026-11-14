@@ -165,6 +165,29 @@ def test_authentication_replay_origin_stale_request_disconnect_and_revoke(tmp_pa
     asyncio.run(go())
 
 
+def test_public_certificate_route_returns_only_the_pinning_certificate(tmp_path):
+    async def go():
+        memory, _, service = setup(tmp_path)
+        service.ca = b"public test certificate"
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=service.application()), base_url=service.url
+        ) as client:
+            result = await client.get("/api/certificate")
+            assert result.status_code == 200
+            assert result.content == service.ca
+            assert result.headers["cache-control"] == "no-store"
+            assert result.headers["content-type"].startswith("application/pkix-cert")
+        service.ca = None
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=service.application()), base_url=service.url
+        ) as client:
+            assert (await client.get("/api/certificate")).status_code == 503
+        await service.close()
+        memory.close()
+
+    asyncio.run(go())
+
+
 def test_commands_are_once_only_expiring_and_cannot_reuse_ids_for_different_args(tmp_path):
     async def go():
         memory, tools, service = setup(tmp_path)
@@ -188,6 +211,112 @@ def test_commands_are_once_only_expiring_and_cannot_reuse_ids_for_different_args
             )
         with pytest.raises(ValueError, match="не разрешена"):
             service.submit(peer, {**command, "operation": "shell"})
+        await service.close()
+        memory.close()
+
+    asyncio.run(go())
+
+
+def test_remote_scenario_passes_explicit_version_and_values_to_existing_runner(tmp_path):
+    async def go():
+        memory, tools, service = setup(tmp_path)
+        _, jwk, device = identity()
+        scenario_id = "1" * 32
+        scenario = SimpleNamespace(id=scenario_id, revision=7, name="Тест")
+        tools.automations = SimpleNamespace(store=SimpleNamespace(get=lambda identifier: scenario))
+        trust(service, jwk, device, capabilities=["scenario"])
+        command = {
+            "id": secrets.token_hex(16),
+            "operation": "scenario",
+            "arguments": {
+                "id": scenario_id,
+                "revision": 7,
+                "variant": "2" * 32,
+                "values": {"room": "study"},
+            },
+            "expires": time.time() + 60,
+        }
+        service.submit(service.store.peer(device), command)
+        await asyncio.gather(*list(service.commands.values()))
+        assert tools.call.await_args.args == (
+            "run_scenario",
+            {
+                "id": scenario_id,
+                "revision": 7,
+                "variant": "2" * 32,
+                "values": '{"room": "study"}',
+            },
+        )
+        assert memory.db.execute("SELECT status FROM sync_commands").fetchone()[0] == "completed"
+        await service.close()
+        memory.close()
+
+    asyncio.run(go())
+
+
+def test_remote_status_exposes_only_scenario_input_names_and_kinds(tmp_path):
+    memory, _, service = setup(tmp_path)
+    scenario = SimpleNamespace(
+        id="1" * 32,
+        name="Вечерний свет",
+        revision=3,
+        enabled=True,
+        variants=[],
+        variables=[SimpleNamespace(name="brightness", kind="number", default=45)],
+    )
+    service.tools.automations = SimpleNamespace(store=SimpleNamespace(list=lambda: [scenario]))
+    status = service.remote_status(
+        {
+            "id": "d" * 64,
+            "capabilities": ["scenario"],
+            "categories": [],
+            "name": "iPhone",
+        }
+    )
+    assert status["scenarios"] == [
+        {
+            "id": scenario.id,
+            "name": scenario.name,
+            "revision": 3,
+            "variants": [],
+            "variables": [{"name": "brightness", "kind": "number"}],
+        }
+    ]
+    assert "default" not in status["scenarios"][0]["variables"][0]
+    asyncio.run(service.close())
+    memory.close()
+
+
+def test_remote_led_action_uses_existing_device_command_without_direct_ble(tmp_path):
+    async def go():
+        memory, tools, service = setup(tmp_path)
+        _, jwk, device = identity()
+        trust(service, jwk, device, capabilities=["devices"])
+        command = {
+            "id": secrets.token_hex(16),
+            "operation": "device",
+            "arguments": {
+                "target": "configured-led",
+                "action": "led",
+                "color": "#8A28CC",
+                "brightness": 55,
+                "power": True,
+            },
+            "expires": time.time() + 60,
+        }
+        service.submit(service.store.peer(device), command)
+        await asyncio.gather(*list(service.commands.values()))
+        assert tools.call.await_args.args == (
+            "device_command",
+            {
+                "target": "configured-led",
+                "action": "led",
+                "color": "#8A28CC",
+                "brightness": 55,
+                "power": True,
+            },
+        )
+        assert memory.db.execute("SELECT status FROM sync_commands").fetchone()[0] == "completed"
         await service.close()
         memory.close()
 

@@ -176,6 +176,19 @@ class DeviceSync(Center):
         async def style():
             return FileResponse(CLIENT / "client.css", media_type="text/css")
 
+        @app.get("/api/certificate")
+        async def certificate():
+            # The CA is public. Mobile clients fetch it during pairing and compare its
+            # SHA-256 fingerprint with the value shown in the authenticated Mac UI.
+            # Commands and personal data still require the signed device protocol below.
+            if not self.ca:
+                return Response(status_code=503)
+            return Response(
+                self.ca,
+                media_type="application/pkix-cert",
+                headers={"Cache-Control": "no-store"},
+            )
+
         @app.post("/api/{operation}")
         async def api(operation: str, request: Request):
             try:
@@ -311,7 +324,25 @@ class DeviceSync(Center):
         scenarios = []
         if "scenario" in peer["capabilities"] and self.tools.automations:
             scenarios = [
-                {"id": s.id, "name": s.name, "revision": s.revision}
+                {
+                    "id": s.id,
+                    "name": s.name,
+                    "revision": s.revision,
+                    "variants": [
+                        {
+                            "id": variant.id,
+                            "name": variant.name,
+                            "place_id": variant.place_id,
+                            "enabled": variant.enabled,
+                        }
+                        for variant in s.variants
+                        if variant.enabled
+                    ],
+                    "variables": [
+                        {"name": variable.name, "kind": variable.kind}
+                        for variable in getattr(s, "variables", [])
+                    ],
+                }
                 for s in self.tools.automations.store.list()
                 if s.enabled
             ]
@@ -440,17 +471,24 @@ class DeviceSync(Center):
                         (context.request_id, scenario.id, scenario.revision)
                     )
                     try:
+                        run_args = {
+                            "id": scenario.id,
+                            "revision": scenario.revision,
+                        }
+                        if args.get("variant"):
+                            run_args["variant"] = args["variant"]
+                        values = args.get("values", {})
+                        if not isinstance(values, dict) or len(json.dumps(values)) > 4000:
+                            raise ValueError("Некорректные параметры сценария.")
+                        if values:
+                            run_args["values"] = json.dumps(values, ensure_ascii=False)
                         with request_scope(context):
-                            result = json.loads(
-                                await self.tools.call(
-                                    "run_scenario",
-                                    {"id": scenario.id, "revision": scenario.revision},
-                                )
-                            )
+                            result = json.loads(await self.tools.call("run_scenario", run_args))
                     finally:
                         scenario_selection.reset(token)
                 elif operation == "device":
                     if args.get("action") not in {
+                        "led",
                         "power",
                         "color",
                         "brightness",

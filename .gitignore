@@ -36,6 +36,12 @@ models/wakeword/*
 node_modules/
 frontend/dist/
 
+# Xcode-generated state and build products
+ios/DerivedData/
+ios/**/xcuserdata/
+*.xcuserstate
+*.xccheckout
+
 # macOS
 .DS_Store
 *.log
