@@ -213,7 +213,7 @@ test('personal shelves explain recommendations and persist dismiss, watched and 
     const item={...movie('Рекомендация','planned'),catalogue_key:'tmdb:movie:777',reason:'Тебе нравится жанр триллер.'};
     view.receive({...initial,personal_result:{request_id:request.request_id,recommendations:{samples:1,mood:'any',message:'Мало оценок',errors:[],shelves:[{id:'liked',name:'Тебе понравится',items:[item]}]}}});
     assert.match(f.window.document.querySelector('.cinema-personal')!.textContent,/Тебе нравится жанр триллер/);
-    const planned=f.window.document.querySelector('.cinema-personal .cinema-quick-bookmark');planned.click();assert.equal(sent.at(-1).op,'catalogue_add');assert.equal(sent.at(-1).values.watchlist,true);
+    const planned=f.window.document.querySelector('.cinema-personal .cinema-quick-bookmark');assert.equal(planned.parentElement!.parentElement!.className,'cinema-card-body');assert.equal(planned.closest('.cinema-poster-wrap'),null);planned.click();assert.equal(sent.at(-1).op,'catalogue_add');assert.equal(sent.at(-1).values.watchlist,true);
     f.window.document.querySelector('.cinema-personal .cinema-quick-watched').click();assert.equal(sent.at(-1).values.watched,true);
     button(f,'Не интересно').click();assert.equal(sent.at(-1).op,'recommendation_dismiss');view.receive({...initial,recommendation_dismissed:item.catalogue_key});assert.equal(f.window.document.querySelectorAll('.cinema-personal-card').length,0);
   }finally{f.window.happyDOM.abort();}
@@ -377,7 +377,7 @@ test('four poster icons toggle durable fields without detail clicks and refresh 
   const f=fixture();try{
     const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);
     const item={...movie('Моя история','planned'),watchlist:1,favorite:1,user_rating:9.5};view.receive(snapshot([item]));button(f,'Хочу посмотреть').click();
-    const panel=f.window.document.querySelector('.cinema-poster-actions');assert.equal(panel.querySelectorAll('button').length,4);
+    const panel=f.window.document.querySelector('.cinema-poster-actions');assert.equal(panel.querySelectorAll('button').length,4);assert.equal(panel.closest('.cinema-poster-wrap'),null);assert.equal(panel.parentElement.className,'cinema-card-body');
     assert.deepEqual([...panel.querySelectorAll('button')].map((b:any)=>b.dataset.posterAction),['bookmark','play','watched','favorite']);
     assert.ok([...panel.querySelectorAll('button')].every((b:any)=>b.title&&b.getAttribute('aria-label')));
     let bubbled=0;panel.parentElement.addEventListener('click',()=>bubbled++);

@@ -330,19 +330,19 @@
 }
 .cinema-poster-wrap { position: relative; min-width: 0; }
 .cinema-poster-actions {
-  position: absolute; top: 8px; right: 8px; z-index: 3;
-  display: flex; align-items: center; gap: 1px; padding: 4px;
-  max-width: calc(100% - 16px); border: 1px solid #ffffff24;
-  border-radius: 13px; background: #130f20b3;
-  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-  box-shadow: 0 3px 12px #0003;
+  display: grid; grid-template-columns: repeat(4, minmax(20px, 1fr)); gap: 3px;
+  width: min(100%, 170px); margin-top: 8px; padding: 4px;
+  border: 1px solid var(--line); border-radius: var(--radius-inner);
+  background: #171219; box-shadow: inset 0 1px #ffffff08;
 }
 .cinema-page .cinema-poster-actions button {
-  position: static; flex: 0 1 30px; min-width: 0; width: 30px; height: 30px;
+  position: static; min-width: 0; width: 100%; height: 30px;
   display: grid; place-items: center; padding: 4px; margin: 0;
-  border: 0; border-radius: 7px; color: #eee9f5; background: transparent;
-  line-height: 1; backdrop-filter: none;
+  border: 0; border-radius: var(--radius-small); color: #eee9f5; background: transparent;
+  line-height: 1; box-shadow: none; backdrop-filter: none;
 }
+.cinema-page button.cinema-title { appearance: none; -webkit-appearance: none; display: -webkit-box; width: 100%; min-height: 2.8em; margin: 0 !important; padding: 0 !important; border: 0 !important; border-radius: 0 !important; background: transparent !important; box-shadow: none !important; color: var(--text); line-height: 1.4; text-align: left; white-space: normal; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.cinema-page button.cinema-title:focus-visible { outline: 0 !important; outline-offset: 0; text-decoration: underline; text-decoration-color: #bd90f1; text-decoration-thickness: 2px; text-underline-offset: 3px; }
 .cinema-poster-actions svg { display: block; width: 22px; height: 22px; max-width: 100%; }
 .cinema-page .cinema-poster-actions button:hover { background: #ffffff1b; }
 .cinema-page .cinema-poster-actions button[aria-pressed=true] { color: #bd80f4; background: #9361cf28; }
@@ -350,7 +350,7 @@
 .cinema-poster-actions .cinema-quick-favorite[aria-pressed=true] svg { fill: currentColor; }
 .cinema-card:hover .cinema-poster img { transform: none; }
 .cinema-list .cinema-card { grid-template-columns: 140px minmax(0,1fr); }
-.cinema-list .cinema-poster-actions { left: 4px; right: 4px; top: 4px; max-width: none; }
+.cinema-list .cinema-poster-actions { grid-column: 1 / -1; }
 
 /* Search opens in document flow, so every poster remains reachable. */
 .cinema-heading { margin-bottom: 15px; gap: 10px; }
@@ -373,8 +373,8 @@
 @media(max-width:760px) { .cinema-search { width: 100%; margin: 0; }.cinema-heading { flex-wrap: wrap; }.cinema-ai-panel { gap: 7px; padding: 8px; }.cinema-tabs button { padding: 9px 11px; } }
 @media(max-width:560px) {
   .cinema-content .cinema-grid:not(.cinema-list) { gap: 12px; }
-  .cinema-poster-actions { top: 5px; right: 5px; padding: 3px; max-width: calc(100% - 10px); }
-  .cinema-page .cinema-poster-actions button { flex-basis: 27px; height: 29px; padding: 3px; }
+  .cinema-poster-actions { gap: 2px; padding: 3px; }
+  .cinema-page .cinema-poster-actions button { height: 28px; padding: 3px; }
   .cinema-list .cinema-card { grid-template-columns: 120px minmax(0,1fr); }
 }
 

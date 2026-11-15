@@ -28,6 +28,57 @@ try {
     }));
     geometry.push({label, ...size});
     assert.ok(size.document <= size.viewport, `${label}: horizontal overflow`);
+    if (label.startsWith('home/')) {
+      const layout = await page.evaluate(() => {
+        const header = document.querySelector('.top').getBoundingClientRect();
+        const nav = document.querySelector('.top .chat-navigation').getBoundingClientRect();
+        const content = document.querySelector('.app-content').getBoundingClientRect();
+        const controls = [...document.querySelectorAll('.top .clock, .top .status')]
+          .map(node => node.getBoundingClientRect());
+        return {
+          headerContainsNav: nav.left >= header.left && nav.right <= header.right &&
+            nav.top >= header.top && nav.bottom <= header.bottom,
+          headerBeforeContent: header.bottom <= content.top + 1,
+          navOverlapsControl: controls.some(rect => nav.left < rect.right && nav.right > rect.left &&
+            nav.top < rect.bottom && nav.bottom > rect.top),
+        };
+      });
+      assert.equal(layout.headerContainsNav, true, `${label}: chat navigation escapes header`);
+      assert.equal(layout.headerBeforeContent, true, `${label}: header overlaps page content`);
+      assert.equal(layout.navOverlapsControl, false, `${label}: chat navigation overlaps clock or status`);
+    }
+    if (label.startsWith('cinema/')) {
+      const titles = await page.locator('.cinema-card-body button.cinema-title').evaluateAll(nodes => nodes.map(title => {
+        const style = getComputedStyle(title);
+        const rect = title.getBoundingClientRect();
+        return {
+          border: [style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth],
+          borderRadius: style.borderRadius,
+          insideCard: rect.left >= title.parentElement.getBoundingClientRect().left - 1 &&
+            rect.right <= title.parentElement.getBoundingClientRect().right + 1,
+        };
+      }));
+      for (const [index, title] of titles.entries()) {
+        assert.deepEqual(title.border, ['0px', '0px', '0px', '0px'], `${label}: title ${index} has a frame`);
+        assert.equal(title.borderRadius, '0px', `${label}: title ${index} has rounded button chrome`);
+        assert.equal(title.insideCard, true, `${label}: title ${index} escapes card body`);
+      }
+      const cards = await page.locator('.cinema-card:has(.cinema-poster-actions)').evaluateAll(nodes => nodes.map(card => {
+        const poster = card.querySelector('.cinema-poster-button').getBoundingClientRect();
+        const body = card.querySelector('.cinema-card-body').getBoundingClientRect();
+        const actions = card.querySelector('.cinema-poster-actions').getBoundingClientRect();
+        return {
+          actionsInBody: actions.left >= body.left - 1 && actions.right <= body.right + 1 &&
+            actions.top >= body.top - 1 && actions.bottom <= body.bottom + 1,
+          actionsOverlapPoster: actions.left < poster.right && actions.right > poster.left &&
+            actions.top < poster.bottom && actions.bottom > poster.top,
+        };
+      }));
+      for (const [index, card] of cards.entries()) {
+        assert.equal(card.actionsInBody, true, `${label}: card ${index} actions escape card body`);
+        assert.equal(card.actionsOverlapPoster, false, `${label}: card ${index} actions cover poster art`);
+      }
+    }
   };
   await page.goto(process.argv[5] ?? 'http://127.0.0.1:8878');
   await navigate('home');
@@ -65,7 +116,7 @@ try {
 
   const views = ['home', 'automations', 'devices', 'cinema', 'memory', 'mac-control',
     'my-devices', 'analytics', 'performance', 'settings'];
-  for (const width of [580, 900, 1440, 1920, 2560]) {
+  for (const width of [320, 390, 580, 900, 1440, 1920, 2560]) {
     await page.setViewportSize({width, height: 1000});
     for (const view of views) {
       await navigate(view);

@@ -294,10 +294,10 @@ export class CinemaCatalogueView {
     const card=node('article','','cinema-card cinema-catalogue-card');card.dataset.catalogueKey=item.catalogue_key;
     const poster=this.button(`Подробнее: ${item.title}`,()=>this.callbacks.detail(item),'cinema-poster-button');poster.replaceChildren(this.callbacks.poster(item));
     const current=()=>this.data?.items.find(i=>i.catalogue_key===item.catalogue_key);
-    const artwork=node('div','','cinema-poster-wrap');artwork.append(poster,posterActions(current,values=>this.callbacks.change(item,values),()=>this.callbacks.watch(item),this.online));
+    const artwork=node('div','','cinema-poster-wrap');artwork.append(poster);
     const body=node('div','','cinema-card-body');
     body.append(this.button(item.title,()=>this.callbacks.detail(item),'cinema-title'),node('p',`${item.year||'Год неизвестен'} · ${item.kind==='series'?'Сериал':'Фильм'}`,'cinema-card-year'));
-    const ratings=node('div','','cinema-ratings');ratings.append(node('span',item.metadata.rating?`★ ${item.metadata.rating.toFixed(1)}`:'TMDB —','cinema-tmdb-rating'),node('span','','cinema-personal-rating'));body.append(ratings,node('small','','cinema-library-badge'));
+    const ratings=node('div','','cinema-ratings');ratings.append(node('span',item.metadata.rating?`★ ${item.metadata.rating.toFixed(1)}`:'TMDB —','cinema-tmdb-rating'),node('span','','cinema-personal-rating'));body.append(ratings,node('small','','cinema-library-badge'),posterActions(current,values=>this.callbacks.change(item,values),()=>this.callbacks.watch(item),this.online));
     card.append(artwork,body);this.updateCard(card,item);return card;
   }
 }

@@ -90,12 +90,11 @@ export class CinemaPersonalView {
   private artwork(item:CinemaTitle|CatalogueTitle):HTMLElement {
     const wrap=make('div','','cinema-poster-wrap');
     const poster=this.button(`Открыть ${item.title}`,()=>this.callbacks.detail(item));poster.className='cinema-poster-button';poster.replaceChildren(this.callbacks.poster(item));
-    const current=()=>this.items.find(i=>'id' in item?i.id===item.id:i.catalogue_key===item.catalogue_key);
-    wrap.append(poster,posterActions(current,values=>this.callbacks.change(item,values),()=>this.callbacks.watch(item),this.online));return wrap;
+    wrap.append(poster);return wrap;
   }
   private posterShelf(title:string,items:CinemaTitle[]):HTMLElement {
     const section=make('section','','cinema-shelf');section.append(make('h3',title));const row=make('div','','cinema-carousel');
-    for(const item of items){const card=make('article','','cinema-card');const body=make('div','','cinema-card-body');body.append(make('strong',item.title),make('p',`Твоя оценка ${item.user_rating}/10`));card.append(this.artwork(item),body);row.append(card);}section.append(row);return section;
+    for(const item of items){const card=make('article','','cinema-card');const body=make('div','','cinema-card-body');const current=()=>this.items.find(i=>i.id===item.id);body.append(make('strong',item.title),make('p',`Твоя оценка ${item.user_rating}/10`),posterActions(current,values=>this.callbacks.change(item,values),()=>this.callbacks.watch(item),this.online));card.append(this.artwork(item),body);row.append(card);}section.append(row);return section;
   }
   private renderProfile():void {
     const p=this.profile;if(!p)return;
@@ -118,6 +117,8 @@ export class CinemaPersonalView {
     for(const shelf of data.shelves){const section=make('section','','cinema-shelf');section.append(make('h3',shelf.name));const row=make('div','','cinema-carousel');
       const saved=new Set(this.items.map(i=>i.catalogue_key));
       for(const item of shelf.items.filter(i=>!saved.has(i.catalogue_key))){const card=make('article','','cinema-card cinema-personal-card');const body=make('div','','cinema-card-body');body.append(make('strong',item.title),make('p',`${item.year||'—'} · ★ ${item.metadata.rating.toFixed(1)}`),make('p',item.reason,'cinema-recommendation-reason'));
+        const current=()=>this.items.find(i=>i.catalogue_key===item.catalogue_key);
+        body.append(posterActions(current,values=>this.callbacks.change(item,values),()=>this.callbacks.watch(item),this.online));
         const actions=make('div','','cinema-personal-actions');actions.append(this.button('Не интересно',()=>{this.callbacks.send({op:'recommendation_dismiss',key:item.catalogue_key});}));body.append(actions);card.append(this.artwork(item),body);row.append(card);}
       if(!row.children.length)section.append(make('p',shelf.id==='now'?'Пока нет сохранённых источников с недавней успешной проверкой. Найди источник в карточке и сохрани его.':'Пока недостаточно данных для этой подборки. Оценки и избранное помогут её наполнить.','cinema-muted'));else section.append(row);this.root.append(section);
     }

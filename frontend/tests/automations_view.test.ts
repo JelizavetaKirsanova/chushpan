@@ -236,7 +236,7 @@ test('primary navigation selects its parent and keeps chat history and memory re
     for(const [view,parent] of [['history','home'],['calendar','home'],['day','home'],['memory','memory'],['notes','memory'],['diagnostics','performance']]) {
       f.workspace.navigate(view);assert.equal(f.window.document.querySelector('.workspace-nav [aria-current]')!.getAttribute('data-view'),parent);
     }
-    assert.ok(f.window.document.querySelector('.hud > .chat-navigation [data-go="history"]'));
+    assert.ok(f.window.document.querySelector('.hud > .top .chat-navigation [data-go="history"]'));
     assert.ok(f.window.document.querySelector('.settings-page [data-go="memory"]'));
     assert.equal(f.window.document.querySelector('.talk .chat-navigation'),null);
   }finally{await f.window.happyDOM.close();}

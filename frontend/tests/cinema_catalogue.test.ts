@@ -165,6 +165,7 @@ test('catalogue watched icon updates in place and does not propagate into poster
     view.receive(snapshot({catalogue_page:{request_id:request.request_id,page:1,items:[entry(1)],next_page:null}}));
     const card=f.window.document.querySelector('.cinema-catalogue-grid .cinema-card');const poster=card.querySelector('.cinema-poster-button');const mark=card.querySelector('.cinema-quick-watched');
     let bubbled=0;card.addEventListener('click',()=>bubbled++);mark.click();assert.equal(changes.at(-1).values.watched,true);assert.equal(bubbled,0);
+    assert.equal(card.querySelector('.cinema-poster-actions')!.closest('.cinema-poster-wrap'),null);assert.equal(card.querySelector('.cinema-poster-actions')!.parentElement!.className,'cinema-card-body');
     view.receive(snapshot({items:[{...entry(1),id:'saved',status:'watched',favorite:0,user_rating:8.5}]}));
     assert.equal(card.querySelector('.cinema-poster-button'),poster);assert.equal(card.querySelector('.cinema-quick-watched'),mark);assert.equal(mark.getAttribute('aria-pressed'),'true');assert.match(mark.title,/Снять отметку/);
     mark.click();assert.equal(changes.at(-1).values.watched,false);assert.equal(card.querySelectorAll('.cinema-poster-actions button').length,4);assert.equal(card.querySelector('details'),null);

@@ -442,13 +442,13 @@ export class CinemaView {
   private card(item:CinemaTitle,wide=false):HTMLElement {
     const card=el('article','',wide?'cinema-card cinema-wide':'cinema-card');card.dataset.titleId=item.id;
     const poster=this.button(`Открыть ${item.title}`,()=>this.detail(item.id),'cinema-poster-button');poster.replaceChildren(this.poster(item));poster.setAttribute('aria-label',`Открыть ${item.title}`);
-    const artwork=el('div','','cinema-poster-wrap');artwork.append(poster,posterActions(()=>this.data?.items.find(i=>i.id===item.id),values=>this.request({op:'update',id:item.id,values}),()=>this.open(this.data?.items.find(i=>i.id===item.id)??item),this.online));
+    const artwork=el('div','','cinema-poster-wrap');artwork.append(poster);
     const body=el('div','','cinema-card-body');body.append(this.button(item.title,()=>this.detail(item.id),'cinema-title'),el('p',`${item.year||'Год неизвестен'} · ${item.kind==='series'?'Сериал':'Фильм'}`,'cinema-card-year'));
     const ratings=el('div','','cinema-ratings');ratings.append(el('span',item.metadata?.rating?`★ ${item.metadata.rating.toFixed(1)}`:'TMDB —','cinema-tmdb-rating'));
     if(item.user_rating)ratings.append(el('span',`★ ${item.user_rating.toFixed(1)}`,'cinema-personal-rating'));body.append(ratings,el('small',item.status==='planned'&&item.watchlist===0?'':statuses[item.status],'cinema-library-badge'));
     if(wide||item.kind==='series')body.append(el('small',episodeCaption(item)));
     if(wide||item.kind==='series'||item.status==='watching'||(item.current?.position??0)>0){body.append(this.progress(item.current),el('small',`${playbackTime(item.current?.position??0)} из ${item.current?.duration?playbackTime(item.current.duration):'—'}`));}
-    body.append(this.button('✎ Изменить прогресс',()=>this.editProgress(item,item.current)));
+    body.append(this.button('✎ Изменить прогресс',()=>this.editProgress(item,item.current)),posterActions(()=>this.data?.items.find(i=>i.id===item.id),values=>this.request({op:'update',id:item.id,values}),()=>this.open(this.data?.items.find(i=>i.id===item.id)??item),this.online));
     card.append(artwork,body);return card;
   }
 
