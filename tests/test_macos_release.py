@@ -90,7 +90,7 @@ def test_update_preserves_previous_and_registers_only_canonical_path(installatio
     assert len(list(i.main.parent.glob("*.app"))) == 1
 
 
-def test_successful_update_prunes_older_verified_rollback_packages(installation):
+def test_successful_update_preserves_older_verified_rollback_packages(installation):
     i = installation
     older = i.state / "20260101T000000Z-old"
     previous = bundle(older / release.APP_NAME, "17", b"older")
@@ -99,7 +99,8 @@ def test_successful_update_prunes_older_verified_rollback_packages(installation)
         {"status": "installed", "build": "18", "previous": str(previous)},
     )
     result = release.install(i.source)
-    assert not older.exists()
+    assert older.exists()
+    assert previous.exists()
     assert Path(result["previous"]).exists()
 
 

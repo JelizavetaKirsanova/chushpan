@@ -337,24 +337,6 @@ def _build() -> Path:
     write_receipt(BUILD_RECEIPT, receipt)
     write_receipt(build_root / "build-complete.json", {"app": str(app), **receipt})
     clean_build_temporaries(build_root)
-    from backend.storage_manager import open_paths
-
-    opened = open_paths()
-    for older in build_root.parent.glob("release-*"):
-        if older == build_root or not (older / "build-complete.json").is_file():
-            continue
-        if opened is None or any(
-            path == older.resolve() or path.is_relative_to(older.resolve()) for path in opened
-        ):
-            continue
-        try:
-            previous = json.loads((older / "build-complete.json").read_text())
-            bundle = Path(previous["app"])
-            if bundle.is_relative_to(older.resolve()) and bundle.is_dir():
-                verify_bundle(bundle)
-                shutil.rmtree(older)
-        except (OSError, ValueError, KeyError):
-            continue
     print(f"Сборка проверена: {app}. Для обновления: python -m scripts.install_macos")
     return app
 

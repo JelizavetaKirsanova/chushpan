@@ -85,7 +85,7 @@ button:disabled { opacity: .48; cursor: default; }
 .nav-avatar { display: grid; place-items: center; width: 42px; height: 42px; flex: 0 0 auto; overflow: hidden; border: 1px solid #604a604e; border-radius: 13px; background: #231b25; }
 .nav-avatar img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .nav-brand strong { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-weight: 620; }
-.nav-brand small { color: var(--subtle); font-size: 10px; font-weight: 450; letter-spacing: 0; }
+.nav-brand small { display: block; max-width: 100%; overflow: hidden; color: var(--subtle); font-size: 10px; font-weight: 450; letter-spacing: 0; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-nav > button {
   display: flex;
   align-items: center;
@@ -769,6 +769,11 @@ dialog::backdrop { background: #09070acc; backdrop-filter: blur(6px); }
   .cinema-history time { grid-column: 1 / -1; }
   .action-confirmation { right: 9px; bottom: 9px; left: 65px; width: auto; }
   .hud[data-view="settings"] > .bottom { left: 56px; }
+}
+@media (max-width: 760px) {
+  /* The dashboard's 760px breakpoint otherwise positions status over the clock. */
+  .hud[data-view] > .top .status { position: static !important; top: auto !important; right: auto !important; margin: 0 !important; flex: 0 0 auto; }
+  .hud[data-view] > .top #date { display: none !important; }
 }
 @media (max-width: 390px) {
   .hud[data-view] { grid-template-columns: 48px minmax(0, 1fr); }
