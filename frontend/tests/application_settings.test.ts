@@ -8,7 +8,7 @@ const code=stripTypeScriptTypes(readFileSync(new URL('../src/application_setting
 test('native settings save preferences and microphone is explicit',async()=>{
   const window=new Window();const root=window.document.createElement('div');window.document.body.append(root);
   const calls:unknown[][]=[];
-  const api={desktop_status:async()=>({version:'test',data_path:'/private/data',login:'off',preferences:{auto_listen:false},permissions:{microphone:'denied'},worker:{state:'paused',components:{whisper:'on_demand'}}}),desktop_preferences:async(value:unknown)=>{calls.push(['preferences',value]);return {ok:true,message:'saved'};},desktop_action:async(...args:unknown[])=>{calls.push(args);return {ok:true,message:'done'};}};
+  const api={desktop_status:async()=>({version:'test',data_path:'/private/data',login:'off',preferences:{auto_listen:false,ambient_hotkey_enabled:false,ambient_hotkey_key:'f12'},ambient_hotkey:'disabled',permissions:{microphone:'denied'},worker:{state:'paused',components:{whisper:'on_demand'}}}),desktop_preferences:async(value:unknown)=>{calls.push(['preferences',value]);return {ok:true,message:'saved'};},desktop_action:async(...args:unknown[])=>{calls.push(args);return {ok:true,message:'done'};}};
   Object.assign(window,{pywebview:{api}});
   const sandbox={exports:{} as Record<string,unknown>,document:window.document,window};vm.runInNewContext(code,sandbox);
   await (sandbox.exports.render as (root:unknown)=>Promise<void>)(root);
@@ -16,8 +16,13 @@ test('native settings save preferences and microphone is explicit',async()=>{
   const buttons=[...root.querySelectorAll('button')];
   buttons.find(b=>b.textContent==='Включить прослушивание')!.click();await Promise.resolve();
   assert.equal(calls[0][0],'listen');
-  buttons.find(b=>b.textContent==='Сохранить параметры приложения')!.click();await Promise.resolve();
-  assert.equal(calls[1][0],'preferences');assert.equal((calls[1][1] as Record<string,boolean>).auto_listen,false);
+  buttons.find(b=>b.textContent==='Сохранить параметры приложения')!.click();await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(calls[1][0],'preferences');assert.equal((calls[1][1] as Record<string,boolean>).auto_listen,false);assert.equal((calls[1][1] as Record<string,boolean>).ambient_hotkey_enabled,false);
+  await new Promise(resolve=>setTimeout(resolve,0));
+  const hotkey=root.querySelector<HTMLSelectElement>('select[aria-label="Клавиша сочетания для Ambient"]')!;hotkey.value='f10';
+  buttons.find(b=>b.textContent==='Сохранить параметры приложения')!.click();await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal((calls[2][1] as Record<string,boolean|string>).ambient_hotkey_key,'f10');
+  assert.match(root.textContent!,/Глобальная клавиша: ⌃⌥⌘F10 · выключена/);
   assert.match(root.textContent!,/Запрещено/);
   await window.happyDOM.abort();
 });

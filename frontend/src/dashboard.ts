@@ -38,7 +38,7 @@ const paths: Record<string, string> = {
   send: 'm22 2-7 20-4-9-9-4Zm0 0L11 13',
   volume: 'M11 4 6 8H2v8h4l5 4ZM15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14',
   activity: 'M2 12h4l3-8 5 16 3-8h5',
-  news: 'M4 3h16v18H4ZM7 7h10M7 11h4v4H7Zm7 0h3m-3 4h3M7 18h10',
+  collapse: 'M15 5l-7 7 7 7M4 5v14',
 };
 export function icon(name: string): string { return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[name] ?? paths.sparkles}"/></svg>`; }
 function el(tag: string, text = '', className = ''): HTMLElement { const value = document.createElement(tag); value.textContent = text; value.className = className; return value; }
@@ -58,6 +58,7 @@ export class DashboardView {
   private year = new Date().getFullYear();
   private selected = '';
   private ambient = false;
+  private pendingAmbientToggle = false;
   private previousView = 'home';
   private lastInput = Date.now();
   private lastSystemIdle: number | null = null;
@@ -68,6 +69,11 @@ export class DashboardView {
   private battery = false;
   private cinemaItems: CinemaTitle[] = [];
   hasLocation = false;
+
+  toggleAmbient(): void {
+    if (!this.data) { this.pendingAmbientToggle = !this.pendingAmbientToggle; return; }
+    this.setAmbient(!this.ambient);
+  }
 
   constructor(private post: (value: object) => void, private chat: (value: {text: string; speak?: boolean}) => void,
     private navigate: (view: string) => void, private search: (value: object) => void, private character: Character,
@@ -136,7 +142,7 @@ export class DashboardView {
   receive(event: HudEvent): void {
     if (event.type === 'voice_settings') {this.microphone=event.microphone;this.status(this.currentStatus);}
     else if(event.type==='session' && event.active && event.listening && !this.busy){this.status(event.recording===false?'Ожидает продолжение':'Слушает');}
-    else if (event.type === 'dashboard') { this.data = event; this.hasLocation = !!event.location.city; this.render(); }
+    else if (event.type === 'dashboard') { this.data = event; this.hasLocation = !!event.location.city; this.render(); if (this.pendingAmbientToggle) { this.pendingAmbientToggle = false; this.setAmbient(!this.ambient); } }
     else if (event.type === 'cinema') { this.cinemaItems = event.items; this.renderCinemaProgress(); }
     else if (event.type === 'dashboard_stats') this.renderStats(event);
     else if (event.type === 'dashboard_calendar') { this.selected = event.date; this.renderEvents(node('calendar-events'), event); node('calendar-selected-title').textContent = this.dateLabel(event.date); this.renderMonth(); }

@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import secrets
+import shutil
 import signal
 import socket
 import subprocess
@@ -82,6 +83,8 @@ class Application(_Api):
         self.endpoint = self.runtime / "endpoint.json"
         self.token = secrets.token_urlsafe(32)
         self.proc = None
+        self.hotkey_proc = None
+        self.ambient_hotkey_status = "disabled"
         self._log_file = None
         self.url = None
         self.quitting = False
@@ -230,6 +233,7 @@ class Application(_Api):
                 "bundle_id": BUNDLE_ID,
                 "data_path": str(self.root),
                 "preferences": self.prefs.model_dump(),
+                "ambient_hotkey": self.ambient_hotkey_status,
                 "login": macos.login_status(),
                 "permissions": macos.permissions(),
                 "worker": self.worker_state,
@@ -239,12 +243,148 @@ class Application(_Api):
 
     def desktop_preferences(self, value):
         with self.native_lock:
+            previous = self.prefs
             self.prefs = save_preferences(self.root, value)
+            if self.prefs.ambient_hotkey_enabled:
+                if (
+                    previous.ambient_hotkey_enabled
+                    and previous.ambient_hotkey_key != self.prefs.ambient_hotkey_key
+                ):
+                    self.stop_global_hotkey()
+                self.start_global_hotkey()
+            else:
+                self.stop_global_hotkey()
+        message = (
+            "Сохранено. Глобальная клавиша Ambient включена."
+            if self.prefs.ambient_hotkey_enabled
+            else "Настройки приложения сохранены."
+        )
+        if self.prefs.ambient_hotkey_enabled and self.ambient_hotkey_status == "conflict":
+            message = (
+                f"Настройки сохранены, но ⌃⌥⌘{self.prefs.ambient_hotkey_key.upper()} "
+                "занята другим приложением. "
+                "Выключи и включи параметр после освобождения клавиши."
+            )
+        elif self.prefs.ambient_hotkey_enabled and self.ambient_hotkey_status == "unavailable":
+            message = (
+                "Настройки сохранены, но помощник глобальной клавиши недоступен в этой сборке."
+            )
         return {
             "ok": True,
-            "message": "Сохранено. Параметры запуска применятся при следующем запуске.",
+            "message": message,
             "status": self.desktop_status(),
         }
+
+    def _ambient_hotkey_binary(self) -> Path:
+        from backend.paths import RESOURCE_ROOT, native_helper
+
+        if helper := native_helper("ambient_hotkey"):
+            return helper
+        source = RESOURCE_ROOT / "backend/ambient_hotkey.swift"
+        if not source.is_file() or not shutil.which("xcrun"):
+            raise RuntimeError("Не найден помощник глобальной клавиши для macOS.")
+        directory = self.root / "data/native"
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        directory.chmod(0o700)
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()[:16]
+        target = directory / f"ambient-hotkey-{digest}"
+        temporary = directory / f".ambient-hotkey-{digest}-{os.getpid()}"
+        try:
+            subprocess.run(
+                ["xcrun", "swiftc", "-O", str(source), "-o", str(temporary)],
+                check=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=90,
+            )
+            temporary.chmod(0o700)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return target
+
+    def start_global_hotkey(self):
+        if self.smoke:
+            self.ambient_hotkey_status = "disabled"
+            return
+        if self.hotkey_proc and self.hotkey_proc.poll() is None:
+            return
+        try:
+            binary = self._ambient_hotkey_binary()
+            process = subprocess.Popen(
+                [str(binary), self.prefs.ambient_hotkey_key],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+                start_new_session=True,
+            )
+            self.hotkey_proc = process
+            self.ambient_hotkey_status = "starting"
+            threading.Thread(target=self._read_global_hotkey, args=(process,), daemon=True).start()
+        except Exception as exc:
+            self.ambient_hotkey_status = "unavailable"
+            log.warning("Global Ambient hotkey could not start: %s", type(exc).__name__)
+
+    def _read_global_hotkey(self, process):
+        try:
+            for line in process.stdout or ():
+                message = line.strip()
+                if message == "READY":
+                    self.ambient_hotkey_status = "enabled"
+                elif message == "TOGGLE":
+                    try:
+                        from PyObjCTools.AppHelper import callAfter
+
+                        callAfter(self.toggle_ambient_hotkey)
+                    except Exception:
+                        log.exception("Could not schedule Ambient hotkey action")
+                elif message.startswith("ERROR"):
+                    self.ambient_hotkey_status = "conflict"
+                    log.warning("Global Ambient hotkey registration failed")
+        except (OSError, ValueError):
+            if not self.quitting:
+                self.ambient_hotkey_status = "unavailable"
+        finally:
+            if self.hotkey_proc is process:
+                self.hotkey_proc = None
+                if not self.quitting:
+                    if self.prefs.ambient_hotkey_enabled:
+                        if self.ambient_hotkey_status != "conflict":
+                            self.ambient_hotkey_status = "unavailable"
+                    else:
+                        self.ambient_hotkey_status = "disabled"
+
+    def toggle_ambient_hotkey(self):
+        if self.quitting or not self.window:
+            return
+        self.hidden = False
+        self.window.show()
+        self.window.restore()
+        if self.loaded:
+            self.window.evaluate_js(
+                "if (window.chushpanToggleAmbient) window.chushpanToggleAmbient(); "
+                "else window.chushpanHotkeyPending = !window.chushpanHotkeyPending;"
+            )
+        else:
+            self.window.evaluate_js("window.chushpanHotkeyPending = !window.chushpanHotkeyPending;")
+
+    def stop_global_hotkey(self):
+        process, self.hotkey_proc = self.hotkey_proc, None
+        self.ambient_hotkey_status = "disabled"
+        if not process:
+            return
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+        if process.stdout:
+            process.stdout.close()
 
     def desktop_action(self, action, value=None):
         try:
@@ -341,6 +481,7 @@ class Application(_Api):
         if self.quitting:
             return
         self.quitting = True
+        self.stop_global_hotkey()
         self.stop_worker()
         if self.listener:
             self.listener.close()
@@ -474,6 +615,8 @@ class Application(_Api):
                 self.listen_item = item
         self.status_item.setMenu_(menu)
         self.refresh_menu()
+        if self.prefs.ambient_hotkey_enabled:
+            self.start_global_hotkey()
 
     def run(self):
         import webview

@@ -9,6 +9,7 @@ import sqlite3
 import tempfile
 from contextlib import closing
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -23,6 +24,8 @@ class Preferences(BaseModel):
     background_voice: bool = True
     energy_saving: bool = False
     recover_engine: bool = True
+    ambient_hotkey_enabled: bool = False
+    ambient_hotkey_key: Literal["f9", "f10", "f11", "f12"] = "f12"
 
 
 def load_preferences(root: Path) -> Preferences:

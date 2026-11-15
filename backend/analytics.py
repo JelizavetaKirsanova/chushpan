@@ -2,16 +2,20 @@
 
 import asyncio
 import csv
+import hashlib
 import io
 import json
 import math
+import os
 import re
 import sqlite3
+import sys
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from datetime import time as wall_time
+from pathlib import Path
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -99,12 +103,18 @@ class Analytics(Center):
         self.queue = asyncio.Queue(maxsize=256)
         self.dropped, self.failure, self.query = 0, policy_error, {"period": "today"}
         self.generation = 0
-        self.sampling_failure = None
+        self.activity_failure = None
+        self.activity_app = None
+        self.activity_started = None
+        self.activity_task = None
+        self.activity_process = None
+        self.activity_build_lock = asyncio.Lock()
         self.bind(bus)
         registry.analytics = self
         store.performance.analytics = self
         self.worker = asyncio.create_task(self.consume())
-        self.sampler = asyncio.create_task(self.sample_apps())
+        if self.policy.enabled and "mac" in self.policy.categories:
+            self.start_activity_observer()
         self.db_path = store.db.execute("PRAGMA database_list").fetchone()[2]
 
     def record(
@@ -281,54 +291,168 @@ class Analytics(Center):
                 for _ in batch:
                     self.queue.task_done()
 
-    async def sample_apps(self):
-        previous, sampled = None, time.monotonic()
-        while True:
-            await asyncio.sleep(5)
-            now = time.monotonic()
-            if not self.policy.enabled or "mac" not in self.policy.categories:
-                self.sampling_failure = None
-                previous, sampled = None, now
-                continue
-            try:
-                status = await self.tools.desktop.bridge.request("desktop_activity_status")
-                active = (await self.tools.desktop.apps("active")).get("apps", [])
-                app = active[0] if len(active) == 1 and status.get("idle_s", 999) < 60 else None
-                excluded = {a.casefold() for a in self.policy.excluded_apps}
-                if app and {app["bundle"].casefold(), app["name"].casefold()} & excluded:
-                    app = None
-                if (
-                    app
-                    and previous
-                    and previous["bundle"] == app["bundle"]
-                    and 0 < now - sampled < 10
-                ):
-                    category = (
-                        "development"
-                        if app["bundle"] in self.policy.development_apps
-                        else "study"
-                        if app["bundle"] in self.policy.study_apps
-                        else "other"
-                    )
-                    self.record(
-                        "mac.activity",
-                        duration=now - sampled,
-                        metadata={
-                            "app": app["name"],
-                            "bundle": app["bundle"],
-                            "category": category,
-                        },
-                    )
-                elif app and previous:
-                    self.record("mac.switch", metadata={"bundle": app["bundle"]})
-                previous = app
-                self.sampling_failure = None
-            except Exception:
-                previous = None
-                self.sampling_failure = (
-                    "Учёт приложений недоступен. Разрешения не запрашивались автоматически."
+    def start_activity_observer(self):
+        if self.activity_task is None or self.activity_task.done():
+            self.activity_task = asyncio.create_task(self.observe_apps())
+
+    def activity_transition(self, event):
+        """Apply an NSWorkspace foreground-app or session-boundary event."""
+        if not self.policy.enabled or "mac" not in self.policy.categories:
+            return
+        try:
+            at = float(event.get("timestamp", time.time()))
+            if not math.isfinite(at):
+                return
+        except (TypeError, ValueError):
+            return
+        kind = event.get("type")
+        if kind in {"paused", "suspended"}:
+            self.finish_activity(at)
+            return
+        if kind != "activated":
+            return
+        bundle = event.get("bundle")
+        name = event.get("app")
+        if not isinstance(bundle, str) or not bundle or not isinstance(name, str) or not name:
+            return
+        excluded = {value.casefold() for value in self.policy.excluded_apps}
+        if {bundle.casefold(), name.casefold()} & excluded:
+            self.finish_activity(at)
+            return
+        if self.activity_app and self.activity_app["bundle"] == bundle:
+            return
+        had_previous = self.activity_app is not None
+        self.finish_activity(at)
+        if had_previous:
+            self.record("mac.switch", metadata={"bundle": bundle}, at=at)
+        self.activity_app = {"bundle": bundle, "name": name}
+        self.activity_started = at
+
+    def finish_activity(self, at=None):
+        app, started = self.activity_app, self.activity_started
+        self.activity_app = self.activity_started = None
+        if not app or started is None:
+            return
+        at = time.time() if at is None else at
+        if not 0 < at - started <= 366 * 86400:
+            return
+        try:
+            timezone = self.s.location.tz_name
+            zone = ZoneInfo(timezone)
+        except (AttributeError, KeyError, ValueError):
+            zone = datetime.now().astimezone().tzinfo
+        development = {value.casefold() for value in self.policy.development_apps}
+        study = {value.casefold() for value in self.policy.study_apps}
+        bundle = app["bundle"]
+        category = (
+            "development"
+            if bundle.casefold() in development
+            else "study"
+            if bundle.casefold() in study
+            else "other"
+        )
+        cursor = started
+        while cursor < at:
+            local = datetime.fromtimestamp(cursor, zone)
+            midnight = datetime.combine(local.date() + timedelta(days=1), wall_time(), zone)
+            segment_end = min(at, midnight.timestamp())
+            segment_duration = segment_end - cursor
+            if 0 < segment_duration <= 86400:
+                self.record(
+                    "mac.activity",
+                    duration=segment_duration,
+                    at=cursor,
+                    metadata={"app": app["name"], "bundle": bundle, "category": category},
                 )
-            sampled = now
+            cursor = segment_end
+
+    async def activity_helper(self):
+        if sys.platform != "darwin":
+            raise RuntimeError("События активного приложения доступны только в macOS.")
+        from backend.paths import native_helper
+
+        if bundled := native_helper("analytics_activity"):
+            return bundled
+        async with self.activity_build_lock:
+            source = Path(__file__).with_name("analytics_activity.swift")
+            cache = Path(self.s.data_path) / "native"
+            cache.mkdir(parents=True, exist_ok=True, mode=0o700)
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()[:16]
+            target = cache / f"analytics-activity-{digest}"
+            if target.exists():
+                return target
+            temporary = target.with_name(target.name + ".building")
+            try:
+                compile_process = await asyncio.create_subprocess_exec(
+                    "xcrun",
+                    "swiftc",
+                    "-O",
+                    "-module-cache-path",
+                    str(cache / "swift-cache"),
+                    str(source),
+                    "-o",
+                    str(temporary),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                try:
+                    code = await asyncio.wait_for(compile_process.wait(), timeout=90)
+                except TimeoutError:
+                    compile_process.kill()
+                    await compile_process.wait()
+                    raise RuntimeError("Не удалось собрать наблюдатель NSWorkspace.") from None
+                if code:
+                    raise RuntimeError("Не удалось собрать наблюдатель NSWorkspace.")
+                os.replace(temporary, target)
+                return target
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    async def observe_apps(self):
+        process = None
+        try:
+            helper = await self.activity_helper()
+            process = await asyncio.create_subprocess_exec(
+                str(helper),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            self.activity_process = process
+            self.activity_failure = None
+            async for line in process.stdout:
+                try:
+                    event = json.loads(line)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                if isinstance(event, dict):
+                    self.activity_transition(event)
+            if process.returncode not in (0, None) and self.policy.enabled:
+                raise RuntimeError("Наблюдатель NSWorkspace завершился.")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.activity_failure = (
+                "Учёт приложений недоступен. Проверь запуск macOS; разрешения не запрашивались."
+            )
+        finally:
+            if process and process.returncode is None:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=2)
+                except TimeoutError:
+                    process.kill()
+                    await process.wait()
+            if self.activity_process is process:
+                self.activity_process = None
+
+    async def stop_activity_observer(self, *, finish=False):
+        if finish:
+            self.finish_activity()
+        task = self.activity_task
+        self.activity_task = None
+        if task and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     async def flush(self):
         async with asyncio.timeout(5):
@@ -455,8 +579,8 @@ class Analytics(Center):
             )
         if result["active_s"]:
             insights.append(
-                "Активность измерена выборками по 5 секунд без ввода и содержимого"
-                " окон. Категории задаёшь ты."
+                "Это фактическое время, когда приложение было на переднем плане; оно не"
+                " подтверждает ввод пользователя. Категории задаёшь ты."
             )
         return {
             "summary": result,
@@ -464,7 +588,7 @@ class Analytics(Center):
             "policy": self.policy.model_dump(),
             "insights": insights,
             "dropped": self.dropped,
-            "error": self.failure or self.sampling_failure,
+            "error": self.failure or self.activity_failure,
             "query": self.query,
             "timezone": self.s.location.tz_name,
             "devices": [
@@ -487,15 +611,21 @@ class Analytics(Center):
                 if not isinstance(name, str) or len(name) > 120 or contains_secret(name):
                     raise ValueError("Проверь список приложений.")
             self.store.set_preference("analytics", "policy", policy.model_dump())
+            should_observe = policy.enabled and "mac" in policy.categories
+            if should_observe:
+                self.start_activity_observer()
+            else:
+                await self.stop_activity_observer(finish=self.policy.enabled)
             self.policy = policy
             self.failure = None
             if not policy.enabled or "mac" not in policy.categories:
-                self.sampling_failure = None
+                self.activity_failure = None
             with self.store.memory_transaction():
                 self.store.db.execute(
                     "DELETE FROM analytics_events WHERE timestamp<?",
                     (time.time() - policy.retention_days * 86400,),
                 )
+            await self.flush()
         elif op == "query":
             query = {k: value[k] for k in ("period", "start", "end", "device") if k in value}
             oldest = (
@@ -510,6 +640,8 @@ class Analytics(Center):
             if value.get("confirmed") is not True:
                 raise ValueError("Подтверди удаление статистики.")
             self.generation += 1
+            if self.activity_app:
+                self.activity_started = time.time()
             with self.store.memory_transaction():
                 self.store.db.execute("DELETE FROM analytics_events")
         elif op == "export":
@@ -557,9 +689,8 @@ class Analytics(Center):
         return {"data": self.snapshot()}
 
     async def close(self):
+        await self.stop_activity_observer(finish=self.policy.enabled)
         await super().close()
-        self.sampler.cancel()
-        await asyncio.gather(self.sampler, return_exceptions=True)
         try:
             await self.flush()
         finally:

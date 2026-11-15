@@ -66,6 +66,12 @@ const voiceSettings = new VoiceSettingsPanel(value => link.voice(value));
 const core = new Character(byId('character'), tap);
 let cinema: CinemaView;
 const dashboard = new DashboardView(value => link.dashboard(value), value => link.chat(value), view => workspace.navigate(view), value => link.historySearch(value), core, value => panels.weather(value), (titleId, episodeId, edit) => cinema?.resumeFromDashboard(titleId, episodeId, edit));
+const ambientHotkeyWindow = window as unknown as {chushpanToggleAmbient?:()=>void;chushpanHotkeyPending?:boolean};
+ambientHotkeyWindow.chushpanToggleAmbient = () => dashboard.toggleAmbient();
+if (ambientHotkeyWindow.chushpanHotkeyPending) {
+  delete ambientHotkeyWindow.chushpanHotkeyPending;
+  dashboard.toggleAmbient();
+}
 const automations = new AutomationsView(value => link.automations(value), view => workspace.navigate(view), () => link.send('wake'), text => link.chat({text}));
 const devices = new DevicesView(value=>link.devices(value),text=>link.chat({text}),()=>tap(),view=>workspace.navigate(view));
 const lighting = new LightingView(value=>link.devices(value),view=>workspace.navigate(view));
@@ -234,8 +240,6 @@ function onEvent(e: HudEvent): void {
     case "weather":
       if (!dashboard.hasLocation) panels.weather(e);
       return;
-    case "news":
-      return panels.news(e);
     case "system":
       return panels.system(e);
     case "timers":

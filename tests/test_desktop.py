@@ -15,13 +15,25 @@ from backend.hud.server import create_app
 
 def test_preferences_are_strict_private_and_durable(tmp_path):
     assert not load_preferences(tmp_path).auto_listen
-    saved = save_preferences(tmp_path, {"start_hidden": True, "energy_saving": True})
+    saved = save_preferences(
+        tmp_path,
+        {
+            "start_hidden": True,
+            "energy_saving": True,
+            "ambient_hotkey_enabled": True,
+            "ambient_hotkey_key": "f10",
+        },
+    )
     assert load_preferences(tmp_path) == saved
+    assert saved.ambient_hotkey_enabled
+    assert saved.ambient_hotkey_key == "f10"
     assert (tmp_path / "application.json").stat().st_mode & 0o777 == 0o600
     with pytest.raises(ValidationError):
         save_preferences(tmp_path, {"auto_listen": "yes"})
     with pytest.raises(ValidationError):
         save_preferences(tmp_path, {"unknown": True})
+    with pytest.raises(ValidationError):
+        save_preferences(tmp_path, {"ambient_hotkey_key": "escape"})
     assert load_preferences(tmp_path) == saved
 
 

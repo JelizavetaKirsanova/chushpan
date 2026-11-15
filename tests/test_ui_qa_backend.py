@@ -123,31 +123,24 @@ def test_analytics_reports_refuse_silent_truncation(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
-def test_analytics_app_sampling_recovers_error_without_changing_privacy(tmp_path, monkeypatch):
+def test_analytics_event_observer_failure_keeps_opt_in_policy(tmp_path, monkeypatch):
     async def run():
         memory, service = analytics_setup(tmp_path)
-        service.sampler.cancel()
-        await asyncio.gather(service.sampler, return_exceptions=True)
         service.policy = CollectionPolicy(enabled=True, categories=["mac"])
-        service.tools.desktop.bridge.request.side_effect = [
-            RuntimeError("native denied"),
-            {"idle_s": 0},
-        ]
-        service.tools.desktop.apps = AsyncMock(return_value={"apps": []})
-        iterations = 0
 
-        async def tick(_):
-            nonlocal iterations
-            iterations += 1
-            if iterations > 2:
-                raise asyncio.CancelledError
+        async def unavailable():
+            raise RuntimeError("native denied")
 
-        monkeypatch.setattr(analytics.asyncio, "sleep", tick)
+        monkeypatch.setattr(service, "activity_helper", unavailable)
+        service.start_activity_observer = Analytics.start_activity_observer.__get__(
+            service, Analytics
+        )
+        service.start_activity_observer()
         try:
-            with pytest.raises(asyncio.CancelledError):
-                await service.sample_apps()
-            assert service.snapshot()["error"] is None
+            await service.activity_task
+            assert "Учёт приложений недоступен" in service.snapshot()["error"]
             assert service.policy.enabled and service.policy.categories == ["mac"]
+            assert not hasattr(service, "sampler")
         finally:
             await service.close()
             memory.close()

@@ -68,3 +68,11 @@
 @media(max-width:1200px) { .statistics-heading { flex-wrap: wrap; }.statistics-heading .statistics-periods { margin-left: auto; }.statistics-kpi { padding: 16px 14px; gap: 10px; }.statistics-kpi > .statistics-icon { width: 40px; height: 40px; }.statistics-donut-layout { gap: 15px; }.statistics-donut { width: 135px; height: 135px; }.statistics-donut > div { width: 97px; height: 97px; }.statistics-tabs .statistics-icon { display: none; } }
 @media(max-width:950px) { .statistics-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }.statistics-grid { grid-template-columns: 1fr; }.statistics-periods { width: 100%; overflow-x: auto; }.performance-page .statistics-periods button { flex: 1; }.statistics-donut-layout { justify-content: start; gap: 32px; }.statistics-tabs { max-width: 100%; }.statistics-tabs button { flex: 0 0 auto !important; }.statistics-request { grid-template-columns: 1fr 1fr !important; }#statistics-pane-performance .performance-layout { grid-template-columns: 1fr; } }
 @media(max-width:540px) { .hud[data-view=performance] .performance-page { padding: 20px 14px 30px; }.statistics-heading h1 { font-size: 22px; }.statistics-heading { gap: 18px; }.statistics-title { gap: 12px; }.statistics-kpi > .statistics-icon { display: none; }.statistics-kpi strong { font-size: 25px; }.statistics-card { padding: 18px 15px; }.statistics-donut-layout { flex-direction: column; gap: 20px; }.statistics-donut-legend { width: 100%; }.statistics-app { grid-template-columns: 1fr 1fr 50px; gap: 10px; }.statistics-series { gap: 6px; } }
+#statistics-root { width: 100%; box-sizing: border-box; }
+@media(max-width:950px) {
+  .statistics-heading { width: 100%; min-width: 0; align-items: stretch; flex-direction: column; gap: 12px; }
+  .statistics-title, .statistics-heading .page-heading { width: 100%; min-width: 0; }
+  .statistics-heading h1, .statistics-heading p { max-width: 100%; overflow-wrap: anywhere; }
+  .statistics-periods { box-sizing: border-box; width: 100%; max-width: 100%; flex: 0 0 auto; }
+  .performance-page .statistics-periods button { flex: 0 0 auto; }
+}

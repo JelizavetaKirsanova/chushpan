@@ -22,6 +22,9 @@ export class Workspace {
   private sessionActive = false;
   private saving = false;
   private hasMusic = false;
+  private currentView = "home";
+  private routeHistory: string[] = [];
+  private sidebarCompact = false;
   constructor(private readonly requestHistory: (id: number) => void,
     private readonly saveDialogue: (value: {enabled: boolean; duration_s: number; nameless_interruptions: boolean; addressee_strictness: "contextual" | "addressed"}) => void,
     private readonly closeSession: () => void,
@@ -48,6 +51,35 @@ export class Workspace {
       });
     });
     node("dialogue-close").addEventListener("click", () => { if (this.online) this.closeSession(); });
+    const routeNames = new Set(["home", "history", "calendar", "automations", "devices", "lighting", "cinema", "memory", "notes", "mac-control", "my-devices", "analytics", "performance", "settings", "privacy", "diagnostics"]);
+    const savedRoute = window.location.hash.slice(1);
+    const initialView = routeNames.has(savedRoute) ? savedRoute : "home";
+    const hud = document.querySelector<HTMLElement>(".hud")!;
+    hud.dataset.view = initialView;
+    this.currentView = initialView;
+    try {
+      const saved = JSON.parse(sessionStorage.getItem("chushpan:navigation") ?? "null") as {current?:string;history?:string[]}|null;
+      if (saved?.current === initialView && Array.isArray(saved.history)) this.routeHistory = saved.history.filter(view => routeNames.has(view)).slice(-30);
+    } catch { /* A private or unavailable browser store only affects back history. */ }
+    const compact = window.matchMedia?.("(max-width: 1180px)") ?? {matches:false,addEventListener:()=>{}};
+    this.sidebarCompact = compact.matches;
+    let savedSidebar = false;
+    try { savedSidebar = localStorage.getItem("chushpan:sidebar") === "collapsed"; } catch { /* Optional preference. */ }
+    this.applySidebar(this.sidebarCompact || savedSidebar);
+    compact.addEventListener("change", event => {
+      this.sidebarCompact = event.matches;
+      let userCollapsed = false;
+      try { userCollapsed = localStorage.getItem("chushpan:sidebar") === "collapsed"; } catch { /* Optional preference. */ }
+      this.applySidebar(this.sidebarCompact || userCollapsed);
+    });
+    node("sidebar-toggle").addEventListener("click", () => {
+      if (this.sidebarCompact) return;
+      const collapsed = hud.dataset.sidebar !== "collapsed";
+      try { localStorage.setItem("chushpan:sidebar", collapsed ? "collapsed" : "expanded"); } catch { /* Current window still updates. */ }
+      this.applySidebar(collapsed);
+    });
+    node("route-back").addEventListener("click", () => this.goBack());
+    this.navigate(initialView);
     document.querySelectorAll<HTMLButtonElement>(".workspace-nav button[data-view]").forEach(button => {
       button.addEventListener("click", () => this.navigate(button.dataset.view!));
     });
@@ -56,13 +88,23 @@ export class Workspace {
       if (event.metaKey || event.ctrlKey) {
         const view = {"1": "home", "2": "history", ",": "settings"}[event.key];
         if (view) { event.preventDefault(); this.navigate(view); }
-      } else if (event.key === "Escape") this.navigate("home");
+      } else if (event.key === "Escape") this.goBack();
     });
   }
-  navigate(view: string): void {
-    view = ({'smart-home': 'devices', permissions: 'settings', commands: 'automations', training: 'automations'} as Record<string, string>)[view] ?? view;
-    if (!document.dispatchEvent(new CustomEvent("workspace:navigate", {detail: view, cancelable: true}))) return;
-    document.querySelector<HTMLElement>(".hud")!.dataset.view = view;
+  navigate(view: string, fromHistory = false): boolean {
+    view = ({'smart-home': 'devices', permissions: 'settings', commands: 'automations', training: 'automations', day: 'home'} as Record<string, string>)[view] ?? view;
+    if (!document.dispatchEvent(new CustomEvent("workspace:navigate", {detail: view, cancelable: true}))) return false;
+    if (view !== this.currentView) {
+      if (fromHistory) this.routeHistory.pop();
+      else this.routeHistory.push(this.currentView);
+      this.routeHistory = this.routeHistory.slice(-30);
+      this.currentView = view;
+      document.querySelector<HTMLElement>(".hud")!.dataset.view = view;
+      try {
+        history.replaceState({chushpanView:view}, "", `#${encodeURIComponent(view)}`);
+        sessionStorage.setItem("chushpan:navigation", JSON.stringify({current:view,history:this.routeHistory}));
+      } catch { /* Routing still works when browser storage is unavailable. */ }
+    }
     const parent = ({history: 'home', calendar: 'home', day: 'home', notes: 'memory', privacy: 'settings', diagnostics: 'performance'} as Record<string, string>)[view] ?? view;
     document.querySelectorAll<HTMLButtonElement>(".workspace-nav button[data-view], .chat-navigation button[data-go]").forEach(button => {
       const selected = button.closest(".workspace-nav")
@@ -76,6 +118,30 @@ export class Workspace {
       else node("history-messages").replaceChildren(text("p", "Для просмотра истории запусти Чушпана. Соединение с backend отсутствует.", "empty-state"));
     }
     if (view === "performance") this.performance?.();
+    this.updateBackButton();
+    return true;
+  }
+  private goBack(): void {
+    const previous = this.routeHistory.at(-1);
+    if (previous) this.navigate(previous, true);
+  }
+  private applySidebar(collapsed: boolean): void {
+    const hud = document.querySelector<HTMLElement>(".hud")!;
+    hud.dataset.sidebar = collapsed ? "collapsed" : "expanded";
+    const button = node("sidebar-toggle") as HTMLButtonElement;
+    const expanded = !collapsed;
+    button.setAttribute("aria-expanded", String(expanded));
+    button.setAttribute("aria-label", expanded ? "Свернуть боковую панель" : "Развернуть боковую панель");
+    button.title = this.sidebarCompact
+      ? "Боковая панель сворачивается автоматически в узком окне"
+      : expanded ? "Свернуть боковую панель" : "Развернуть боковую панель";
+    button.disabled = this.sidebarCompact;
+    const label = button.querySelector<HTMLSpanElement>("span:not([data-icon])");
+    if (label) label.textContent = expanded ? "Свернуть меню" : "Развернуть меню";
+  }
+  private updateBackButton(): void {
+    const button = node("route-back") as HTMLButtonElement;
+    button.hidden = this.currentView === "home" || this.routeHistory.length === 0;
   }
   openTrace(id: string): void { this.navigate('performance'); this.performance?.(id); }
   connection(online: boolean): void {

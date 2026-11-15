@@ -60,11 +60,6 @@ export interface WeatherEvent {
   days: WeatherDay[];
 }
 
-export interface NewsEvent {
-  type: "news";
-  items: { title: string; source: string; hours_ago: number | null; link?: string }[];
-}
-
 export interface SystemEvent {
   type: "system";
   battery: { percent: number; status: string; on_power_adapter: boolean } | null;
@@ -147,7 +142,6 @@ type HudPayload =
   | StateEvent
   | LevelEvent
   | WeatherEvent
-  | NewsEvent
   | SystemEvent
   | StatsEvent
   | AutostartEvent

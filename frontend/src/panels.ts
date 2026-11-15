@@ -1,11 +1,9 @@
-// Side panels and the transcript. Everything from the backend goes in as text, never
-// as HTML: news titles come from the internet.
+// Side panels and the transcript. External content is rendered as text, never as HTML.
 
 import { copyText } from "./clipboard";
-import { fill, type Strings } from "./i18n";
+import type { Strings } from "./i18n";
 import type {
   FootprintEvent,
-  NewsEvent,
   StatsEvent,
   SystemEvent,
   Timer,
@@ -50,28 +48,6 @@ function meter(label: string, percent: number | null, text: string, warn = false
   bar.append(fillBar);
   row.append(el("span", "label", label), bar, el("span", "value", text));
   return row;
-}
-
-type OpenUrl = { api?: { open_url?: (url: string) => Promise<boolean> } };
-
-/** A headline that opens its article: in the default browser from the native window
- * (it would otherwise load inside the HUD), in a new tab from a browser. */
-function newsLink(title: string, url: string, hint: string): HTMLElement {
-  const safe = /^https?:\/\//i.test(url) ? url : null;
-  if (!safe) return el("div", "title", title);
-  const a = el("a", "title link", title) as HTMLAnchorElement;
-  a.href = safe;
-  a.target = "_blank";
-  a.rel = "noopener noreferrer";
-  a.title = hint;
-  a.addEventListener("click", (e) => {
-    const native = (window as unknown as { pywebview?: OpenUrl }).pywebview?.api;
-    if (native?.open_url) {
-      e.preventDefault();
-      void native.open_url(safe);
-    }
-  });
-  return a;
 }
 
 function clock(ms: number): string {
@@ -145,32 +121,6 @@ export class Panels {
           el("span", "rain", rain != null && rain >= 30 ? `${rain}%` : ""),
           el("span", "range", `${dash(d.min)}° / ${dash(d.max)}°`),
         );
-        return row;
-      }),
-    );
-  }
-
-  news(n: NewsEvent): void {
-    const list = $("news-list");
-    if (!n.items.length) {
-      list.replaceChildren(el("li", "empty", this.t.noNews));
-      return;
-    }
-    list.replaceChildren(
-      ...n.items.map((item) => {
-        const row = el("li");
-        const when =
-          item.hours_ago == null
-            ? ""
-            : item.hours_ago < 1
-              ? this.t.justNow
-              : fill(this.t.hoursAgo, { n: item.hours_ago });
-        const meta = el("div", "meta");
-        meta.append(el("span", "", item.source), el("span", "", when));
-        const title = item.link
-          ? newsLink(item.title, item.link, this.t.openNews)
-          : el("div", "title", item.title);
-        row.append(title, meta);
         return row;
       }),
     );

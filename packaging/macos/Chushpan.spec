@@ -28,6 +28,8 @@ datas += collect_data_files("backend", include_py_files=True)
 binaries = [
     (str(native / name), "native")
     for name in (
+        "analytics_activity",
+        "ambient_hotkey",
         "permissions",
         "devices",
         "music_safari",

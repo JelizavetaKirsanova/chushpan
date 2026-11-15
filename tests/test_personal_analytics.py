@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -17,6 +18,8 @@ def setup(tmp_path):
     store = MemoryStore(tmp_path / "analytics.sqlite")
     tools = SimpleNamespace(desktop=SimpleNamespace(bridge=SimpleNamespace(request=AsyncMock())))
     service = Analytics(Settings(location={"timezone": "Europe/Tallinn"}), store, tools, HudBus())
+    # Feed deterministic NSWorkspace-shaped transitions instead of observing the test desktop.
+    service.start_activity_observer = lambda: None
     return store, service
 
 
@@ -123,6 +126,106 @@ def test_bounded_queue_drops_instead_of_blocking_voice(tmp_path):
                 service.record("assistant.request", metadata={"kind": "voice"})
             assert service.queue.qsize() == 256 and service.dropped == 44
             await service.flush()
+        finally:
+            await service.close()
+            store.close()
+
+    asyncio.run(go())
+
+
+def test_foreground_activity_uses_switch_and_session_events_without_polling(tmp_path):
+    async def go():
+        store, service = setup(tmp_path)
+        try:
+            await service.handle(
+                {
+                    "op": "policy",
+                    "value": {
+                        "enabled": True,
+                        "categories": ["mac"],
+                        "development_apps": ["com.example.editor"],
+                        "excluded_apps": ["com.example.private"],
+                    },
+                }
+            )
+            start = time.time() - 60
+            service.activity_transition(
+                {
+                    "type": "activated",
+                    "timestamp": start,
+                    "bundle": "com.example.editor",
+                    "app": "Editor",
+                }
+            )
+            service.activity_transition(
+                {
+                    "type": "activated",
+                    "timestamp": start + 12,
+                    "bundle": "com.example.browser",
+                    "app": "Browser",
+                }
+            )
+            service.activity_transition(
+                {
+                    "type": "paused",
+                    "timestamp": start + 32,
+                }
+            )
+            service.activity_transition(
+                {
+                    "type": "activated",
+                    "timestamp": start + 40,
+                    "bundle": "com.example.private",
+                    "app": "Private app",
+                }
+            )
+            service.activity_transition(
+                {
+                    "type": "paused",
+                    "timestamp": start + 52,
+                }
+            )
+            await service.flush()
+            rows = store.db.execute(
+                "SELECT event_type,duration,metadata FROM analytics_events ORDER BY timestamp"
+            ).fetchall()
+            activity = [(row[1], json.loads(row[2])) for row in rows if row[0] == "mac.activity"]
+            assert [(duration, metadata["category"]) for duration, metadata in activity] == [
+                (12, "development"),
+                (20, "other"),
+            ]
+            assert all("private" not in row[2] for row in rows)
+            assert service.snapshot()["summary"]["switches"] == 1
+            assert not hasattr(service, "sample_apps")
+            service.tools.desktop.bridge.request.assert_not_awaited()
+        finally:
+            await service.close()
+            store.close()
+
+    asyncio.run(go())
+
+
+def test_foreground_activity_is_split_at_local_midnight(tmp_path):
+    async def go():
+        store, service = setup(tmp_path)
+        try:
+            await service.handle(
+                {"op": "policy", "value": {"enabled": True, "categories": ["mac"]}}
+            )
+            started = datetime.fromisoformat("2026-11-04T23:59:30+02:00").timestamp()
+            service.activity_app = {"bundle": "com.example.editor", "name": "Editor"}
+            service.activity_started = started
+            service.finish_activity(started + 90)
+            await service.flush()
+            rows = store.db.execute(
+                "SELECT timestamp,duration FROM analytics_events "
+                "WHERE event_type='mac.activity' ORDER BY timestamp"
+            ).fetchall()
+            zone = ZoneInfo("Europe/Tallinn")
+            assert [(datetime.fromtimestamp(row[0], zone).date(), row[1]) for row in rows] == [
+                (datetime.fromtimestamp(started, zone).date(), 30),
+                (datetime.fromtimestamp(started + 30, zone).date(), 60),
+            ]
         finally:
             await service.close()
             store.close()

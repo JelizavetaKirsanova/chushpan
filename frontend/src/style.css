@@ -333,67 +333,6 @@ ul {
   font-family: var(--mono);
 }
 
-/* News */
-
-.news li {
-  padding: 8px 0;
-  border-top: 1px dashed var(--line);
-}
-
-.news li:first-child {
-  border-top: 0;
-  padding-top: 0;
-}
-
-.news .title {
-  font-size: 13px;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.news a.link {
-  color: inherit;
-  text-decoration: none;
-  cursor: pointer;
-  transition: color 0.2s;
-}
-
-.news a.link::after {
-  content: " ↗";
-  font-size: 11px;
-  color: var(--accent);
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-
-.news a.link:hover,
-.news a.link:focus-visible {
-  color: var(--ice);
-  text-decoration: underline;
-  text-decoration-color: var(--line);
-  text-underline-offset: 3px;
-}
-
-.news a.link:hover::after,
-.news a.link:focus-visible::after {
-  opacity: 1;
-}
-
-.news a.link:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.news .meta {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 3px;
-  font: 11px var(--mono);
-  color: var(--dim);
-}
-
 /* System meters */
 
 .meters {

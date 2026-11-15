@@ -13,7 +13,7 @@
   </head>
   <body>
     <div class="hud" data-state="offline" data-view="home">
-      <nav class="workspace-nav" aria-label="Разделы приложения"><div class="nav-brand"><span class="nav-avatar"><img src="/assets/chushpan-icon.png" alt=""></span><strong>Чушпан<small>Твой голосовой ассистент</small></strong></div>
+      <nav class="workspace-nav" aria-label="Разделы приложения"><div class="nav-brand"><span class="nav-avatar"><img src="/assets/chushpan-icon.png" alt=""></span><strong>Чушпан<small>Твой голосовой ассистент</small></strong></div><button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-expanded="true" aria-label="Свернуть боковую панель" title="Свернуть боковую панель"><span data-icon="collapse"></span><span>Свернуть меню</span></button>
       <button data-view="home" aria-current="page"><span data-icon="grid"></span><span>Главная</span><kbd>⌘1</kbd></button>
       <button data-view="automations"><span data-icon="sparkles"></span><span>Сценарии</span></button>
       <button data-view="devices"><span data-icon="lamp"></span><span>Устройства</span></button>
@@ -27,8 +27,8 @@
       <button data-view="settings"><span data-icon="settings"></span><span>Настройки</span></button>
       <div class="nav-spacer"></div><div class="nav-foot"><span class="connection-light"></span><span id="nav-state">Подключаюсь…</span><button data-action="ambient" title="Ambient" aria-label="Открыть Ambient"><span data-icon="moon"></span></button></div></nav>
 
-      <div class="backdrop" aria-hidden="true"></div><header class="top"><div class="brand"><b id="name">Чушпан</b><span id="model"></span></div><div class="clock"><span id="time">--:--</span><span id="date"></span></div><div class="status" role="status" aria-live="polite"><span class="dot"></span><span id="state-label">Подключение</span></div></header>
-      <nav class="chat-navigation" aria-label="Разговоры и день"><button data-go="history">Разговоры</button><button data-go="calendar">Календарь</button><button data-go="day">Новости</button><button data-action="new-chat" aria-label="Новый разговор">+</button></nav>
+      <div class="backdrop" aria-hidden="true"></div><header class="top"><div class="brand"><b id="name">Чушпан</b><span id="model"></span></div><button id="route-back" type="button" hidden aria-label="Вернуться на предыдущую страницу">← Назад</button><div class="clock"><span id="time">--:--</span><span id="date"></span></div><div class="status" role="status" aria-live="polite"><span class="dot"></span><span id="state-label">Подключение</span></div></header>
+      <nav class="chat-navigation" aria-label="Разговоры"><button data-go="history">Разговоры</button><button data-go="calendar">Календарь</button><button data-action="new-chat" aria-label="Новый разговор">+</button></nav>
       <div class="app-content">
       <section class="home-view" aria-label="Главная">
       <p id="dashboard-feedback" class="dashboard-feedback" role="status" hidden></p>
@@ -85,10 +85,6 @@
         </section>
       </aside>
       </section>
-      <section class="workspace-page news-page" aria-label="Новости"><section class="panel grow" id="news">
-          <h2><span data-label="news"></span></h2>
-          <ul class="news" id="news-list"></ul>
-        </section></section>
       <section class="workspace-page history-page" aria-label="История разговоров">
         <div class="page-heading"><small>ПАМЯТЬ ДИАЛОГА</small><h1>Разговоры</h1><button class="text-button" data-go="home">‹ Чат</button><p>Твои сохранённые диалоги. Без технических событий.</p></div>
         <div class="page-toolbar"><label class="search-field"><span data-icon="search"></span><input id="history-search" type="search" placeholder="Поиск по сообщениям"></label><label class="check-label"><input id="history-trash" type="checkbox"> Корзина</label><button data-action="new-chat">Новый разговор</button></div><details class="recent-dialogues"><summary>Недавние разговоры</summary>      <div class="recent-heading"><span>Недавние разговоры</span><button data-action="new-chat" aria-label="Новый разговор">+</button></div><label class="recent-search"><span data-icon="search"></span><input id="recent-search" placeholder="Найти разговор" type="search" aria-label="Поиск разговоров"></label><div id="recent-conversations" class="recent-conversations"><p class="muted">История появится после подключения.</p></div></details><div class="history-layout"><div id="conversation-list" class="conversation-list"></div><div id="history-messages" class="history-messages"><p class="empty-state">Выбери разговор слева.</p></div></div>
