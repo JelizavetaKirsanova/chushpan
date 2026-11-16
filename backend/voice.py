@@ -37,7 +37,7 @@ from backend.audio.stt import (
     strip_wake_phrase,
     thanks,
 )
-from backend.audio.tts import PiperSpeaker, SaySpeaker, SileroSpeaker, Speaker
+from backend.audio.tts import CloudSpeaker, PiperSpeaker, SaySpeaker, SileroSpeaker, Speaker
 from backend.audio.wakeword import WakeWordDetector
 from backend.brain.conversation import Conversation
 from backend.brain.llm import LLMError
@@ -157,6 +157,22 @@ def make_speaker(s: Settings) -> Speaker:
         speaker = SileroSpeaker(
             s.voice_path,
             speaker=s.tts.silero_speaker,
+            device=s.audio.output_device,
+            pronunciations=s.tts.pronunciations,
+        )
+    elif s.tts.engine in {"openai", "elevenlabs"}:
+        key = (
+            s.tts.openai_api_key.get_secret_value()
+            if s.tts.engine == "openai"
+            else s.tts.elevenlabs_api_key.get_secret_value()
+        )
+        speaker = CloudSpeaker(
+            s.tts.engine,
+            key,
+            model=(s.tts.openai_model if s.tts.engine == "openai" else "eleven_multilingual_v2"),
+            voice=s.tts.openai_voice,
+            voice_id=s.tts.elevenlabs_voice_id,
+            rate=s.tts.cloud_rate,
             device=s.audio.output_device,
             pronunciations=s.tts.pronunciations,
         )

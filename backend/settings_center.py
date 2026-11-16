@@ -58,6 +58,7 @@ class SettingsCenter:
                 ambiguity_rule=settings.tools.ambiguity_rule,
             ).model_dump(),
             "studio": Studio(
+                engine=settings.tts.engine,
                 voice=settings.voice_name,
                 input_device=settings.audio.input_device,
                 pronunciations=dict(settings.tts.pronunciations),
@@ -122,14 +123,30 @@ class SettingsCenter:
             "memory_pending": self.store.preference("memory", "pending") or [],
             "training": automations.store.training() if automations else [],
             "habits_opt_in": bool(self.store.preference("memory", "habits_opt_in")),
-            "engine": self.s.tts.engine,
-            "voices": ["eugene", "aidar", "baya", "kseniya", "xenia"]
-            if self.s.tts.engine == "silero"
-            else [self.s.voice_name],
+            "engine": (self.store.preference("settings", "studio") or {}).get(
+                "engine", self.s.tts.engine
+            ),
+            "tts_keys": {
+                "openai": bool(self.s.tts.openai_api_key.get_secret_value()),
+                "elevenlabs": bool(self.s.tts.elevenlabs_api_key.get_secret_value()),
+            },
+            "voices": (
+                ["eugene", "aidar", "baya", "kseniya", "xenia"]
+                if (self.store.preference("settings", "studio") or {}).get(
+                    "engine", self.s.tts.engine
+                )
+                == "silero"
+                else ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+                if (self.store.preference("settings", "studio") or {}).get(
+                    "engine", self.s.tts.engine
+                )
+                == "openai"
+                else [self.s.voice_name]
+            ),
             "voice_support": {
-                "rate": self.s.tts.engine in {"silero", "piper"},
+                "rate": self.s.tts.engine in {"silero", "piper", "openai"},
                 "pitch": self.s.tts.engine == "silero",
-                "expression": False,
+                "expression": self.s.tts.engine in {"openai", "elevenlabs"},
             },
             "permissions": self.permissions,
             "permission_onboarding": self.permission_onboarding,
@@ -858,7 +875,19 @@ class SettingsCenter:
 
     def validate_studio(self, values):
         selected = Studio.model_validate(values)
-        if selected.voice not in self.snapshot()["voices"]:
+        if (
+            selected.engine in {"openai", "elevenlabs"}
+            and not self.snapshot()["tts_keys"][selected.engine]
+        ):
+            raise ValueError(f"Добавь JARVIS_TTS__{selected.engine.upper()}_API_KEY в .env.")
+        voices = (
+            ["eugene", "aidar", "baya", "kseniya", "xenia"]
+            if selected.engine == "silero"
+            else ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+            if selected.engine == "openai"
+            else [self.s.voice_name]
+        )
+        if selected.voice not in voices:
             raise ValueError("Голос не установлен для текущего движка.")
         if selected.input_device != self.s.audio.input_device:
             import sounddevice as sd
@@ -866,15 +895,36 @@ class SettingsCenter:
             sd.check_input_settings(
                 device=selected.input_device, channels=1, dtype="int16", samplerate=16000
             )
-        if self.s.tts.engine != "silero" and selected.pitch != "medium":
+        if selected.engine != "silero" and selected.pitch != "medium":
             raise ValueError("Текущий движок не поддерживает высоту голоса.")
-        if self.s.tts.engine not in {"silero", "piper"} and selected.rate != "medium":
+        if selected.engine not in {"silero", "piper"} and selected.rate != "medium":
             raise ValueError("Текущий движок не поддерживает скорость речи.")
 
     def apply_studio(self, values):
         if not self.loop:
             return
         selected = Studio.model_validate(values)
+        previous = self.loop.speaker
+        previous_provider = getattr(previous, "provider", None) or self.s.tts.engine
+        self.s.tts.engine = selected.engine
+        if selected.engine == "silero":
+            self.s.tts.silero_speaker = selected.voice
+        elif selected.engine == "piper":
+            self.s.tts.voice = selected.voice
+        elif selected.engine == "openai":
+            self.s.tts.openai_voice = selected.voice
+        if selected.engine in {"openai", "elevenlabs"}:
+            if not self.snapshot()["tts_keys"][selected.engine]:
+                raise ValueError(f"Добавь JARVIS_TTS__{selected.engine.upper()}_API_KEY в .env.")
+        if previous_provider != selected.engine:
+            from backend.voice import make_speaker
+
+            previous.interrupt()
+            replacement = make_speaker(self.s)
+            for name in ("on_sentence", "on_level", "on_audio", "on_error"):
+                if hasattr(previous, name):
+                    setattr(replacement, name, getattr(previous, name))
+            self.loop.speaker = replacement
         speaker = self.loop.speaker
         change_input = getattr(self.loop, "change_input_device", None)
         if change_input:

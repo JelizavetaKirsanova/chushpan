@@ -556,6 +556,79 @@ class SileroSpeaker(PiperSpeaker):
         await loop.run_in_executor(self._synth_pool, self._synth, "Так.")
 
 
+class CloudSpeaker(PiperSpeaker):
+    """Cloud TTS adapter using the same sentence queue, PCM player, AEC and barge-in."""
+
+    def __init__(
+        self,
+        provider: str,
+        api_key: str,
+        *,
+        model: str,
+        voice: str,
+        voice_id: str = "",
+        rate: float = 1.0,
+        device=None,
+        pronunciations=None,
+    ) -> None:
+        super().__init__(Path("<cloud-tts>"), device=device, pronunciations=pronunciations)
+        self.provider, self.api_key = provider, api_key
+        self.model, self.cloud_voice, self.voice_id, self.rate_factor = model, voice, voice_id, rate
+
+    @property
+    def sample_rate(self) -> int:
+        return 24000
+
+    def _load(self) -> None:
+        return None
+
+    def _synth(self, text: str) -> np.ndarray:
+        import httpx
+
+        with measure("tts_text_preparation"):
+            spoken = speech_text(
+                text,
+                self.pronunciations,
+                self.speech_language,
+                normalize_numbers=self.normalize_numbers,
+                normalize_english=self.normalize_english,
+            )
+        if self.provider == "openai":
+            url = "https://api.openai.com/v1/audio/speech"
+            payload = {
+                "model": self.model,
+                "voice": self.cloud_voice,
+                "input": spoken,
+                "response_format": "pcm",
+                "speed": self.rate_factor,
+                "instructions": "Speak Russian naturally in a warm, expressive male voice. "
+                "Use clear standard Russian pronunciation, measured conversational pacing, "
+                "subtle emotion, and restrained dry irony when appropriate. Keep volume steady.",
+            }
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+        else:
+            if not self.voice_id:
+                raise SynthesisError("Для ElevenLabs задайте ID голоса.")
+            url = f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}"
+            payload = {
+                "text": spoken,
+                "model_id": self.model or "eleven_multilingual_v2",
+                "voice_settings": {
+                    "stability": 0.55,
+                    "similarity_boost": 0.75,
+                    "style": 0.2,
+                    "use_speaker_boost": True,
+                },
+            }
+            headers = {"xi-api-key": self.api_key}
+            url += "?output_format=pcm_24000"
+        with httpx.Client(timeout=httpx.Timeout(45, connect=8)) as client:
+            response = client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+        audio = np.frombuffer(response.content, dtype="<i2").copy()
+        return audio
+
+
 class SaySpeaker:
     """Fallback using macOS `say`: no downloads, but less natural and not streamed."""
 

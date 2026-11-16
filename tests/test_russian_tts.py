@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from backend.audio.russian import normalize
-from backend.audio.tts import SileroSpeaker
+from backend.audio.tts import CloudSpeaker, SileroSpeaker
 from backend.voice import speak_tokens, speech_sentences
 from tests.test_silero_tts import FakeSilero
 
@@ -78,6 +78,51 @@ def test_literals_not_read_or_mutated(source):
 
 def test_protected_content_is_removed_before_number_grouping():
     assert normalize("`123` 456 видео") == "фрагмент в тексте четыреста пятьдесят шесть видео"
+
+
+def test_openai_tts_adapter_normalizes_speech_without_changing_display(monkeypatch):
+    import httpx
+
+    captured = {}
+
+    class Response:
+        content = b"\x01\x00\xfe\xff"
+
+        def raise_for_status(self):
+            return None
+
+    class Client:
+        def __init__(self, **kwargs):
+            captured["timeout"] = kwargs["timeout"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, *, json, headers):
+            captured.update(url=url, payload=json, headers=headers)
+            return Response()
+
+    monkeypatch.setattr(httpx, "Client", Client)
+    original = "Чушпан, Gemini 3.8 Flash."
+    speaker = CloudSpeaker(
+        "openai",
+        "test-key",
+        model="gpt-4o-mini-tts",
+        voice="onyx",
+        pronunciations={"Чушпан": "Чушпа́н"},
+    )
+    speaker.speech_language = "ru"
+    samples = speaker._synth(original)
+    assert samples.tolist() == [1, -2]
+    assert captured["url"].endswith("/v1/audio/speech")
+    assert captured["payload"]["voice"] == "onyx"
+    assert "Чушпа́н" in captured["payload"]["input"]
+    assert "Джемини три точка восемь Флэш" in captured["payload"]["input"]
+    assert original == "Чушпан, Gemini 3.8 Flash."
+    speaker._synth_pool.shutdown()
 
 
 @pytest.mark.parametrize("stride", [1, 2, 7, 1000])

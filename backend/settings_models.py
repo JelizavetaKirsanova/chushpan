@@ -9,6 +9,7 @@ from backend.personality import Strict
 
 
 class Studio(Strict):
+    engine: Literal["silero", "piper", "say", "openai", "elevenlabs"] = "silero"
     voice: str = Field(default="eugene", max_length=80)
     input_device: str | int | None = None
     rate: Literal["x-slow", "slow", "medium", "fast", "x-fast"] = "medium"
@@ -257,6 +258,7 @@ def apply_persisted(settings, store):
                 setattr(settings.llm, name, selected)
     if value := store.preference("settings", "studio"):
         studio = Studio.model_validate(value)
+        settings.tts.engine = studio.engine
         if settings.tts.engine == "silero":
             settings.tts.silero_speaker = studio.voice
         elif settings.tts.engine == "piper":

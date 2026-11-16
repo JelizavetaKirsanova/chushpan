@@ -223,7 +223,7 @@ class STTConfig(BaseModel):
 
 
 class TTSConfig(BaseModel):
-    engine: str = "piper"
+    engine: Literal["silero", "piper", "say", "openai", "elevenlabs"] = "piper"
     voice: str | None = None  # None = language default
     voices_dir: Path = Path("models/voices")
     say_voice: str | None = None
@@ -232,6 +232,12 @@ class TTSConfig(BaseModel):
     pronunciations: dict[str, str] = Field(default_factory=dict)
     silero_model: Path = Path("silero_v5_6_ru.pt")  # in voices_dir, or an absolute path
     silero_speaker: str = "eugene"  # eugene | aidar (male); baya | kseniya | xenia (female)
+    openai_api_key: SecretStr = SecretStr("")
+    openai_model: str = "gpt-4o-mini-tts"
+    openai_voice: str = "onyx"
+    elevenlabs_api_key: SecretStr = SecretStr("")
+    elevenlabs_voice_id: str = ""
+    cloud_rate: float = Field(default=1.0, ge=0.7, le=1.3)
 
 
 class AudioConfig(BaseModel):
