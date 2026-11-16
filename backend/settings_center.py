@@ -59,7 +59,14 @@ class SettingsCenter:
             ).model_dump(),
             "studio": Studio(
                 engine=settings.tts.engine,
-                voice=settings.voice_name,
+                voice=(
+                    settings.tts.silero_speaker
+                    if settings.tts.engine == "silero"
+                    else settings.tts.openai_voice
+                    if settings.tts.engine == "openai"
+                    else settings.voice_name
+                ),
+                elevenlabs_voice_id=settings.tts.elevenlabs_voice_id,
                 input_device=settings.audio.input_device,
                 pronunciations=dict(settings.tts.pronunciations),
                 wake_phrase=settings.wakeword.phrase or "эй чушпан",
@@ -901,7 +908,9 @@ class SettingsCenter:
             return
         selected = Studio.model_validate(values)
         previous = self.loop.speaker
-        previous_provider = getattr(previous, "provider", None) or previous_engine or self.s.tts.engine
+        previous_provider = (
+            getattr(previous, "provider", None) or previous_engine or self.s.tts.engine
+        )
         self.s.tts.engine = selected.engine
         if selected.engine == "silero":
             self.s.tts.silero_speaker = selected.voice

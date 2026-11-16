@@ -34,11 +34,13 @@ class Studio(Strict):
             and len(self.input_device) > 200
         ):
             raise ValueError("Некорректный микрофон.")
-        if any(
-            not k.strip() or not v.strip() or len(k) > 80 or len(v) > 180
-            for k, v in self.pronunciations.items()
-        ) or contains_secret(self.model_dump_json()) or any(
-            char in self.elevenlabs_voice_id for char in " \t\r\n/?#"
+        if (
+            any(
+                not k.strip() or not v.strip() or len(k) > 80 or len(v) > 180
+                for k, v in self.pronunciations.items()
+            )
+            or contains_secret(self.model_dump_json())
+            or any(char in self.elevenlabs_voice_id for char in " \t\r\n/?#")
         ):
             raise ValueError("Проверь словарь: до 200 слов, без секретов и пустых значений.")
         return self
@@ -265,6 +267,7 @@ def apply_persisted(settings, store):
         if settings.tts.engine == "silero":
             settings.tts.silero_speaker = studio.voice
         elif settings.tts.engine == "piper":
+            settings.tts.voice = studio.voice
             settings.tts.length_scale = {
                 "x-slow": 1.4,
                 "slow": 1.2,
@@ -272,6 +275,12 @@ def apply_persisted(settings, store):
                 "fast": 0.85,
                 "x-fast": 0.7,
             }[studio.rate]
+        elif settings.tts.engine == "say":
+            settings.tts.say_voice = studio.voice
+        elif settings.tts.engine == "openai":
+            settings.tts.openai_voice = studio.voice
+        elif settings.tts.engine == "elevenlabs":
+            settings.tts.elevenlabs_voice_id = studio.elevenlabs_voice_id
         settings.audio.input_device = studio.input_device
         settings.tts.pronunciations = dict(studio.pronunciations)
         settings.wakeword.phrase = studio.wake_phrase
