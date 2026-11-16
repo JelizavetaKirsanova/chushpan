@@ -7,8 +7,6 @@ import unicodedata
 from datetime import date
 
 DEFAULT_PRONUNCIATIONS = {
-    "Чушпан": "Чу́шпан",
-    "Chushpan": "Чу́шпан",
     "YouTube Sleep Timer": "Ютуб слип таймер",
     "Youtube sleep": "Ютуб слип",
     "Apple Shortcuts": "Эпл шорткатс",

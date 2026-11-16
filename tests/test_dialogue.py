@@ -17,6 +17,12 @@ from tests.test_voice_loop import custom_harness
 from tests.test_voice_reliability import SPEECH
 
 
+def test_dialogue_window_defaults_to_fifteen_seconds():
+    from backend.config import DialogueConfig
+
+    assert DialogueConfig().duration_s == 15
+
+
 async def finish(h):
     await h.loop.task
     await asyncio.sleep(0)

@@ -264,7 +264,7 @@ class VADConfig(BaseModel):
 class DialogueConfig(BaseModel):
     enabled: bool = True
     mode: Literal["name_only", "dialogue", "continuous"] | None = None
-    duration_s: int = Field(default=30, ge=0, le=300)  # 0 = no inactivity timeout
+    duration_s: int = Field(default=15, ge=0, le=300)  # 0 = no inactivity timeout
     nameless_interruptions: bool = False
     addressee_strictness: Literal["contextual", "addressed"] = "contextual"
     background_filter: Literal["balanced", "strict"] = "balanced"

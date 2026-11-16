@@ -213,7 +213,7 @@ def test_stream_does_not_split_long_url_or_decimal():
 def test_name_stress_is_only_in_speech_copy_and_can_be_overridden():
     original = "Чушпан открыл Safari и поставил громкость 25%."
     prepared = speech_text(original, {}, "ru")
-    assert "Чу́шпан" in prepared and "Сафари" in prepared and "двадцать пять" in prepared
+    assert "Чушпан" in prepared and "Сафари" in prepared and "двадцать пять" in prepared
     assert original == "Чушпан открыл Safari и поставил громкость 25%."
     assert "Чушпа́н" in speech_text(original, {"Чушпан": "Чушпа́н"}, "ru")
 
