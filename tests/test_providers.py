@@ -182,6 +182,75 @@ def test_config_keeps_local_provider_selectable_and_rejects_external_fallback():
         create_llm(Settings(llm={"host": "https://example.org"}))
 
 
+def test_async_provider_creation_reads_openai_key_off_loop(monkeypatch):
+    import threading
+
+    from backend.brain import openai_keychain, providers
+
+    main_thread = threading.get_ident()
+    observed = {}
+    sentinel = object()
+
+    class Keychain:
+        def read(self):
+            observed["thread"] = threading.get_ident()
+            observed["daemon"] = threading.current_thread().daemon
+            return "test-only-key"
+
+    def factory(settings, *, openai_key=None):
+        observed["key"] = openai_key
+        return sentinel
+
+    monkeypatch.setattr(openai_keychain, "OpenAIKeychain", Keychain)
+    monkeypatch.setattr(providers, "create_llm", factory)
+    settings = Settings(llm={"provider": "openai"})
+
+    assert run(providers.create_llm_async(settings)) is sentinel
+    assert observed["thread"] != main_thread
+    assert observed["daemon"] is True and observed["key"] == "test-only-key"
+
+
+def test_blocked_openai_keychain_times_out_and_builds_fallback_without_key(monkeypatch):
+    import threading
+    import time
+
+    from backend.brain import openai_keychain, providers
+
+    entered, release = threading.Event(), threading.Event()
+    observed = {}
+    sentinel = object()
+
+    class Keychain:
+        def read(self):
+            observed["thread"] = threading.get_ident()
+            observed["daemon"] = threading.current_thread().daemon
+            entered.set()
+            release.wait(timeout=1)
+            return "test-only-key"
+
+    def factory(settings, *, openai_key=None):
+        observed["key"] = openai_key
+        return sentinel
+
+    monkeypatch.setattr(openai_keychain, "OpenAIKeychain", Keychain)
+    monkeypatch.setattr(providers, "create_llm", factory)
+    settings = Settings(llm={"provider": "openai"})
+
+    async def check():
+        started = time.perf_counter()
+        task = asyncio.create_task(providers.create_llm_async(settings, keychain_timeout_s=0.03))
+        assert await asyncio.wait_for(asyncio.to_thread(entered.wait), timeout=0.5)
+        result = await asyncio.wait_for(task, timeout=0.5)
+        return result, time.perf_counter() - started
+
+    try:
+        result, elapsed = run(check())
+        assert result is sentinel and elapsed < 0.5
+        assert observed["daemon"] is True and observed["key"] == ""
+    finally:
+        release.set()
+
+
 def test_secrets_are_filtered_in_text_arguments_and_results():
     value = {"password": "hunter2", "token": "abc", "content": "пароль: hunter2 Bearer xyz"}
     assert "hunter2" not in str(redact(value)) and "xyz" not in str(redact(value))

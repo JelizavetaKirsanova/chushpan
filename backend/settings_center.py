@@ -902,10 +902,10 @@ class SettingsCenter:
         if category == "studio":
             self.apply_studio(selected.model_dump(), previous_engine=previous_tts_engine)
         if category == "models":
-            from backend.brain.providers import create_llm
+            from backend.brain.providers import create_llm_async
 
             await self.conv.settle()
-            client = create_llm(self.s)
+            client = await create_llm_async(self.s)
             self.attach_openai_usage(client)
             if hasattr(client, "on_status"):
                 client.on_status = self.bus.publish

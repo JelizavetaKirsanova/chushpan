@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
@@ -744,7 +745,52 @@ class FallbackClient:
         raise LLMError("Сейчас нет доступной модели. Попробуй ещё раз немного позже.")
 
 
-def create_llm(s: Settings) -> LLMClient:
+async def _read_openai_key_bounded(timeout_s: float) -> tuple[str, str]:
+    """Read a saved key off-loop, with a hard startup bound.
+
+    Keychain Security.framework calls can wait indefinitely for macOS. A daemon
+    thread keeps both the HUD event loop and interpreter shutdown independent of
+    that system call.
+    """
+    loop = asyncio.get_running_loop()
+    result: asyncio.Future[tuple[str, str]] = loop.create_future()
+
+    def read() -> None:
+        from backend.brain.openai_keychain import OpenAIKeychain
+
+        try:
+            key = OpenAIKeychain().read()
+            value = (key, "saved" if key else "missing")
+        except Exception as exc:
+            value = ("", "missing" if "Сначала добавь" in str(exc) else "unavailable")
+
+        def finish() -> None:
+            if not result.done():
+                result.set_result(value)
+
+        try:
+            loop.call_soon_threadsafe(finish)
+        except RuntimeError:
+            pass  # The application closed while macOS was servicing Keychain.
+
+    threading.Thread(target=read, name="chushpan-keychain-read", daemon=True).start()
+    try:
+        return await asyncio.wait_for(result, timeout_s)
+    except TimeoutError:
+        return "", "timeout"
+
+
+async def create_llm_async(s: Settings, *, keychain_timeout_s: float = 3.0) -> LLMClient:
+    """Construct providers without making Keychain part of the event loop."""
+    if s.llm.provider == "openai":
+        key, state = await _read_openai_key_bounded(keychain_timeout_s)
+        if state != "saved":
+            log.warning("OPENAI_KEYCHAIN state=%s; local fallback remains available", state)
+        return create_llm(s, openai_key=key)
+    return await asyncio.to_thread(create_llm, s)
+
+
+def create_llm(s: Settings, *, openai_key: str | None = None) -> LLMClient:
     # A cloud fallback must actually be local. Existing explicit Ollama mode stays compatible.
     if s.llm.provider in {"gemini", "openai"} and urlparse(s.llm.host).hostname not in {
         "localhost",
@@ -759,13 +805,15 @@ def create_llm(s: Settings) -> LLMClient:
         from backend.brain.openai_keychain import OpenAIKeychain
         from backend.brain.openai_provider import OpenAIClient
 
-        keychain = OpenAIKeychain()
-        key = ""
-        if keychain.status().get("configured"):
-            try:
-                key = keychain.read()
-            except Exception:
-                log.warning("OpenAI key is present but unavailable from macOS Keychain")
+        key = openai_key
+        if key is None:
+            keychain = OpenAIKeychain()
+            key = ""
+            if keychain.status().get("configured"):
+                try:
+                    key = keychain.read()
+                except Exception:
+                    log.warning("OpenAI key is present but unavailable from macOS Keychain")
         cloud = OpenAIClient(s.openai, key)
         return FallbackClient(cloud, local, s.openai.fallback)
     cloud = GeminiClient(s.gemini, api_key())

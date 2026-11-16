@@ -42,7 +42,7 @@ from backend.audio.tts import CloudSpeaker, PiperSpeaker, SaySpeaker, SileroSpea
 from backend.audio.wakeword import WakeWordDetector
 from backend.brain.conversation import Conversation
 from backend.brain.llm import LLMError
-from backend.brain.providers import configured_label, create_llm
+from backend.brain.providers import configured_label, create_llm_async
 from backend.config import Settings
 from backend.context import (
     DeviceContext,
@@ -2512,7 +2512,7 @@ async def _run_voice(
         apply_persisted(s, store)
     except (ValueError, TypeError):
         log.warning("SETTINGS invalid_saved_value using_config")
-    llm = create_llm(
+    llm = await create_llm_async(
         s.model_copy(
             update={"llm": s.llm.model_copy(update={"keep_alive": s.resources.keep_alive})}
         )
