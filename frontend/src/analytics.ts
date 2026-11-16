@@ -1,15 +1,61 @@
 import type {HudEvent} from './types';
 import {ModulePage,card,date,duration,el,formFields,grid,metric,row,seconds,type ModuleChannel} from './module_ui';
 export interface AnalyticsPolicy {enabled:boolean;categories:string[];retention_days:number;excluded_apps:string[];development_apps:string[];study_apps:string[];}
-export interface AnalyticsSummary {count:number;voice:number;text:number;mean_s:number|null;p50_s:number|null;p95_s:number|null;failed:number;active_s:number;development_s:number;study_s:number;switches:number;apps:{bundle:string;name:string;seconds:number}[];categories:Record<string,number>;daily:{day:string;requests:number;active_s:number}[];providers:Record<string,number>;commands:{name:string;category?:string;count:number;failed:number;confirmed:number}[];stages:{name:string;mean_s:number;p95_s:number}[];latencies:{at:number;seconds:number|null}[];events:number;}
+export interface AnalyticsApplication {bundle:string;name:string;seconds:number;}
+export interface AnalyticsSummary {count:number;voice:number;text:number;mean_s:number|null;p50_s:number|null;p95_s:number|null;failed:number;active_s:number;idle_s:number;system_s:number;legacy_s:number;background_s:number|null;development_s:number;study_s:number;switches:number;apps:AnalyticsApplication[];system_apps:AnalyticsApplication[];legacy_apps:AnalyticsApplication[];categories:Record<string,number>;daily:{day:string;requests:number;active_s:number}[];providers:Record<string,number>;commands:{name:string;category?:string;count:number;failed:number;confirmed:number}[];stages:{name:string;mean_s:number;p95_s:number}[];latencies:{at:number;seconds:number|null}[];events:number;}
 export interface AnalyticsData {summary:AnalyticsSummary;previous:AnalyticsSummary;policy:AnalyticsPolicy;insights:string[];dropped:number;error:string|null;query:{period?:string;start?:string;end?:string;device?:string};timezone:string;devices:string[];categories:Record<string,string>;}
 const categoryLabels:Record<string,string>={development:'Разработка (выбрано тобой)',study:'Учёба (выбрано тобой)',other:'Другое'};
 const colors=['#bb7ffa','#8399f3','#e88fc3','#77649e','#69bdbe'];
+const applicationBarWidths=new Map<string,number>();
+const appColor=(bundle:string):string=>{const hash=[...bundle].reduce((value,char)=>(value*31+char.charCodeAt(0))|0,0);return colors[Math.abs(hash)%colors.length];};
+const exactDuration=(value:number):string=>{const total=Math.round(Math.max(0,value));const hours=Math.floor(total/3600);const minutes=Math.floor(total%3600/60);const seconds=total%60;return hours?`${hours} ч ${minutes} м ${seconds} с`:minutes?`${minutes} м ${seconds} с`:`${seconds} с`;};
 
 export function barChart(values:{label:string;value:number;detail:string}[],title:string):HTMLElement {
   const node=card(title);const plot=el('div','','module-bars');const selected=el('p','Нажми на столбец, чтобы посмотреть значение.','chart-detail');const max=Math.max(1,...values.map(v=>v.value));
   if(!values.length){node.append(el('p','Нет событий за выбранный период.','muted'));return node;}
   values.forEach((value,index)=>{const button=el('button','','chart-bar');button.type='button';button.setAttribute('aria-label',value.label+': '+value.detail);button.title=value.detail;const track=el('span','','chart-bar-track');const fill=el('span','','chart-bar-fill');fill.style.width=`${Math.max(0,Math.min(100,value.value/max*100))}%`;fill.style.background=colors[index%colors.length];track.append(fill);button.append(el('span',value.label,'chart-bar-label'),track,el('small',value.detail));button.onclick=()=>{selected.textContent=value.label+' · '+value.detail;plot.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));};plot.append(button);});node.append(plot,selected);return node;
+}
+export function applicationTimeChart(apps:AnalyticsApplication[],systemApps:AnalyticsApplication[]=[],legacyApps:AnalyticsApplication[]=[]):HTMLElement {
+  const node=card('Измеренное время приложений');
+  const renderRows=(items:AnalyticsApplication[],container:HTMLElement,scope:string)=>{
+    const valueOf=(app:AnalyticsApplication)=>Number.isFinite(app.seconds)?Math.max(0,app.seconds):0;
+    const sorted=[...items].sort((a,b)=>valueOf(b)-valueOf(a)||a.name.localeCompare(b.name,'ru'));
+    const maximum=Math.max(0,...sorted.map(valueOf));
+    const total=sorted.reduce((sum,app)=>sum+valueOf(app),0);
+    sorted.forEach(app=>{
+      const value=valueOf(app);const relative=maximum?value/maximum*100:0;
+      const share=total?value/total*100:0;const percent=new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(share);
+      const accent=appColor(app.bundle);const key=`${scope}:${app.bundle}`;const previous=applicationBarWidths.get(key);
+      const animate=previous!==undefined&&previous!==relative&&typeof window.requestAnimationFrame==='function';
+      const item=el('div','','application-time-row');item.title=`${app.name} · ${exactDuration(value)} · ${percent}% от времени списка`;
+      const identity=el('span','','application-time-identity');
+      const icon=el('span',[...app.name.trim()][0]?.toLocaleUpperCase('ru-RU')||'•','application-time-icon');
+      icon.setAttribute('aria-hidden','true');icon.style.setProperty('--app-accent',accent);
+      const name=el('span',app.name,'application-time-name');name.title=app.name;
+      identity.append(icon,name);
+      const track=el('span','','application-time-track');track.setAttribute('role','progressbar');
+      track.setAttribute('aria-label',`${app.name}: ${exactDuration(value)}, ${percent}% от времени списка`);
+      track.setAttribute('aria-valuemin','0');track.setAttribute('aria-valuemax','100');track.setAttribute('aria-valuenow',String(relative));
+      track.title=`${exactDuration(value)} · ${percent}% от времени списка`;
+      const fill=el('span','','application-time-fill');fill.style.width=`${animate?previous:relative}%`;fill.style.setProperty('--app-accent',accent);track.append(fill);
+      const time=el('strong',exactDuration(value),'application-time-value');
+      item.append(identity,track,time);container.append(item);
+      if(animate)window.requestAnimationFrame(()=>{fill.style.width=`${relative}%`;});
+      applicationBarWidths.set(key,relative);
+    });
+  };
+  if(apps.length){const list=el('div','','application-time-list');renderRows(apps,list,'apps');node.append(list);}
+  else node.append(el('p','Нет измерений приложений за выбранный период.','muted'));
+  if(systemApps.length){
+    const details=el('details','','application-system-details');const total=systemApps.reduce((sum,app)=>sum+Math.max(0,app.seconds),0);
+    details.append(el('summary',`Системные процессы · ${exactDuration(total)}`));const list=el('div','','application-time-list application-system-list');renderRows(systemApps,list,'system');details.append(list);node.append(details);
+  }
+  if(legacyApps.length){
+    const details=el('details','','application-system-details');const total=legacyApps.reduce((sum,app)=>sum+Math.max(0,app.seconds),0);
+    details.append(el('summary',`История без проверки простоя · ${exactDuration(total)}`));const list=el('div','','application-time-list application-system-list');renderRows(legacyApps,list,'legacy');details.append(list);node.append(details);
+  }
+  node.append(el('p','Учтено время приложения на переднем плане. После минуты без ввода оно относится к простою. Системные процессы, включая loginwindow, показаны отдельно. История до определения простоя сохранена отдельно. Фоновое время не измеряется.','application-time-note'));
+  return node;
 }
 export function donut(categories:Record<string,number>):HTMLElement {
   const node=card('Распределение активности');const total=Object.values(categories).reduce((sum,v)=>sum+v,0);if(!total){node.append(el('p','Сбор активности приложений выключен или измерений ещё нет.','muted'));return node;}
@@ -40,8 +86,9 @@ export class AnalyticsView extends ModulePage<AnalyticsData> {
       this.content.append(grid(metric('Голосовые',String(summary.voice)),metric('Текстовые',String(summary.text)),metric('P50',seconds(summary.p50_s)),metric('P95',seconds(summary.p95_s))));
       this.content.append(barChart(summary.latencies.filter(r=>r.seconds!=null).map(r=>({label:date(r.at),value:r.seconds!,detail:seconds(r.seconds)})),'Задержка первого ответа'),barChart(summary.stages.map(s=>({label:s.name,value:s.mean_s,detail:`Среднее ${seconds(s.mean_s)} · P95 ${seconds(s.p95_s)}`})),'Этапы конвейера'),barChart(Object.entries(summary.providers).map(([name,count])=>({label:name,value:count,detail:`${count} запросов`})),'Наблюдавшиеся провайдеры'),card('Расходы API','Достоверные тарифы не подключены. Стоимость не оценивается.'));
     }else if(this.tab==='apps'||this.tab==='study'){
-      this.content.append(grid(metric('Активность Mac',summary.active_s?duration(summary.active_s):'Нет измерений'),metric('Выбранные приложения разработки',summary.development_s?duration(summary.development_s):'Нет измерений'),metric('Выбранные приложения учёбы',summary.study_s?duration(summary.study_s):'Нет измерений'),metric('Переключения приложений',String(summary.switches))));
-      this.content.append(barChart(summary.apps.filter(app=>this.tab!=='study'||data.policy.study_apps.includes(app.bundle)||data.policy.development_apps.includes(app.bundle)).map(app=>({label:app.name,value:app.seconds,detail:duration(app.seconds)})),'Измеренное время приложений'),card('Как это считается','Выборки активного приложения каждые 5 секунд. Простой больше минуты исключён. Категории учёбы и разработки задаются вручную; время в IDE не считается продуктивностью автоматически.'),this.button('Выбрать приложения',()=>{this.tab='collection';this.render();}));
+      this.content.append(grid(metric('Активность на переднем плане',summary.active_s?duration(summary.active_s):'Нет измерений'),metric('Простой',summary.idle_s?duration(summary.idle_s):'Нет измерений'),metric('Системные процессы',summary.system_s?duration(summary.system_s):'Нет измерений'),metric('Переключения приложений',String(summary.switches))));
+      const apps=summary.apps.filter(app=>this.tab!=='study'||data.policy.study_apps.includes(app.bundle)||data.policy.development_apps.includes(app.bundle));
+      this.content.append(applicationTimeChart(apps,summary.system_apps,summary.legacy_apps),card('Как это считается','Измеряется только приложение на переднем плане; интервалы не складывают время нескольких одновременно запущенных процессов. Простой определяется по отсутствию ввода в течение минуты. История без данных о простое сохранена отдельно. Фоновое время не собирается. Категории учёбы и разработки задаются вручную; время в IDE само по себе не считается продуктивностью.'),this.button('Выбрать приложения',()=>{this.tab='collection';this.render();}));
     }else if(this.tab==='devices'||this.tab==='media'){
       const selected=summary.commands.filter(r=>r.category?(this.tab==='media'?r.category==='media.event':r.category==='devices.command'):(this.tab==='media'?r.name.startsWith('media')||r.name.includes('music'):!r.name.startsWith('media')&&!r.name.includes('music')));this.content.append(grid(metric('Команды',String(selected.reduce((n,r)=>n+r.count,0))),metric('Подтверждено',String(selected.reduce((n,r)=>n+r.confirmed,0))),metric('Ошибки',String(selected.reduce((n,r)=>n+r.failed,0)))));this.content.append(barChart(selected.map(r=>({label:r.name,value:r.count,detail:`${r.count} запусков · ${r.confirmed} подтверждено · ${r.failed} ошибок`})),'Результаты команд'));
       if(this.tab==='media')this.content.append(card('Время просмотра','Время проигрывания нельзя вывести из числа команд. Подтверждённый прогресс хранится в медиатеке; длительность просмотра этой статистикой не подменяется.'),this.navigation('Открыть медиатеку','cinema'));

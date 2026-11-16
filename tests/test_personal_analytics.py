@@ -74,7 +74,8 @@ def test_events_metadata_percentiles_export_filters_retention_and_clear(tmp_path
             data = service.snapshot()["summary"]
             assert data["count"] == 4 and data["mean_s"] == 3
             assert data["p50_s"] == 1 and data["p95_s"] == 8
-            assert data["active_s"] == 5 and data["development_s"] == 0
+            assert data["active_s"] == 0 and data["legacy_s"] == 5
+            assert data["development_s"] == 0
             raw = (await service.handle({"op": "export"}))["download"]["content"]
             assert "Private conversation" not in raw and "password" not in raw
             assert len(json.loads(raw)["events"]) == 5
@@ -226,6 +227,72 @@ def test_foreground_activity_is_split_at_local_midnight(tmp_path):
                 (datetime.fromtimestamp(started, zone).date(), 30),
                 (datetime.fromtimestamp(started + 30, zone).date(), 60),
             ]
+        finally:
+            await service.close()
+            store.close()
+
+    asyncio.run(go())
+
+
+def test_activity_separates_idle_and_system_time_without_deleting_historical_loginwindow(tmp_path):
+    async def go():
+        store, service = setup(tmp_path)
+        try:
+            await service.handle(
+                {"op": "policy", "value": {"enabled": True, "categories": ["mac"]}}
+            )
+            start = time.time() - 1000
+            service.record(
+                "mac.activity",
+                duration=200,
+                at=start - 500,
+                metadata={
+                    "app": "loginwindow",
+                    "bundle": "com.apple.loginwindow",
+                    "category": "other",
+                },
+            )
+            service.activity_transition(
+                {
+                    "type": "activated",
+                    "timestamp": start,
+                    "bundle": "com.apple.loginwindow",
+                    "app": "loginwindow",
+                }
+            )
+            service.activity_transition(
+                {
+                    "type": "activated",
+                    "timestamp": start + 100,
+                    "bundle": "com.example.editor",
+                    "app": "Editor",
+                }
+            )
+            service.activity_transition({"type": "idle", "idle": True, "timestamp": start + 110})
+            service.activity_transition({"type": "idle", "idle": False, "timestamp": start + 130})
+            service.activity_transition({"type": "paused", "timestamp": start + 140})
+            await service.flush()
+
+            service.query = {"period": "all"}
+            summary = service.snapshot()["summary"]
+            assert summary["active_s"] == 20
+            assert summary["idle_s"] == 20
+            assert summary["system_s"] == 300
+            assert summary["background_s"] is None
+            assert [(app["bundle"], app["seconds"]) for app in summary["apps"]] == [
+                ("com.example.editor", 20)
+            ]
+            assert [(app["bundle"], app["seconds"]) for app in summary["system_apps"]] == [
+                ("com.apple.loginwindow", 300)
+            ]
+            assert sum(day["active_s"] for day in summary["daily"]) == 20
+            assert (
+                store.db.execute(
+                    "SELECT COUNT(*) FROM analytics_events WHERE event_type='mac.activity' "
+                    "AND metadata LIKE '%com.apple.loginwindow%'"
+                ).fetchone()[0]
+                >= 2
+            )
         finally:
             await service.close()
             store.close()

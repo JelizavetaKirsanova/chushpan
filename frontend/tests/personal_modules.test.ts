@@ -9,14 +9,14 @@ function fixture(){
   const window=new Window({settings:{disableJavaScriptEvaluation:true,disableCSSFileLoading:true,disableJavaScriptFileLoading:true}});
   window.document.write('<div class="hud" data-view="memory"><section id="module-memory"></section><section id="module-mac-control"></section><section id="module-my-devices"></section><section id="module-analytics"></section></div>');
   window.confirm=()=>true;
-  const code=['module_ui','memory_library','mac_center','device_sync','analytics'].map(name=>stripTypeScriptTypes(readFileSync(new URL('../src/'+name+'.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'')).join('\n')+'\nexports.views=[MemoryLibraryView,MacCenterView,DeviceSyncView,AnalyticsView];exports.barChart=barChart;exports.donut=donut;';
+  const code=['module_ui','memory_library','mac_center','device_sync','analytics'].map(name=>stripTypeScriptTypes(readFileSync(new URL('../src/'+name+'.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'')).join('\n')+'\nexports.views=[MemoryLibraryView,MacCenterView,DeviceSyncView,AnalyticsView];exports.barChart=barChart;exports.applicationTimeChart=applicationTimeChart;exports.donut=donut;';
   const sandbox={exports:{} as Record<string,any>,document:window.document,window,HTMLInputElement:window.HTMLInputElement,HTMLTextAreaElement:window.HTMLTextAreaElement,CustomEvent:window.CustomEvent,confirm:()=>true,setTimeout:()=>0,clearTimeout:()=>{},Blob:window.Blob,URL:window.URL,atob};
   vm.runInNewContext(code,sandbox);
   const sent:any[]=[];const destinations:string[]=[];const views=sandbox.exports.views.map((View:any)=>new View((channel:string,value:any)=>sent.push({channel,...value}),(view:string)=>destinations.push(view)));
   return {window,views,sent,destinations,sandbox};
 }
 function memory(){return {items:[{id:7,content:'Тестовый факт',category:'preference',source:'explicit_user',confidence:1,confirmed:1,sensitive:0,created_at:'2026-11-05T00:00:00Z',updated_at:'2026-11-05T00:00:00Z',revision:3,project_id:null,expires_at:null,status:'active'}],projects:[],total:1,used_today:0,categories:{preference:'Предпочтения'},pending:[],access:[],fts:true,policy:{automatic:'ask'},conversations:[],bindings:[]};}
-function analytics(){return {summary:{count:0,voice:0,text:0,mean_s:null,p50_s:null,p95_s:null,failed:0,active_s:0,development_s:0,study_s:0,switches:0,apps:[],categories:{},daily:[],providers:{},commands:[],stages:[],latencies:[],events:0},previous:{},policy:{enabled:false,categories:[],retention_days:30,excluded_apps:[],development_apps:[],study_apps:[]},insights:[],dropped:0,error:null,query:{period:'today'},timezone:'Europe/Tallinn',devices:[],categories:{assistant:'Чушпан',mac:'Приложения'}};}
+function analytics(){return {summary:{count:0,voice:0,text:0,mean_s:null,p50_s:null,p95_s:null,failed:0,active_s:0,idle_s:0,system_s:0,legacy_s:0,background_s:null,development_s:0,study_s:0,switches:0,apps:[],system_apps:[],legacy_apps:[],categories:{},daily:[],providers:{},commands:[],stages:[],latencies:[],events:0},previous:{},policy:{enabled:false,categories:[],retention_days:30,excluded_apps:[],development_apps:[],study_apps:[]},insights:[],dropped:0,error:null,query:{period:'today'},timezone:'Europe/Tallinn',devices:[],categories:{assistant:'Чушпан',mac:'Приложения'}};}
 
 test('four modules request real channels and preserve honest offline state',()=>{const f=fixture();try{for(const view of f.views)view.connection(true);assert.deepEqual(f.sent.map(v=>v.channel),['memory_library','mac_center','device_sync','analytics']);f.views[0].receive({type:'memory_library',data:memory(),busy:false});f.views[0].connection(false);assert.match(f.window.document.getElementById('module-memory')!.textContent,/устаревшими/);assert.equal((f.window.document.querySelector('#module-memory button[data-write]') as HTMLButtonElement).disabled,true);}finally{f.window.happyDOM.abort();}});
 test('memory details keep revision on deletion and projects navigate independently',()=>{const f=fixture();try{const view=f.views[0];view.connection(true);view.receive({type:'memory_library',data:memory(),busy:false});const detail=[...f.window.document.querySelectorAll('#module-memory button')].find(b=>b.textContent==='Подробнее')!;detail.click();const remove=[...f.window.document.querySelectorAll('dialog button')].find(b=>b.textContent==='Удалить')!;remove.click();assert.equal(f.sent.at(-1).op,'delete');assert.equal(f.sent.at(-1).revision,3);assert.equal(f.sent.at(-1).confirmed,true);for(const tab of f.window.document.querySelectorAll('#module-memory [role=tab]')){tab.click();assert.equal(tab.getAttribute('aria-selected'),'true');}}finally{f.window.happyDOM.abort();}});
@@ -25,6 +25,58 @@ test('unpaired devices display no invented phone, connection or active sync',()=
 test('analytics has empty measurements, opt-in policy controls and accessible interactive bars',()=>{const f=fixture();try{const view=f.views[3];view.connection(true);view.receive({type:'analytics',busy:false,data:analytics()});const root=f.window.document.getElementById('module-analytics')!;assert.match(root.textContent,/Сбор данных выключен/);assert.match(root.textContent,/Нет измерений/);assert.doesNotMatch(root.textContent,/NaN|Infinity/);([...root.querySelectorAll('[role=tab]')].find(b=>b.textContent==='Сбор данных')!).click();const enabled=root.querySelector<HTMLInputElement>('input[name=enabled]')!;enabled.checked=true;([...root.querySelectorAll('button')].find(b=>b.textContent==='Сохранить настройки')!).click();assert.equal(f.sent.at(-1).op,'policy');assert.equal(f.sent.at(-1).value.enabled,true);const chart=f.sandbox.exports.barChart([{label:'Пн',value:2,detail:'2 обращения'}],'Обращения');chart.querySelector('button').click();assert.equal(chart.querySelector('button').getAttribute('aria-pressed'),'true');assert.match(chart.querySelector('.chart-detail').textContent,/2 обращения/);}finally{f.window.happyDOM.abort();}});
 
 test('events stored after opt-in appear in the analytics overview chart',()=>{const f=fixture();try{const view=f.views[3],data=analytics();data.policy.enabled=true;data.summary.events=2;data.summary.count=2;data.summary.daily=[{day:'2026-11-09',requests:2,active_s:0}];view.connection(true);view.receive({type:'analytics',busy:false,data});const root=f.window.document.getElementById('module-analytics')!;assert.equal(root.querySelectorAll('.chart-bar').length,1);assert.match(root.querySelector('.chart-bar')!.getAttribute('aria-label')!,/2 обращений/);assert.doesNotMatch(root.textContent,/Сбор данных выключен/);}finally{f.window.happyDOM.abort();}});
+
+test('application time chart sorts rows, truncates long names, explains exact values and keeps zero bars empty',()=>{
+  const f=fixture();try{
+    const chart=f.sandbox.exports.applicationTimeChart([
+      {bundle:'browser',name:'Browser',seconds:1800},
+      {bundle:'zero',name:'Never used',seconds:0},
+      {bundle:'editor',name:'A very long application name that must be truncated in its row',seconds:3600},
+    ],[{bundle:'com.apple.loginwindow',name:'loginwindow',seconds:900}],[{bundle:'legacy',name:'Old Editor',seconds:600}]);
+    const rows=[...chart.querySelectorAll('.application-time-row')];
+    assert.equal(rows.length,5);
+    assert.deepEqual(rows.slice(0,3).map(row=>row.querySelector('.application-time-name')!.textContent),[
+      'A very long application name that must be truncated in its row','Browser','Never used',
+    ]);
+    assert.equal(rows[0].querySelector('.application-time-name')!.title,'A very long application name that must be truncated in its row');
+    assert.equal(rows[0].querySelector('.application-time-fill')!.style.width,'100%');
+    assert.equal(rows[1].querySelector('.application-time-fill')!.style.width,'50%');
+    assert.equal(rows[2].querySelector('.application-time-fill')!.style.width,'0%');
+    assert.match(rows[1].title,/30 м 0 с · 33,3%/);
+    assert.equal(rows[0].querySelector('.application-time-value')!.textContent,'1 ч 0 м 0 с');
+    assert.match(chart.querySelector('summary')!.textContent!,/Системные процессы · 15 м 0 с/);
+    assert.match(chart.querySelectorAll('summary')[1].textContent!,/История без проверки простоя · 10 м 0 с/);
+    assert.match(chart.textContent!,/Фоновое время не измеряется/);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('application time chart handles empty and large result sets without horizontal row growth',()=>{
+  const f=fixture();try{
+    const empty=f.sandbox.exports.applicationTimeChart([]);
+    assert.match(empty.textContent!,/Нет измерений приложений/);
+    const many=Array.from({length:48},(_,index)=>({bundle:`app.${index}`,name:`Application ${index}`,seconds:index}));
+    const chart=f.sandbox.exports.applicationTimeChart(many);
+    assert.equal(chart.querySelectorAll('.application-time-row').length,48);
+    assert.ok([...chart.querySelectorAll('.application-time-row')].every(row=>row.classList.contains('application-time-row')));
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('apps analytics view shows foreground, idle and system categories without the old polling claim',()=>{
+  const f=fixture();try{
+    const view=f.views[3],data=analytics();data.policy.enabled=true;
+    data.summary.events=3;data.summary.active_s=120;data.summary.idle_s=60;data.summary.system_s=600;
+    data.summary.apps=[{bundle:'example.editor',name:'Editor',seconds:120}];
+    data.summary.system_apps=[{bundle:'com.apple.loginwindow',name:'loginwindow',seconds:600}];
+    data.summary.legacy_apps=[{bundle:'example.old',name:'Old Editor',seconds:3600}];
+    view.connection(true);view.receive({type:'analytics',busy:false,data});
+    findButton(f.window.document.getElementById('module-analytics')!,'Приложения').click();
+    const root=f.window.document.getElementById('module-analytics')!;
+    assert.match(root.textContent!,/Активность на переднем плане/);assert.match(root.textContent!,/Простой/);
+    assert.match(root.textContent!,/Системные процессы · 10 м 0 с/);assert.match(root.textContent!,/loginwindow/);
+    assert.match(root.textContent!,/История без проверки простоя · 1 ч 0 м 0 с/);
+    assert.doesNotMatch(root.textContent!,/Выборки активного приложения каждые 5 секунд/);
+  }finally{f.window.happyDOM.abort();}
+});
 
 function syncData(){return {running:false,url:'',fingerprint:'',invite:null,pending:[],peers:[],categories:{memory:'Память'},capabilities:['chat'],history:[],conflicts:[],endpoint:{host:'127.0.0.1',port:8766}};}
 function findButton(scope:ParentNode,label:string){const button=[...scope.querySelectorAll('button')].find(b=>b.textContent===label);assert.ok(button,label);return button;}

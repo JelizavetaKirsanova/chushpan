@@ -106,6 +106,7 @@ class Analytics(Center):
         self.activity_failure = None
         self.activity_app = None
         self.activity_started = None
+        self.activity_idle = False
         self.activity_task = None
         self.activity_process = None
         self.activity_build_lock = asyncio.Lock()
@@ -146,6 +147,8 @@ class Analytics(Center):
             "status",
             "tool",
             "category",
+            "system",
+            "activity_state",
             "first_content_s",
             "stages",
             "scenario_id",
@@ -155,6 +158,8 @@ class Analytics(Center):
             if key not in allowed:
                 continue
             if isinstance(value, str) and len(value) <= 120 and not contains_secret(value):
+                clean[key] = value
+            elif type(value) is bool and key == "system":
                 clean[key] = value
             elif type(value) in (int, float) and math.isfinite(value) and value >= 0:
                 clean[key] = value
@@ -296,7 +301,7 @@ class Analytics(Center):
             self.activity_task = asyncio.create_task(self.observe_apps())
 
     def activity_transition(self, event):
-        """Apply an NSWorkspace foreground-app or session-boundary event."""
+        """Apply foreground-app, idle-state, and session-boundary events."""
         if not self.policy.enabled or "mac" not in self.policy.categories:
             return
         try:
@@ -309,6 +314,17 @@ class Analytics(Center):
         if kind in {"paused", "suspended"}:
             self.finish_activity(at)
             return
+        if kind == "idle":
+            idle = event.get("idle")
+            if type(idle) is not bool or idle == self.activity_idle:
+                return
+            app = self.activity_app
+            self.finish_activity(at)
+            self.activity_idle = idle
+            if app:
+                self.activity_app = app
+                self.activity_started = at
+            return
         if kind != "activated":
             return
         bundle = event.get("bundle")
@@ -319,14 +335,31 @@ class Analytics(Center):
         if {bundle.casefold(), name.casefold()} & excluded:
             self.finish_activity(at)
             return
-        if self.activity_app and self.activity_app["bundle"] == bundle:
+        system = event.get("system") is True or self.is_system_app(bundle)
+        if (
+            self.activity_app
+            and self.activity_app["bundle"] == bundle
+            and self.activity_app["system"] == system
+        ):
             return
-        had_previous = self.activity_app is not None
+        had_previous = self.activity_app is not None and not self.activity_app["system"]
         self.finish_activity(at)
-        if had_previous:
+        if had_previous and not system:
             self.record("mac.switch", metadata={"bundle": bundle}, at=at)
-        self.activity_app = {"bundle": bundle, "name": name}
+        self.activity_app = {"bundle": bundle, "name": name, "system": system}
         self.activity_started = at
+
+    @staticmethod
+    def is_system_app(bundle):
+        """Fallback for older observer events and historical login-window rows."""
+        return isinstance(bundle, str) and bundle.casefold() in {
+            "com.apple.loginwindow",
+            "com.apple.dock",
+            "com.apple.controlcenter",
+            "com.apple.notificationcenterui",
+            "com.apple.windowserver",
+            "com.apple.windowmanager",
+        }
 
     def finish_activity(self, at=None):
         app, started = self.activity_app, self.activity_started
@@ -344,6 +377,8 @@ class Analytics(Center):
         development = {value.casefold() for value in self.policy.development_apps}
         study = {value.casefold() for value in self.policy.study_apps}
         bundle = app["bundle"]
+        system = app.get("system", self.is_system_app(bundle))
+        activity_state = "system" if system else "idle" if self.activity_idle else "foreground"
         category = (
             "development"
             if bundle.casefold() in development
@@ -362,7 +397,13 @@ class Analytics(Center):
                     "mac.activity",
                     duration=segment_duration,
                     at=cursor,
-                    metadata={"app": app["name"], "bundle": bundle, "category": category},
+                    metadata={
+                        "app": app["name"],
+                        "bundle": bundle,
+                        "category": category,
+                        "system": system,
+                        "activity_state": activity_state,
+                    },
                 )
             cursor = segment_end
 
@@ -487,8 +528,17 @@ class Analytics(Center):
             if r["metadata"].get("first_content_s") is not None
             and r["metadata"].get("status") == "completed"
         ]
-        activity = [r for r in events if r["event_type"] == "mac.activity"]
-        apps, categories, daily, providers, commands, stages = {}, {}, {}, {}, {}, {}
+        apps, system_apps, legacy_apps, categories, daily, providers, commands, stages = (
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+        )
+        active_s = idle_s = system_s = legacy_s = 0
         for row in events:
             meta = row["metadata"]
             day = (
@@ -505,13 +555,34 @@ class Analytics(Center):
                     stages.setdefault(name, []).append(duration)
             if row["event_type"] == "mac.activity":
                 duration, bundle = row["duration"] or 0, meta.get("bundle", "unknown")
-                app = apps.setdefault(
-                    bundle, {"bundle": bundle, "name": meta.get("app", bundle), "seconds": 0}
-                )
-                app["seconds"] += duration
-                group["active_s"] += duration
-                category = meta.get("category", "other")
-                categories[category] = categories.get(category, 0) + duration
+                is_system = meta.get("system") is True or self.is_system_app(bundle)
+                state = "system" if is_system else meta.get("activity_state")
+                if state == "system":
+                    app = system_apps.setdefault(
+                        bundle,
+                        {"bundle": bundle, "name": meta.get("app", bundle), "seconds": 0},
+                    )
+                    app["seconds"] += duration
+                    system_s += duration
+                elif state == "idle":
+                    idle_s += duration
+                elif state == "foreground":
+                    app = apps.setdefault(
+                        bundle,
+                        {"bundle": bundle, "name": meta.get("app", bundle), "seconds": 0},
+                    )
+                    app["seconds"] += duration
+                    active_s += duration
+                    group["active_s"] += duration
+                    category = meta.get("category", "other")
+                    categories[category] = categories.get(category, 0) + duration
+                else:
+                    app = legacy_apps.setdefault(
+                        bundle,
+                        {"bundle": bundle, "name": meta.get("app", bundle), "seconds": 0},
+                    )
+                    app["seconds"] += duration
+                    legacy_s += duration
             if meta.get("tool"):
                 key = (row["event_type"], meta["tool"])
                 command = commands.setdefault(
@@ -535,11 +606,17 @@ class Analytics(Center):
             "p50_s": percentile(latencies, 0.5),
             "p95_s": percentile(latencies, 0.95),
             "failed": sum(r["metadata"].get("status") == "failed" for r in requests),
-            "active_s": sum(r["duration"] or 0 for r in activity),
+            "active_s": active_s,
+            "idle_s": idle_s,
+            "system_s": system_s,
+            "legacy_s": legacy_s,
+            "background_s": None,
             "development_s": categories.get("development", 0),
             "study_s": categories.get("study", 0),
             "switches": sum(r["event_type"] == "mac.switch" for r in events),
             "apps": sorted(apps.values(), key=lambda r: -r["seconds"]),
+            "system_apps": sorted(system_apps.values(), key=lambda r: -r["seconds"]),
+            "legacy_apps": sorted(legacy_apps.values(), key=lambda r: -r["seconds"]),
             "categories": categories,
             "daily": list(daily.values()),
             "providers": providers,

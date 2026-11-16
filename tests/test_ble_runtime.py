@@ -56,6 +56,10 @@ def test_build_manifest_hashes_shipped_code_and_records_revision(tmp_path, monke
         "backend/memory/intelligence.py",
         "backend/devices/colors.py",
         "frontend/src/color_editor.ts",
+        "frontend/src/analytics.ts",
+        "frontend/src/personal_modules.css",
+        "backend/analytics.py",
+        "backend/analytics_activity.swift",
         "frontend/src/memory_library.ts",
         "frontend/src/module_ui.ts",
     }
