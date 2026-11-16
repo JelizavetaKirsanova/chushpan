@@ -7,7 +7,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from backend.audio.level import level
 from backend.config import Settings
-from backend.hud.bus import QUEUE_SIZE, HudBus
+from backend.hud.bus import HudBus
 from backend.hud.feeds import news_panel, system_panel, weather_panel
 from backend.hud.server import allowed_origins, create_app
 from backend.state import State
@@ -54,13 +54,18 @@ def test_snapshot_keeps_latest_panels_and_the_transcript():
     assert len(bus.snapshot()[-1]["lines"]) == 8
 
 
-def test_a_stalled_client_loses_the_oldest_events():
+def test_a_stalled_client_keeps_requests_and_coalesces_adjacent_levels():
     bus = HudBus()
     queue = bus.subscribe()
-    for i in range(QUEUE_SIZE + 10):
+    for i in range(522):
+        bus.publish({"type": "user", "text": str(i)})
+    for i in range(10):
         bus.publish({"type": "level", "mic": i})
-    assert queue.qsize() == QUEUE_SIZE
-    assert queue.get_nowait()["mic"] == 10
+    assert queue.qsize() == 523
+    assert queue.get_nowait()["text"] == "0"
+    for _ in range(521):
+        queue.get_nowait()
+    assert queue.get_nowait() == {"type": "level", "mic": 9}
     bus.unsubscribe(queue)
     assert bus.clients == 0
 

@@ -198,6 +198,24 @@
       </footer>
 <div id="action-confirmation" class="action-confirmation" hidden><strong>Нужно твоё подтверждение</strong><p id="confirmation-summary"></p><div class="button-row"><button id="confirm-action" class="primary"></button><button data-command="Отмена">Отмена</button></div></div>
 <dialog id="edit-dialog"><form id="edit-form"><h2 id="edit-heading"></h2><p id="edit-description" class="muted"></p><label id="edit-value-label">Текст<input id="edit-value" maxlength="80"></label><label id="edit-long-label" hidden>Текст<textarea id="edit-long" rows="5" maxlength="3000"></textarea></label><div class="button-row"><button type="submit" id="edit-submit" class="primary">Сохранить</button><button type="button" id="edit-cancel">Отмена</button></div></form></dialog>    </div>
+    <script>
+      (() => {
+        const report = (type, source = "", line = 0) => {
+          fetch("/_desktop/frontend-error", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ type, source, line }),
+            keepalive: true,
+          }).catch(() => {});
+        };
+        window.addEventListener("error", (event) =>
+          report(event.error?.name || "ScriptError", event.filename || "", event.lineno || 0),
+        );
+        window.addEventListener("unhandledrejection", (event) =>
+          report(event.reason?.name || "UnhandledRejection"),
+        );
+      })();
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

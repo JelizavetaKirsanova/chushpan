@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import json
 import logging
 import re
@@ -11,6 +12,7 @@ import socket
 import sqlite3
 import webbrowser
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -58,6 +60,33 @@ NOT_BUILT = """<!doctype html><html lang="ru"><meta charset="utf-8">
 <p>Затем обновите страницу.</p></body></html>"""
 
 
+def frontend_readiness(dist: Path = DIST_DIR) -> dict[str, object]:
+    """Check the built entry page and every local asset it directly references."""
+    index = dist / "index.html"
+    if not index.is_file():
+        return {"ready": False, "assets_checked": 0, "missing": ["index.html"]}
+    try:
+        source = index.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return {"ready": False, "assets_checked": 0, "missing": ["index.html"]}
+
+    root = dist.resolve()
+    refs = re.findall(r"(?:src|href)=['\"]([^'\"]+)['\"]", source)
+    local_refs = [ref for ref in refs if urlsplit(ref).path.startswith("/")]
+    missing: list[str] = []
+    for ref in local_refs:
+        relative = urlsplit(ref).path.lstrip("/")
+        target = (dist / relative).resolve()
+        if not target.is_relative_to(root) or not target.is_file():
+            missing.append(Path(relative).name or "asset")
+    return {
+        "ready": bool(local_refs) and not missing,
+        "assets_checked": len(local_refs),
+        "assets": local_refs[:12],
+        "missing": missing[:12],
+    }
+
+
 def allowed_origins(host: str, port: int) -> set[str]:
     """Pages allowed to connect. Any site open in the browser can try ws://127.0.0.1;
     without this check it could read the conversation or send commands."""
@@ -70,6 +99,44 @@ def create_app(bus: HudBus, origins: set[str], dist: Path = DIST_DIR, native=Non
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     if native is not None:
         native.routes(app)
+
+    @app.get("/_desktop/health")
+    async def desktop_health() -> dict[str, object]:
+        frontend = frontend_readiness(dist)
+        return {
+            "backend": "ready",
+            "frontend": frontend,
+            "voice": getattr(native, "boot_stage", "ready" if native is None else "starting"),
+        }
+
+    @app.post("/_desktop/frontend-error")
+    async def frontend_error(request: Request) -> Response:
+        host = request.client.host if request.client else ""
+        try:
+            local_client = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            local_client = False
+        origin = request.headers.get("origin")
+        if not local_client or (origin is not None and origin not in origins):
+            return Response(status_code=403)
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 1024:
+                return Response(status_code=413)
+        try:
+            value = json.loads(body)
+        except (ValueError, TypeError):
+            return Response(status_code=400)
+        if not isinstance(value, dict):
+            return Response(status_code=400)
+        error_type = re.sub(r"[^A-Za-z0-9_.-]", "", str(value.get("type", "Error")))[:48]
+        source = Path(urlsplit(str(value.get("source", ""))).path).name
+        source = re.sub(r"[^A-Za-z0-9_.-]", "", source)[:100] or "unknown"
+        line = value.get("line", 0)
+        line = line if type(line) is int and 0 <= line <= 10_000_000 else 0
+        log.error("HUD_FRONTEND_JS_ERROR type=%s source=%s line=%d", error_type, source, line)
+        return Response(status_code=204)
 
     @app.get("/cinema/diagnostics/{identifier}/image")
     async def cinema_diagnostic_image(identifier: str, request: Request) -> Response:

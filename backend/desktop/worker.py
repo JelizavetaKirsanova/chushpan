@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
+import logging
 import os
 import secrets
 import shutil
 import signal
+import time
 from pathlib import Path
 
 from fastapi import HTTPException, Request
@@ -15,6 +18,47 @@ from fastapi import HTTPException, Request
 from backend.config import Settings
 from backend.hud.bus import HudBus
 from backend.hud.server import HudServer
+
+log = logging.getLogger(__name__)
+
+# Importing the native audio/model stack can take several minutes on a cold
+# launch. Keep it off the HTTP server's event loop so the HUD remains usable.
+_VOICE_MODULES = (
+    "backend.voice",
+    "backend.audio.capture",
+    "backend.audio.stt",
+    "backend.audio.vad",
+    "backend.audio.wakeword",
+    "backend.boot",
+    "backend.brain.briefing",
+    "backend.hud.feeds",
+    "backend.hud.workspace",
+    "backend.hud.dashboard",
+    "backend.tools.news",
+    "backend.tools.weather",
+    "backend.audio.activity",
+    "backend.audio.aec",
+    "backend.settings_models",
+    "backend.settings_center",
+    "backend.personal_modules",
+    "backend.desktop.platform",
+    "backend.permissions",
+)
+
+
+def _prepare_desktop_voice():
+    for name in _VOICE_MODULES:
+        importlib.import_module(name)
+    return importlib.import_module("backend.voice")._run_voice
+
+
+async def _load_desktop_voice():
+    """Import slow optional voice dependencies without stalling HUD HTTP/WebSocket."""
+    started = time.perf_counter()
+    log.info("DESKTOP_BOOT stage=voice_import_started")
+    run_voice = await asyncio.to_thread(_prepare_desktop_voice)
+    log.info("DESKTOP_BOOT stage=voice_import_ready elapsed_s=%.3f", time.perf_counter() - started)
+    return run_voice
 
 
 class DesktopEngine:
@@ -28,6 +72,7 @@ class DesktopEngine:
         self.components = {}
         self.error = ""
         self.ready = False
+        self.boot_stage = "starting"
         self.ollama = None
 
     async def ensure_ollama(self):
@@ -111,6 +156,7 @@ class DesktopEngine:
             state = "paused"
         return {
             "state": state,
+            "boot_stage": self.boot_stage,
             "listening": bool(self.loop and self.loop.microphone_running),
             "requested": self.enabled.is_set(),
             "components": self.components,
@@ -122,6 +168,8 @@ class DesktopEngine:
     async def capture(self, mic, loop, warmup):
         """Stop closes the input immediately; waiting uses events, never audio polling."""
         self.loop, self.mic, self.ready = loop, mic, True
+        self.boot_stage = "voice_ready"
+        log.info("DESKTOP_BOOT stage=voice_ready")
         self.components.update(
             ui="ready", voice="on_demand", whisper="on_demand", wake="on_demand", model="on_demand"
         )
@@ -210,12 +258,17 @@ async def run_worker(token: str, endpoint: Path, *, smoke=False, parent=0):
 
     watcher = asyncio.create_task(watch_parent())
     try:
+        log.info("DESKTOP_BOOT stage=http_starting")
         if not await server.start():
             raise RuntimeError("Не удалось запустить интерфейс.")
+        engine.boot_stage = "http_ready"
+        log.info("DESKTOP_BOOT stage=http_ready port=%d", settings.server.port)
         endpoint.write_text(json.dumps({"url": server.url, "pid": os.getpid()}))
         endpoint.chmod(0o600)
+        log.info("DESKTOP_BOOT stage=endpoint_published")
         if smoke:
             engine.ready = True
+            engine.boot_stage = "smoke_ready"
             engine.components = {"ui": "ready", "microphone": "disabled_for_test"}
             engine.bus.publish({"type": "state", "state": "sleeping"})
             engine.bus.publish({"type": "boot", "steps": [], "progress": 100})
@@ -233,12 +286,16 @@ async def run_worker(token: str, endpoint: Path, *, smoke=False, parent=0):
         else:
             from backend.desktop.storage import load_preferences
             from backend.paths import USER_ROOT
-            from backend.voice import _run_voice
 
             prefs = load_preferences(USER_ROOT)
             if prefs.energy_saving:
                 settings.resources.profile = "economy"
-            await _run_voice(settings, resume=prefs.restore_session, briefing=False, desktop=engine)
+            engine.boot_stage = "voice_importing"
+            log.info("DESKTOP_BOOT stage=voice_importing")
+            run_voice = await _load_desktop_voice()
+            engine.boot_stage = "voice_starting"
+            log.info("DESKTOP_BOOT stage=voice_starting")
+            await run_voice(settings, resume=prefs.restore_session, briefing=False, desktop=engine)
     except asyncio.CancelledError:
         pass
     finally:

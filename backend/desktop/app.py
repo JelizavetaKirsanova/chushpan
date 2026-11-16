@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import contextlib
 import hashlib
+import html
 import json
 import logging
 import os
@@ -17,7 +18,9 @@ import sys
 import threading
 import time
 import urllib.request
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from urllib.parse import urljoin, urlsplit
 
 from backend.desktop import BUNDLE_ID, VERSION
 from backend.desktop import platform as macos
@@ -27,6 +30,10 @@ from backend.instance import InstanceLock
 from backend.paths import USER_ROOT
 
 log = logging.getLogger(__name__)
+BACKEND_READY_TIMEOUT_S = 45
+FRONTEND_LOAD_TIMEOUT_S = 30
+SPLASH_LOAD_TIMEOUT_S = 15
+HEALTH_TIMEOUT_S = 2
 STATE_LABELS = {
     "starting": "Запуск",
     "loading": "Загрузка компонентов",
@@ -37,6 +44,29 @@ STATE_LABELS = {
     "paused": "Приостановлен",
     "error": "Ошибка",
 }
+
+
+def startup_error_page(message: str) -> str:
+    safe_message = html.escape(message)
+    return (
+        "<!doctype html><html lang='ru'><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<title>Чушпан · запуск интерфейса</title>"
+        "<body style='margin:0;background:#15121f;color:#f5e9ec;font:17px system-ui'>"
+        "<main style='max-width:720px;margin:12vh auto;padding:32px'>"
+        "<h1>Не удалось подключить интерфейс</h1>"
+        f"<p>{safe_message}</p>"
+        "<p>Голосовой движок и пользовательские данные не удалены.</p>"
+        "<button style='padding:12px 18px;border-radius:10px' "
+        "onclick='window.pywebview.api.desktop_retry_frontend()'>"
+        "Повторить подключение</button></main></body></html>"
+    )
+
+
+def local_urlopen(url: str, *, timeout: float):
+    """Access the private loopback service directly, ignoring system HTTP proxies."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return opener.open(url, timeout=timeout)
 
 
 def worker_command() -> list[str]:
@@ -58,6 +88,9 @@ class Bridge(_Api):
 
     def desktop_action(self, action, value=None):
         return self._shell.desktop_action(action, value)
+
+    def desktop_retry_frontend(self):
+        return self._shell.desktop_retry_frontend()
 
 
 class Application(_Api):
@@ -92,6 +125,16 @@ class Application(_Api):
         self.worker_state = {"state": "starting", "components": {}}
         self.restarts = 0
         self.loaded = False
+        self.initial_splash_loaded = False
+        self.webview_started_at = None
+        self.frontend_load_pending = False
+        self.frontend_load_started_at = None
+        self.frontend_attempts = 0
+        self.frontend_error_shown = False
+        self.frontend_retry_after = 0.0
+        self.frontend_retry_requested = threading.Event()
+        self.worker_started_at = None
+        self.expected_worker_pid = None
         self.native_lock = threading.RLock()
         self.worker_lock = threading.RLock()
         self.listener = None
@@ -105,8 +148,24 @@ class Application(_Api):
             data=json.dumps(value).encode(),
             headers={"Content-Type": "application/json", "X-Chushpan-Token": self.token},
         )
-        with urllib.request.urlopen(request, timeout=3) as response:
+        with local_urlopen(request.full_url, timeout=3) as response:
             return json.load(response)
+
+    def _configure_startup_logging(self) -> None:
+        path = self.logs / "desktop.log"
+        root = logging.getLogger()
+        for handler in root.handlers:
+            if getattr(handler, "_chushpan_desktop_log", False) and getattr(
+                handler, "baseFilename", None
+            ) == str(path):
+                return
+        handler = RotatingFileHandler(path, maxBytes=5_000_000, backupCount=1, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        handler._chushpan_desktop_log = True
+        root.addHandler(handler)
+        root.setLevel(logging.INFO)
+        path.chmod(0o600)
+        log.info("DESKTOP_BOOT stage=logger_ready")
 
     def start_worker(self):
         with self.worker_lock:
@@ -114,6 +173,11 @@ class Application(_Api):
                 return
             self.url = None
             self.loaded = False
+            self.frontend_load_pending = False
+            self.frontend_load_started_at = None
+            self.frontend_error_shown = False
+            self.frontend_retry_after = 0.0
+            self.worker_started_at = time.monotonic()
             self.endpoint.unlink(missing_ok=True)
             from backend.autostart import rotate_log
 
@@ -152,6 +216,12 @@ class Application(_Api):
                 stderr=self._log_file,
                 start_new_session=True,
             )
+            self.expected_worker_pid = self.proc.pid
+            log.info(
+                "DESKTOP_BOOT stage=worker_started pid=%s version=%s",
+                self.proc.pid,
+                VERSION,
+            )
 
     def stop_worker(self):
         with self.worker_lock:
@@ -171,6 +241,7 @@ class Application(_Api):
                 self._log_file = None
             self.proc = None
             self.url = None
+            self.expected_worker_pid = None
 
     def singleton(self):
         if not self.lock.acquire():
@@ -240,6 +311,14 @@ class Application(_Api):
                 "smoke": self.smoke,
                 "auto_listen_suppressed": self.no_auto_listen,
             }
+
+    def desktop_retry_frontend(self):
+        """Ask the monitor to re-probe the local service and reload only the WebView."""
+        if self.quitting:
+            return {"ok": False, "message": "Приложение завершает работу."}
+        log.info("DESKTOP_BOOT stage=frontend_retry_requested")
+        self.frontend_retry_requested.set()
+        return {"ok": True, "message": "Повторно подключаю интерфейс к локальному серверу."}
 
     def desktop_preferences(self, value):
         with self.native_lock:
@@ -493,12 +572,169 @@ class Application(_Api):
             self.window.destroy()
         self.lock.release()
 
+    def _endpoint_url(self) -> str | None:
+        if not self.endpoint.is_file():
+            return None
+        try:
+            value = json.loads(self.endpoint.read_text(encoding="utf-8"))
+            if not isinstance(value, dict):
+                log.warning("DESKTOP_BOOT stage=endpoint_rejected")
+                return None
+            url = value.get("url")
+            pid = value.get("pid")
+            parsed = urlsplit(url) if isinstance(url, str) else None
+            if (
+                parsed is None
+                or parsed.scheme != "http"
+                or parsed.hostname not in {"127.0.0.1", "localhost"}
+                or parsed.port is None
+                or parsed.path not in {"", "/"}
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.query
+                or parsed.fragment
+                or (self.expected_worker_pid and pid != self.expected_worker_pid)
+            ):
+                log.warning("DESKTOP_BOOT stage=endpoint_rejected")
+                return None
+            return url.rstrip("/")
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            log.warning("DESKTOP_BOOT stage=endpoint_invalid")
+            return None
+
+    @staticmethod
+    def _probe_frontend(url: str) -> tuple[bool, str, str]:
+        """Require a responsive health route, real HTML, and the shipped static assets."""
+        try:
+            with local_urlopen(url + "/_desktop/health", timeout=HEALTH_TIMEOUT_S) as response:
+                if response.status != 200:
+                    return False, f"Локальный backend вернул HTTP {response.status}.", "unknown"
+                health = json.loads(response.read(16_384))
+            if not isinstance(health, dict):
+                return False, "Локальный backend вернул некорректный health-ответ.", "unknown"
+            voice_stage = str(health.get("voice", "unknown"))[:48]
+            if health.get("backend") != "ready":
+                return False, "Backend ещё не подтвердил готовность.", voice_stage
+            frontend = health.get("frontend")
+            if not isinstance(frontend, dict) or frontend.get("ready") is not True:
+                return False, "В bundle не найдены index.html или frontend assets.", voice_stage
+            with local_urlopen(url + "/", timeout=HEALTH_TIMEOUT_S) as response:
+                content_type = response.headers.get("Content-Type", "")
+                document = response.read(128_000)
+                if response.status != 200 or "text/html" not in content_type:
+                    return False, "Frontend не вернул HTML документа.", voice_stage
+            if b"<html" not in document.lower() and b"<!doctype html" not in document.lower():
+                return False, "Ответ frontend не содержит HTML-документ.", voice_stage
+            for asset in frontend.get("assets", [])[:8]:
+                if not isinstance(asset, str) or not asset.startswith("/"):
+                    continue
+                with local_urlopen(
+                    urljoin(url + "/", asset.lstrip("/")), timeout=HEALTH_TIMEOUT_S
+                ) as response:
+                    if response.status != 200:
+                        return False, "Один из frontend assets недоступен.", voice_stage
+            return True, "", voice_stage
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            return False, f"Локальный backend пока не отвечает ({type(exc).__name__}).", "unknown"
+
+    def _load_url_on_gui_thread(self, url: str) -> None:
+        try:
+            self.window.load_url(url)
+        except Exception as exc:
+            self.frontend_load_pending = False
+            self.frontend_retry_after = time.monotonic() + min(
+                5 * max(self.frontend_attempts, 1), 30
+            )
+            log.exception("DESKTOP_BOOT stage=webview_load_failed type=%s", type(exc).__name__)
+            self._show_startup_error(
+                "WebView не принял адрес frontend. Нажми «Повторить подключение»."
+            )
+
+    def _on_frontend_loaded(self):
+        if not self.frontend_load_pending:
+            self.initial_splash_loaded = True
+            log.info("DESKTOP_BOOT stage=splash_loaded")
+            return
+        try:
+            current_url = self.window.get_current_url()
+            expected = urlsplit(self.url or "")
+            current = urlsplit(current_url or "")
+        except Exception as exc:
+            log.warning("DESKTOP_BOOT stage=loaded_event_unverified type=%s", type(exc).__name__)
+            return
+        if (
+            not expected.netloc
+            or current.scheme != expected.scheme
+            or current.netloc != expected.netloc
+        ):
+            log.info("DESKTOP_BOOT stage=stale_loaded_event_ignored")
+            return
+        self.frontend_load_pending = False
+        self.frontend_load_started_at = None
+        self.loaded = True
+        self.frontend_error_shown = False
+        log.info("DESKTOP_BOOT stage=frontend_loaded attempt=%d", self.frontend_attempts)
+
+    def _request_frontend_load(self, url: str) -> None:
+        from PyObjCTools.AppHelper import callAfter
+
+        self.url = url
+        self.frontend_attempts += 1
+        self.frontend_load_pending = True
+        self.frontend_load_started_at = time.monotonic()
+        self.frontend_retry_after = 0.0
+        self.frontend_error_shown = False
+        self.loaded = False
+        log.info("DESKTOP_BOOT stage=webview_load_requested attempt=%d", self.frontend_attempts)
+        callAfter(self._load_url_on_gui_thread, url)
+
+    def _show_startup_error(self, message: str) -> None:
+        if self.frontend_error_shown or not self.window:
+            return
+        self.frontend_error_shown = True
+        try:
+            from PyObjCTools.AppHelper import callAfter
+
+            log.error("DESKTOP_BOOT stage=startup_error message=%s", message)
+            if self.loaded:
+                callAfter(
+                    self.window.evaluate_js,
+                    "window.chushpanNativeNotice && window.chushpanNativeNotice("
+                    + json.dumps(message, ensure_ascii=False)
+                    + ");",
+                )
+            else:
+                callAfter(self.window.load_html, startup_error_page(message))
+        except Exception as exc:
+            log.exception(
+                "DESKTOP_BOOT stage=startup_error_display_failed type=%s", type(exc).__name__
+            )
+
+    def _handle_frontend_retry(self) -> None:
+        self.frontend_retry_requested.clear()
+        if self.proc is None or self.proc.poll() is not None:
+            self.stop_worker()
+            self.start_worker()
+            return
+        self.frontend_error_shown = False
+        self.frontend_load_pending = False
+        self.frontend_load_started_at = None
+        self.frontend_retry_after = 0.0
+        self.worker_started_at = time.monotonic()
+        self.url = None
+        self.loaded = False
+        log.info("DESKTOP_BOOT stage=frontend_retry_started")
+
     def monitor(self):
         self.start_worker()
+        log.info("DESKTOP_BOOT stage=monitor_started")
         while not self.quitting:
             try:
+                if self.frontend_retry_requested.is_set():
+                    self._handle_frontend_retry()
                 if self.proc and self.proc.poll() is not None:
                     code = self.proc.returncode
+                    log.error("DESKTOP_BOOT stage=worker_exited code=%s", code)
                     self.stop_worker()
                     self.worker_state = {
                         "state": "error",
@@ -509,12 +745,68 @@ class Application(_Api):
                         self.restarts += 1
                         time.sleep(min(2**self.restarts, 8))
                         self.start_worker()
-                elif self.endpoint.exists():
-                    if self.url is None:
-                        self.url = json.loads(self.endpoint.read_text())["url"]
-                        self.window.load_url(self.url)
-                        self.loaded = True
-                    self.worker_state = self.control({"op": "status"})
+                    else:
+                        self._show_startup_error(
+                            "Голосовой backend завершился при запуске. "
+                            "Открой журнал запуска из меню приложения."
+                        )
+                elif self.proc:
+                    endpoint_url = self._endpoint_url()
+                    if endpoint_url and self.loaded:
+                        self.worker_state = self.control({"op": "status"})
+                    elif (
+                        endpoint_url
+                        and not self.frontend_load_pending
+                        and time.monotonic() >= self.frontend_retry_after
+                    ):
+                        ready, reason, voice_stage = self._probe_frontend(endpoint_url)
+                        if ready:
+                            if not self.initial_splash_loaded:
+                                reason = "Ожидаю загрузку стартового окна WebView."
+                            elif self.url != endpoint_url or not self.loaded:
+                                self._request_frontend_load(endpoint_url)
+                            self.worker_state = self.control({"op": "status"})
+                            if voice_stage == "voice_error":
+                                self._show_startup_error(
+                                    "Голосовой движок не завершил инициализацию. "
+                                    "Проверь журнал и нажми «Повторить подключение»."
+                                )
+                        elif (
+                            self.worker_started_at
+                            and time.monotonic() - self.worker_started_at > BACKEND_READY_TIMEOUT_S
+                        ):
+                            self._show_startup_error(reason)
+                        if (
+                            not self.initial_splash_loaded
+                            and self.webview_started_at
+                            and time.monotonic() - self.webview_started_at > SPLASH_LOAD_TIMEOUT_S
+                        ):
+                            self._show_startup_error(
+                                "WebView не завершил загрузку стартового окна за 15 секунд. "
+                                "Проверь журнал запуска."
+                            )
+                        if (
+                            self.frontend_load_pending
+                            and self.frontend_load_started_at
+                            and time.monotonic() - self.frontend_load_started_at
+                            > FRONTEND_LOAD_TIMEOUT_S
+                        ):
+                            self.frontend_load_pending = False
+                            self.frontend_retry_after = time.monotonic() + min(
+                                5 * max(self.frontend_attempts, 1), 30
+                            )
+                            self._show_startup_error(
+                                "WebView не завершил загрузку интерфейса за 30 секунд. "
+                                "Повтори подключение."
+                            )
+                    elif (
+                        self.worker_started_at
+                        and time.monotonic() - self.worker_started_at > BACKEND_READY_TIMEOUT_S
+                    ):
+                        self._show_startup_error(
+                            "Backend не опубликовал готовый локальный endpoint за 45 секунд. "
+                            "Повтори подключение."
+                        )
                     if (
                         self.prefs.auto_listen
                         and not self.no_auto_listen
@@ -532,8 +824,8 @@ class Application(_Api):
                     from PyObjCTools.AppHelper import callAfter
 
                     callAfter(self.refresh_menu)
-            except Exception:
-                log.exception("Desktop status refresh failed")
+            except Exception as exc:
+                log.exception("DESKTOP_BOOT stage=monitor_error type=%s", type(exc).__name__)
             time.sleep(2)
 
     def refresh_menu(self):
@@ -582,6 +874,12 @@ class Application(_Api):
             def restart_(self, sender):
                 threading.Thread(target=lambda: shell._menu_action("restart"), daemon=True).start()
 
+            def logs_(self, sender):
+                threading.Thread(target=lambda: shell._menu_action("logs"), daemon=True).start()
+
+            def reconnect_(self, sender):
+                threading.Thread(target=shell.desktop_retry_frontend, daemon=True).start()
+
             def quit_(self, sender):
                 threading.Thread(target=shell.quit, daemon=True).start()
 
@@ -607,6 +905,8 @@ class Application(_Api):
             ("История диалогов", "history:", ""),
             ("Настройки…", "settings:", ","),
             ("Перезапустить голосовой движок", "restart:", ""),
+            ("Переподключить интерфейс", "reconnect:", ""),
+            ("Журнал запуска", "logs:", ""),
             ("Завершить Чушпана", "quit:", "q"),
         ]:
             item = menu.addItemWithTitle_action_keyEquivalent_(title, selector, key)
@@ -624,8 +924,10 @@ class Application(_Api):
 
         if not self.singleton():
             return 0
+        self._configure_startup_logging()
         atexit.register(self.stop_worker)
         bridge = Bridge(self)
+        self.webview_started_at = time.monotonic()
         self.window = webview.create_window(
             "Чушпан",
             html=(
@@ -643,6 +945,7 @@ class Application(_Api):
         )
         bridge.window = self.window
         self.window.events.closing += self.close_window
+        self.window.events.loaded += self._on_frontend_loaded
         self.window.events.minimized += lambda: setattr(self, "minimized", True)
         self.window.events.restored += lambda: setattr(self, "minimized", False)
 
@@ -651,6 +954,7 @@ class Application(_Api):
             self.monitor()
 
         try:
+            log.info("DESKTOP_BOOT stage=webview_start version=%s", VERSION)
             webview.start(start, gui="cocoa", private_mode=True)
         finally:
             self.quit()

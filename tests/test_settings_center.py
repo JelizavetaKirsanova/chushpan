@@ -47,6 +47,36 @@ def event(bus):
     return next(e for e in bus.snapshot() if e["type"] == "settings_center")
 
 
+def test_openai_keychain_status_is_loaded_off_event_loop(monkeypatch):
+    import threading
+
+    async def run():
+        s, store, bus, _, conv, previous = fixture()
+        await previous.close()
+        main_thread = threading.get_ident()
+        observed_threads = []
+
+        class Keychain:
+            def status(self):
+                observed_threads.append(threading.get_ident())
+                return {"configured": True, "state": "saved", "storage": "keychain"}
+
+        monkeypatch.setattr(SettingsCenter, "openai_keychain", staticmethod(lambda: Keychain()))
+        center = SettingsCenter(s, store, conv, bus)
+        assert event(bus)["models"]["openai"]["credentials"]["state"] == "checking"
+        await asyncio.wait_for(center.openai_credentials_task, timeout=1)
+        assert observed_threads and observed_threads[0] != main_thread
+        assert event(bus)["models"]["openai"]["credentials"] == {
+            "configured": True,
+            "state": "saved",
+            "storage": "keychain",
+        }
+        await center.close()
+        store.close()
+
+    asyncio.run(run())
+
+
 def test_profiles_migrate_legacy_independently_and_survive_restart(tmp_path):
     path = tmp_path / "memory.db"
     store = MemoryStore(path)

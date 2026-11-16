@@ -2463,6 +2463,10 @@ async def _run_voice(
     from backend.tools.news import NewsService
     from backend.tools.weather import WeatherService
 
+    # Desktop HTTP must continue answering while the rest of its startup runs.
+    if desktop is not None:
+        await asyncio.sleep(0)
+
     started_at = started_at or time.perf_counter()
     use_wake = s.wakeword.enabled if wake_word is None else wake_word
     use_briefing = s.briefing.enabled if briefing is None else briefing
@@ -2586,6 +2590,8 @@ async def _run_voice(
     from backend.personal_modules import PersonalModules
 
     personal_modules = PersonalModules(s, store, tools, bus)
+    if desktop is not None:
+        await asyncio.sleep(0)
     if isinstance(speaker, PiperSpeaker):
         speaker.on_level = lambda v: bus.publish({"type": "level", "out": v})
     aec = None

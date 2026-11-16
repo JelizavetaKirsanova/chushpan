@@ -51,6 +51,12 @@ class SettingsCenter:
         self.closed = False
         self.clients = []
         self._openai_pending_usage = {}
+        self.openai_credentials_status = {
+            "configured": False,
+            "state": "checking",
+            "storage": "keychain",
+        }
+        self.openai_credentials_task = None
         self.defaults = {
             "commands": CommandControls(
                 context_s=settings.tools.control_context_s,
@@ -106,6 +112,13 @@ class SettingsCenter:
             loop.settings_center = self
             self.apply_studio(self.value("studio"))
         self.publish()
+        try:
+            self.openai_credentials_task = asyncio.get_running_loop().create_task(
+                self.refresh_openai_credentials_status()
+            )
+        except RuntimeError:
+            # Synchronous test and CLI construction must not touch macOS Keychain.
+            pass
         if startup_permissions:
             self.request({"op": "permissions"})
 
@@ -160,7 +173,7 @@ class SettingsCenter:
                 **self.model_status,
                 "openai": {
                     **self.model_status.get("openai", {}),
-                    "credentials": self.openai_keychain().status(),
+                    "credentials": dict(self.openai_credentials_status),
                 },
                 "openai_usage": self.openai_monthly_usage(),
             },
@@ -496,6 +509,29 @@ class SettingsCenter:
         from backend.brain.openai_keychain import OpenAIKeychain
 
         return OpenAIKeychain()
+
+    async def refresh_openai_credentials_status(self):
+        """Read macOS Keychain away from the HUD event loop.
+
+        Security.framework calls can block while the login keychain is locked or
+        macOS is waiting for its security daemon. The UI and local HTTP health
+        endpoint must remain responsive during that delay.
+        """
+        try:
+            status = await asyncio.to_thread(self.openai_keychain().status)
+        except Exception:
+            status = {"configured": False, "state": "unavailable", "storage": "keychain"}
+        if not isinstance(status, dict):
+            status = {"configured": False, "state": "unavailable", "storage": "keychain"}
+        self.openai_credentials_status = {
+            "configured": status.get("configured") is True,
+            "state": status.get("state")
+            if status.get("state") in {"saved", "missing", "locked", "unavailable"}
+            else "unavailable",
+            "storage": "keychain",
+        }
+        if not self.closed:
+            self.publish()
 
     async def openai_models(self, *, check=False):
         from backend.brain.openai_provider import OpenAIClient
@@ -1249,6 +1285,9 @@ class SettingsCenter:
     async def close(self):
         self.closed = True
         self.profiles.on_change = None
+        if self.openai_credentials_task and not self.openai_credentials_task.done():
+            self.openai_credentials_task.cancel()
+            await asyncio.gather(self.openai_credentials_task, return_exceptions=True)
         for task in list(self.jobs):
             task.cancel()
         await asyncio.gather(*self.jobs, return_exceptions=True)

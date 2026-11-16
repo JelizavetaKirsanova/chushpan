@@ -5,12 +5,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import multiprocessing
 import os
 import sys
 from pathlib import Path
 
 
 def main():
+    # PyInstaller must intercept resource_tracker and spawn-worker command lines
+    # before the desktop argument parser sees their private Python flags.
+    multiprocessing.freeze_support()
     parser = argparse.ArgumentParser()
     parser.add_argument("--desktop-worker", action="store_true")
     parser.add_argument("--endpoint", type=Path)
