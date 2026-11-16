@@ -63,7 +63,7 @@ def startup_error_page(message: str) -> str:
     )
 
 
-def local_urlopen(url: str, *, timeout: float):
+def local_urlopen(url: str | urllib.request.Request, *, timeout: float):
     """Access the private loopback service directly, ignoring system HTTP proxies."""
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     return opener.open(url, timeout=timeout)
@@ -148,7 +148,7 @@ class Application(_Api):
             data=json.dumps(value).encode(),
             headers={"Content-Type": "application/json", "X-Chushpan-Token": self.token},
         )
-        with local_urlopen(request.full_url, timeout=3) as response:
+        with local_urlopen(request, timeout=3) as response:
             return json.load(response)
 
     def _configure_startup_logging(self) -> None:

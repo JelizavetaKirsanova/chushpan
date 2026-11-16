@@ -154,6 +154,39 @@ def test_frontend_probe_requires_html_and_static_assets(monkeypatch):
     assert (ready, reason, voice) == (True, "", "voice_importing")
 
 
+def test_control_preserves_post_method_body_and_token(monkeypatch):
+    observed = {}
+
+    class Response:
+        def read(self):
+            return b'{"state":"ready"}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def open_local(request, *, timeout):
+        observed["request"] = request
+        observed["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(desktop_app, "local_urlopen", open_local)
+    app = desktop_app.Application.__new__(desktop_app.Application)
+    app.url = "http://127.0.0.1:43210"
+    app.token = "private-test-token"
+
+    assert app.control({"op": "status"}) == {"state": "ready"}
+    request = observed["request"]
+    headers = {name.lower(): value for name, value in request.header_items()}
+    assert request.get_method() == "POST"
+    assert json.loads(request.data) == {"op": "status"}
+    assert headers["x-chushpan-token"] == "private-test-token"
+    assert headers["content-type"] == "application/json"
+    assert observed["timeout"] == 3
+
+
 def test_endpoint_accepts_only_current_local_worker(tmp_path):
     app = desktop_app.Application.__new__(desktop_app.Application)
     app.endpoint = tmp_path / "endpoint.json"
