@@ -83,6 +83,27 @@ def test_followup_countdown_starts_after_full_playback_and_pauses_during_speech(
     asyncio.run(run())
 
 
+def test_stale_session_timer_cannot_close_refreshed_conversation():
+    async def run():
+        h = custom_harness("Эй, Чушпан")
+        h.s.dialogue.duration_s = 30
+        h.loop._wake_up(None)
+        old_generation = h.loop._session_generation
+        h.now += 29
+        h.loop._open_session()  # an accepted follow-up refreshes the full window
+        new_deadline = h.loop.session_deadline
+        h.now += 2
+        h.loop._session_timeout(old_generation)  # callback was already queued before cancel()
+        assert h.state is State.LISTENING
+        assert h.loop.session_active
+        assert h.loop.session_deadline == new_deadline
+        h.now = new_deadline + 0.1
+        h.loop._session_timeout(h.loop._session_generation)
+        assert h.state is State.SLEEPING
+
+    asyncio.run(run())
+
+
 def test_neutral_followup_without_name_is_heard_after_an_accepted_turn():
     async def run():
         h = custom_harness("Эй, Чушпан, привет")

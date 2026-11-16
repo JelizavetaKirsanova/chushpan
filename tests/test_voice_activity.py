@@ -128,11 +128,14 @@ def test_natural_followup_named_farewell_and_hard_session_limit():
         assert len(heard) == 2 and h.state is State.SLEEPING
         h.loop._wake_up(None)
         start = h.loop._session_started_at
-        h.now = start + h.s.dialogue.max_session_s - 1
+        h.now = start + 240  # the inactivity window can extend across long conversations
         h.loop._open_session()
-        assert h.loop.session_deadline == start + h.s.dialogue.max_session_s
+        assert h.loop.session_deadline == h.now + h.s.dialogue.duration_s
         h.now += 2
         h.loop._session_timeout()
+        assert h.state is State.LISTENING and h.loop.session_active
+        h.now = h.loop.session_deadline + 0.1
+        h.loop._session_timeout(h.loop._session_generation)
         assert h.state is State.SLEEPING
 
     asyncio.run(run())

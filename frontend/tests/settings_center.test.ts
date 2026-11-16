@@ -60,7 +60,7 @@ test('advanced voice options expose bounded VAD, background filtering and contin
     f.view.open('voice');
     assert.ok(f.window.document.querySelector('#voice-mode option[value="continuous"]'));
     assert.deepEqual([...f.window.document.querySelectorAll<HTMLSelectElement>('#voice-mode option')].map(option=>option.textContent),['По ключевой фразе','Свободный разговор','Постоянный диалог']);
-    assert.deepEqual([...f.window.document.querySelectorAll<HTMLSelectElement>('#voice-duration option')].map(option=>option.value),['15','30','60','0']);
+    assert.deepEqual([...f.window.document.querySelectorAll<HTMLSelectElement>('#voice-duration option')].map(option=>option.value),['10','20','30','60','custom']);
     assert.equal((f.window.document.getElementById('voice-vad') as unknown as HTMLInputElement).min,'0.1');
     assert.ok(f.window.document.getElementById('voice-background'));
     assert.ok(f.window.document.getElementById('voice-min-speech'));

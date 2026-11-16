@@ -15,9 +15,9 @@ export const recipientLabels = {
 };
 
 export function sessionCaption(session: {active: boolean; listening: boolean; requires_wake: boolean; phase?:string; recording?:boolean; paused?:boolean}): string {
-  const phases:Record<string,string>={idle:"Ожидает активации",wake_detected:"Проверяет ключевую фразу",listening:"Слушает",processing:"Думает",speaking:"Говорит",follow_up_listening:"Ждёт продолжения"};
+  const phases:Record<string,string>={idle:"Ожидает активации",wake_detected:"Слушает",listening:"Слушает",processing:"Думает",speaking:"Говорит",follow_up_listening:"Ожидает продолжения"};
   if(session.phase)return phases[session.phase]??"Ожидает активации";
-  if (session.active && session.listening && session.recording === false) return "Ждёт продолжения";
+  if (session.active && session.listening && session.recording === false) return "Ожидает продолжения";
   if (session.active) return session.listening ? "Слушает" : "Сессия активна";
   return session.requires_wake ? "Ожидает активации фразой «Эй, Чушпан»" : "Свободный диалог включён";
 }

@@ -18,7 +18,7 @@ class VoiceControls(BaseModel):
     sensitivity: Literal["conservative", "balanced", "sensitive"] = "balanced"
     mode: Literal["name_only", "dialogue", "continuous"] = "dialogue"
     # 0 means the dialogue remains open until the user closes it.
-    continuation_s: int = Field(default=20, ge=0, le=300)
+    continuation_s: int = Field(default=30, ge=0, le=300)
     allow_barge_in: bool = False
     noise_suppression: bool = True
     vad_threshold: float | None = Field(default=None, ge=0.1, le=0.95)

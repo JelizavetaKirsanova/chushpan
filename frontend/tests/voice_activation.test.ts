@@ -30,7 +30,7 @@ test('denied or unavailable native microphone reports an actionable error',async
 
 test('follow-up listening differs from active speech and model processing',async()=>{
   const {dialogueCaption}=await import('../src/voice_activation.ts');
-  assert.equal(dialogueCaption('listening',{active:true,recording:false}),'Ожидает продолжение');
+  assert.equal(dialogueCaption('listening',{active:true,recording:false}),'Ожидает продолжения');
   assert.equal(dialogueCaption('listening',{active:true,recording:true}),'Слушает');
   assert.equal(dialogueCaption('thinking',{active:true,recording:false}),null);
 });

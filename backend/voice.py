@@ -589,6 +589,9 @@ class VoiceLoop:
         self.barge_task: asyncio.Task | None = None
         self.session_deadline: float | None = None
         self._session_timer: asyncio.TimerHandle | None = None
+        # TimerHandle.cancel() cannot retract a callback already queued by asyncio.
+        # Each callback therefore also carries the generation that created it.
+        self._session_generation = 0
         self._session_paused_at: float | None = None
         self._session_remaining = 0.0
         self._session_indefinite = False
@@ -783,7 +786,14 @@ class VoiceLoop:
         if phase not in _PHASE_TRANSITIONS[self.session_phase]:
             log.warning("VOICE_PHASE_REJECT from=%s to=%s", self.session_phase.value, phase.value)
             return
+        previous = self.session_phase
         self.session_phase = phase
+        log.info(
+            "VOICE_SESSION_PHASE from=%s to=%s request=%s",
+            previous.value,
+            phase.value,
+            self.state.request_id,
+        )
         if publish:
             self._publish_session()
 
@@ -831,6 +841,7 @@ class VoiceLoop:
             self._session_started_at = self.clock()
         self._session_paused_at = None
         if not self.use_wake or self.s.dialogue.duration_s == 0:
+            self._session_generation += 1
             self._session_indefinite = True
             self.session_deadline = None
             self.listen_deadline = None
@@ -844,15 +855,14 @@ class VoiceLoop:
             self._publish_session()
             return
         self._session_indefinite = False
-        self.session_deadline = min(
-            self.clock() + self.s.dialogue.duration_s,
-            self._session_started_at + self.s.dialogue.max_session_s,
-        )
+        self.session_deadline = self.clock() + self.s.dialogue.duration_s
         self.listen_deadline = self.session_deadline
         if self._session_timer:
             self._session_timer.cancel()
+        self._session_generation += 1
+        generation = self._session_generation
         self._session_timer = asyncio.get_running_loop().call_later(
-            max(0.01, self.session_deadline - self.clock()), self._session_timeout
+            max(0.01, self.session_deadline - self.clock()), self._session_timeout, generation
         )
         log.info(
             "SESSION_ACTIVE request=%s duration_s=%s",
@@ -869,6 +879,7 @@ class VoiceLoop:
         )
         self._session_paused_at = self.clock()
         self.listen_deadline = None
+        self._session_generation += 1
         if self._session_timer:
             self._session_timer.cancel()
             self._session_timer = None
@@ -885,17 +896,23 @@ class VoiceLoop:
             return
         if self.session_deadline is None:
             return
-        self.session_deadline = min(
-            self.clock() + self._session_remaining,
-            self._session_started_at + self.s.dialogue.max_session_s,
-        )
+        self.session_deadline = self.clock() + self._session_remaining
         self.listen_deadline = self.session_deadline
+        self._session_generation += 1
+        generation = self._session_generation
         self._session_timer = asyncio.get_running_loop().call_later(
-            max(0.01, self.session_deadline - self.clock()), self._session_timeout
+            max(0.01, self.session_deadline - self.clock()), self._session_timeout, generation
         )
         self._publish_session()
 
-    def _session_timeout(self) -> None:
+    def _session_timeout(self, generation: int | None = None) -> None:
+        if generation is not None and generation != self._session_generation:
+            log.info(
+                "SESSION_TIMEOUT_IGNORED reason=stale_timer generation=%s current=%s",
+                generation,
+                self._session_generation,
+            )
+            return
         if (
             self.session_deadline is None
             or self.session_active
@@ -907,6 +924,7 @@ class VoiceLoop:
         self._go_to_sleep()
 
     def _close_session(self) -> None:
+        self._session_generation += 1
         self.session_deadline = None
         self._session_paused_at = None
         self._session_remaining = 0
@@ -931,7 +949,6 @@ class VoiceLoop:
                 "wake_threshold": self.s.wakeword.threshold,
                 "min_avg_logprob": self.s.wakeword.min_avg_logprob,
                 "max_no_speech_prob": self.s.wakeword.max_no_speech_prob,
-                "max_session_s": self.s.dialogue.max_session_s,
                 "noise_available": self.input_processor is not None,
                 "noise_active": bool(
                     self.input_processor and self.input_processor.noise_suppression

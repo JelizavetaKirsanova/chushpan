@@ -10,28 +10,31 @@ export interface VoiceControls {
 export type VoiceSettingsEvent = ({type: 'voice_settings'} & VoiceControls & {
   activation_enabled: boolean; wake_source: string; wake_threshold: number;
   min_avg_logprob: number; max_no_speech_prob: number; noise_available: boolean;
-  noise_active: boolean; microphone: string; state: string; session_phase:string; max_session_s: number;
+  noise_active: boolean; microphone: string; state: string; session_phase:string;
 }) | {type: 'voice_settings_result'; ok: boolean; message: string};
 
 const node = (id: string) => document.getElementById(id)!;
 function selectDuration(id:string,value:number):void {
   const select=node(id) as HTMLSelectElement;
   const stringValue=String(value);
-  if(![...select.options].some(option=>option.value===stringValue)){
-    const option=document.createElement('option');option.value=stringValue;option.textContent=`Сохранённое значение: ${value} с`;select.append(option);
-  }
-  select.value=stringValue;
+  const preset=[...select.options].some(option=>option.value===stringValue);
+  select.value=preset?stringValue:'custom';
+  (node('voice-duration-custom') as HTMLInputElement).value=stringValue;
+  node('voice-duration-custom-wrap').hidden=preset;
 }
 export class VoiceSettingsPanel {
   private online = false;
   private ready = false;
   constructor(private send: (value: VoiceControls) => void) {
+    node('voice-duration').addEventListener('change',()=>{node('voice-duration-custom-wrap').hidden=(node('voice-duration') as HTMLSelectElement).value!=='custom';});
     node('voice-settings').addEventListener('submit', event => {
       event.preventDefault(); if (!this.online || !this.ready) return;
       const value: VoiceControls = {
         sensitivity: (node('voice-sensitivity') as HTMLSelectElement).value as VoiceControls['sensitivity'],
         mode: (node('voice-mode') as HTMLSelectElement).value as VoiceControls['mode'],
-        continuation_s: Number((node('voice-duration') as HTMLSelectElement).value),
+        continuation_s: (node('voice-duration') as HTMLSelectElement).value==='custom'
+          ? Number((node('voice-duration-custom') as HTMLInputElement).value)
+          : Number((node('voice-duration') as HTMLSelectElement).value),
         allow_barge_in: (node('voice-barge') as HTMLInputElement).checked,
         noise_suppression: (node('voice-noise') as HTMLInputElement).checked,
         vad_threshold:Number((node('voice-vad') as HTMLInputElement).value),
@@ -62,11 +65,11 @@ export class VoiceSettingsPanel {
       (node('voice-background') as HTMLSelectElement).value=event.background_filter??'balanced';
     }
     (node('voice-noise') as HTMLInputElement).disabled = !this.online || !event.noise_available;
-    node('voice-session-limit').textContent = `Предел одной сессии: ${event.max_session_s} с.`;
+    node('voice-session-limit').textContent = 'Таймер начинается после ответа и обновляется после каждой принятой реплики.';
     node('voice-thresholds').textContent = event.wake_source === 'whisper'
       ? `Whisper: средний logprob ≥ ${event.min_avg_logprob}; no_speech_prob ≤ ${event.max_no_speech_prob}. Это метрики декодера, не вероятность обращения.`
       : `Порог ONNX detector: ${event.wake_threshold}.`;
-    const phases:Record<string,string>={idle:'Ожидает активации',wake_detected:'Проверяет ключевую фразу',listening:'Слушает',processing:'Думает',speaking:'Говорит',follow_up_listening:'Ждёт продолжения'};
+    const phases:Record<string,string>={idle:'Ожидает активации',wake_detected:'Слушает',listening:'Слушает',processing:'Думает',speaking:'Говорит',follow_up_listening:'Ожидает продолжения'};
     node('microphone-status').textContent = event.microphone === 'starting' ? 'Подготовка распознавания и голоса · микрофон ещё выключен'
       : event.microphone === 'stopped' ? 'Микрофон не запущен'
       : event.mode === 'continuous' ? `Постоянный диалог включён · ${phases[event.session_phase]??'Слушает'} · нажми кнопку микрофона, чтобы немедленно выключить`

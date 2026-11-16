@@ -141,7 +141,7 @@ export class DashboardView {
   }
   receive(event: HudEvent): void {
     if (event.type === 'voice_settings') {this.microphone=event.microphone;this.status(this.currentStatus);}
-    else if(event.type==='session' && event.active && event.listening && !this.busy){this.status(event.recording===false?'Ожидает продолжение':'Слушает');}
+    else if(event.type==='session' && event.active && event.listening && !this.busy){this.status(event.recording===false?'Ожидает продолжения':'Слушает');}
     else if (event.type === 'dashboard') { this.data = event; this.hasLocation = !!event.location.city; this.render(); if (this.pendingAmbientToggle) { this.pendingAmbientToggle = false; this.setAmbient(!this.ambient); } }
     else if (event.type === 'cinema') { this.cinemaItems = event.items; this.renderCinemaProgress(); }
     else if (event.type === 'dashboard_stats') this.renderStats(event);

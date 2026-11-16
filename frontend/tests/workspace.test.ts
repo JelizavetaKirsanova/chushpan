@@ -32,7 +32,7 @@ test("zero latency and absent measurements stay distinct", () => {
 });
 
 test("session captions distinguish follow-up listening from a mandatory wake word", () => {
-  assert.equal(sessionCaption({active: true, listening: true, requires_wake: false,phase:'follow_up_listening'}),'Ждёт продолжения');
+  assert.equal(sessionCaption({active: true, listening: true, requires_wake: false,phase:'follow_up_listening'}),'Ожидает продолжения');
   assert.equal(sessionCaption({active: true, listening: false, requires_wake: false,phase:'processing'}),'Думает');
   assert.equal(sessionCaption({active: false, listening: false, requires_wake: true,phase:'idle'}),'Ожидает активации');
 });

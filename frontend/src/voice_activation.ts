@@ -18,5 +18,5 @@ export async function requestMicrophone(api:MicrophoneApi|undefined, starting:()
 
 export function dialogueCaption(mode:string,session:{active:boolean;recording?:boolean}|null):string|null {
   if(mode!=='listening'||!session?.active)return null;
-  return session.recording===false?'Ожидает продолжение':'Слушает';
+  return session.recording===false?'Ожидает продолжения':'Слушает';
 }
