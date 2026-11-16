@@ -8,6 +8,7 @@ from contextvars import ContextVar
 from enum import StrEnum
 
 request_context: ContextVar[int | None] = ContextVar("voice_request", default=None)
+client_request_context: ContextVar[str | None] = ContextVar("client_request", default=None)
 
 
 class State(StrEnum):

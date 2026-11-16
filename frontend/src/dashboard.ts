@@ -53,7 +53,7 @@ export class DashboardView {
   private microphone = "unknown";
   private currentStatus = "";
   private data: DashboardData | null = null;
-  private pending = '';
+  private pendingRequests = new Map<string, string>();
   private month = new Date().getMonth();
   private year = new Date().getFullYear();
   private selected = '';
@@ -75,7 +75,7 @@ export class DashboardView {
     this.setAmbient(!this.ambient);
   }
 
-  constructor(private post: (value: object) => void, private chat: (value: {text: string; speak?: boolean}) => void,
+  constructor(private post: (value: object) => void, private chat: (value: {text: string; speak?: boolean; client_request_id?: string}) => void,
     private navigate: (view: string) => void, private search: (value: object) => void, private character: Character,
     private weather: (value: WeatherEvent) => void,
     private resumeCinema: (titleId: string, episodeId: string, edit?: boolean) => void) {
@@ -112,13 +112,13 @@ export class DashboardView {
   }
   connection(online: boolean): void {
     this.online = online;
-    if (!online) { this.pending = ''; this.status('Ошибка подключения'); this.character.error(); this.feedback('Связь с Чушпаном потеряна. Переподключаюсь…'); }
+    if (!online) { this.pendingRequests.clear(); this.status('Ошибка подключения'); this.character.error(); this.feedback('Связь с Чушпаном потеряна. Переподключаюсь…'); }
     else { this.feedback(''); this.refresh(); }
     this.controls();
   }
   private controls(): void {
     const available = this.online && !!this.data?.ready;
-    (node('chat-send') as HTMLButtonElement).disabled = !available || this.busy || !!this.pending;
+    (node('chat-send') as HTMLButtonElement).disabled = !available || this.pendingRequests.size > 0;
     document.querySelectorAll<HTMLButtonElement>('#ambient-settings button[type=submit], #manual-location button[type=submit], [data-action=new-chat], [data-action=add-note], [data-action=add-goal], [data-action=add-task], #confirm-action').forEach(control => control.disabled = !available || this.busy);
     document.querySelectorAll<HTMLInputElement>('#dashboard-goals input').forEach(control => control.disabled = !available);
     document.querySelectorAll<HTMLButtonElement>('[data-op], [data-command], #run-night').forEach(control => control.disabled = !available || this.busy);
@@ -129,10 +129,21 @@ export class DashboardView {
   refresh(): void { if (this.online) this.send({op: 'refresh', days: this.statsDays}); }
   private submitChat(): void {
     const text = (node('chat-input') as HTMLTextAreaElement).value.trim();
-    if (!text || !this.online || !this.data?.ready || this.busy || this.pending) return;
-    this.pending = text; this.chat({text, speak: (node('chat-speak') as HTMLInputElement).checked}); this.controls();
+    if (!text || !this.online || !this.data?.ready || this.pendingRequests.size > 0) return;
+    const clientRequestId = crypto.randomUUID();
+    this.pendingRequests.set(clientRequestId, text);
+    this.chat({text, speak: (node('chat-speak') as HTMLInputElement).checked, client_request_id: clientRequestId});
+    this.controls();
   }
-  private command(text: string): void { if (this.online && this.data?.ready && !this.busy) { this.setAmbient(false); this.navigate('home'); this.chat({text}); } }
+  private command(text: string): void { if (this.online && this.data?.ready) { this.setAmbient(false); this.navigate('home'); this.chat({text}); } }
+  private finishPending(clientRequestId?: string, clearInput = true): void {
+    if (!clientRequestId) return;
+    const submitted = this.pendingRequests.get(clientRequestId);
+    this.pendingRequests.delete(clientRequestId);
+    const input = node('chat-input') as HTMLTextAreaElement;
+    if (clearInput && submitted && input.value.trim() === submitted) input.value = '';
+    this.controls();
+  }
   private status(text: string): void {
     this.currentStatus=text;
     if(this.online&&!this.busy&&this.microphone==='stopped')text='Микрофон выключен';
@@ -158,11 +169,18 @@ export class DashboardView {
     } else if (event.type === 'tool') { this.busy = true; this.status('Выполняет команду'); this.controls(); }
     else if (event.type === 'user') {
       this.setAmbient(false); document.querySelector<HTMLElement>('.hud')!.dataset.chat = 'true';
-      if (event.text === this.pending) { if ((node('chat-input') as HTMLTextAreaElement).value.trim() === this.pending) (node('chat-input') as HTMLTextAreaElement).value = ''; this.pending = ''; }
+      const id = event.client_request_id;
+      if (id) this.finishPending(id);
       this.controls();
     } else if (event.type === 'transcript') document.querySelector<HTMLElement>('.hud')!.dataset.chat = String(event.lines.length > 0);
-    else if (event.type === 'reply_end') { this.pending = ''; this.refresh(); this.controls(); }
-    else if (event.type === 'notice') { this.pending = ''; this.feedback(event.message); if (event.error) this.character.error(); this.controls(); }
+    else if (event.type === 'chat_queued') {
+      this.finishPending(event.client_request_id);
+      if (event.position > 0) this.feedback(`Сообщение принято в очередь (${event.position}).`);
+    } else if (event.type === 'chat_rejected') {
+      this.finishPending(event.client_request_id, false);
+      this.feedback(event.message);
+    } else if (event.type === 'reply_end') { this.finishPending(event.client_request_id); this.refresh(); this.controls(); }
+    else if (event.type === 'notice') { this.finishPending(event.client_request_id, false); this.feedback(event.message); if (event.error) this.character.error(); this.controls(); }
     else if (event.type === 'performance_live' && event.trace && event.trace.status !== 'running') {
       if (event.trace.stages.some(s => s.stage === 'tool_execution' && s.outcome === 'ok') && event.trace.status === 'completed') this.character.success();
     } else if (event.type === 'system') { this.battery = event.battery?.on_power_adapter === false; this.motion(); }

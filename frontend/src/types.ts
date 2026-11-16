@@ -150,9 +150,11 @@ type HudPayload =
   | ExportedEvent
   | { type: "timers"; items: Timer[] }
   | { type: "transcript"; lines: TranscriptLine[] }
-  | { type: "user"; text: string }
+  | { type: "user"; text: string; client_request_id?: string }
   | { type: "reply"; delta: string; duration_s?: number }
-  | { type: "reply_end"; cut?: boolean }
+  | { type: "reply_end"; cut?: boolean; client_request_id?: string }
+  | { type: "chat_queued"; position: number; client_request_id: string }
+  | { type: "chat_rejected"; message: string; client_request_id?: string }
   | { type: "tool"; name: string };
 
-export type HudEvent = HudPayload & {request_id?: number};
+export type HudEvent = HudPayload & {request_id?: number; client_request_id?: string};

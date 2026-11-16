@@ -2,8 +2,15 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import httpx
+
 from backend.brain.openai_keychain import OpenAIKeychain
-from backend.brain.openai_provider import OpenAIClient, OpenAIRequestError, text_models
+from backend.brain.openai_provider import (
+    OpenAIClient,
+    OpenAIRequestError,
+    _transient_transport_error,
+    text_models,
+)
 from backend.brain.pricing import estimate
 from backend.brain.providers import FallbackClient
 from backend.config import OpenAIConfig
@@ -18,6 +25,14 @@ def test_model_filter_keeps_text_chat_models_only():
         SimpleNamespace(id="chat-latest"),
     ]
     assert text_models(models) == ["chat-latest", "gpt-4.1-mini"]
+
+
+def test_wrapped_sdk_transport_failures_are_classified_as_transient():
+    try:
+        raise RuntimeError("SDK wrapper") from httpx.ConnectError("offline")
+    except RuntimeError as error:
+        assert _transient_transport_error(error)
+    assert not _transient_transport_error(ValueError("invalid request"))
 
 
 def test_responses_input_preserves_tool_flow_and_marks_old_results_untrusted():

@@ -12,6 +12,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextvars import ContextVar
 from enum import StrEnum
+from uuid import UUID, uuid4
 
 import numpy as np
 from rich.console import Console
@@ -58,7 +59,7 @@ from backend.memory.store import MemoryStore
 from backend.night import night_addressed, night_requested
 from backend.resources import Resources
 from backend.security import command_text
-from backend.state import State, StateMachine, request_context
+from backend.state import State, StateMachine, client_request_context, request_context
 from backend.tools import Tool, build_registry
 from backend.tools.geocode import resolve_location
 from backend.tools.media import MediaService
@@ -68,6 +69,11 @@ console = Console(highlight=False)
 log = logging.getLogger(__name__)
 phase_sink: ContextVar[Callable[[str], None] | None] = ContextVar("voice_phase", default=None)
 _standalone_requests = itertools.count(-1, -1)
+MAX_QUEUED_TEXT = 16
+
+
+class VoiceOutputError(RuntimeError):
+    """Speech output failed after the generated text has been preserved."""
 
 
 def emit_phase(name: str) -> None:
@@ -202,15 +208,39 @@ async def speak_tokens(
     lang: str,
     on_token: Callable[[str], None] | None = None,
     on_start: Callable[[], None] | None = None,
+    on_generated: Callable[[str], None] | None = None,
 ) -> bool:
-    """Stream generated text into the speaker sentence by sentence."""
+    """Stream model tokens to listeners while feeding sentences to the speaker."""
     splitter = SentenceSplitter(min_chars, protect_literals=lang == "ru")
+    tokens_ready: asyncio.Queue[object] = asyncio.Queue()
+    stream_end = object()
+    stream_error: BaseException | None = None
+
+    async def produce_tokens() -> None:
+        nonlocal stream_error
+        try:
+            async for token in tokens:
+                if on_generated:
+                    on_generated(token)
+                if on_token:
+                    on_token(token)
+                tokens_ready.put_nowait(token)
+        except BaseException as exc:
+            stream_error = exc
+        finally:
+            tokens_ready.put_nowait(stream_end)
+
+    producer = asyncio.create_task(produce_tokens())
+
+    async def queued_tokens() -> AsyncIterator[str]:
+        while (token := await tokens_ready.get()) is not stream_end:
+            yield str(token)
+        if stream_error is not None:
+            raise stream_error
 
     async def sentences() -> AsyncIterator[str]:
         intro = ""
-        async for token in tokens:
-            if on_token:
-                on_token(token)
+        async for token in queued_tokens():
             for sentence in splitter.feed(token):
                 if spoken := (sentence if lang == "ru" else clean_for_speech(sentence, lang)):
                     if (
@@ -232,7 +262,29 @@ async def speak_tokens(
         if intro:
             yield intro
 
-    return await speaker.speak(sentences(), on_start=on_start)
+    try:
+        completed = await speaker.speak(sentences(), on_start=on_start)
+        if not completed:
+            # A false result is the speaker's explicit interruption signal. Do not keep
+            # the model request alive while barge-in validation waits for its next turn.
+            producer.cancel()
+            await asyncio.gather(producer, return_exceptions=True)
+            return False
+        await producer
+        if stream_error is not None:
+            raise stream_error from None
+        return completed
+    except asyncio.CancelledError:
+        producer.cancel()
+        await asyncio.gather(producer, return_exceptions=True)
+        raise
+    except Exception as exc:
+        # If model generation itself failed, preserve that error. Otherwise keep draining
+        # generation so the complete answer reaches the chat even after speaker failure.
+        await producer
+        if stream_error is not None:
+            raise stream_error from None
+        raise VoiceOutputError(type(exc).__name__) from exc
 
 
 async def reply_aloud(
@@ -243,6 +295,7 @@ async def reply_aloud(
     on_token: Callable[[str], None] | None = None,
     on_start: Callable[[], None] | None = None,
     on_silent_token: Callable[[str], None] | None = None,
+    on_generated: Callable[[str], None] | None = None,
 ) -> bool:
     # Own the callback and both kinds of playback until cancellation cleanup completes.
     lock = getattr(speaker, "_reply_lock", None)
@@ -254,10 +307,18 @@ async def reply_aloud(
     if store := getattr(conv, "store", None):
         store.performance.attach(profile, conv.id)
     status = "completed"
+    saved_sentence_callback = None
+    changed_sentence_callback = False
     try:
         with measure("reply_queue"):
             await lock.acquire()
         try:
+            if on_generated and hasattr(speaker, "on_sentence"):
+                # The transcript is now emitted from model generation; playback callbacks
+                # would duplicate it and hide text when TTS fails.
+                saved_sentence_callback = speaker.on_sentence
+                speaker.on_sentence = None
+                changed_sentence_callback = True
             from backend.audio.waiting import trace
 
             token = None
@@ -274,6 +335,8 @@ async def reply_aloud(
 
                     if silent_reply(store, conv.s):
                         async for piece in conv.reply(user_text):
+                            if piece and on_generated:
+                                on_generated(piece)
                             if piece and on_token:
                                 on_token(piece)
                             if piece and on_silent_token:
@@ -282,7 +345,7 @@ async def reply_aloud(
                             await finish(False)
                         return True
                 completed = await _reply_aloud(
-                    conv, speaker, user_text, min_chars, on_token, on_start
+                    conv, speaker, user_text, min_chars, on_token, on_start, on_generated
                 )
                 if not completed:
                     status = "cancelled"
@@ -292,6 +355,8 @@ async def reply_aloud(
                     trace("REQUEST_COMPLETED")
                     request_context.reset(token)
         finally:
+            if changed_sentence_callback:
+                speaker.on_sentence = saved_sentence_callback
             lock.release()
     except BaseException as exc:
         status = (
@@ -305,17 +370,25 @@ async def reply_aloud(
         current.reset(timing_token)
 
 
-async def _reply_aloud(conv, speaker, user_text, min_chars, on_token, on_start) -> bool:
+async def _reply_aloud(
+    conv, speaker, user_text, min_chars, on_token, on_start, on_generated=None
+) -> bool:
     """Stream the LLM reply into the speaker sentence by sentence."""
     completed = False
     try:
         if conv.s.locale.lang == "ru":
             completed = await _russian_reply_aloud(
-                conv, speaker, user_text, min_chars, on_token, on_start
+                conv, speaker, user_text, min_chars, on_token, on_start, on_generated
             )
         else:
             completed = await speak_tokens(
-                speaker, conv.reply(user_text), min_chars, conv.s.locale.lang, on_token, on_start
+                speaker,
+                conv.reply(user_text),
+                min_chars,
+                conv.s.locale.lang,
+                on_token,
+                on_start,
+                on_generated,
             )
     finally:
         # Synthesis can run several sentences ahead. Playback, rather than generation,
@@ -329,7 +402,9 @@ async def _reply_aloud(conv, speaker, user_text, min_chars, on_token, on_start) 
     return completed
 
 
-async def _russian_reply_aloud(conv, speaker, user_text, min_chars, on_token, on_start) -> bool:
+async def _russian_reply_aloud(
+    conv, speaker, user_text, min_chars, on_token, on_start, on_generated=None
+) -> bool:
     from backend.audio.waiting import allow_waiting, trace
 
     queue = asyncio.Queue(maxsize=32)
@@ -424,7 +499,9 @@ async def _russian_reply_aloud(conv, speaker, user_text, min_chars, on_token, on
         emit_phase("processing")
         completed = False
         try:
-            completed = await speak_tokens(speaker, tokens(), min_chars, "ru", on_token, main_start)
+            completed = await speak_tokens(
+                speaker, tokens(), min_chars, "ru", on_token, main_start, on_generated
+            )
             return completed
         finally:
             trace("MAIN_AUDIO_END", completed=completed, started=main_started)
@@ -592,6 +669,7 @@ class VoiceLoop:
         self.clock = clock
         self.state = StateMachine(State.SLEEPING if self.use_wake else State.LISTENING, clock)
         self.task: asyncio.Task | None = None
+        self._text_queue: deque[tuple[str, bool, str]] = deque()
         self.wake_task: asyncio.Task | None = None
         self.mute_until = 0.0
         self.vad_wait_s = 0.0
@@ -1120,6 +1198,14 @@ class VoiceLoop:
     def _phase(self, name: str) -> None:
         owner = request_context.get() or self.state.request_id
         if self.state.set_phase(name, owner):
+            profile = current.get()
+            request_id = client_request_context.get() or (profile.request_id if profile else None)
+            log.info(
+                "VOICE_REQUEST_STAGE request_id=%s owner=%s stage=%s",
+                request_id or "-",
+                owner,
+                name,
+            )
             self.bus.publish({"type": "activity", "phase": name, "request_id": owner})
 
     @property
@@ -1300,43 +1386,97 @@ class VoiceLoop:
     def submit_text(self, value: dict) -> bool:
         """Explicit local UI input, using the same conversation, tools and turn owner."""
         if (
-            set(value) - {"text", "speak"}
+            not isinstance(value, dict)
+            or bool(set(value) - {"text", "speak", "client_request_id"})
             or not isinstance(value.get("text"), str)
             or not 0 < len(value["text"].strip()) <= 4000
             or type(value.get("speak", False)) is not bool
+            or (
+                value.get("client_request_id") is not None
+                and not isinstance(value.get("client_request_id"), str)
+            )
         ):
             self.bus.publish(
                 {
-                    "type": "notice",
-                    "error": True,
+                    "type": "chat_rejected",
                     "message": "Сообщение должно содержать от 1 до 4000 символов.",
                 }
             )
             return False
-        if self.busy:
+        raw_request_id = value.get("client_request_id")
+        try:
+            client_id = str(uuid4()) if raw_request_id is None else str(UUID(raw_request_id))
+        except (TypeError, ValueError):
             self.bus.publish(
                 {
-                    "type": "notice",
-                    "error": True,
-                    "message": "Дождись текущего ответа или останови его кнопкой микрофона.",
+                    "type": "chat_rejected",
+                    "message": "Не удалось принять идентификатор сообщения.",
                 }
             )
             return False
+        if len(self._text_queue) >= MAX_QUEUED_TEXT:
+            self.bus.publish(
+                {
+                    "type": "chat_rejected",
+                    "client_request_id": client_id,
+                    "message": "Очередь сообщений заполнена. "
+                    "Повтори отправку через несколько секунд.",
+                    "request_id": self.state.request_id,
+                }
+            )
+            return False
+        self._text_queue.append((value["text"].strip(), value.get("speak", False), client_id))
+        position = len(self._text_queue) if self.busy else len(self._text_queue) - 1
+        self.bus.publish(
+            {
+                "type": "chat_queued",
+                "client_request_id": client_id,
+                "position": position,
+                "request_id": self.state.request_id,
+            }
+        )
+        log.info(
+            "VOICE_REQUEST_STAGE request_id=%s owner=%s stage=queued position=%d",
+            client_id,
+            self.state.request_id,
+            position,
+        )
+        if not self.busy:
+            if (
+                self.task is not None
+                and self.task.done()
+                and self.state.state in {State.THINKING, State.SPEAKING}
+            ):
+                # The old task's callback may still be waiting in the loop. Complete its
+                # state transition now; the later callback will see the replacement task.
+                self._after_turn(self.task)
+            else:
+                self._start_next_text()
+        return True
+
+    def _start_next_text(self) -> None:
+        if self.busy or not self._text_queue:
+            return
+        text, speak, client_id = self._text_queue.popleft()
         if self.state.state is State.SLEEPING:
-            if self.clock() < self.mute_until:
-                return
             self.state.to(State.LISTENING)
+        if self.state.state is not State.LISTENING:
+            log.error(
+                "VOICE_REQUEST_STAGE request_id=%s stage=deferred state=%s",
+                client_id,
+                self.state.state.value,
+            )
+            self._text_queue.appendleft((text, speak, client_id))
+            return
         self.state.to(State.THINKING)
         self.task = asyncio.create_task(
             self._bounded_turn(
-                functools.partial(
-                    self._handle_text, value["text"].strip(), value.get("speak", False)
-                ),
+                functools.partial(self._handle_text, text, speak),
                 kind="text",
+                client_id=client_id,
             )
         )
         self.task.add_done_callback(self._after_turn)
-        return True
 
     async def _handle_text(self, text: str, speak: bool) -> None:
         if center := getattr(self, "settings_center", None):
@@ -1356,16 +1496,32 @@ class VoiceLoop:
 
         try:
             if speak:
-                await reply_aloud(
-                    self.conv,
-                    self.speaker,
-                    text,
-                    self.s.tts.sentence_min_chars,
-                    on_start=on_start,
-                    on_silent_token=lambda piece: self.bus.publish(
-                        {"type": "reply", "delta": piece}
-                    ),
-                )
+                try:
+                    await reply_aloud(
+                        self.conv,
+                        self.speaker,
+                        text,
+                        self.s.tts.sentence_min_chars,
+                        on_start=on_start,
+                        on_generated=lambda piece: self.bus.publish(
+                            {"type": "reply", "delta": piece}
+                        ),
+                    )
+                except VoiceOutputError as exc:
+                    profile.fail("tts_output")
+                    self._phase("error")
+                    log.warning(
+                        "VOICE_TTS_FAILED request_id=%s error_type=%s",
+                        profile.request_id,
+                        type(exc.__cause__ or exc).__name__,
+                    )
+                    self.bus.publish(
+                        {
+                            "type": "notice",
+                            "error": True,
+                            "message": "Текст ответа показан в чате, но озвучить его не удалось.",
+                        }
+                    )
             else:
                 async with contextlib.aclosing(self.conv.reply(text)) as stream:
                     async for piece in stream:
@@ -1390,11 +1546,14 @@ class VoiceLoop:
                 }
             )
 
-    async def _bounded_turn(self, operation, *, kind: str = "voice") -> None:
+    async def _bounded_turn(
+        self, operation, *, kind: str = "voice", client_id: str | None = None
+    ) -> None:
         from backend.audio.waiting import trace
 
-        profile = Profile(kind=kind)
+        profile = Profile(kind=kind, request_id=client_id or uuid4().hex)
         profile_token = current.set(profile)
+        client_token = client_request_context.set(profile.request_id)
         owner = self.state.begin_request()
         request_token = request_context.set(owner)
         phase_token = phase_sink.set(self._phase)
@@ -1405,6 +1564,13 @@ class VoiceLoop:
         session_token = voice_session.set(None)
         self.bus.request_id = owner
         trace("REQUEST_RECEIVED", source="audio" if kind == "voice" else "text")
+        log.info(
+            "VOICE_REQUEST_STAGE request_id=%s owner=%s stage=received kind=%s state=%s",
+            profile.request_id,
+            owner,
+            kind,
+            self.state.state.value,
+        )
         failed = True
         try:
             self._pause_session("processing")
@@ -1429,14 +1595,25 @@ class VoiceLoop:
                 Path(site.filename).name,
                 site.lineno,
             )
+            message = (
+                f"Не удалось дождаться ответа за {TURN_TIMEOUT_S:g} секунд. "
+                "Прослушивание восстановлено; "
+                "запрос можно повторить."
+                if isinstance(exc, TimeoutError)
+                else "Не удалось получить ответ от модели. Прослушивание восстановлено; "
+                "запрос можно повторить."
+                if isinstance(exc, LLMError)
+                else "Не удалось обработать запрос. Прослушивание восстановлено; "
+                "запрос можно повторить."
+            )
+            self.bus.publish({"type": "notice", "error": True, "message": message})
             self.bus.publish(
                 {
-                    "type": "notice",
-                    "error": True,
-                    "message": "Не удалось завершить запрос. Прослушивание восстановлено; "
-                    "действие автоматически не повторяется.",
+                    "type": "reply",
+                    "delta": "Не получилось обработать это обращение. Попробуй ещё раз.",
                 }
             )
+            self.bus.publish({"type": "reply_end", "cut": False})
             console.print(
                 "[red]Голосовой запрос прерван из-за ошибки или таймаута; слушаю снова.[/]"
             )
@@ -1444,6 +1621,12 @@ class VoiceLoop:
             if failed and self.speaker is not None and asyncio.current_task() is self.task:
                 self.speaker.interrupt()
             trace("REQUEST_COMPLETED", failed=failed)
+            log.info(
+                "VOICE_REQUEST_STAGE request_id=%s owner=%s stage=completed status=%s",
+                profile.request_id,
+                owner,
+                "failed" if failed else "completed",
+            )
             profile.finish(
                 "cancelled"
                 if asyncio.current_task().cancelling()
@@ -1452,6 +1635,7 @@ class VoiceLoop:
                 else "completed"
             )
             current.reset(profile_token)
+            client_request_context.reset(client_token)
             phase_sink.reset(phase_token)
             request_context.reset(request_token)
             voice_addressed.reset(address_token)
@@ -1471,6 +1655,9 @@ class VoiceLoop:
         self.bus.publish(
             {"type": "addressee", "state": "waiting", "request_id": self.state.request_id}
         )
+        if self._text_queue:
+            self._start_next_text()
+            return
         if self._sleep_requested:
             self._sleep_requested = False
             self._barged_in = False
@@ -2178,20 +2365,28 @@ class VoiceLoop:
                 s.tts.sentence_min_chars,
                 on_token=echo,
                 on_start=on_start,
-                on_silent_token=lambda piece: self.bus.publish({"type": "reply", "delta": piece}),
+                on_generated=lambda piece: self.bus.publish({"type": "reply", "delta": piece}),
+            )
+        except VoiceOutputError as exc:
+            profile.fail("tts_output")
+            self._phase("error")
+            log.warning(
+                "VOICE_TTS_FAILED request_id=%s error_type=%s",
+                profile.request_id,
+                type(exc.__cause__ or exc).__name__,
+            )
+            self.bus.publish(
+                {
+                    "type": "notice",
+                    "error": True,
+                    "message": "Текст ответа показан в чате, но озвучить его не удалось.",
+                }
             )
         except LLMError as exc:
             profile.fail(type(exc).__name__)
             log.error("ERROR model type=%s request=%s", type(exc).__name__, request_context.get())
             self._phase("error")
-            self.bus.publish(
-                {
-                    "type": "notice",
-                    "error": True,
-                    "message": "Модель не ответила. Можно повторить запрос.",
-                }
-            )
-            return
+            raise
         finally:
             end_reply(self.bus, self.speaker)
             profile.add("response_total", time.perf_counter() - speech_end)

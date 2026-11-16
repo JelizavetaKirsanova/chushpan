@@ -12,7 +12,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from backend.state import request_context
+from backend.state import client_request_context, request_context
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +43,6 @@ STICKY = {
     "cinema",
 }
 TRANSCRIPT_LINES = 8
-QUEUE_SIZE = 512  # ~15 s of audio levels; a stalled client loses the oldest events
 
 
 class HudBus:
@@ -60,6 +59,19 @@ class HudBus:
         return len(self._clients)
 
     def publish(self, event: Event) -> None:
+        client_request_id = client_request_context.get()
+        if client_request_id and event["type"] in {
+            "activity",
+            "chat_queued",
+            "chat_rejected",
+            "reply",
+            "reply_end",
+            "user",
+            "stats",
+            "notice",
+            "state",
+        }:
+            event = {**event, "client_request_id": client_request_id}
         if event["type"] in {
             "state",
             "activity",
@@ -69,6 +81,8 @@ class HudBus:
             "stats",
             "tool",
             "notice",
+            "chat_queued",
+            "chat_rejected",
             "ai_status",
             "addressee",
         }:
@@ -80,9 +94,12 @@ class HudBus:
                 self.request_id = owner
         self._remember(event)
         for queue in self._clients:
-            if queue.full():
-                queue.get_nowait()
-            queue.put_nowait(event)
+            # Audio meters are ephemeral. Coalesce adjacent meter updates and keep all
+            # transcript, state and request events, even when a HUD client is slow.
+            if event["type"] == "level" and queue._queue and queue._queue[-1]["type"] == "level":
+                queue._queue[-1] = event
+            else:
+                queue.put_nowait(event)
 
     def _remember(self, event: Event) -> None:
         kind = event["type"]
@@ -115,7 +132,7 @@ class HudBus:
         return [*self._sticky.values(), {"type": "transcript", "lines": lines}]
 
     def subscribe(self) -> asyncio.Queue[Event]:
-        queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=QUEUE_SIZE)
+        queue: asyncio.Queue[Event] = asyncio.Queue()
         self._clients.add(queue)
         return queue
 

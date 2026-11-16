@@ -19,6 +19,20 @@ from backend.latency import current
 log = logging.getLogger(__name__)
 
 
+def _transient_transport_error(exc: Exception) -> bool:
+    """Recognize OpenAI SDK connection wrappers as retryable transport failures."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (httpx.TimeoutException, httpx.NetworkError, TimeoutError)):
+            return True
+        if type(current).__name__ in {"APIConnectionError", "APITimeoutError"}:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 class OpenAIRequestError(LLMError):
     def __init__(self, status_code: int | None, *, transient: bool, reason: str):
         self.status_code = status_code
@@ -213,8 +227,7 @@ class OpenAIClient:
                 "credits_exhausted",
             }
             transient = not no_credits and (
-                status in {429, 500, 502, 503, 504}
-                or isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, TimeoutError))
+                status in {429, 500, 502, 503, 504} or _transient_transport_error(exc)
             )
             reason = (
                 "проверь API-ключ"
@@ -332,8 +345,7 @@ class OpenAIClient:
                 "credits_exhausted",
             }
             transient = not no_credits and (
-                status in {429, 500, 502, 503, 504}
-                or isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, TimeoutError))
+                status in {429, 500, 502, 503, 504} or _transient_transport_error(exc)
             )
             reason = (
                 "проверь API-ключ"
@@ -344,5 +356,11 @@ class OpenAIClient:
                 if transient
                 else "ошибка обработки запроса"
             )
-            log.warning("OpenAI stream failed status=%s transient=%s", status, transient)
+            log.warning(
+                "OpenAI stream failed status=%s transient=%s error_type=%s cause_type=%s",
+                status,
+                transient,
+                type(exc).__name__,
+                type(exc.__cause__).__name__ if exc.__cause__ else None,
+            )
             raise OpenAIRequestError(status, transient=transient, reason=reason) from None
