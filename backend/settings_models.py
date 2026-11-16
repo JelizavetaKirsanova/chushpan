@@ -11,6 +11,7 @@ from backend.personality import Strict
 class Studio(Strict):
     engine: Literal["silero", "piper", "say", "openai", "elevenlabs"] = "silero"
     voice: str = Field(default="eugene", max_length=80)
+    elevenlabs_voice_id: str = Field(default="", max_length=120)
     input_device: str | int | None = None
     rate: Literal["x-slow", "slow", "medium", "fast", "x-fast"] = "medium"
     pitch: Literal["x-low", "low", "medium", "high", "x-high"] = "medium"
@@ -36,7 +37,9 @@ class Studio(Strict):
         if any(
             not k.strip() or not v.strip() or len(k) > 80 or len(v) > 180
             for k, v in self.pronunciations.items()
-        ) or contains_secret(self.model_dump_json()):
+        ) or contains_secret(self.model_dump_json()) or any(
+            char in self.elevenlabs_voice_id for char in " \t\r\n/?#"
+        ):
             raise ValueError("Проверь словарь: до 200 слов, без секретов и пустых значений.")
         return self
 
