@@ -594,6 +594,7 @@ export class AutomationsView {
     const fit = this.button('Вписать схему', () => {this.setCanvasZoom(100); const viewport = this.editor.querySelector<HTMLElement>('.scenario-flow-viewport'); if (viewport) {viewport.scrollTop = 0; viewport.scrollLeft = 0;}});
     flowTools.append(undoStep, redoStep, copyStep, pasteStep, zoomOut, zoomLabel, zoomIn, fit);
     const viewport = el('div', '', 'scenario-flow-viewport'); viewport.tabIndex = 0; viewport.setAttribute('aria-label', 'Полотно сценария, блоки идут сверху вниз');
+    viewport.style.setProperty('--scenario-canvas-scale', String(this.canvasZoom / 100));
     const flow = el('div', '', 'scenario-flow-content'); flow.style.setProperty('zoom', `${this.canvasZoom}%`);
     const triggerNode = el('div', '', 'scenario-flow-trigger'); triggerNode.append(this.glyph('shortcut'), el('strong', 'Триггеры'), el('small', this.triggerDescription(draft)));
     flow.append(triggerNode, el('span', '', 'scenario-flow-connector'), this.blocks(variant?.actions ?? draft.actions, true));
@@ -673,6 +674,7 @@ export class AutomationsView {
     const content = this.editor.querySelector<HTMLElement>('.scenario-flow-content');
     const label = this.editor.querySelector<HTMLElement>('.scenario-zoom-label');
     if (content) content.style.setProperty('zoom', `${this.canvasZoom}%`);
+    this.editor.querySelector<HTMLElement>('.scenario-flow-viewport')?.style.setProperty('--scenario-canvas-scale', String(this.canvasZoom / 100));
     if (label) label.textContent = `${this.canvasZoom}%`;
   }
   private triggerDescription(scenario: Scenario): string {
