@@ -699,3 +699,34 @@ test('queued pause from the old audio source cannot erase the next track resume 
     assert.ok(saves.some(value=>value.id==='first'&&value.position===10));
   }finally{f.window.happyDOM.abort();}
 });
+
+test('rapid audio selection keeps the latest track when earlier file reads finish last',async()=>{
+  const f=fixture();try{
+    const view=new f.CinemaView(()=>{},()=>{},()=>{},()=>{});view.connection(true);
+    const first={id:'first',name:'first.wav',kind:'music',mime:'audio/wav',size:20,addedAt:'2026-11-17',favorite:false,playlistIds:[],position:10,duration:100};
+    const second={...first,id:'second',name:'second.wav',position:50};
+    const reads=new Map<string,(value:Blob)=>void>();
+    view.localItems=[first,second];view.localStore={supported:()=>false,file:(id:string)=>new Promise(resolve=>reads.set(id,resolve)),update:async()=>{}};
+    const audio=view.audio;audio.canPlayType=()=> 'probably';audio.pause=()=>{};audio.load=()=>{};audio.play=async()=>{};
+    const older=view.playLocalAudio(first);const latest=view.playLocalAudio(second);
+    reads.get(second.id)!(new f.window.Blob(['second'],{type:'audio/wav'}));await latest;
+    const selectedSource=audio.src;assert.equal(view.activeAudioId,second.id);
+    reads.get(first.id)!(new f.window.Blob(['first'],{type:'audio/wav'}));await older;
+    assert.equal(view.activeAudioId,second.id);assert.equal(audio.src,selectedSource);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('an obsolete audio play rejection cannot overwrite the current track status',async()=>{
+  const f=fixture();try{
+    const view=new f.CinemaView(()=>{},()=>{},()=>{},()=>{});view.connection(true);
+    const first={id:'first',name:'first.wav',kind:'music',mime:'audio/wav',size:20,addedAt:'2026-11-17',favorite:false,playlistIds:[],position:10,duration:100};
+    const second={...first,id:'second',name:'second.wav',position:50};
+    view.localItems=[first,second];view.localStore={supported:()=>false,file:async()=>new f.window.Blob(['test'],{type:'audio/wav'}),update:async()=>{}};
+    let rejectOld:(reason:Error)=>void=()=>{};let plays=0;
+    const audio=view.audio;audio.canPlayType=()=> 'probably';audio.pause=()=>{};audio.load=()=>{};audio.play=()=>++plays===1?new Promise((_resolve,reject)=>{rejectOld=reject;}):Promise.resolve();
+    const older=view.playLocalAudio(first);await new Promise(resolve=>setImmediate(resolve));
+    await view.playLocalAudio(second);view.feedback.textContent='Текущий трек';view.feedback.dataset.error='false';
+    rejectOld(new Error('AbortError: interrupted by a new load'));await older;
+    assert.equal(view.activeAudioId,second.id);assert.equal(view.feedback.textContent,'Текущий трек');assert.equal(view.feedback.dataset.error,'false');
+  }finally{f.window.happyDOM.abort();}
+});

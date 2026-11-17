@@ -955,7 +955,10 @@ class Application(_Api):
 
         try:
             log.info("DESKTOP_BOOT stage=webview_start version=%s", VERSION)
-            webview.start(start, gui="cocoa", private_mode=True)
+            # Cocoa ignores storage_path. Its default WKWebsiteDataStore persists
+            # localStorage/IndexedDB, isolated by this profile's stable HUD origin.
+            # private_mode=True would delete ALL of that store on every launch.
+            webview.start(start, gui="cocoa", private_mode=False)
         finally:
             self.quit()
         return 0

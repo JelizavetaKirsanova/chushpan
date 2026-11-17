@@ -16,6 +16,7 @@ from pathlib import Path
 from fastapi import HTTPException, Request
 
 from backend.config import Settings
+from backend.desktop.storage import load_web_port, save_web_port
 from backend.hud.bus import HudBus
 from backend.hud.server import HudServer
 
@@ -230,6 +231,24 @@ class DesktopEngine:
                 loop._publish_voice()
 
 
+async def start_desktop_server(server: HudServer, root: Path) -> None:
+    """A profile gets one persistent origin, including isolated smoke/QA profiles."""
+    port = load_web_port(root)
+    server.s.server.host, server.s.server.port = "127.0.0.1", port
+    if not await server.start():
+        if port:
+            raise RuntimeError(
+                f"Сохранённый порт интерфейса {port} занят или недоступен. "
+                "Освободи порт и повтори запуск; адрес и данные браузера не изменены."
+            )
+        raise RuntimeError("Не удалось запустить локальный интерфейс.")
+    try:
+        save_web_port(root, server.s.server.port)
+    except Exception:
+        await server.stop()
+        raise
+
+
 async def run_worker(token: str, endpoint: Path, *, smoke=False, parent=0):
     from backend.ble_diagnostics import runtime_info, trace
     from backend.instance import InstanceLock
@@ -259,8 +278,7 @@ async def run_worker(token: str, endpoint: Path, *, smoke=False, parent=0):
     watcher = asyncio.create_task(watch_parent())
     try:
         log.info("DESKTOP_BOOT stage=http_starting")
-        if not await server.start():
-            raise RuntimeError("Не удалось запустить интерфейс.")
+        await start_desktop_server(server, settings.data_path.parent)
         engine.boot_stage = "http_ready"
         log.info("DESKTOP_BOOT stage=http_ready port=%d", settings.server.port)
         endpoint.write_text(json.dumps({"url": server.url, "pid": os.getpid()}))

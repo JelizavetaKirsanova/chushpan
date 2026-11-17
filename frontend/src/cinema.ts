@@ -103,6 +103,7 @@ export class CinemaView {
   private audioURL='';
   private audioReady=false;
   private audioGeneration=0;
+  private audioRequest=0;
   private lastAudioSaveAt=0;
   private audio!:HTMLAudioElement;
   private audioBar=el('section','','cinema-local-audio-bar');
@@ -446,7 +447,30 @@ export class CinemaView {
 
   private async removeLocal(item:LocalMediaItem):Promise<void>{try{await this.localStore.remove(item.id);this.localItems=await this.localStore.list();if(this.activeAudioId===item.id){this.activeAudioId='';this.audioReady=false;this.audioGeneration++;this.audio.pause();this.audio.removeAttribute('src');if(this.audioURL)URL.revokeObjectURL(this.audioURL);this.audioURL='';}this.selectedMediaKey='';this.updateAudioBar();this.render();}catch(error){this.feedback.textContent=error instanceof Error?error.message:'Не удалось удалить файл.';this.feedback.dataset.error='true';}}
 
-  private async playLocalAudio(item:LocalMediaItem):Promise<void>{try{if(this.activeAudioId===item.id){if(this.audio.paused)await this.audio.play();else this.audio.pause();return;}const blob=await this.localStore.file(item.id);if(!blob)throw new Error('Файл не найден в локальном хранилище.');if(item.mime&&this.audio.canPlayType(item.mime)==='')throw new Error('Этот аудиоформат не поддерживается встроенным плеером. Файл останется в медиатеке.');this.persistAudioProgress(false,true);this.audioReady=false;const generation=++this.audioGeneration;const resume=item.position;this.audio.pause();if(this.audioURL)URL.revokeObjectURL(this.audioURL);this.audioURL=URL.createObjectURL(blob);this.activeAudioId=item.id;this.audio.src=this.audioURL;this.audio.onloadedmetadata=()=>{if(generation!==this.audioGeneration||this.activeAudioId!==item.id)return;if(resume>0&&resume<this.audio.duration-3)this.audio.currentTime=resume;this.audioReady=true;this.saveLocalProgress(item,this.audio.currentTime,this.audio.duration);};this.audio.load();await this.audio.play();this.updateAudioBar();}catch(error){this.feedback.textContent=error instanceof Error?error.message:'Не удалось воспроизвести аудиофайл.';this.feedback.dataset.error='true';}}
+  private async playLocalAudio(item:LocalMediaItem):Promise<void>{
+    const request=++this.audioRequest;
+    try{
+      if(this.activeAudioId===item.id){if(this.audio.paused)await this.audio.play();else this.audio.pause();return;}
+      const blob=await this.localStore.file(item.id);
+      if(request!==this.audioRequest)return;
+      if(!blob)throw new Error('Файл не найден в локальном хранилище.');
+      if(item.mime&&this.audio.canPlayType(item.mime)==='')throw new Error('Этот аудиоформат не поддерживается встроенным плеером. Файл останется в медиатеке.');
+      this.persistAudioProgress(false,true);this.audioReady=false;
+      const generation=++this.audioGeneration;const resume=item.position;
+      this.audio.pause();if(this.audioURL)URL.revokeObjectURL(this.audioURL);
+      this.audioURL=URL.createObjectURL(blob);this.activeAudioId=item.id;this.audio.src=this.audioURL;
+      this.audio.onloadedmetadata=()=>{
+        if(generation!==this.audioGeneration||this.activeAudioId!==item.id)return;
+        if(resume>0&&resume<this.audio.duration-3)this.audio.currentTime=resume;
+        this.audioReady=true;this.saveLocalProgress(item,this.audio.currentTime,this.audio.duration);
+      };
+      this.audio.load();await this.audio.play();
+      if(request===this.audioRequest)this.updateAudioBar();
+    }catch(error){
+      if(request!==this.audioRequest)return;
+      this.feedback.textContent=error instanceof Error?error.message:'Не удалось воспроизвести аудиофайл.';this.feedback.dataset.error='true';
+    }
+  }
 
   private playNextAudio(direction:number):void{const tracks=this.localItems.filter(item=>item.kind==='music').sort((a,b)=>a.addedAt.localeCompare(b.addedAt));if(!tracks.length)return;let index=tracks.findIndex(item=>item.id===this.activeAudioId);index=(index+direction+tracks.length)%tracks.length;void this.playLocalAudio(tracks[index]);}
 

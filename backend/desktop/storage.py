@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -26,6 +27,57 @@ class Preferences(BaseModel):
     recover_engine: bool = True
     ambient_hotkey_enabled: bool = False
     ambient_hotkey_key: Literal["f9", "f10", "f11", "f12"] = "f12"
+
+
+def load_web_port(root: Path) -> int:
+    """Keep the WebKit origin stable; damaged state must never create a new library."""
+    path = root / "web-origin.json"
+    if path.is_symlink():
+        raise RuntimeError("Файл адреса интерфейса не должен быть символической ссылкой.")
+    try:
+        value = json.loads(path.read_text())
+    except FileNotFoundError:
+        return 0
+    except (ValueError, UnicodeError) as exc:
+        raise RuntimeError(
+            "Сохранённый адрес интерфейса повреждён; данные браузера сохранены."
+        ) from exc
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"port"}
+        or type(value["port"]) is not int
+        or not 1024 <= value["port"] <= 65535
+    ):
+        raise RuntimeError("Сохранённый адрес интерфейса некорректен; данные браузера сохранены.")
+    return value["port"]
+
+
+def save_web_port(root: Path, port: int) -> None:
+    """Publish the first bound port atomically, without replacing a known origin."""
+    if type(port) is not int or not 1024 <= port <= 65535:
+        raise ValueError("Неверный локальный порт интерфейса.")
+    existing = load_web_port(root)
+    if existing:
+        if existing != port:
+            raise RuntimeError("Адрес интерфейса изменился; прежнее хранилище сохранено.")
+        return
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, name = tempfile.mkstemp(dir=root, prefix=".web-origin-")
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w") as out:
+            json.dump({"port": port}, out)
+            out.flush()
+            os.fsync(out.fileno())
+        try:
+            os.link(temporary, root / "web-origin.json")
+        except FileExistsError:
+            if load_web_port(root) != port:
+                raise RuntimeError(
+                    "Адрес интерфейса изменился; прежнее хранилище сохранено."
+                ) from None
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def load_preferences(root: Path) -> Preferences:

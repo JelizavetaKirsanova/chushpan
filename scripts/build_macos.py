@@ -45,6 +45,7 @@ MANIFEST_SOURCES = (
     "pyproject.toml",
     "backend/desktop/app.py",
     "backend/desktop/storage.py",
+    "backend/desktop/storage.py",
     "backend/cinema/site_browser.py",
     "backend/cinema/browser_diagnostics.py",
     "backend/cinema/evidence.py",
