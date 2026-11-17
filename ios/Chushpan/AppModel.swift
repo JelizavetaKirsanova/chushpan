@@ -44,11 +44,17 @@ final class AppModel: ObservableObject {
     @Published var cloudSyncStatus = "Облачная синхронизация выключена."
     @Published var isCloudSyncing = false
     @Published var macBaseURL: String
+    @Published var macRemoteURL: String
     @Published var macFingerprint: String
     @Published var macPairCode: String?
     @Published var macTrusted: Bool
+    @Published var macAutoReconnectEnabled: Bool
     @Published var macStatus: MacRemoteStatus?
     @Published var macConnectionMessage = "Mac не сопряжён."
+    @Published var macDiscoveryMessage = "Ищу Чушпан через Bonjour…"
+    @Published var discoveredMacs: [DiscoveredMac] = []
+    @Published var macLastConnectedAt: Date?
+    @Published var macConnectionKind = "Локальная сеть"
     @Published var macActionFeedback: MacActionFeedback?
     @Published var macConfirmationCode = ""
 
@@ -57,6 +63,7 @@ final class AppModel: ObservableObject {
     private let keychain = KeychainVault()
     private let gemini = GeminiClient()
     private let cloud = CloudSyncService()
+    private let macBrowser = MacServiceBrowser()
     private var generationTask: Task<Void, Never>?
     private var localSaveTask: Task<Void, Never>?
     private var cloudSaveTask: Task<Void, Never>?
@@ -64,6 +71,9 @@ final class AppModel: ObservableObject {
     private var cloudSyncRequestedAgain = false
     private var cloudSyncGeneration = 0
     private var macClient: MacBridgeClient?
+    private var reconnectTask: Task<Void, Never>?
+    private var pairingInProgress = false
+    private var sceneIsActive = true
 
     init() {
         includeRelevantMemory = UserDefaults.standard.bool(forKey: "mobile.includeRelevantMemory")
@@ -71,8 +81,12 @@ final class AppModel: ObservableObject {
         voiceIdentifier = UserDefaults.standard.string(forKey: "mobile.voiceIdentifier") ?? ""
         cloudSyncEnabled = UserDefaults.standard.bool(forKey: "mobile.cloudSyncEnabled")
         macBaseURL = UserDefaults.standard.string(forKey: "mobile.macBaseURL") ?? ""
+        macRemoteURL = UserDefaults.standard.string(forKey: "mobile.macRemoteURL") ?? ""
         macFingerprint = UserDefaults.standard.string(forKey: "mobile.macFingerprint") ?? ""
         macTrusted = UserDefaults.standard.bool(forKey: "mobile.macTrusted")
+        macAutoReconnectEnabled = UserDefaults.standard.object(forKey: "mobile.macAutoReconnect") as? Bool ?? true
+        let lastConnected = UserDefaults.standard.double(forKey: "mobile.macLastConnectedAt")
+        macLastConnectedAt = lastConnected > 0 ? Date(timeIntervalSince1970: lastConnected) : nil
         let resolvedStore: MobileStore
         do {
             let applicationStore = try MobileStore.applicationDefault()
@@ -91,6 +105,15 @@ final class AppModel: ObservableObject {
             cloudSyncStatus = "Синхронизация iCloud включена. Проверяю доступность…"
             requestCloudSync()
         }
+        macBrowser.onChange = { [weak self] services in
+            guard let self else { return }
+            self.discoveredMacs = services
+            if self.macTrusted && self.macAutoReconnectEnabled && self.sceneIsActive {
+                self.scheduleMacReconnect()
+            }
+        }
+        macBrowser.onMessage = { [weak self] message in self?.macDiscoveryMessage = message }
+        macBrowser.start()
         if macTrusted, !macBaseURL.isEmpty, !macFingerprint.isEmpty {
             Task { await refreshMac() }
         }
@@ -435,7 +458,121 @@ final class AppModel: ObservableObject {
             UserDefaults.standard.set(macBaseURL, forKey: "mobile.macBaseURL")
             UserDefaults.standard.set(macFingerprint, forKey: "mobile.macFingerprint")
             UserDefaults.standard.set(false, forKey: "mobile.macTrusted")
+            UserDefaults.standard.set(true, forKey: "mobile.macAutoReconnect")
+            macAutoReconnectEnabled = true
             macConnectionMessage = "Сверь код с Mac и подтверди новое устройство в его панели сопряжения."
+            pollPairingApproval()
+        } catch {
+            macConnectionMessage = error.localizedDescription
+        }
+    }
+
+    func pairWithMac(_ device: DiscoveredMac) async {
+        guard !pairingInProgress else { return }
+        pairingInProgress = true
+        defer { pairingInProgress = false }
+        macConnectionMessage = "Устанавливаю защищённую связь с \(device.name)…"
+        do {
+            let name = UIDevice.current.model.contains("iPad") ? "iPad" : "iPhone"
+            let kind = name == "iPad" ? "ipad" : "iphone"
+            let (client, code, _, fingerprint) = try await MacBridgeClient.pair(
+                baseURL: device.localURL,
+                deviceName: name,
+                kind: kind
+            )
+            macClient?.close()
+            macClient = client
+            macBaseURL = device.localURL
+            macRemoteURL = device.remoteURL ?? ""
+            macFingerprint = fingerprint
+            macPairCode = code
+            macTrusted = false
+            UserDefaults.standard.set(macBaseURL, forKey: "mobile.macBaseURL")
+            UserDefaults.standard.set(macRemoteURL, forKey: "mobile.macRemoteURL")
+            UserDefaults.standard.set(macFingerprint, forKey: "mobile.macFingerprint")
+            UserDefaults.standard.set(false, forKey: "mobile.macTrusted")
+            UserDefaults.standard.set(true, forKey: "mobile.macAutoReconnect")
+            macAutoReconnectEnabled = true
+            macConnectionMessage = "Сравни код на Mac и iPhone/iPad. Подтверждение нужно только для этого нового устройства."
+            pollPairingApproval()
+        } catch {
+            macConnectionMessage = error.localizedDescription
+        }
+    }
+
+    func connectToMac(_ device: DiscoveredMac) async {
+        if !macTrusted {
+            await pairWithMac(device)
+            return
+        }
+        let candidates = [device.localURL, device.remoteURL].compactMap { $0 }
+        for address in candidates {
+            do {
+                let client = try await MacBridgeClient.restore(
+                    baseURL: address,
+                    fingerprint: macFingerprint
+                )
+                let status = try await client.status()
+                macClient?.close()
+                macClient = client
+                macStatus = status
+                macBaseURL = address
+                recordMacConnection(at: address)
+                macConnectionMessage = "Соединение с Mac восстановлено."
+                return
+            } catch {
+                macConnectionMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func pairWithMac(address: String) async {
+        let baseURL = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !baseURL.isEmpty, !pairingInProgress else { return }
+        if macTrusted {
+            do {
+                let client = try await MacBridgeClient.restore(baseURL: baseURL, fingerprint: macFingerprint)
+                let status = try await client.status()
+                macClient?.close()
+                macClient = client
+                macBaseURL = baseURL
+                macRemoteURL = baseURL
+                macStatus = status
+                UserDefaults.standard.set(baseURL, forKey: "mobile.macBaseURL")
+                UserDefaults.standard.set(baseURL, forKey: "mobile.macRemoteURL")
+                recordMacConnection(at: baseURL)
+                macConnectionMessage = "Соединение с Mac восстановлено по настроенному адресу."
+            } catch {
+                macConnectionMessage = error.localizedDescription
+            }
+            return
+        }
+        pairingInProgress = true
+        defer { pairingInProgress = false }
+        macConnectionMessage = "Проверяю защищённый адрес Mac…"
+        do {
+            let name = UIDevice.current.model.contains("iPad") ? "iPad" : "iPhone"
+            let kind = name == "iPad" ? "ipad" : "iphone"
+            let (client, code, _, fingerprint) = try await MacBridgeClient.pair(
+                baseURL: baseURL,
+                deviceName: name,
+                kind: kind
+            )
+            macClient?.close()
+            macClient = client
+            macBaseURL = baseURL
+            macRemoteURL = baseURL
+            macFingerprint = fingerprint
+            macPairCode = code
+            macTrusted = false
+            UserDefaults.standard.set(macBaseURL, forKey: "mobile.macBaseURL")
+            UserDefaults.standard.set(macRemoteURL, forKey: "mobile.macRemoteURL")
+            UserDefaults.standard.set(macFingerprint, forKey: "mobile.macFingerprint")
+            UserDefaults.standard.set(false, forKey: "mobile.macTrusted")
+            UserDefaults.standard.set(true, forKey: "mobile.macAutoReconnect")
+            macAutoReconnectEnabled = true
+            macConnectionMessage = "Сравни код на Mac и iPhone/iPad, затем подтверди сопряжение на Mac."
+            pollPairingApproval()
         } catch {
             macConnectionMessage = error.localizedDescription
         }
@@ -443,12 +580,29 @@ final class AppModel: ObservableObject {
 
     func refreshMac() async {
         if macClient == nil {
-            do { macClient = try await MacBridgeClient.restore(baseURL: macBaseURL, fingerprint: macFingerprint) }
-            catch {
-                macConnectionMessage = error.localizedDescription
+            guard macTrusted || macPairCode != nil else {
+                macConnectionMessage = "Выбери найденный Mac, чтобы подключиться."
+                return
+            }
+            let candidates = connectionCandidates()
+            var restored: MacBridgeClient?
+            var lastError: Error = MacBridgeError.transport
+            for candidate in candidates {
+                do {
+                    restored = try await MacBridgeClient.restore(
+                        baseURL: candidate,
+                        fingerprint: macFingerprint
+                    )
+                    macBaseURL = candidate
+                    break
+                } catch { lastError = error }
+            }
+            guard let restored else {
+                macConnectionMessage = lastError.localizedDescription
                 macStatus = nil
                 return
             }
+            macClient = restored
         }
         guard let client = macClient else { return }
         do {
@@ -464,11 +618,126 @@ final class AppModel: ObservableObject {
                 UserDefaults.standard.set(true, forKey: "mobile.macTrusted")
             }
             macStatus = try await client.status()
-            macConnectionMessage = "Mac на связи по защищённой локальной сети."
+            recordMacConnection(at: macBaseURL)
+            macConnectionMessage = "Mac на связи по защищённому соединению."
         } catch {
             macStatus = nil
             macConnectionMessage = error.localizedDescription
+            if let bridgeError = error as? MacBridgeError, case .pairingEnded = bridgeError {
+                macPairCode = nil
+                macClient?.close()
+                macClient = nil
+            }
         }
+    }
+
+    func setSceneActive(_ active: Bool) {
+        sceneIsActive = active
+        if active {
+            macBrowser.start()
+            if macTrusted && macAutoReconnectEnabled { scheduleMacReconnect() }
+        } else {
+            macBrowser.stop()
+            reconnectTask?.cancel()
+            reconnectTask = nil
+        }
+    }
+
+    func disconnectMac() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        macClient?.close()
+        macClient = nil
+        macStatus = nil
+        macAutoReconnectEnabled = false
+        UserDefaults.standard.set(false, forKey: "mobile.macAutoReconnect")
+        macConnectionMessage = "Отключено. Нажми «Подключить» для следующего соединения."
+    }
+
+    func setMacAutoReconnect(_ enabled: Bool) {
+        macAutoReconnectEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "mobile.macAutoReconnect")
+        if enabled { scheduleMacReconnect() }
+        else {
+            reconnectTask?.cancel()
+            reconnectTask = nil
+        }
+    }
+
+    private func pollPairingApproval() {
+        Task { [weak self] in
+            guard let self else { return }
+            for _ in 0..<60 {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled, !self.macTrusted, self.macPairCode != nil else { return }
+                await self.refreshMac()
+            }
+            if !self.macTrusted {
+                self.macConnectionMessage = "Сопряжение истекло. Подключи устройство снова, если запрос был отклонён."
+                self.macPairCode = nil
+            }
+        }
+    }
+
+    private func scheduleMacReconnect() {
+        guard macTrusted, macAutoReconnectEnabled, sceneIsActive else { return }
+        reconnectTask?.cancel()
+        reconnectTask = Task { [weak self] in
+            guard let self else { return }
+            let delays: [UInt64] = [0, 1, 2, 4, 8, 16, 30]
+            for delay in delays {
+                if delay > 0 { try? await Task.sleep(nanoseconds: delay * 1_000_000_000) }
+                guard !Task.isCancelled else { return }
+                for candidate in self.connectionCandidates() {
+                    do {
+                        let client = try await MacBridgeClient.restore(
+                            baseURL: candidate,
+                            fingerprint: self.macFingerprint
+                        )
+                        let status = try await client.status()
+                        self.macClient?.close()
+                        self.macClient = client
+                        self.macStatus = status
+                        self.macBaseURL = candidate
+                        self.recordMacConnection(at: candidate)
+                        self.macConnectionMessage = "Соединение с Mac восстановлено."
+                        return
+                    } catch {
+                        self.macStatus = nil
+                    }
+                }
+            }
+            if !Task.isCancelled {
+                self.macConnectionMessage = "Mac пока недоступен. Повторю подключение при следующем обнаружении сети."
+            }
+        }
+    }
+
+    private func connectionCandidates() -> [String] {
+        let local = discoveredMacs.map(\.localURL)
+        let remote = discoveredMacs.compactMap(\.remoteURL)
+        var result: [String] = []
+        for candidate in local + remote + [macRemoteURL, macBaseURL] where
+            !candidate.isEmpty && !result.contains(candidate) {
+            result.append(candidate)
+        }
+        return result
+    }
+
+    private func recordMacConnection(at address: String) {
+        macLastConnectedAt = Date()
+        UserDefaults.standard.set(macLastConnectedAt?.timeIntervalSince1970, forKey: "mobile.macLastConnectedAt")
+        UserDefaults.standard.set(address, forKey: "mobile.macBaseURL")
+        macConnectionKind = isTailscaleAddress(address) ? "Удалённая сеть Tailscale" : "Локальная сеть Bonjour"
+    }
+
+    private func isTailscaleAddress(_ value: String) -> Bool {
+        guard let host = URLComponents(string: value)?.host else { return false }
+        let octets = host.split(separator: ".").compactMap { UInt8($0) }
+        if octets.count == 4 {
+            return octets[0] == 100 && (64...127).contains(Int(octets[1]))
+        }
+        return host.localizedCaseInsensitiveContains("ts.net")
     }
 
     func syncFromMac() async {
@@ -491,17 +760,23 @@ final class AppModel: ObservableObject {
     }
 
     func forgetMacOnThisDevice() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
         macClient?.close()
         macClient = nil
         try? keychain.remove("mac-device-signing-key")
         macBaseURL = ""
+        macRemoteURL = ""
         macFingerprint = ""
         macStatus = nil
         macPairCode = nil
         macTrusted = false
+        macAutoReconnectEnabled = true
         UserDefaults.standard.removeObject(forKey: "mobile.macBaseURL")
+        UserDefaults.standard.removeObject(forKey: "mobile.macRemoteURL")
         UserDefaults.standard.removeObject(forKey: "mobile.macFingerprint")
         UserDefaults.standard.set(false, forKey: "mobile.macTrusted")
+        UserDefaults.standard.set(true, forKey: "mobile.macAutoReconnect")
         macConnectionMessage = "Данные сопряжения удалены с этого устройства. Отзови устройство в панели Mac, чтобы удалить его доверие там."
     }
 

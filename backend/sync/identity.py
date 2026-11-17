@@ -140,11 +140,15 @@ class KeychainIdentity:
         return identity
 
 
-def certificates(identity, host):
+def certificates(identity, host, *, service_hostname=None):
     ca = x509.load_pem_x509_certificate(identity["ca"].encode())
     ca_key = serialization.load_pem_private_key(identity["ca_key"].encode(), password=None)
     server_key = serialization.load_pem_private_key(identity["server_key"].encode(), password=None)
     now = datetime.now(UTC)
+    addresses = [host] if isinstance(host, str) else list(host)
+    names = [x509.IPAddress(ipaddress.ip_address(value)) for value in addresses]
+    if service_hostname:
+        names.append(x509.DNSName(service_hostname.rstrip(".")))
     certificate = (
         x509.CertificateBuilder()
         .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Chushpan Mac")]))
@@ -153,10 +157,7 @@ def certificates(identity, host):
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - timedelta(minutes=5))
         .not_valid_after(now + timedelta(days=365))
-        .add_extension(
-            x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address(host))]),
-            critical=False,
-        )
+        .add_extension(x509.SubjectAlternativeName(names), critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(
             x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]), critical=False

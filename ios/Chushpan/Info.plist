@@ -25,7 +25,11 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Камера используется только по нажатию кнопки для сканирования одноразового QR-приглашения Mac.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Нужна защищённая связь по локальной сети с сопряжённым Mac. Приложение не открывает порты роутера.</string>
+	<string>Нужен поиск Чушпана на Mac и защищённая связь с выбранным устройством в локальной сети. Приложение не открывает порты роутера.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_chushpan._tcp</string>
+	</array>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Микрофон используется только во время голосового ввода по кнопке.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

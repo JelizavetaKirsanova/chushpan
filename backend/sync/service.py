@@ -8,7 +8,9 @@ import hashlib
 import ipaddress
 import json
 import secrets
+import shutil
 import socket
+import subprocess
 import tempfile
 import time
 from collections import defaultdict, deque
@@ -45,19 +47,95 @@ def lan_address(value):
         address = ipaddress.ip_address(value)
     except (ValueError, TypeError):
         raise ValueError("Укажи локальный IPv4-адрес этого Mac.") from None
-    local = (
-        any(
-            address in ipaddress.ip_network(net)
-            for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8")
-        )
-        if address.version == 4
-        else False
+    networks = (
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "127.0.0.0/8",
+        "100.64.0.0/10",  # Tailscale's CGNAT range; never a public listener.
     )
+    local = address.version == 4 and any(address in ipaddress.ip_network(net) for net in networks)
     if not local:
-        raise ValueError(
-            "Сервер доступен только по локальному IPv4-адресу. Публичный интерфейс запрещён."
-        )
+        raise ValueError("Нужен локальный IPv4 или адрес Tailscale. Публичный интерфейс запрещён.")
     return str(address)
+
+
+def discover_lan_address():
+    """Return the preferred private IPv4 without sending a network request."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
+            route.connect(("192.0.2.1", 9))  # UDP connect only asks the OS for its route.
+            address = route.getsockname()[0]
+            parsed = ipaddress.ip_address(address)
+            if address != "0.0.0.0" and not parsed.is_loopback:
+                if parsed not in ipaddress.ip_network("100.64.0.0/10"):
+                    return lan_address(address)
+    except (OSError, ValueError):
+        pass
+
+    ipconfig = "/usr/sbin/ipconfig"
+    if not Path(ipconfig).is_file():
+        return None
+    names = [name for _, name in socket.if_nameindex() if name.startswith(("en", "bridge", "eth"))][
+        :12
+    ]
+    names.sort(key=lambda name: (name not in {"en0", "en1", "en2"}, name))
+    for name in names:
+        if name.startswith(("lo", "utun", "awdl", "llw")):
+            continue
+        try:
+            result = subprocess.run(
+                [ipconfig, "getifaddr", name], capture_output=True, text=True, timeout=1
+            )
+            address = result.stdout.strip()
+            if result.returncode == 0:
+                parsed = ipaddress.ip_address(address)
+                if (
+                    parsed.version == 4
+                    and not parsed.is_loopback
+                    and parsed not in ipaddress.ip_network("100.64.0.0/10")
+                ):
+                    return lan_address(address)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            continue
+    return None
+
+
+def discover_tailscale_address():
+    executable = shutil.which("tailscale")
+    if not executable and Path("/Applications/Tailscale.app/Contents/MacOS/Tailscale").is_file():
+        executable = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+    if not executable:
+        return None
+    try:
+        result = subprocess.run([executable, "ip", "-4"], capture_output=True, text=True, timeout=2)
+        for value in result.stdout.splitlines():
+            try:
+                address = ipaddress.ip_address(value.strip())
+                if address.version == 4 and address in ipaddress.ip_network("100.64.0.0/10"):
+                    return lan_address(str(address))
+            except ValueError:
+                continue
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def pairing_code(challenge, identity, fingerprint):
+    raw = f"{challenge}{identity}{fingerprint}".encode()
+    return str(int(hashlib.sha256(raw).hexdigest()[:12], 16) % 1_000_000).zfill(6)
+
+
+def connection_type(address):
+    try:
+        parsed = ipaddress.ip_address(address)
+    except (ValueError, TypeError):
+        return "local"
+    return (
+        "tailscale"
+        if parsed.version == 4 and parsed in ipaddress.ip_network("100.64.0.0/10")
+        else "local"
+    )
 
 
 class DeviceSync(Center):
@@ -69,12 +147,21 @@ class DeviceSync(Center):
         self.identity = identity or KeychainIdentity()
         self.model_factory = model_factory
         self.server, self.server_task, self.bonjour, self.listener = None, None, None, None
+        self.listeners, self.network_watch_task = [], None
         self.url, self.fingerprint, self.ca = "", "", None
+        self.bound_hosts, self.allowed_hosts, self.allowed_origins, self.service_hostname = (
+            [],
+            set(),
+            set(),
+            "",
+        )
         self.invite, self.pending = None, {}
         self.failure = None
         self.started_at = None
         self.endpoint = memory.preference("sync", "endpoint") or {"host": "", "port": 8766}
+        self.tailnet_host = ""
         self.commands, self.rates = {}, defaultdict(deque)
+        self.pair_attempts = deque()
         self.bind(bus)
         # A crashed command is uncertain and must never be replayed after restart.
         with memory.memory_transaction():
@@ -101,6 +188,7 @@ class DeviceSync(Center):
             "running": running,
             "error": failure,
             "endpoint": self.endpoint,
+            "tailnet_host": self.tailnet_host,
             "url": self.url if running else "",
             "fingerprint": self.fingerprint,
             "invite": invite if running else None,
@@ -147,7 +235,8 @@ class DeviceSync(Center):
 
         @app.middleware("http")
         async def secure_headers(request, call_next):
-            if request.headers.get("host") != self.url.removeprefix("https://"):
+            allowed = self.allowed_hosts or {self.url.removeprefix("https://")}
+            if request.headers.get("host", "").lower() not in allowed:
                 return Response(status_code=403)
             response = await call_next(request)
             response.headers.update(
@@ -192,9 +281,10 @@ class DeviceSync(Center):
         @app.post("/api/{operation}")
         async def api(operation: str, request: Request):
             try:
-                self.rate(request.client.host if request.client else "unknown")
+                client_address = request.client.host if request.client else "unknown"
+                self.rate(client_address)
                 if (
-                    request.headers.get("origin") != self.url
+                    request.headers.get("origin") not in self.allowed_origins | {self.url}
                     or request.headers.get("content-type", "").split(";")[0] != "application/json"
                 ):
                     raise HTTPException(403)
@@ -247,7 +337,8 @@ class DeviceSync(Center):
                 peer = self.store.peer(device)
                 with self.memory.memory_transaction():
                     self.memory.db.execute(
-                        "UPDATE sync_peers SET last_seen=? WHERE id=?", (time.time(), device)
+                        "UPDATE sync_peers SET last_seen=?,connection_type=? WHERE id=?",
+                        (time.time(), connection_type(client_address), device),
                     )
                 if operation in {"status", "reconnect"}:
                     return self.remote_status(peer)
@@ -287,26 +378,36 @@ class DeviceSync(Center):
         return app
 
     def pair(self, value, identity, jwk):
-        invite = self.invite
-        if (
-            not invite
-            or invite["expires"] < time.time()
-            or not secrets.compare_digest(str(value.get("invite", "")), invite["nonce"])
-        ):
-            raise ValueError("Приглашение недействительно.")
+        now = time.time()
+        self.pending = {key: item for key, item in self.pending.items() if item["expires"] > now}
+        while self.pair_attempts and self.pair_attempts[0] < now - 60:
+            self.pair_attempts.popleft()
+        if len(self.pair_attempts) >= 20:
+            raise ValueError("Слишком много запросов на сопряжение. Подожди минуту.")
         if value.get("kind") not in {"iphone", "ipad"} or len(self.pending) >= 8:
             raise ValueError("Некорректное устройство или слишком много запросов.")
+        self.pair_attempts.append(now)
         name = text(value.get("name"), 80)
-        self.invite = None  # One invitation can bind only one public key.
-        code = str(
-            int(
-                hashlib.sha256(
-                    (invite["nonce"] + identity + self.fingerprint).encode()
-                ).hexdigest()[:12],
-                16,
+        challenge = value.get("challenge")
+        if (
+            isinstance(challenge, str)
+            and 24 <= len(challenge) <= 100
+            and all(
+                character.isascii() and (character.isalnum() or character in "-_=")
+                for character in challenge
             )
-            % 1000000
-        ).zfill(6)
+        ):
+            code = pairing_code(challenge, identity, self.fingerprint)
+        else:
+            invite = self.invite
+            if (
+                not invite
+                or invite["expires"] < time.time()
+                or not secrets.compare_digest(str(value.get("invite", "")), invite["nonce"])
+            ):
+                raise ValueError("Приглашение недействительно или отсутствует проверочный вызов.")
+            self.invite = None  # A legacy QR invitation can bind only one public key.
+            code = pairing_code(invite["nonce"], identity, self.fingerprint)
         self.pending[identity] = {
             "id": identity,
             "name": name,
@@ -654,19 +755,39 @@ class DeviceSync(Center):
             else "awaiting_mac_confirmation"
         }
 
-    async def start(self, host, port, *, advertise=True):
+    async def start(self, host=None, port=0, *, advertise=True, monitor=True):
         self.memory._require_memory()
         if self.server_task and not self.server_task.done():
             raise ValueError("Сначала останови текущий сервер.")
-        host = lan_address(host)
-        if type(port) is not int or not 1024 <= port <= 65535:
-            raise ValueError("Порт должен быть от 1024 до 65535.")
+        if type(port) is not int or not 0 <= port <= 65535:
+            raise ValueError("Порт должен быть от 0 до 65535.")
+
+        local_host = None
+        if host is None:
+            local_host, tailnet_host = await asyncio.gather(
+                asyncio.to_thread(discover_lan_address),
+                asyncio.to_thread(discover_tailscale_address),
+            )
+            hosts = [value for value in dict.fromkeys((local_host, tailnet_host)) if value]
+        else:
+            hosts = [lan_address(host)]
+            if hosts[0] not in ipaddress.ip_network("100.64.0.0/10"):
+                local_host = hosts[0]
+        if not hosts:
+            raise ValueError(
+                "Не найдена локальная сеть. Подключи Mac к Wi-Fi или настрой Tailscale."
+            )
+        use_bonjour = bool(advertise and local_host)
+
         identity = await asyncio.to_thread(self.identity.read)
-        certs = await asyncio.to_thread(certificates, identity, host)
-        self.url, self.fingerprint, self.ca = (
-            f"https://{host}:{port}",
-            certs["fingerprint"],
-            certs["ca"],
+        # The stable Bonjour hostname follows the Mac across DHCP address changes. Its
+        # certificate is also pinned before a paired client sends any signed requests.
+        ca_fingerprint = hashlib.sha256(
+            identity["ca"].encode() if identity["ca"].startswith("-----BEGIN") else identity["ca"]
+        ).hexdigest()
+        service_hostname = f"chushpan-{ca_fingerprint[:12]}.local" if use_bonjour else ""
+        certs = await asyncio.to_thread(
+            certificates, identity, hosts, service_hostname=service_hostname or None
         )
         with tempfile.TemporaryDirectory(prefix="chushpan-tls-") as directory:
             cert_path, key_path = Path(directory) / "certificate.pem", Path(directory) / "key.pem"
@@ -675,7 +796,7 @@ class DeviceSync(Center):
             key_path.write_bytes(certs["key"])
             config = uvicorn.Config(
                 self.application(),
-                host=host,
+                host=hosts[0],
                 port=port,
                 ssl_certfile=str(cert_path),
                 ssl_keyfile=str(key_path),
@@ -685,16 +806,41 @@ class DeviceSync(Center):
                 timeout_keep_alive=10,
             )
             config.load()  # SSLContext owns the key before the private temporary file is removed.
-        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        listeners = []
+        actual_port = port
         try:
-            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            listener.bind((host, port))
-            listener.listen(16)
-            listener.setblocking(False)
-            self.listener = listener
+            for index, address in enumerate(hosts):
+                listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                try:
+                    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    listener.bind((address, actual_port))
+                    if index == 0 and actual_port == 0:
+                        actual_port = listener.getsockname()[1]
+                    listener.listen(16)
+                    listener.setblocking(False)
+                    listeners.append(listener)
+                except OSError:
+                    listener.close()
+                    if index == 0:
+                        raise
+
+            actual_hosts = [sock.getsockname()[0] for sock in listeners]
+            service_authority = f"{service_hostname}:{actual_port}" if service_hostname else ""
+            url_authority = service_authority or f"{actual_hosts[0]}:{actual_port}"
+            self.url = f"https://{url_authority}"
+            self.fingerprint, self.ca = certs["fingerprint"], certs["ca"]
+            self.service_hostname = service_hostname
+            self.bound_hosts = actual_hosts
+            self.allowed_hosts = {f"{address}:{actual_port}" for address in actual_hosts}
+            if service_authority:
+                self.allowed_hosts.add(service_authority)
+            self.allowed_origins = {f"https://{authority}" for authority in self.allowed_hosts}
+            self.listeners = listeners
+            self.listener = listeners[0]
             self.server = LocalServer(config)
             self.started_at = time.time()
-            self.server_task = asyncio.create_task(self.server.serve(sockets=[listener]))
+            self.server_task = asyncio.create_task(self.server.serve(sockets=listeners))
             for _ in range(50):
                 if self.server_task.done():
                     await self.server_task
@@ -704,37 +850,111 @@ class DeviceSync(Center):
                 await asyncio.sleep(0.02)
             if not self.server.started:
                 raise ValueError("TLS-сервер не подтвердил запуск.")
-            if advertise:
-                self.bonjour = await asyncio.create_subprocess_exec(
+
+            tailnet_host = next(
+                (
+                    value
+                    for value in actual_hosts
+                    if ipaddress.ip_address(value) in ipaddress.ip_network("100.64.0.0/10")
+                ),
+                "",
+            )
+            if use_bonjour:
+                arguments = [
                     "/usr/bin/dns-sd",
-                    "-R",
+                    "-P",
                     "Chushpan",
                     "_chushpan._tcp",
                     "local.",
-                    str(port),
+                    str(actual_port),
+                    service_hostname + ".",
+                    local_host,
                     "tls=1",
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-            self.failure = None
-            self.endpoint = {"host": host, "port": port}
+                    "version=2",
+                ]
+                if tailnet_host:
+                    arguments.append("tailscale=" + tailnet_host)
+                try:
+                    self.bonjour = await asyncio.create_subprocess_exec(
+                        *arguments,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                except OSError:
+                    self.failure = (
+                        "HTTPS запущен, но Bonjour недоступен. Проверь службу DNS-SD Mac."
+                    )
+            self.failure = self.failure if use_bonjour and self.bonjour is None else None
+            self.endpoint = {
+                "host": local_host or actual_hosts[0],
+                "port": actual_port,
+            }
+            self.tailnet_host = tailnet_host
             self.memory.set_preference("sync", "endpoint", self.endpoint)
+            if (
+                monitor
+                and self.network_watch_task is None
+                and not all(ipaddress.ip_address(value).is_loopback for value in actual_hosts)
+            ):
+                self.network_watch_task = asyncio.create_task(self.watch_network(actual_port))
         except BaseException as exc:
-            listener.close()
-            await self.stop()
+            for listener in listeners:
+                listener.close()
+            await self._stop_server(clear_pairings=False)
             self.failure = (
                 "Запуск сервера отменён."
                 if isinstance(exc, asyncio.CancelledError)
-                else "Этот порт уже занят. Останови другой сервер или выбери другой порт."
+                else "Этот порт уже занят. Выбери автоматический порт или освободи порт."
                 if isinstance(exc, OSError) and exc.errno == errno.EADDRINUSE
-                else "Этот IP-адрес не назначен Mac. Проверь адрес текущей локальной сети."
+                else "IP-адрес сменился или интерфейс отключён. Подключи Mac к сети снова."
                 if isinstance(exc, OSError) and exc.errno == errno.EADDRNOTAVAIL
-                else "TLS-сервер не запущен. Проверь локальный IP, порт и доступность сети."
+                else "TLS-сервер не запущен. Проверь доступность сети и Keychain."
             )
             raise
 
-    async def stop(self):
-        self.invite, self.pending = None, {}
+    async def start_automatically(self):
+        if self.server_task and not self.server_task.done():
+            return
+        try:
+            await self.start(port=0)
+            self.publish(data=self.snapshot(), message="Защищённая точка подключения готова.")
+        except (OSError, ValueError) as exc:
+            self.failure = (
+                str(exc)
+                if isinstance(exc, ValueError)
+                else "Не удалось запустить локальную точку подключения."
+            )
+            if self.network_watch_task is None:
+                self.network_watch_task = asyncio.create_task(self.watch_network(0))
+            self.publish(data=self.snapshot())
+
+    async def watch_network(self, port):
+        try:
+            while True:
+                await asyncio.sleep(8)
+                local_host, tailnet_host = await asyncio.gather(
+                    asyncio.to_thread(discover_lan_address),
+                    asyncio.to_thread(discover_tailscale_address),
+                )
+                current = set(self.bound_hosts)
+                wanted = {value for value in (local_host, tailnet_host) if value}
+                if current == wanted:
+                    continue
+                await self._stop_server(clear_pairings=False)
+                if wanted:
+                    try:
+                        await self.start(port=port, monitor=False)
+                    except (OSError, ValueError):
+                        self.failure = "Сеть изменилась. Повторяю поиск локального Mac."
+                else:
+                    self.failure = "Mac сейчас не подключён к локальной сети или Tailscale."
+                self.publish(data=self.snapshot())
+        except asyncio.CancelledError:
+            return
+
+    async def _stop_server(self, *, clear_pairings=True):
+        if clear_pairings:
+            self.invite, self.pending = None, {}
         for task in list(self.commands.values()):
             task.cancel()
         await asyncio.gather(*list(self.commands.values()), return_exceptions=True)
@@ -750,25 +970,40 @@ class DeviceSync(Center):
                 pass
             except Exception:
                 self.failure = "TLS-сервер завершился с ошибкой."
-        if self.listener:
-            self.listener.close()
+        for listener in self.listeners or ([self.listener] if self.listener else []):
+            listener.close()
         self.server, self.server_task, self.listener, self.bonjour = None, None, None, None
+        self.listeners = []
         self.url = ""
+        self.bound_hosts = []
+        self.allowed_hosts, self.allowed_origins = set(), set()
+        self.service_hostname = ""
         self.started_at = None
+
+    async def stop(self):
+        watcher, self.network_watch_task = self.network_watch_task, None
+        if watcher and watcher is not asyncio.current_task():
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
+        await self._stop_server()
 
     async def handle(self, value):
         op = value.get("op", "snapshot")
         message = None
         if op == "start":
             try:
-                await self.start(value.get("host"), value.get("port", 8766))
+                await self.start(
+                    value.get("host"),
+                    value.get("port", 0),
+                    advertise=value.get("mode") != "tailscale",
+                )
             except OSError:
                 raise ValueError(
                     self.failure or "Не удалось открыть локальный TLS-сервер."
                 ) from None
             message = (
-                "Локальный TLS-сервер запущен. Доверенные устройства пока не "
-                "получают разрешений автоматически."
+                "Защищённая точка подключения запущена. Разрешения устройств не включены "
+                "автоматически."
             )
         elif op == "stop":
             await self.stop()

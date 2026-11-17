@@ -1,4 +1,5 @@
 import CryptoKit
+import Combine
 import Foundation
 import Security
 
@@ -8,18 +9,20 @@ enum MacBridgeError: LocalizedError {
     case certificateMismatch
     case untrustedCertificate
     case notPaired
+    case pairingEnded
     case server(String)
     case transport
 
     var errorDescription: String? {
         switch self {
         case .invalidInvite: "В приглашении Mac нет одноразового кода сопряжения."
-        case .invalidAddress: "Нужен HTTPS-адрес локального Mac из приглашения Чушпана."
-        case .certificateMismatch: "Отпечаток TLS-сертификата не совпал с тем, что показан на Mac."
+        case .invalidAddress: "Нужен корректный HTTPS-адрес сервера Чушпана."
+        case .certificateMismatch: "Сертификат или код сопряжения не совпал с Mac. Отклони неизвестный запрос."
         case .untrustedCertificate: "Сертификат Mac не прошёл проверку TLS."
         case .notPaired: "Сначала подтверди сопряжение на Mac."
+        case .pairingEnded: "Запрос сопряжения отклонён или истёк. Можно начать его снова."
         case .server(let message): message
-        case .transport: "Mac недоступен по защищённой локальной сети. Команда не повторялась."
+        case .transport: "Mac недоступен по защищённой сети. Команда не повторялась."
         }
     }
 }
@@ -73,8 +76,8 @@ private final class BootstrapCertificateDelegate: NSObject, URLSessionTaskDelega
             completionHandler(.cancelAuthenticationChallenge, nil)
             return
         }
-        // This one public certificate response is checked against a fingerprint the user
-        // compares with the Mac UI. Every later request uses the pinned CA as a TLS anchor.
+        // The pairing code independently binds this public certificate to the Mac UI.
+        // Later requests use the returned CA as a TLS trust anchor.
         completionHandler(.useCredential, URLCredential(trust: trust))
     }
 }
@@ -195,6 +198,73 @@ final class MacBridgeClient {
         return (client, code, client.identity)
     }
 
+    static func pair(
+        baseURL: String,
+        deviceName: String,
+        kind: String
+    ) async throws -> (MacBridgeClient, String, String, String) {
+        guard let components = URLComponents(string: baseURL),
+              components.scheme?.lowercased() == "https",
+              let host = components.host,
+              components.user == nil,
+              components.password == nil,
+              let url = components.url,
+              components.path.isEmpty || components.path == "/",
+              components.query == nil,
+              components.fragment == nil else { throw MacBridgeError.invalidAddress }
+        var certificateURL = components
+        certificateURL.path = "/api/certificate"
+        guard let certificateURLValue = certificateURL.url else { throw MacBridgeError.invalidAddress }
+        let bootstrapDelegate = BootstrapCertificateDelegate(host: host)
+        let bootstrap = URLSession(configuration: .ephemeral, delegate: bootstrapDelegate, delegateQueue: nil)
+        defer { bootstrap.finishTasksAndInvalidate() }
+        let (certificateData, response): (Data, URLResponse)
+        do { (certificateData, response) = try await bootstrap.data(from: certificateURLValue) }
+        catch { throw MacBridgeError.transport }
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              let certificate = SecCertificateCreateWithData(nil, certificateData as CFData) else {
+            throw MacBridgeError.untrustedCertificate
+        }
+
+        let fingerprint = SHA256.hash(data: certificateData)
+            .map { String(format: "%02x", $0) }.joined()
+        let vault = KeychainVault()
+        let signer: P256.Signing.PrivateKey
+        if let stored = try vault.read(Self.privateKeyAccount) {
+            signer = try P256.Signing.PrivateKey(rawRepresentation: stored)
+        } else {
+            signer = P256.Signing.PrivateKey()
+            try vault.write(signer.rawRepresentation, account: Self.privateKeyAccount)
+        }
+        let challenge = Self.base64URL(Data((UUID().uuidString + UUID().uuidString).utf8))
+        let identity = Self.identity(for: signer.publicKey)
+        let code = Self.pairingCode(challenge: challenge, identity: identity, fingerprint: fingerprint)
+        let delegate = PinnedCertificateDelegate(certificate: certificate, host: host)
+        let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+        let client = MacBridgeClient(baseURL: url, signer: signer, session: session)
+        let result: MacPairResponse = try await client.request(
+            "pair",
+            value: [
+                "challenge": challenge,
+                "key": Self.jwk(for: signer.publicKey),
+                "name": String(deviceName.prefix(80)),
+                "kind": kind,
+            ],
+            allowPairing: true
+        )
+        guard result.status == "pending", let serverCode = result.code else {
+            client.close()
+            throw MacBridgeError.notPaired
+        }
+        // A MITM cannot choose a code that also matches the code displayed by the Mac:
+        // both independently derive it from this challenge, the public key and the Mac CA.
+        guard constantTimeEqual(code, serverCode) else {
+            client.close()
+            throw MacBridgeError.certificateMismatch
+        }
+        return (client, code, client.identity, fingerprint)
+    }
+
     static func restore(baseURL: String, fingerprint: String) async throws -> MacBridgeClient {
         guard let components = URLComponents(string: baseURL),
               components.scheme?.lowercased() == "https",
@@ -297,6 +367,9 @@ final class MacBridgeClient {
         catch { throw MacBridgeError.transport }
         guard let http = response as? HTTPURLResponse else { throw MacBridgeError.transport }
         if !(200..<300).contains(http.statusCode) {
+            if http.statusCode == 403, allowPairing, operation == "pair_status" {
+                throw MacBridgeError.pairingEnded
+            }
             if http.statusCode == 403, !allowPairing { throw MacBridgeError.notPaired }
             let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             let message = parsed?["error"] as? String ?? "Mac вернул HTTP \(http.statusCode)."
@@ -334,6 +407,139 @@ final class MacBridgeClient {
         let left = Array(lhs.utf8), right = Array(rhs.utf8)
         guard left.count == right.count else { return false }
         return zip(left, right).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) } == 0
+    }
+
+    static func pairingCode(challenge: String, identity: String, fingerprint: String) -> String {
+        let digest = SHA256.hash(data: Data((challenge + identity + fingerprint).utf8))
+        let prefix = digest.prefix(6).map { String(format: "%02x", $0) }.joined()
+        return String(format: "%06llu", (UInt64(prefix, radix: 16) ?? 0) % 1_000_000)
+    }
+}
+
+struct DiscoveredMac: Hashable, Identifiable {
+    var id: String
+    var name: String
+    var host: String
+    var port: Int
+    var tailnetAddress: String?
+
+    var localURL: String { "https://\(host):\(port)" }
+    var remoteURL: String? {
+        guard let tailnetAddress, !tailnetAddress.isEmpty else { return nil }
+        return "https://\(tailnetAddress):\(port)"
+    }
+}
+
+@MainActor
+final class MacServiceBrowser: NSObject, ObservableObject, NetServiceBrowserDelegate, NetServiceDelegate {
+    @Published private(set) var services: [DiscoveredMac] = []
+    @Published private(set) var message = "Ищу Чушпан на локальной сети…"
+    var onChange: (([DiscoveredMac]) -> Void)?
+    var onMessage: ((String) -> Void)?
+
+    private let browser = NetServiceBrowser()
+    private var resolving: [String: NetService] = [:]
+    private var resolved: [String: DiscoveredMac] = [:]
+    private var isSearching = false
+    private var searchTimeoutTask: Task<Void, Never>?
+
+    func start() {
+        guard !isSearching else { return }
+        resolving.values.forEach { $0.stop() }
+        resolving.removeAll()
+        resolved.removeAll()
+        services = []
+        onChange?([])
+        isSearching = true
+        browser.delegate = self
+        browser.searchForServices(ofType: "_chushpan._tcp.", inDomain: "local.")
+        setMessage("Ищу Чушпан через Bonjour…")
+        searchTimeoutTask?.cancel()
+        searchTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard let self, self.isSearching, self.services.isEmpty, !Task.isCancelled else { return }
+            self.setMessage("Mac не найден. Проверь локальную сеть и Bonjour; гостевой или корпоративный Wi-Fi может блокировать обнаружение.")
+        }
+    }
+
+    func stop() {
+        guard isSearching else { return }
+        browser.stop()
+        searchTimeoutTask?.cancel()
+        searchTimeoutTask = nil
+        resolving.values.forEach { $0.stop() }
+        resolving.removeAll()
+        isSearching = false
+    }
+
+    func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
+        let key = service.name + "|" + service.domain
+        resolving[key] = service
+        service.delegate = self
+        service.resolve(withTimeout: 6)
+    }
+
+    func netServiceBrowser(_ browser: NetServiceBrowser, didRemove service: NetService, moreComing: Bool) {
+        let key = service.name + "|" + service.domain
+        resolving.removeValue(forKey: key)?.stop()
+        resolved.removeValue(forKey: key)
+        publishServices()
+    }
+
+    func netServiceBrowser(_ browser: NetServiceBrowser, didNotSearch errorDict: [String: NSNumber]) {
+        searchTimeoutTask?.cancel()
+        searchTimeoutTask = nil
+        isSearching = false
+        setMessage("Не удалось искать Mac через Bonjour. Разреши Чушпану доступ к локальной сети в настройках iPhone/iPad.")
+    }
+
+    func netServiceDidResolveAddress(_ sender: NetService) {
+        let key = sender.name + "|" + sender.domain
+        guard let host = sender.hostName?.trimmingCharacters(in: CharacterSet(charactersIn: ".")),
+              !host.isEmpty,
+              (1...65535).contains(sender.port) else { return }
+        let txt = NetService.dictionary(fromTXTRecord: sender.txtRecordData() ?? Data())
+        let tailnet = txt["tailscale"].flatMap { String(data: $0, encoding: .utf8) }
+            .flatMap(Self.validatedTailnetAddress)
+        resolved[key] = DiscoveredMac(
+            id: key,
+            name: sender.name,
+            host: host,
+            port: sender.port,
+            tailnetAddress: tailnet
+        )
+        resolving.removeValue(forKey: key)
+        publishServices()
+    }
+
+    func netService(_ sender: NetService, didNotResolve errorDict: [String: NSNumber]) {
+        resolving.removeValue(forKey: sender.name + "|" + sender.domain)
+        if resolved.isEmpty {
+            setMessage("Mac найден, но адрес Bonjour не разрешился. Проверь Wi-Fi и сетевую изоляцию.")
+        }
+    }
+
+    private func publishServices() {
+        searchTimeoutTask?.cancel()
+        searchTimeoutTask = nil
+        services = resolved.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        setMessage(services.isEmpty
+            ? "Mac не найден. Проверь, что локальный сервер работает и оба устройства в одной сети; некоторые Wi-Fi блокируют Bonjour."
+            : "Найдено устройств Mac: \(services.count).")
+        onChange?(services)
+    }
+
+    private func setMessage(_ value: String) {
+        message = value
+        onMessage?(value)
+    }
+
+    private static func validatedTailnetAddress(_ value: String) -> String? {
+        let octets = value.split(separator: ".").compactMap { UInt8($0) }
+        guard octets.count == 4, octets[0] == 100, (64...127).contains(Int(octets[1])) else {
+            return nil
+        }
+        return value
     }
 }
 

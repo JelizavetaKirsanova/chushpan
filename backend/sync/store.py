@@ -11,7 +11,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS sync_peers (id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
 public_key TEXT NOT NULL, approved_at REAL NOT NULL, revoked_at REAL,
 disconnected INTEGER NOT NULL DEFAULT 0, last_seen REAL, last_sync REAL,
-categories TEXT NOT NULL DEFAULT '[]', capabilities TEXT NOT NULL DEFAULT '[]');
+categories TEXT NOT NULL DEFAULT '[]', capabilities TEXT NOT NULL DEFAULT '[]',
+connection_type TEXT NOT NULL DEFAULT 'local');
 CREATE TABLE IF NOT EXISTS sync_nonces (peer_id TEXT NOT NULL, nonce TEXT NOT NULL,
 at REAL NOT NULL, PRIMARY KEY(peer_id,nonce));
 CREATE TABLE IF NOT EXISTS sync_commands (peer_id TEXT NOT NULL, command_id TEXT NOT NULL,
@@ -36,6 +37,11 @@ class SyncStore:
     def __init__(self, memory):
         self.memory, self.db = memory, memory.db
         self.db.executescript(SCHEMA)
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(sync_peers)")}
+        if "connection_type" not in columns:
+            self.db.execute(
+                "ALTER TABLE sync_peers ADD COLUMN connection_type TEXT NOT NULL DEFAULT 'local'"
+            )
 
     def peer(self, identity, *, connected=True):
         row = self.db.execute("SELECT * FROM sync_peers WHERE id=?", (identity,)).fetchone()
@@ -109,7 +115,7 @@ class SyncStore:
         result = rows(
             self.db,
             "SELECT "
-            "id,name,kind,approved_at,revoked_at,disconnected,last_seen,last_sync,categories,capabilities"
+            "id,name,kind,approved_at,revoked_at,disconnected,last_seen,last_sync,categories,capabilities,connection_type"
             " FROM sync_peers ORDER BY approved_at DESC LIMIT 100",
         )
         for row in result:

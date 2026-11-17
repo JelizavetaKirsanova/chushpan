@@ -127,6 +127,30 @@ final class GeminiClientTests: XCTestCase {
     }
 }
 
+final class MacPairingCodeTests: XCTestCase {
+    func testPairingCodeBindsChallengeDeviceAndCertificate() {
+        let challenge = "test-challenge-12345678901234567890"
+        let identity = String(repeating: "1", count: 64)
+        let fingerprint = String(repeating: "ab", count: 32)
+        XCTAssertEqual(
+            MacBridgeClient.pairingCode(
+                challenge: challenge,
+                identity: identity,
+                fingerprint: fingerprint
+            ),
+            "835016"
+        )
+        XCTAssertNotEqual(
+            MacBridgeClient.pairingCode(
+                challenge: challenge,
+                identity: identity,
+                fingerprint: String(repeating: "cd", count: 32)
+            ),
+            "835016"
+        )
+    }
+}
+
 private final class HeldResponseURLProtocol: URLProtocol {
     static var onStart: (() -> Void)?
     static var wasStopped = false

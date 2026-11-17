@@ -72,7 +72,10 @@ struct MobileStore {
             root["macMemoryCache"] = root["macMemoryCache"] ?? []
             root["macMediaCache"] = root["macMediaCache"] ?? []
             root["sharedSettings"] = root["sharedSettings"] ?? [
-                "appearance": "system", "model": "gemini-3.8-flash"
+                "appearance": "system",
+                "model": "gemini-3.8-flash",
+                "updatedAt": ISO8601DateFormatter().string(from: Date()),
+                "modifiedBy": "",
             ]
             root["schemaVersion"] = 2
         }

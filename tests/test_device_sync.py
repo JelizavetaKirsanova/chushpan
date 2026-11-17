@@ -1,4 +1,5 @@
 import asyncio
+import ipaddress
 import json
 import secrets
 import time
@@ -16,7 +17,8 @@ from backend.hud.bus import HudBus
 from backend.memory.store import MemoryStore
 from backend.security import Confirmations
 from backend.sync.identity import encode, public_key
-from backend.sync.service import DeviceSync, lan_address
+from backend.sync.service import DeviceSync, connection_type, lan_address, pairing_code
+from backend.sync.store import SyncStore
 
 
 def identity():
@@ -130,6 +132,109 @@ def test_pairing_requires_both_devices_expires_and_starts_with_no_grants(tmp_pat
         memory.close()
 
     asyncio.run(go())
+
+
+def test_discovery_pairing_checks_certificate_bound_code_and_handles_two_devices(tmp_path):
+    async def go():
+        memory, _, service = setup(tmp_path)
+        service.fingerprint = "ab" * 32
+        first_key, first_jwk, first_id = identity()
+        second_key, second_jwk, second_id = identity()
+        first_challenge = secrets.token_urlsafe(24)
+        second_challenge = secrets.token_urlsafe(24)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=service.application()), base_url=service.url
+        ) as client:
+            first = await signed(
+                client,
+                first_key,
+                first_id,
+                "pair",
+                {
+                    "challenge": first_challenge,
+                    "key": first_jwk,
+                    "name": "iPhone",
+                    "kind": "iphone",
+                },
+            )
+            second = await signed(
+                client,
+                second_key,
+                second_id,
+                "pair",
+                {
+                    "challenge": second_challenge,
+                    "key": second_jwk,
+                    "name": "iPad",
+                    "kind": "ipad",
+                },
+            )
+            assert first.status_code == second.status_code == 200
+            assert first.json()["code"] == pairing_code(
+                first_challenge, first_id, service.fingerprint
+            )
+            assert second.json()["code"] == pairing_code(
+                second_challenge, second_id, service.fingerprint
+            )
+            assert len(service.pending) == 2
+            assert (await signed(client, first_key, first_id, "status", {})).status_code == 403
+
+            await service.handle(
+                {
+                    "op": "approve",
+                    "id": first_id,
+                    "code": first.json()["code"],
+                    "confirmed": True,
+                }
+            )
+            await service.handle({"op": "reject", "id": second_id})
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(
+                    app=service.application(), client=("100.94.1.2", 51234)
+                ),
+                base_url=service.url,
+            ) as tailscale_client:
+                trusted = await signed(tailscale_client, first_key, first_id, "status", {})
+            rejected = await signed(client, second_key, second_id, "status", {})
+            assert trusted.status_code == 200
+            assert trusted.json()["capabilities"] == []
+            assert trusted.json()["categories"] == []
+            assert service.store.peer(first_id)["connection_type"] == "tailscale"
+            assert rejected.status_code == 403
+            peers = service.store.peers()
+            assert len(peers) == 1 and peers[0]["kind"] == "iphone"
+        await service.close()
+        memory.close()
+
+    asyncio.run(go())
+
+
+def test_tailscale_bind_addresses_are_allowed_without_allowing_public_interfaces():
+    assert lan_address("100.94.1.2") == "100.94.1.2"
+    with pytest.raises(ValueError, match="Публичный интерфейс запрещён"):
+        lan_address("203.0.113.20")
+    assert connection_type("100.94.1.2") == "tailscale"
+    assert connection_type("192.168.1.20") == "local"
+
+
+def test_existing_trusted_devices_migrate_connection_type_without_losing_trust(tmp_path):
+    memory = MemoryStore(tmp_path / "sync-migration.sqlite")
+    memory.db.execute(
+        "CREATE TABLE sync_peers (id TEXT PRIMARY KEY,name TEXT NOT NULL,kind TEXT NOT NULL,"
+        "public_key TEXT NOT NULL,approved_at REAL NOT NULL,revoked_at REAL,"
+        "disconnected INTEGER NOT NULL DEFAULT 0,last_seen REAL,last_sync REAL,"
+        "categories TEXT NOT NULL DEFAULT '[]',capabilities TEXT NOT NULL DEFAULT '[]')"
+    )
+    memory.db.execute(
+        "INSERT INTO sync_peers(id,name,kind,public_key,approved_at) VALUES(?,?,?,?,?)",
+        ("device", "Existing iPad", "ipad", "{}", time.time()),
+    )
+    store = SyncStore(memory)
+    peer = store.peer("device")
+    assert peer["name"] == "Existing iPad"
+    assert peer["connection_type"] == "local"
+    assert store.peers()[0]["connection_type"] == "local"
+    memory.close()
 
 
 def test_authentication_replay_origin_stale_request_disconnect_and_revoke(tmp_path):
@@ -440,3 +545,19 @@ def test_tls_identity_is_keychain_only_and_cert_has_ip_san(monkeypatch):
     assert len(result["fingerprint"]) == 64
     assert saved[0]["kSecAttrAccessible"] == "kSecAttrAccessibleWhenUnlockedThisDeviceOnly"
     assert serialization.load_pem_private_key(material["server_key"].encode(), password=None)
+
+    multi = certificates(
+        material,
+        ["192.168.1.10", "100.94.1.2"],
+        service_hostname="chushpan-test.local",
+    )
+    names = (
+        x509.load_pem_x509_certificate(multi["certificate"])
+        .extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        .value
+    )
+    assert set(names.get_values_for_type(x509.IPAddress)) == {
+        ipaddress.ip_address("192.168.1.10"),
+        ipaddress.ip_address("100.94.1.2"),
+    }
+    assert names.get_values_for_type(x509.DNSName) == ["chushpan-test.local"]

@@ -2591,6 +2591,7 @@ async def _run_voice(
 
     personal_modules = PersonalModules(s, store, tools, bus)
     if desktop is not None:
+        asyncio.create_task(personal_modules.sync.start_automatically())
         await asyncio.sleep(0)
     if isinstance(speaker, PiperSpeaker):
         speaker.on_level = lambda v: bus.publish({"type": "level", "out": v})

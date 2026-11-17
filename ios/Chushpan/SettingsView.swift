@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var keyMessage: String?
     @State private var pairInvitation = ""
     @State private var pairFingerprint = ""
+    @State private var remoteAddress = ""
     @State private var pairMessage: String?
     @State private var showingCloudConsent = false
     @State private var showingScanner = false
@@ -93,64 +94,120 @@ struct SettingsView: View {
                     .font(.footnote)
             }
 
-            Section("Подключение к Mac") {
-                HStack {
-                    Label(model.macStatus == nil ? "Mac недоступен" : "Mac на связи", systemImage: model.macStatus == nil ? "wifi.slash" : "wifi")
-                        .foregroundStyle(model.macStatus == nil ? Color.gray : Color.green)
-                    Spacer()
-                    Button("Проверить") { Task { await model.refreshMac() } }
-                        .disabled(model.macBaseURL.isEmpty)
-                }
-                Text(model.macConnectionMessage).font(.footnote).foregroundStyle(.secondary)
-                if let code = model.macPairCode {
-                    Text("Код подтверждения: \(code)")
-                        .font(.title3.monospacedDigit().weight(.semibold))
-                        .accessibilityLabel("Код сопряжения \(code). Подтверди этот же код на Mac.")
-                    Text("Подтверди тот же код в разделе «Мои устройства» на Mac. Пока подтверждения нет, команды и данные Mac недоступны.")
+            Section("Подключение к Чушпану") {
+                if model.macTrusted {
+                    Label(
+                        model.macStatus.map { "\($0.name ?? "Mac") — Подключено" } ?? "Mac переподключается",
+                        systemImage: model.macStatus == nil ? "wifi.slash" : "lock.shield.fill"
+                    )
+                    .foregroundStyle(model.macStatus == nil ? Color.gray : Color.green)
+                    Text(model.macStatus == nil ? model.macDiscoveryMessage : model.macConnectionKind)
                         .font(.footnote).foregroundStyle(.secondary)
-                    Button("Проверить подтверждение") { Task { await model.refreshMac() } }
-                }
-                TextField("Ссылка из QR-приглашения Mac", text: $pairInvitation, axis: .vertical)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    .accessibilityLabel("Ссылка приглашения Mac")
-                TextField("SHA-256 отпечаток центра TLS с Mac", text: $pairFingerprint)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.asciiCapable)
-                    .accessibilityLabel("Отпечаток TLS центра сертификации Mac")
-                HStack {
-                    Button("Сканировать QR") {
-                        Task {
-                            let granted = await AVCaptureDevice.requestAccess(for: .video)
-                            if granted && DataScannerViewController.isSupported && DataScannerViewController.isAvailable {
-                                showingScanner = true
-                            } else {
-                                pairMessage = "Разреши камеру для сканирования или вставь ссылку приглашения вручную."
+                    if let last = model.macLastConnectedAt {
+                        Text("Последнее подключение · \(last.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Toggle("Переподключаться автоматически", isOn: Binding(
+                        get: { model.macAutoReconnectEnabled },
+                        set: { model.setMacAutoReconnect($0) }
+                    ))
+                    HStack {
+                        Button("Проверить") { Task { await model.refreshMac() } }
+                        Button("Отключить", role: .destructive) { model.disconnectMac() }
+                        Button("Забыть") { showingForgetMac = true }
+                    }
+                } else {
+                    Label("Найденные устройства", systemImage: "dot.radiowaves.left.and.right")
+                    if model.discoveredMacs.isEmpty {
+                        HStack(alignment: .top, spacing: 10) {
+                            if model.macDiscoveryMessage.hasPrefix("Ищу") { ProgressView() }
+                            Text(model.macDiscoveryMessage).font(.footnote).foregroundStyle(.secondary)
+                        }
+                    } else {
+                        ForEach(model.discoveredMacs) { device in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(device.name).font(.headline)
+                                    Text("Локальная сеть · защищённое сопряжение")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button("Подключить") {
+                                    Task { await model.connectToMac(device) }
+                                }
+                                .buttonStyle(.borderedProminent)
                             }
+                            .padding(.vertical, 4)
                         }
                     }
-                    .disabled(!DataScannerViewController.isSupported)
-                    Button("Сопрячь с Mac") {
-                        Task { await model.pairWithMac(invitation: pairInvitation, fingerprint: pairFingerprint) }
-                    }
-                    .disabled(pairInvitation.isEmpty || pairFingerprint.isEmpty)
                 }
-                Text("В панели сопряжения Mac сначала запусти локальный TLS-сервер, создай одноразовое приглашение и сравни SHA-256 отпечаток сертификата. Подключение работает в одной защищённой локальной сети; порты роутера не открываются.")
-                    .font(.footnote).foregroundStyle(.secondary)
+
+                if !model.macTrusted, let code = model.macPairCode {
+                    Text("Код подтверждения")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Text(code).font(.title.monospacedDigit().weight(.bold))
+                        .accessibilityLabel("Код сопряжения \(code). Сравни его с кодом на Mac.")
+                    Text("Сравни код с окном Чушпана на Mac. Если он совпадает, подтверди запрос там; иначе отклони его.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Text(model.macConnectionMessage).font(.footnote).foregroundStyle(.secondary)
+
                 if model.macTrusted {
                     Button("Запросить разрешённые данные Mac", systemImage: "arrow.down.doc") {
                         Task { await model.syncFromMac() }
                     }
-                    Text("Этот запрос не запускается автоматически. Mac возвращает только категории, разрешённые на Mac; полученная копия сохраняется здесь и не отправляется в CloudKit.")
+                    Text("Mac возвращает только категории, разрешённые на Mac. Копия сохраняется здесь и не отправляется в CloudKit.")
                         .font(.footnote).foregroundStyle(.secondary)
-                    Button("Забыть сопряжение на этом устройстве", role: .destructive) { showingForgetMac = true }
+                    if let date = model.database.macCacheUpdatedAt {
+                        Text("Локальная копия Mac · \(date.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
-                if let pairMessage { Text(pairMessage).font(.footnote).foregroundStyle(.secondary) }
-                if let date = model.database.macCacheUpdatedAt {
-                    Text("Локальная копия Mac · \(date.formatted(date: .abbreviated, time: .shortened))")
+
+                DisclosureGroup("Дополнительные настройки") {
+                    Text("Bonjour может быть заблокирован гостевой или корпоративной Wi-Fi сетью. При такой изоляции используй Tailscale на обоих устройствах.")
                         .font(.footnote).foregroundStyle(.secondary)
+                    TextField("https://адрес-Tailscale-Mac:порт", text: $remoteAddress)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                    Button("Подключить через Tailscale") {
+                        Task { await model.pairWithMac(address: remoteAddress) }
+                    }
+                    .disabled(remoteAddress.isEmpty)
+                    Text("Установи Tailscale и разреши VPN-профиль на iPhone/iPad. Чушпан не открывает сервер в публичный интернет. После первого сопряжения адрес сохраняется для переподключения.")
+                        .font(.footnote).foregroundStyle(.secondary)
+
+                    DisclosureGroup("Старое приглашение и диагностика") {
+                        TextField("Ссылка из одноразового QR Mac", text: $pairInvitation, axis: .vertical)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                        TextField("SHA-256 отпечаток CA (совместимость со старым Mac)", text: $pairFingerprint)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.asciiCapable)
+                        HStack {
+                            Button("Сканировать QR") {
+                                Task {
+                                    let granted = await AVCaptureDevice.requestAccess(for: .video)
+                                    if granted && DataScannerViewController.isSupported && DataScannerViewController.isAvailable {
+                                        showingScanner = true
+                                    } else {
+                                        pairMessage = "Разреши камеру для сканирования или введи ссылку вручную."
+                                    }
+                                }
+                            }
+                            .disabled(!DataScannerViewController.isSupported)
+                            Button("Сопрячь") {
+                                Task { await model.pairWithMac(invitation: pairInvitation, fingerprint: pairFingerprint) }
+                            }
+                            .disabled(pairInvitation.isEmpty || pairFingerprint.isEmpty)
+                        }
+                        if let pairMessage { Text(pairMessage).font(.footnote).foregroundStyle(.secondary) }
+                        Text("Подключение: \(model.macBaseURL.isEmpty ? "не настроено" : model.macBaseURL)")
+                            .font(.caption.monospaced()).foregroundStyle(.secondary)
+                    }
                 }
             }
 
@@ -189,7 +246,9 @@ struct SettingsView: View {
                     .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Готово") { showingScanner = false } } }
             }
         }
-        .task { await model.refreshMac() }
+        .task {
+            if remoteAddress.isEmpty { remoteAddress = model.macRemoteURL }
+        }
     }
 
     private func saveKey() {
