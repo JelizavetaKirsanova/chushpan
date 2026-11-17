@@ -3936,9 +3936,11 @@
 }
 
 .cinema-page button.cinema-media-title {
-    display: -webkit-box;
+    display: flex;
+    align-items: flex-start;
     width: 100%;
-    min-height: 2.5em;
+    height: calc(2.6em + 14px);
+    min-height: calc(2.6em + 14px);
     padding: 6px 8px;
     overflow: hidden;
     border: 0;
@@ -3948,8 +3950,77 @@
     font-weight: 650;
     text-align: left;
     line-height: 1.3;
+}
+
+.cinema-media-title-label {
+    display: -webkit-box;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    overflow-wrap: anywhere;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
+}
+
+/* Reserve the same rows whether a card has progress or only a status. */
+.cinema-media-grid:not(.is-list) .cinema-media-card {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    transform: none;
+}
+
+.cinema-media-grid:not(.is-list) .cinema-media-art {
+    aspect-ratio: 1 / .9;
+    min-height: 0;
+}
+
+.cinema-media-grid:not(.is-list) .cinema-media-card-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto 14px 14px 8px minmax(42px, 1fr);
+    align-items: start;
+    gap: 4px;
+}
+
+.cinema-media-grid:not(.is-list) .cinema-media-card-body > .cinema-media-title {
+    grid-row: 1;
+}
+
+.cinema-media-grid:not(.is-list) .cinema-media-card-body > p {
+    grid-row: 2;
+}
+
+.cinema-media-grid:not(.is-list) .cinema-media-card-body > small {
+    grid-row: 3;
+}
+
+.cinema-media-grid:not(.is-list) .cinema-media-card-body > progress {
+    grid-row: 4;
+    margin-top: 2px;
+}
+
+.cinema-media-grid:not(.is-list) .cinema-poster-actions {
+    grid-row: 5;
+    align-self: end;
+    width: 100%;
+    margin-top: 0;
+}
+
+.cinema-media-grid:not(.is-list) .cinema-poster-actions button {
+    position: static;
+    width: 100%;
+    height: 32px;
+    min-height: 32px;
+    padding: 4px;
+    margin: 0;
+}
+
+.cinema-page .cinema-media-card-actions > button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 36px;
+    min-height: 36px;
 }
 
 .cinema-media-card-body p, .cinema-media-card-body small {
@@ -3992,7 +4063,7 @@
 }
 
 .cinema-page button.cinema-more {
-    flex: 0 0 30px;
+    flex: 0 0 36px;
     padding: 6px;
     font-size: 16px;
 }

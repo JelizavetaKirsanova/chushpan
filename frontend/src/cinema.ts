@@ -169,7 +169,7 @@ export class CinemaView {
     document.addEventListener('workspace:navigate',event=>{if((event as CustomEvent).detail==='cinema'&&this.online)this.request({op:'refresh'});});
     this.connection(false);
   }
-  private button(label:string,action:()=>void,cls=''):HTMLButtonElement {const b=el('button',label,cls);b.type='button';b.disabled=!this.online;b.onclick=action;return b;}
+  private button(label:string,action:()=>void,cls=''):HTMLButtonElement {const b=el('button',label,cls);b.type='button';b.disabled=!this.online;b.onclick=action;if(cls==='cinema-media-title'){b.replaceChildren(el('span',label,'cinema-media-title-label'));b.title=label;}return b;}
   private field(label:string,input:HTMLElement):HTMLLabelElement {input.setAttribute('aria-label',label);const node=el('label','','cinema-field');node.append(el('span',label),input);return node;}
   private input(value='',type='text'):HTMLInputElement {const n=el('input');n.type=type;n.value=value;return n;}
   private select(options:[string,string][],value:string):HTMLSelectElement {const node=el('select');for(const [id,label]of options){const option=el('option',label);option.value=id;node.append(option);}node.value=value;return node;}
