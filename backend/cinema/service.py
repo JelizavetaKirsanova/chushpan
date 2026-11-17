@@ -580,6 +580,24 @@ class Cinema:
                 else:
                     self.sources.invalidate()
                 self.message = "Кеш очищен. Личная медиатека сохранена."
+            elif op == "playlist_create":
+                result = await self.db("playlist_create", value.get("name", ""))
+                self.message = f"Плейлист «{result['name']}» создан."
+            elif op == "playlist_delete":
+                result = await self.db("playlist_delete", value["id"])
+                self.message = "Плейлист удалён. Сами фильмы и их прогресс сохранены."
+            elif op == "playlist_item":
+                result = await self.db(
+                    "playlist_item",
+                    value["playlist_id"],
+                    value["title_id"],
+                    value.get("action", "add"),
+                )
+                self.message = (
+                    "Добавлено в плейлист."
+                    if result["action"] == "add"
+                    else "Удалено из плейлиста."
+                )
             elif op == "source":
                 async with self.lock:
                     result = await self.db("save_source", value["source"])

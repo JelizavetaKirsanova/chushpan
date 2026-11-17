@@ -13,6 +13,8 @@ import type {BrowserDiagnosticReport} from './cinema_browser_diagnostics';
 import type {SourceDiagnosticReport} from './cinema_source_diagnostics';
 import type {PlaybackSnapshot} from './cinema_viewer';
 import type {EmbeddedPlayerState,EmbeddedControl} from './cinema_player';
+import {LocalMediaStore, classifyMedia, localMediaLabels} from './local_media';
+import type {LocalMediaItem, LocalMediaKind} from './local_media';
 
 export interface CinemaSource {id:string;name:string;base_url:string;search_url:string;adapter:'manual'|'html5'|'local'|'direct';category?:'site'|'streaming'|'local';enabled:boolean;priority?:number;preferred?:boolean;search_mode?:'manual'|'archive'|'sitemap';language?:string;access_type?:string;access_status?:string;embed_allowed?:boolean;health?:{status:string;checked_at?:string;last_success?:string;reason?:string};capabilities?:{mode:string;search:boolean;embedded:boolean;progress:boolean;content_types?:string[];formats?:string[];seasons?:boolean;episodes?:boolean;voices?:boolean;controls?:string[];verification_status?:string}}
 export interface CinemaLink {id:string;episode_id:string;source_id:string;source_name:string;url:string;voice:string}
@@ -27,12 +29,13 @@ interface SiteTemplate {id:string;name:string;site_origin:string;frame_host:stri
 interface SiteLesson {request_id:string;saved:boolean;message:string;players?:string[];player?:string;page_opened?:boolean;frame_host?:string;playback_confirmed?:boolean;before?:number;position?:number;duration?:number}
 export interface CinemaTitle {site_recipe?:SiteRecipe|null;id:string;title:string;kind:'movie'|'series';year:number;poster_url:string;description:string;status:'watching'|'planned'|'watched';watchlist?:number;manual_watched?:number|null;favorite:number;catalogue_key?:string;metadata?:CinemaMetadata;user_rating?:number|null;user_note?:string;completed_at?:string|null;added_at?:string;favorite_added_at?:string|null;source_memory?:{pinned_source_id?:string;last_source_id?:string;page_url?:string};episodes:CinemaEpisode[];current:CinemaEpisode|null}
 interface CinemaHistory {id:number;episode_id:string;title:string;title_id:string;season:number;episode:number;position:number;duration:number;created_at:string;event:string;source_name:string;watched:number}
+export interface CinemaPlaylist {id:string;name:string;created_at:string;updated_at:string;item_ids:string[]}
 export interface CinemaPreferences {
   internet_search?:boolean;search_provider?:'tavily'|'brave'|'safari';prefer_free?:boolean;prefer_russian?:boolean;open_in_safari?:boolean;autoplay?:boolean;remember_voice?:boolean;offer_next?:boolean;resume_rewind_seconds?:number;watched_threshold:number;auto_next:boolean;startup:'continue'|'library';poll_seconds:number;devices:Record<string,'mac'|'airplay'>;
   watch_region?:string;save_progress?:boolean;recommendations_show_watched?:boolean;preferred_language?:string;free_only?:boolean;auto_search?:boolean;auto_open?:boolean;ask_paid?:boolean;auto_select_source?:boolean;use_last_source?:boolean;embedded_playback?:boolean;allow_browser?:boolean;personalize?:boolean;
   catalogue_filters?:Partial<import('./cinema_catalogue').CatalogueFilters>;russian_titles?:boolean;hide_animation?:boolean;hide_anime?:boolean;hide_documentary?:boolean;hide_watched?:boolean;hide_watchlist?:boolean;hide_saved?:boolean;default_sort?:string;cards_per_row?:number;resume_position?:boolean;auto_fullscreen?:boolean;auto_max_quality?:boolean;recommend_ratings?:boolean;recommend_favorites?:boolean;recommend_history?:boolean;
 }
-export interface CinemaEvent {site_templates?:SiteTemplate[];site_lesson?:SiteLesson;browser_diagnostics?:BrowserDiagnosticReport;source_diagnostics?:SourceDiagnosticReport;playback?:PlaybackSnapshot;internet_search?:{configured:boolean;provider:string;providers?:{tavily?:{configured:boolean;storage:string;state:string};brave?:{configured:boolean;storage:string}}};search_connection?:{provider:string;ok:boolean;authenticated?:boolean;code:string;message:string;usage?:number;limit?:number|null};cinema_stage?:{stage:string;status:string;message:string;title_id:string;episode_id:string};cinema_diagnostics?:{id:number;stage:string;status:string;message:string;created_at:string}[];safari_check?:{method:string;extension:string;automation:string;javascript?:string};next_episode?:{title_id:string;episode_id:string;season:number;episode:number;title:string;player?:string|null}|null;watch_progress?:{request_id:string;title_id:string;message:string};watch_confirmation?:{token:string;source_name:string;url:string;message:string};detail_updated?:string;similar?:{request_id:string;items:CatalogueTitle[]};library_export?:unknown;library_import_preview?:{token:string;titles:number;sources:number;events:number;existing:number};library_imported?:{added:number;preserved:number};source_action?:{result_id:string;message:string}|null;recommendation_dismissed?:string;recommendations_reset?:boolean;personal_result?:{request_id:string;profile?:FilmProfile;recommendations?:PersonalRecommendations;error?:string};personal_recommendations?:PersonalRecommendations;source_results?:SourceResults;embedded_player?:EmbeddedPlayerState;embedded_control?:EmbeddedControl;type:'cinema';items:CinemaTitle[];sources:CinemaSource[];history:CinemaHistory[];preferences:CinemaPreferences;location:string;devices:{id:string;name:string;available:boolean;reason:string}[];durable:boolean;session:{title_id:string;episode_id:string;mode:string}|null;message:string;error?:string;saved?:string;navigate?:boolean;matches?:CatalogueTitle[];tmdb?:{configured:boolean};catalogue_detail?:CatalogueTitle;source_options?:SourceOptions;active_tab?:string;season_loaded?:string;loaded_season?:number;catalogue_page?:CataloguePage;catalogue_config?:CatalogueConfig;catalogue_config_error?:string;catalogue_intent?:{query?:string;genre?:string}}
+export interface CinemaEvent {site_templates?:SiteTemplate[];site_lesson?:SiteLesson;browser_diagnostics?:BrowserDiagnosticReport;source_diagnostics?:SourceDiagnosticReport;playback?:PlaybackSnapshot;internet_search?:{configured:boolean;provider:string;providers?:{tavily?:{configured:boolean;storage:string;state:string};brave?:{configured:boolean;storage:string}}};search_connection?:{provider:string;ok:boolean;authenticated?:boolean;code:string;message:string;usage?:number;limit?:number|null};cinema_stage?:{stage:string;status:string;message:string;title_id:string;episode_id:string};cinema_diagnostics?:{id:number;stage:string;status:string;message:string;created_at:string}[];safari_check?:{method:string;extension:string;automation:string;javascript?:string};next_episode?:{title_id:string;episode_id:string;season:number;episode:number;title:string;player?:string|null}|null;watch_progress?:{request_id:string;title_id:string;message:string};watch_confirmation?:{token:string;source_name:string;url:string;message:string};detail_updated?:string;similar?:{request_id:string;items:CatalogueTitle[]};library_export?:unknown;library_import_preview?:{token:string;titles:number;sources:number;events:number;existing:number};library_imported?:{added:number;preserved:number};source_action?:{result_id:string;message:string}|null;recommendation_dismissed?:string;recommendations_reset?:boolean;personal_result?:{request_id:string;profile?:FilmProfile;recommendations?:PersonalRecommendations;error?:string};personal_recommendations?:PersonalRecommendations;source_results?:SourceResults;embedded_player?:EmbeddedPlayerState;embedded_control?:EmbeddedControl;type:'cinema';items:CinemaTitle[];playlists?:CinemaPlaylist[];sources:CinemaSource[];history:CinemaHistory[];preferences:CinemaPreferences;location:string;devices:{id:string;name:string;available:boolean;reason:string}[];durable:boolean;session:{title_id:string;episode_id:string;mode:string}|null;message:string;error?:string;saved?:string;navigate?:boolean;matches?:CatalogueTitle[];tmdb?:{configured:boolean};catalogue_detail?:CatalogueTitle;source_options?:SourceOptions;active_tab?:string;season_loaded?:string;loaded_season?:number;catalogue_page?:CataloguePage;catalogue_config?:CatalogueConfig;catalogue_config_error?:string;catalogue_intent?:{query?:string;genre?:string}}
 
 export function playbackTime(value:number):string {
   const total=Math.max(0,Math.floor(Number.isFinite(value)?value:0));
@@ -56,7 +59,7 @@ export class CinemaView {
   private tabs=el('nav','','cinema-tabs');
   private data:CinemaEvent|null=null;
   private online=false;
-  private tab='continue';
+  private tab='library';
   private query='';
   private list=false;
   private libraryKind='all';
@@ -90,11 +93,33 @@ export class CinemaView {
   private sourceFilter='all';
   private dateFilter='';
   private first=true;
+  private collection='all';
+  private mediaKind:'all'|'music'|'video'|'image'|'document'='all';
+  private localStore=new LocalMediaStore();
+  private localItems:LocalMediaItem[]=[];
+  private selectedMediaKey='';
+  private detailPane:'about'|'seasons'|'files'='about';
+  private activeAudioId='';
+  private audioURL='';
+  private saveAudioTimer=0;
+  private activeVideoURL='';
+  private audio!:HTMLAudioElement;
+  private audioBar=el('section','','cinema-local-audio-bar');
+  private audioTitle=el('strong');
+  private audioMeta=el('small');
+  private audioPlay=el('button','▶','cinema-audio-play');
+  private audioSeek=el('input');
+  private audioClock=el('span','','cinema-audio-clock');
+  private audioVolume=el('input');
+  private audioPrevious=el('button','|◀');
+  private audioNext=el('button','▶|');
+  private previewURLs=new Set<string>();
+  private seasonChoice=0;
   private nextOffer=el('div','','cinema-next-offer');
   constructor(private send:(value:object)=>void,private chat:(text:string)=>void,private navigate:()=>void,private listen:()=>void) {
     const heading=el('header','','cinema-heading');const title=el('h1');title.innerHTML=icon('film');title.append(el('span','Медиатека'));
-    const searchForm=el('form','','cinema-search');const glyph=el('span');glyph.innerHTML=icon('search');this.search=el('input');this.search.type='search';this.search.placeholder='Поиск фильмов и сериалов…';this.search.setAttribute('aria-label','Поиск по кинотеке');this.search.maxLength=200;
-    this.search.oninput=()=>{this.query=this.search.value;this.changeTab('catalogue',false);this.catalogueView.search(this.query);this.render();};searchForm.onsubmit=e=>{e.preventDefault();this.changeTab('catalogue',false);this.catalogueView.search(this.query,false);this.render();};searchForm.append(glyph,this.search);
+    const searchForm=el('form','','cinema-search');const glyph=el('span');glyph.innerHTML=icon('search');this.search=el('input');this.search.type='search';this.search.placeholder='Поиск в медиатеке…';this.search.setAttribute('aria-label','Поиск в медиатеке');this.search.maxLength=200;
+    this.search.oninput=()=>{if(this.tab==='catalogue'){this.query=this.search.value;this.catalogueView.search(this.query);this.render();}else{this.libraryQuery=this.search.value;this.render();}};searchForm.onsubmit=e=>{e.preventDefault();if(this.tab==='catalogue'){this.query=this.search.value;this.catalogueView.search(this.query,false);}else this.libraryQuery=this.search.value;this.render();};searchForm.append(glyph,this.search);
     const mic=this.button('Голосовая команда',this.listen,'cinema-mic');mic.innerHTML=icon('mic');mic.setAttribute('aria-label','Голосовая команда');heading.append(title,searchForm,mic,this.button('Настройки',()=>{this.changeTab('sources');}));
     this.tabs.setAttribute('aria-label','Разделы кинотеки');this.feedback.setAttribute('role','status');this.feedback.setAttribute('aria-live','polite');
     const composer=el('form','','cinema-composer');const spark=el('span');spark.innerHTML=icon('activity');const input=el('input');input.placeholder='Скажи, что посмотреть…';input.setAttribute('aria-label','Команда Чушпану о кино');input.maxLength=400;
@@ -118,6 +143,21 @@ export class CinemaView {
     composer.onsubmit=e=>{e.preventDefault();if(this.online&&input.value.trim()){this.chat(input.value.trim());input.value='';close();}};
     document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!composer.hidden){e.preventDefault();e.stopImmediatePropagation();close();}},true);
     this.root.append(heading,composer,this.tabs,this.feedback,this.nextOffer,this.viewer.root,this.content);
+    this.audio=el('audio');this.audio.controls=false;this.audio.preload='metadata';this.audio.hidden=true;
+    this.audioSeek.type='range';this.audioSeek.min='0';this.audioSeek.max='1000';this.audioSeek.value='0';this.audioSeek.setAttribute('aria-label','Позиция воспроизведения');
+    this.audioVolume.type='range';this.audioVolume.min='0';this.audioVolume.max='1';this.audioVolume.step='0.01';this.audioVolume.value='0.8';this.audioVolume.setAttribute('aria-label','Громкость локального аудио');this.audio.volume=0.8;
+    this.audioPlay.type=this.audioPrevious.type=this.audioNext.type='button';this.audioPlay.setAttribute('aria-label','Воспроизвести или приостановить');this.audioPrevious.setAttribute('aria-label','Предыдущий трек');this.audioNext.setAttribute('aria-label','Следующий трек');
+    const audioArtwork=el('div','♫','cinema-audio-art');const audioInfo=el('div','','cinema-audio-info');audioInfo.append(this.audioTitle,this.audioMeta);
+    const audioControls=el('div','','cinema-audio-controls');audioControls.append(this.audioPrevious,this.audioPlay,this.audioNext);
+    this.audioBar.append(audioArtwork,audioInfo,audioControls,this.audioClock,this.audioSeek,this.audioVolume,this.audio);
+    this.audioPlay.onclick=()=>{if(this.activeAudioId){if(this.audio.paused)void this.audio.play();else this.audio.pause();}};
+    this.audioPrevious.onclick=()=>this.playNextAudio(-1);this.audioNext.onclick=()=>this.playNextAudio(1);
+    this.audioSeek.oninput=()=>{if(this.audio.duration>0)this.audio.currentTime=this.audio.duration*Number(this.audioSeek.value)/1000;};
+    this.audioVolume.oninput=()=>{this.audio.volume=Number(this.audioVolume.value);};
+    this.root.append(this.audioBar);
+    this.audio.onplay=()=>this.updateAudioBar();this.audio.onpause=()=>{this.persistAudioProgress();this.updateAudioBar();};this.audio.ontimeupdate=()=>{this.updateAudioBar();this.persistAudioProgress();};
+    this.audio.onended=()=>{this.persistAudioProgress(true);this.playNextAudio(1);};this.updateAudioBar();
+    void this.refreshLocal();
     document.addEventListener('cinema:settings',()=>{this.changeTab('sources');});
     document.addEventListener('cinema:integration',()=>this.changeTab('integration'));
     document.addEventListener('workspace:navigate',event=>{if((event as CustomEvent).detail==='cinema'&&this.online)this.request({op:'refresh'});});
@@ -133,7 +173,7 @@ export class CinemaView {
     if(event.type!=='cinema')return;
     this.data=event;this.catalogueView.receive(event);this.personalView.receive(event);if(event.embedded_player)this.closeDialog(false);this.embeddedPlayer.receive(event);this.viewer.receive(event);this.sourceDiagnostics.receive(event);
     if(event.playback&&['PLAYING','PAUSED'].includes(event.playback.state)&&event.playback.token!==this.viewerToken){this.viewerToken=event.playback.token;this.closeDialog(false);}
-    if(this.first){this.tab=event.preferences.startup==='library'?'planned':'watching';this.first=false;}
+    if(this.first){this.tab='library';this.first=false;}
     this.feedback.textContent=event.error??event.message??'';this.feedback.dataset.error=String(!!event.error);
     if(event.error){this.pendingWatch=null;this.ratingReturn=null;}
     if(event.error&&this.dialog){let error=this.dialog.querySelector<HTMLElement>('.cinema-form-error');if(!error){error=el('p','','cinema-form-error');error.setAttribute('role','alert');this.dialog.append(error);}error.textContent=event.error;}
@@ -176,7 +216,16 @@ export class CinemaView {
     if(event.saved&&this.pendingWatch){const item=event.items.find(v=>v.id===event.saved);if(item){this.pendingWatch=null;if(this.pendingFind){this.pendingFind=false;if(this.dialog?.dataset.rich==='true')this.detail(item.id);this.open(item);}else this.open(item);}}
   }
   private changeTab(tab:string,render=true):void {
+    if(['planned','watching','watched','favorites'].includes(tab)){
+      this.collection=tab;
+      tab='library';
+    }else if(tab==='continue'){
+      this.collection='watching';
+      tab='library';
+    }
     if(this.tab!==tab){const scroller=this.root.closest<HTMLElement>('.workspace-page');if(scroller)this.scrollPositions.set(this.tab,scroller.scrollTop);this.tab=tab;}
+    if(tab==='library')this.search.value=this.libraryQuery;
+    else if(tab==='catalogue')this.search.value=this.query;
     if(render)this.render();
   }
   private render():void {
@@ -186,7 +235,9 @@ export class CinemaView {
     const scroller=this.root.closest<HTMLElement>('.workspace-page');
     const top=this.renderedTab===this.tab?scroller?.scrollTop??0:this.scrollPositions.get(this.tab)??0;
     this.renderedTab=this.tab;
-    if(!this.data){this.content.replaceChildren(this.empty(this.online?'Загружаю твою кинотеку…':'Кинотека появится после подключения к Чушпану.'));return;}
+    this.tabs.hidden=this.tab==='library';
+    this.root.dataset.screen=this.tab==='library'?'library':this.tab;
+    if(!this.data){if(this.tab==='library')this.renderLibrary();else this.content.replaceChildren(this.empty(this.online?'Загружаю твою кинотеку…':'Кинотека появится после подключения к Чушпану.'));return;}
     if(this.tab!=='sources'&&this.tab!=='integration')delete this.content.dataset.settings;
     if(this.tab==='catalogue'){this.catalogue();}
     else if(this.tab==='profile'||this.tab==='personal'){this.personalView.mount(this.content,this.tab);}
