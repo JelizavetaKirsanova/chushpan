@@ -146,6 +146,9 @@ class Scenario(Model):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=1000)
     icon: str = Field(default="✦", max_length=12)
+    color: str = Field(default="#9B4BD3", pattern=r"^#[0-9A-Fa-f]{6}$")
+    tags: list[str] = Field(default_factory=list, max_length=12)
+    favorite: bool = False
     enabled: bool = True
     mode: Literal["exact", "smart"] = "smart"
     phrases: list[str] = Field(default_factory=list)  # Deliberately no phrase-count limit.
@@ -166,6 +169,14 @@ class Scenario(Model):
 
     @model_validator(mode="after")
     def valid(self):
+        normalized_tags = []
+        for tag in self.tags:
+            value = tag.strip()
+            if not value or len(value) > 32:
+                raise ValueError("Тег должен содержать от 1 до 32 символов.")
+            if value.casefold() not in {item.casefold() for item in normalized_tags}:
+                normalized_tags.append(value)
+        self.tags = normalized_tags
         seen = set()
         for phrase in self.phrases:
             normalized = normalize_phrase(phrase)

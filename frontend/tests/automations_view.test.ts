@@ -150,7 +150,7 @@ test('reference editor keeps navigation, inline controls, tags and advanced disc
     assert.equal(f.window.document.querySelector('.permissions-page'),null);
     assert.ok(f.window.document.querySelector('.settings-page .permission-settings'));
     f.button('+ Создать сценарий');
-    assert.deepEqual([...f.window.document.querySelectorAll('.editor-step h2')].map(n=>n.textContent),['Блоки сценария','Дополнительно']);
+    assert.deepEqual([...f.window.document.querySelectorAll('.editor-step h2')].map(n=>n.textContent),['Блок-схема','Дополнительно']);
     assert.equal((f.window.document.querySelector('.editor-advanced') as unknown as HTMLDetailsElement).open,false);
     assert.equal(f.window.document.querySelector('.scenario-layout')!.getAttribute('data-editing'),'true');
     assert.ok(f.window.document.querySelector('.editor-advanced .variant-editor'));
@@ -164,6 +164,38 @@ test('reference editor keeps navigation, inline controls, tags and advanced disc
     assert.equal(draft.phrases.length,40);assert.equal(draft.confirmation,'auto');assert.ok(draft.triggers.some(t=>t.kind==='voice'));
     assert.equal(draft.actions[0].capability,'mac.brightness');assert.equal(draft.actions[0].parameters.level,27);
     assert.equal(f.requests.some(r=>r.op==='run'||r.op==='capture'),false);
+  }finally{await f.window.happyDOM.close();}
+});
+
+test('scenario overview filters, persists favorites, exports real model metadata, and runs only by explicit action',async()=>{
+  const f=fixture();try {
+    const scenario={...state.newScenario(),id:'d'.repeat(32),revision:1,name:'Вечер',description:'Подготовка ко сну',tags:['Дом','Вечер'],favorite:false,phrases:['Пора спать'],created_at:'2026-11-16T12:00:00Z',updated_at:'2026-11-16T12:00:00Z'};
+    f.view.receive({...f.data,scenarios:[scenario],runs:[{id:'run-1',scenario_id:scenario.id,name:scenario.name,status:'confirmed',steps:[],started_at:'2026-11-17T12:00:00Z'}]});
+    assert.ok(f.window.document.querySelector('.scenario-hero'));
+    assert.ok(f.window.document.querySelector('.scenario-rail'));
+    assert.match(f.window.document.querySelector('.scenario-week-chart')!.getAttribute('aria-label')!,/семь дней/);
+    f.button('Избранные');assert.match(f.window.document.querySelector('.scenario-list')!.textContent,/Подходящих сценариев нет/);
+    f.button('Все');f.button('Добавить в избранное');
+    assert.equal(f.requests.at(-1)!.op,'save');
+    const favorited={...scenario,favorite:true,revision:2};
+    f.view.receive({...f.data,scenarios:[favorited],saved:favorited.id});
+    assert.equal(f.window.document.querySelector('.scenario-layout')!.getAttribute('data-editing'),'false');
+    f.button('Избранные');assert.match(f.window.document.querySelector('.scenario-list')!.textContent,/Вечер/);
+    f.button('▶ Запустить');assert.equal(f.requests.at(-1)!.op,'run');
+  }finally{await f.window.happyDOM.close();}
+});
+
+test('visual flow supports safe test preview and undo/redo over the saved scenario document',async()=>{
+  const f=fixture();try {
+    f.button('+ Создать сценарий');
+    assert.ok(f.window.document.querySelector('.scenario-flow-viewport'));
+    assert.ok(f.window.document.querySelector('.scenario-flow-trigger'));
+    assert.ok(f.window.document.querySelector('.scenario-flow-finish'));
+    f.fill('Название','Ночь');
+    f.button('Отменить последнее изменение');assert.equal(f.field('Название').value,'');
+    f.button('Повторить изменение');assert.equal(f.field('Название').value,'Ночь');
+    f.button('▷ Тестовый запуск');assert.equal(f.requests.at(-1)!.op,'preview');
+    assert.equal(f.requests.at(-1)!.scenario && (f.requests.at(-1)!.scenario as state.Scenario).name,'Ночь');
   }finally{await f.window.happyDOM.close();}
 });
 

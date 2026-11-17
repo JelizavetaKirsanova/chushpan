@@ -4,14 +4,14 @@ export interface Condition {source: 'variable' | 'available' | 'time' | 'locatio
 export interface Block {kind: 'action' | 'delay' | 'sequence' | 'parallel' | 'if'; capability: string; parameters: Record<string, Json>; seconds: number; condition: Condition | null; children: Block[]; otherwise: Block[]; on_error: 'stop' | 'continue'; enabled: boolean; required: boolean}
 export interface Variant {id: string; name: string; place_id: string; enabled: boolean; actions: Block[]; conditions: Condition[]}
 export interface Place {id: string; revision: number; name: string; cities: string[]; wifi_networks?: {ssid:string;bssid:string}[]; zones?: {latitude:number;longitude:number;radius_km:number}[]; signals?: {kind:string;key:string;name:string}[]}
-export interface Scenario {id: string; revision: number; name: string; description: string; icon: string; enabled: boolean; mode: 'exact' | 'smart'; phrases: string[]; actions: Block[]; variants: Variant[]; conditions: Condition[]; triggers: {kind: 'voice' | 'manual' | 'schedule' | 'condition'; at: string; weekdays: number[]}[]; variables: {name: string; kind: 'number' | 'string' | 'boolean'; default: Json}[]; confirmation: 'auto' | 'always'; schema_version: 2; version_policy: 'fallback'; general_enabled: true; inter_block_delay_s: number; show_status: boolean; error_policy: 'block' | 'stop' | 'continue'; timeout_s: number | null}
+export interface Scenario {id: string; revision: number; name: string; description: string; icon: string; color: string; tags: string[]; favorite: boolean; created_at?: string; updated_at?: string; enabled: boolean; mode: 'exact' | 'smart'; phrases: string[]; actions: Block[]; variants: Variant[]; conditions: Condition[]; triggers: {kind: 'voice' | 'manual' | 'schedule' | 'condition'; at: string; weekdays: number[]}[]; variables: {name: string; kind: 'number' | 'string' | 'boolean'; default: Json}[]; confirmation: 'auto' | 'always'; schema_version: 2; version_policy: 'fallback'; general_enabled: true; inter_block_delay_s: number; show_status: boolean; error_policy: 'block' | 'stop' | 'continue'; timeout_s: number | null}
 export const clone = <T>(value: T): T => structuredClone(value);
 export const newId = (): string => crypto.randomUUID().replaceAll('-', '');
 export function newBlock(kind: Block['kind'] = 'action', capability = ''): Block {
   return {kind, capability, parameters: {}, seconds: 1, condition: kind === 'if' ? {source: 'variable', key: '', operator: 'eq', value: true} : null, children: [], otherwise: [], on_error: 'stop', enabled: true, required: true};
 }
 export function newScenario(): Scenario {
-  return {id: '', revision: 0, name: 'Новый сценарий', description: '', icon: '✦', enabled: true, mode: 'smart', phrases: [], actions: [], variants: [], conditions: [], triggers: [{kind: 'voice', at: '22:00', weekdays: [0,1,2,3,4,5,6]}, {kind: 'manual', at: '22:00', weekdays: [0,1,2,3,4,5,6]}], variables: [], confirmation: 'auto', schema_version: 2, version_policy: 'fallback', general_enabled: true, inter_block_delay_s: 0, show_status: true, error_policy: 'block', timeout_s: 3600};
+  return {id: '', revision: 0, name: 'Новый сценарий', description: '', icon: '✦', color: '#9B4BD3', tags: [], favorite: false, enabled: true, mode: 'smart', phrases: [], actions: [], variants: [], conditions: [], triggers: [{kind: 'voice', at: '22:00', weekdays: [0,1,2,3,4,5,6]}, {kind: 'manual', at: '22:00', weekdays: [0,1,2,3,4,5,6]}], variables: [], confirmation: 'auto', schema_version: 2, version_policy: 'fallback', general_enabled: true, inter_block_delay_s: 0, show_status: true, error_policy: 'block', timeout_s: 3600};
 }
 export function addVariant(scenario: Scenario, place: Place, source?: Variant): Variant {
   if (scenario.variants.some(v => v.place_id === place.id)) throw new Error('Для этого места уже есть версия.');
@@ -25,7 +25,7 @@ export function moveBlock(blocks: Block[], index: number, offset: number): void 
 }
 export function searchCommands(scenarios: Scenario[], query: string): Scenario[] {
   const value = query.trim().toLocaleLowerCase('ru');
-  return scenarios.filter(s => [s.name, s.description, ...s.phrases, ...s.variants.map(v => v.name)].some(text => text.toLocaleLowerCase('ru').includes(value)));
+  return scenarios.filter(s => [s.name, s.description, ...s.tags, ...s.phrases, ...s.variants.map(v => v.name)].some(text => text.toLocaleLowerCase('ru').includes(value)));
 }
 
 /** A drop moves the item, preserving the relative order of every other block. */

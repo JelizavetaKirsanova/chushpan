@@ -162,6 +162,30 @@ def test_unlimited_phrases_durability_edit_delete_and_conflicts(rig):
         restarted.get(scenario.id)
 
 
+def test_scenario_tags_favorite_color_and_store_timestamps(rig):
+    scenario = saved(
+        rig,
+        tags=[" Вечер ", "вечер", "Дом"],
+        favorite=True,
+        color="#AABBCC",
+    )
+    restored = rig.service.store.get(scenario.id)
+    assert restored.tags == ["Вечер", "Дом"]
+    assert restored.favorite is True and restored.color == "#AABBCC"
+    metadata = next(
+        item for item in rig.service.store.list_with_metadata() if item["id"] == scenario.id
+    )
+    assert metadata["created_at"]
+    assert metadata["updated_at"]
+
+
+def test_scenario_color_and_tags_are_validated():
+    with pytest.raises(ValidationError):
+        Scenario(name="bad color", color="purple")
+    with pytest.raises(ValidationError, match="Тег"):
+        Scenario(name="bad tag", tags=[""])
+
+
 def test_duplicate_normalized_phrases_are_rejected():
     with pytest.raises(ValidationError):
         Scenario(name="test", phrases=["Мой вечер", "Чушпан, МОЙ вечер!"])

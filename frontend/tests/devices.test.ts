@@ -36,6 +36,24 @@ test('devices render independently with filters and no raw identifiers on cards'
   } finally {await f.close();}
 });
 
+test('device categories and grid/list controls operate on registered records',async()=>{
+  const f=fixture();try {
+    const root=f.window.document.querySelector('#devices-root')!;
+    const filters=[...root.querySelectorAll<HTMLButtonElement>('.device-filter')];
+    const lighting=filters.find(button=>button.textContent?.startsWith('Освещение'))!;
+    lighting.click();
+    assert.equal(root.querySelectorAll('.device-tile').length,1);
+    assert.match(root.querySelector('.device-tile')!.textContent!,/Свет у стола/);
+    const all=[...root.querySelectorAll<HTMLButtonElement>('.device-filter')].find(button=>button.textContent?.startsWith('Все'))!;
+    all.click();
+    assert.equal(root.querySelectorAll('.device-tile').length,2);
+    root.querySelector<HTMLButtonElement>('.device-layout-toggle[aria-label="Список"]')!.click();
+    assert.equal(root.querySelector('.devices-groups')!.getAttribute('data-layout'),'list');
+    root.querySelector<HTMLButtonElement>('.device-layout-toggle[aria-label="Сетка"]')!.click();
+    assert.equal(root.querySelector('.devices-groups')!.getAttribute('data-layout'),'grid');
+  } finally {await f.close();}
+});
+
 test('absent operation timing is never rendered as undefined milliseconds',async()=>{
   const f=fixture();try{
     f.view.receive({...f.state,metrics:{}});f.open('Свет у стола');

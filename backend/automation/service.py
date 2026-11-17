@@ -285,7 +285,7 @@ class Automations:
                 {
                     "type": "automations",
                     "editor_version": 3,
-                    "scenarios": [s.model_dump(mode="json") for s in self.store.list()],
+                    "scenarios": self.store.list_with_metadata(),
                     "capabilities": self.capabilities.catalogue(),
                     "runs": self.store.history(),
                     "training": self.store.training(),

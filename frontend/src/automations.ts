@@ -60,8 +60,21 @@ export class AutomationsView {
   private openedBlocks = new WeakSet<Block>();
   private capturing = false;
   private toggling = new Set<string>();
+  private listSaving = new Set<string>();
   private placeFilter = '';
   private pendingPhrase = '';
+  private listFilter: 'all' | 'active' | 'favorite' | 'schedule' | 'voice' = 'all';
+  private listSort: 'updated' | 'name' | 'usage' = 'updated';
+  private listMode: 'grid' | 'list' = 'grid';
+  private listFilters: HTMLButtonElement[] = [];
+  private undoStack: Scenario[] = [];
+  private redoStack: Scenario[] = [];
+  private historySnapshot = '';
+  private replayingHistory = false;
+  private canvasZoom = 100;
+  private clipboardBlock: Block | null = null;
+  private selectedBlock: {blocks: Block[]; index: number} | null = null;
+  private overview = el('aside', '', 'scenario-rail');
   private executionRoot = el('div', '', 'scenario-execution');
   private dialogueStatus = el('div', '', 'scenario-dialogue-status');
 
@@ -71,15 +84,37 @@ export class AutomationsView {
     this.feedback.setAttribute('role', 'status'); this.feedback.setAttribute('aria-live', 'polite');
     const page = document.querySelector<HTMLElement>('.automations-page')!;
     page.querySelector('h1')!.textContent = 'Сценарии';
-    page.querySelector('.page-heading p')!.textContent = 'Скажи одну фразу — Чушпан сделает остальное.';
+    page.querySelector('.page-heading p')!.textContent = 'Автоматизируй рутину, управляй устройствами и создавай свои сценарии.';
+    const hero = page.querySelector<HTMLElement>('.page-heading')!;
+    hero.classList.add('scenario-hero');
+    hero.querySelector('small')!.textContent = 'ТВОЯ АВТОМАТИЗАЦИЯ';
+    const heroArt = el('div', '', 'scenario-hero-art');
+    heroArt.setAttribute('aria-hidden', 'true'); heroArt.append(el('span', '☾'), el('span', '🐱'), el('span', '✦'));
+    hero.append(heroArt);
     const toolbar = el('div', '', 'page-toolbar');
-    const search = el('input'); search.type = 'search'; search.placeholder = 'Найти сценарий'; search.setAttribute('aria-label', 'Поиск моих команд'); search.oninput = () => {this.searchText = search.value; this.renderList();};
-    const create = this.button('+ Создать сценарий', () => {if (!this.discardAllowed()) return; this.draft = newScenario(); this.pendingPlace = ''; this.draft.name = ''; this.pendingPhrase = ''; this.activeVariant = ''; this.dirty = false; this.advancedOpen = false; this.previewRoot.replaceChildren(); this.revisionRoot.replaceChildren(); this.renderEditor();}); create.className = 'primary';
+    const search = el('input'); search.type = 'search'; search.placeholder = 'Поиск сценариев…'; search.setAttribute('aria-label', 'Поиск моих команд'); search.oninput = () => {this.searchText = search.value; this.renderList();};
+    const sort = this.select([['updated', 'По дате изменения'], ['name', 'По названию'], ['usage', 'По частоте запусков']], this.listSort, value => {this.listSort = value; this.renderList();}, false); sort.className = 'scenario-sort'; sort.setAttribute('aria-label', 'Сортировка сценариев');
+    const create = this.button('+ Создать сценарий', () => {if (!this.discardAllowed()) return; this.draft = newScenario(); this.pendingPlace = ''; this.draft.name = ''; this.pendingPhrase = ''; this.activeVariant = ''; this.dirty = false; this.advancedOpen = false; this.selectedBlock = null; this.undoStack = []; this.redoStack = []; this.historySnapshot = ''; this.previewRoot.replaceChildren(); this.revisionRoot.replaceChildren(); this.renderEditor();}); create.className = 'primary';
     const placeFilter = this.select([['', 'Все места'], ['general', 'Общий'], ...(this.data?.places ?? []).map(p => [p.id, p.name] as [string, string])], '', value => {this.placeFilter = value; this.renderList();}, false);
     placeFilter.setAttribute('aria-label', 'Фильтр по местоположению'); placeFilter.id = 'scenario-place-filter';
-    toolbar.append(search, placeFilter, create);
-    const layout = el('div', '', 'scenario-layout'); layout.append(this.list, this.editor);
+    const filterBar = el('nav', '', 'scenario-filters'); filterBar.setAttribute('aria-label', 'Фильтры сценариев');
+    for (const [value, label] of [['all', 'Все'], ['active', 'Активные'], ['favorite', 'Избранные'], ['schedule', 'По расписанию'], ['voice', 'По голосу']] as const) {
+      const button = this.button(label, () => {this.listFilter = value; this.updateListFilterState(); this.renderList();});
+      button.setAttribute('aria-pressed', String(value === this.listFilter)); this.listFilters.push(button); filterBar.append(button);
+    }
+    const viewToggle = el('div', '', 'scenario-view-toggle');
+    for (const [mode, label] of [['grid', 'Сетка'], ['list', 'Список']] as const) {
+      const button = this.button(label, () => {this.listMode = mode; this.updateListViewState(viewToggle);});
+      button.setAttribute('aria-pressed', String(mode === this.listMode)); button.setAttribute('aria-label', `Вид: ${label.toLowerCase()}`); viewToggle.append(button);
+    }
+    const filtersRow = el('div', '', 'scenario-filter-row'); filtersRow.append(filterBar, placeFilter, viewToggle);
+    const importFile = el('input'); importFile.type = 'file'; importFile.accept = 'application/json,.json'; importFile.hidden = true; importFile.setAttribute('aria-label', 'Выбрать JSON сценария');
+    importFile.onchange = async () => {const file = importFile.files?.[0]; if (!file) return; try {if (file.size > 1_000_000) throw new Error('Файл сценария должен быть меньше 1 МБ.'); const parsed = JSON.parse(await file.text()) as {format?: string; schema_version?: number; scenario?: Partial<Scenario>}; if (parsed.format !== 'chushpan-scenario' || parsed.schema_version !== 2 || !parsed.scenario || typeof parsed.scenario.name !== 'string') throw new Error('Формат сценария или версия схемы не поддерживается.'); const imported = Object.assign(newScenario(), parsed.scenario, {id: '', revision: 0, created_at: undefined, updated_at: undefined}); this.draft = imported; this.dirty = true; this.undoStack = []; this.redoStack = []; this.historySnapshot = ''; this.activeVariant = ''; this.previewRoot.replaceChildren(); this.feedback.textContent = 'JSON загружен в черновик. Проверь блоки и настройки, затем сохрани сценарий.'; this.renderEditor();} catch (error) {this.feedback.textContent = error instanceof Error ? error.message : 'Не удалось прочитать сценарий JSON.'; this.feedback.dataset.error = 'true';} importFile.value = '';};
+    const importButton = this.button('Импорт JSON', () => importFile.click()); importButton.className = 'scenario-import';
+    toolbar.append(search, sort, importButton, create, importFile);
+    const layout = el('div', '', 'scenario-layout'); layout.append(this.list, this.overview, this.editor);
     page.querySelector('.page-heading')!.after(toolbar, this.feedback, layout);
+    toolbar.after(filtersRow);
     const old = page.querySelector('.integration-grid');
     if (old) {const details = el('details', '', 'legacy-ritual'); details.append(el('summary', 'Встроенные сценарии'), old); page.append(details);}
     const settings = document.querySelector('.settings-page')!;
@@ -104,13 +139,21 @@ export class AutomationsView {
     this.renderEditor();
   }
 
+  private updateListFilterState(): void {
+    this.listFilters.forEach((button, index) => button.setAttribute('aria-pressed', String(['all', 'active', 'favorite', 'schedule', 'voice'][index] === this.listFilter)));
+  }
+  private updateListViewState(toggle: HTMLElement): void {
+    toggle.querySelectorAll<HTMLButtonElement>('button').forEach((button, index) => button.setAttribute('aria-pressed', String(['grid', 'list'][index] === this.listMode)));
+    this.list.dataset.mode = this.listMode;
+  }
+
   private button(label: string, action: () => void): HTMLButtonElement {
     const button = el('button', label); button.type = 'button'; button.disabled = !this.online;
     button.onclick = action; return button;
   }
   private input(value: string, change: (value: string) => void, type = 'text'): HTMLInputElement {
     const input = el('input'); input.type = type; input.value = value;
-    input.oninput = () => {change(input.value); this.dirty = true;}; return input;
+    input.oninput = () => {change(input.value); this.dirty = true; this.trackHistoryChange();}; return input;
   }
   private select<T extends string>(values: [T, string][], current: T, change: (value: T) => void, markDirty = true): HTMLSelectElement {
     const select = el('select');
@@ -121,7 +164,7 @@ export class AutomationsView {
   connection(online: boolean): void {
     this.online = online;
     if (!online) this.saving = false;
-    document.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('.scenario-layout button, .automation-section button, .automations-page > .page-toolbar button, .scenario-layout input, .scenario-layout select, .scenario-layout textarea, .automation-section input, .automation-section select, .permission-settings button, .place-settings button, .location-selection select').forEach(control => {
+    document.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('.scenario-layout button, .scenario-filter-row button, .scenario-filter-row select, .automation-section button, .automations-page > .page-toolbar button, .scenario-layout input, .scenario-layout select, .scenario-layout textarea, .automation-section input, .automation-section select, .permission-settings button, .place-settings button, .location-selection select').forEach(control => {
       if (!online) {control.dataset.wasDisabled ??= String(control.disabled); control.disabled = true;}
       else if (control.dataset.wasDisabled !== undefined) {control.disabled = control.dataset.wasDisabled === 'true'; delete control.dataset.wasDisabled;}
       else if (control.tagName === 'BUTTON') control.disabled = false;
@@ -142,14 +185,14 @@ export class AutomationsView {
     this.data = event;
     if (event.result || event.error) this.running = false;
     if (event.permissions) this.permissions = event.permissions;
-    if (event.saved && this.toggling.delete(event.saved)) {
+    if (event.saved && (this.toggling.delete(event.saved) || this.listSaving.delete(event.saved))) {
       if (this.draft?.id === event.saved && !this.dirty) {this.draft = clone(event.scenarios.find(s => s.id === event.saved)!); this.renderEditor();}
     } else if (event.saved && (!this.dirty || this.saving)) {
       this.draft = this.document(event.scenarios.find(s => s.id === event.saved) ?? newScenario());
-      this.dirty = false; this.saving = false; this.renderEditor();
+      this.dirty = false; this.saving = false; this.selectedBlock = null; this.undoStack = []; this.redoStack = []; this.historySnapshot = ''; this.renderEditor();
     } else if (event.deleted && event.deleted === this.draft?.id) {this.draft = null; this.dirty = false; this.activeVariant = ''; this.previewRoot.replaceChildren(); this.renderEditor();}
     else if (event.updated && event.updated === this.draft?.id && !this.dirty) {this.draft = clone(event.scenarios.find(s => s.id === event.updated)!); this.renderEditor();}
-    if (event.error) {const wasSaving = this.saving; this.saving = false; if (wasSaving) this.renderEditor(); this.toggling.clear(); this.feedback.replaceChildren(el('span', /фраз|конфликт|дубликат|уже.*использ/i.test(event.error) ? 'Эта фраза уже используется. Измени её или выбери другую.' : 'Не удалось применить изменение. Проверь заполненные поля и попробуй снова.')); const details = el('details'); details.append(el('summary', 'Подробнее'), el('p', event.error)); this.feedback.append(details); this.feedback.dataset.error = 'true';}
+    if (event.error) {const wasSaving = this.saving; this.saving = false; if (wasSaving) this.renderEditor(); this.toggling.clear(); this.listSaving.clear(); this.feedback.replaceChildren(el('span', /фраз|конфликт|дубликат|уже.*использ/i.test(event.error) ? 'Эта фраза уже используется. Измени её или выбери другую.' : 'Не удалось применить изменение. Проверь заполненные поля и попробуй снова.')); const details = el('details'); details.append(el('summary', 'Подробнее'), el('p', event.error)); this.feedback.append(details); this.feedback.dataset.error = 'true';}
     else if (event.message) {this.feedback.textContent = event.message; delete this.feedback.dataset.error;}
     if (event.captured !== undefined) {
       this.capturing = false;
@@ -275,7 +318,7 @@ export class AutomationsView {
     const root = el('div', '', 'version-tabs-editor');
     root.append(el('span', 'Версии сценария', 'field-caption'));
     const tabs = el('div', '', 'variant-tabs'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Версии сценария');
-    const general = this.button('', () => {this.activeVariant = ''; this.pendingPlace = ''; this.previewRoot.replaceChildren(); this.renderEditor();});
+    const general = this.button('', () => {this.activeVariant = ''; this.pendingPlace = ''; this.selectedBlock = null; this.previewRoot.replaceChildren(); this.renderEditor();});
     general.append(el('span', 'Общий'), el('small', 'Другие города · место неизвестно')); general.setAttribute('role', 'tab'); general.setAttribute('aria-label', 'Общий'); general.setAttribute('aria-selected', String(!this.activeVariant)); general.title = 'Обязательная версия. Используется, если подходящей локальной версии нет.'; tabs.append(general);
     const places = this.data?.places ?? [];
     for (const place of [...places.filter(p => ['dorm', 'home'].includes(p.id)), ...places.filter(p => !['dorm', 'home'].includes(p.id))]) {
@@ -283,7 +326,7 @@ export class AutomationsView {
       if (!variant && !['dorm', 'home'].includes(place.id)) continue;
       const name = place.id === 'dorm' ? 'Общага' : place.id === 'home' ? 'Дом' : variant?.name ?? place.name;
       const usage = place.id === 'dorm' ? 'Таллинн' : place.id === 'home' ? 'Силламяэ' : 'Ручной выбор';
-      const tab = this.button('', () => {if (variant) {this.activeVariant = variant.id; this.pendingPlace = '';} else this.pendingPlace = place.id; this.previewRoot.replaceChildren(); this.renderEditor();});
+      const tab = this.button('', () => {if (variant) {this.activeVariant = variant.id; this.pendingPlace = '';} else this.pendingPlace = place.id; this.selectedBlock = null; this.previewRoot.replaceChildren(); this.renderEditor();});
       const title = variant ? name : `+ ${name}`;
       tab.append(el('span', title), el('small', `${usage}${variant && !variant.enabled ? ' · выключена' : ''}`)); tab.setAttribute('aria-label', title); tab.title = usage;
       if (variant) {tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(this.activeVariant === variant.id));} else tab.className = 'add-version-tab';
@@ -344,13 +387,22 @@ export class AutomationsView {
   private edit(scenario: Scenario): void {
     if (!this.discardAllowed()) return;
     this.feedback.replaceChildren(); delete this.feedback.dataset.error;
-    this.draft = this.document(scenario); this.pendingPlace = ''; this.pendingPhrase = ''; this.activeVariant = ''; this.dirty = false; this.advancedOpen = false;
-    this.previewRoot.replaceChildren(); this.revisionRoot.replaceChildren(); this.recognition.replaceChildren(); this.phraseText = ''; this.renderEditor();
+    this.draft = this.document(scenario); this.pendingPlace = ''; this.pendingPhrase = ''; this.activeVariant = ''; this.dirty = false; this.advancedOpen = false; this.selectedBlock = null;
+    this.undoStack = []; this.redoStack = []; this.historySnapshot = ''; this.previewRoot.replaceChildren(); this.revisionRoot.replaceChildren(); this.recognition.replaceChildren(); this.phraseText = ''; this.renderEditor();
   }
   private runButton(scenario: Scenario): HTMLButtonElement {
-    const button = this.button('Запустить на устройствах', () => {if (this.dirty) {this.feedback.textContent = 'Сначала сохрани изменения.'; return;} if (this.running) return; if (window.confirm(`Запустить «${scenario.name}» на реальных устройствах? Версия будет выбрана по текущему месту.`)) {this.running = true; this.editor.querySelectorAll<HTMLButtonElement>('.real-run').forEach(button => button.disabled = true); this.send({op: 'run', id: scenario.id, revision: scenario.revision, variant: ''});}});
+    const button = this.button('Запустить на устройствах', () => this.runScenario(scenario));
     button.className = 'real-run';
     button.disabled ||= this.dirty || !scenario.enabled || !scenario.triggers.some(t => t.kind === 'manual'); return button;
+  }
+  private runScenario(scenario: Scenario): void {
+    if (this.dirty) {this.feedback.textContent = 'Сначала сохрани изменения.'; return;}
+    if (this.running || !scenario.enabled || !scenario.triggers.some(t => t.kind === 'manual')) return;
+    if (!window.confirm(`Запустить «${scenario.name}» на реальных устройствах? Версия будет выбрана по текущему месту.`)) return;
+    this.running = true;
+    this.editor.querySelectorAll<HTMLButtonElement>('.real-run').forEach(button => button.disabled = true);
+    this.editor.querySelectorAll<HTMLButtonElement>('.scenario-card-run,.scenario-quick-run').forEach(button => button.disabled = true);
+    this.send({op: 'run', id: scenario.id, revision: scenario.revision, variant: ''});
   }
   private remove(scenario: Scenario): void {
     if (!window.confirm(`Удалить «${scenario.name}»?`)) return;
@@ -367,37 +419,100 @@ export class AutomationsView {
   }
   private renderList(): void {
     this.list.replaceChildren();
+    this.list.dataset.mode = this.listMode;
     const filter = document.querySelector<HTMLSelectElement>('#scenario-place-filter');
     if (filter) {const values = [['', 'Все места'], ['general', 'Общий'], ...(this.data?.places ?? []).map(p => [p.id, p.name])]; filter.replaceChildren(...values.map(([value, name]) => {const option = el('option', name); option.value = value; return option;})); filter.value = this.placeFilter;}
-    const matches = searchCommands(this.data?.scenarios ?? [], this.searchText).filter(s => !this.placeFilter || (this.placeFilter === 'general' ? true : s.variants.some(v => v.place_id === this.placeFilter)));
+    const usage = new Map<string, number>();
+    for (const run of this.data?.runs ?? []) usage.set(run.scenario_id, (usage.get(run.scenario_id) ?? 0) + 1);
+    let matches = searchCommands(this.data?.scenarios ?? [], this.searchText)
+      .filter(s => !this.placeFilter || this.placeFilter === 'general' || s.variants.some(v => v.place_id === this.placeFilter))
+      .filter(s => this.listFilter === 'all' || this.listFilter === 'active' && s.enabled || this.listFilter === 'favorite' && s.favorite || this.listFilter === 'schedule' && s.triggers.some(t => t.kind === 'schedule') || this.listFilter === 'voice' && s.triggers.some(t => t.kind === 'voice'));
+    matches = [...matches].sort((a, b) => this.listSort === 'name' ? a.name.localeCompare(b.name, 'ru') : this.listSort === 'usage' ? (usage.get(b.id) ?? 0) - (usage.get(a.id) ?? 0) || a.name.localeCompare(b.name, 'ru') : (b.updated_at ?? '').localeCompare(a.updated_at ?? '') || b.revision - a.revision);
     for (const scenario of matches) {
       const row = el('article', '', 'scenario-card');
+      row.style.setProperty('--scenario-color', /^#[0-9a-f]{6}$/i.test(scenario.color ?? '') ? scenario.color : '#9B4BD3');
       const open = this.button('', () => this.edit(scenario)); open.className = 'scenario-open'; open.setAttribute('aria-label', `Открыть сценарий ${scenario.name}`);
       const text = el('span', '', 'scenario-summary');
       const total = countBlocks(scenario.actions) + scenario.variants.reduce((n, v) => n + countBlocks(v.actions), 0);
-      text.append(el('strong', scenario.name), el('small', scenario.phrases.map(p => `«${p}»`).join(' · ') || 'Запуск кнопкой'), el('small', `${['Общий', ...scenario.variants.map(v => v.name)].join(' · ')}   ·   Блоков: ${total}   ·   ${scenario.enabled ? 'Включён' : 'Выключен'}`, 'scenario-meta'));
+      const triggerSummary = scenario.triggers.filter(t => t.kind === 'voice' || t.kind === 'schedule').map(t => t.kind === 'schedule' ? `◷ ${t.at}` : 'Голос').join(' · ') || 'Ручной запуск';
+      text.append(el('strong', scenario.name), el('small', scenario.description || scenario.phrases.map(p => `«${p}»`).join(' · ') || 'Без описания'), el('small', `${triggerSummary} · ${total} блоков · ${usage.get(scenario.id) ?? 0} запусков`, 'scenario-meta'));
+      if (scenario.tags.length) {const tags = el('span', '', 'scenario-tags'); scenario.tags.forEach(tag => tags.append(el('span', tag))); text.append(tags);}
       open.append(el('span', scenario.icon, 'scenario-icon'), text);
       const enabled = this.button('', () => {if (this.draft?.id === scenario.id && !this.discardAllowed()) return; this.toggling.add(scenario.id); this.send({op: 'save', scenario: {...clone(scenario), enabled: !scenario.enabled}});}); enabled.className = 'scenario-switch'; enabled.setAttribute('role', 'switch'); enabled.setAttribute('aria-checked', String(scenario.enabled)); enabled.setAttribute('aria-label', `Сценарий ${scenario.name} включён`);
       const menu = el('details', '', 'scenario-menu'); menu.append(el('summary', '⋯')); menu.firstElementChild!.setAttribute('aria-label', `Действия со сценарием ${scenario.name}`);
-      const items = el('div', '', 'menu-items'); items.append(this.button('Редактировать', () => {menu.open = false; this.edit(scenario);}), this.button('Дублировать', () => {if (this.discardAllowed()) {this.saving = true; this.send({op: 'copy', id: scenario.id});}}), this.button('Удалить', () => this.remove(scenario)));
-      menu.append(items); row.append(open, enabled, menu); this.list.append(row);
+      const items = el('div', '', 'menu-items');
+      const toggleFavorite = () => {this.listSaving.add(scenario.id); this.send({op: 'save', scenario: {...clone(scenario), favorite: !scenario.favorite}});};
+      items.append(this.button('Редактировать', () => {menu.open = false; this.edit(scenario);}), this.button(scenario.favorite ? 'Убрать из избранного' : 'В избранное', toggleFavorite), this.button('Дублировать', () => {if (this.discardAllowed()) {this.saving = true; this.send({op: 'copy', id: scenario.id});}}), this.button('Экспортировать JSON', () => this.exportScenario(scenario)), this.button('Удалить', () => this.remove(scenario)));
+      const history = el('details', '', 'scenario-card-history'); history.append(el('summary', 'История запусков'));
+      const recent = (this.data?.runs ?? []).filter(run => run.scenario_id === scenario.id).slice(0, 5);
+      if (!recent.length) history.append(el('p', 'Запусков пока нет.'));
+      for (const run of recent) history.append(el('p', `${new Date(run.started_at).toLocaleString()} · ${status[run.status] ?? run.status}`));
+      items.append(history); menu.append(items);
+      const actions = el('div', '', 'scenario-card-actions');
+      const favorite = this.button(scenario.favorite ? '★' : '☆', toggleFavorite); favorite.setAttribute('aria-label', scenario.favorite ? 'Убрать из избранного' : 'Добавить в избранное'); favorite.className = 'scenario-favorite';
+      const run = this.button('▶ Запустить', () => this.runScenario(scenario)); run.className = 'scenario-card-run'; run.disabled ||= !scenario.enabled || this.running || (this.data?.runs ?? []).some(item => item.scenario_id === scenario.id && item.status === 'running') || !scenario.triggers.some(t => t.kind === 'manual');
+      actions.append(run, favorite, enabled, menu); row.append(open, actions); this.list.append(row);
     }
-    if (!matches.length) this.list.append(el('p', this.searchText ? 'Сценариев не найдено.' : 'Твои маленькие привычки начинаются с первого сценария.', 'empty-state'));
+    if (!matches.length) this.list.append(el('p', this.searchText ? 'Сценариев не найдено.' : this.listFilter !== 'all' ? 'Подходящих сценариев нет.' : 'Твои маленькие привычки начинаются с первого сценария.', 'empty-state'));
     if (this.lastDeleted) this.list.append(this.button('Отменить удаление', () => {const deleted = this.lastDeleted!; this.saving = true; this.send({op: 'restore', id: deleted.id, from_revision: deleted.revision, expected_revision: 0}); this.lastDeleted = null;}));
+    this.renderOverview();
+  }
+
+  private exportScenario(scenario: Scenario): void {
+    const payload = JSON.stringify({format: 'chushpan-scenario', schema_version: scenario.schema_version, scenario}, null, 2);
+    const url = URL.createObjectURL(new Blob([payload], {type: 'application/json'}));
+    const anchor = el('a'); anchor.href = url; anchor.download = `${scenario.name.replace(/[^\p{L}\p{N}-]+/gu, '-') || 'scenario'}.json`; anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  private renderOverview(): void {
+    this.overview.replaceChildren();
+    const scenarios = this.data?.scenarios ?? [], runs = this.data?.runs ?? [];
+    const quick = el('section', '', 'scenario-rail-card'); quick.append(el('h2', 'Быстрый запуск'));
+    const favorites = scenarios.filter(s => s.favorite && s.enabled && s.triggers.some(t => t.kind === 'manual')).slice(0, 4);
+    if (!favorites.length) quick.append(el('p', 'Добавь сценарии в избранное, чтобы запускать их отсюда.'));
+    for (const scenario of favorites) {const button = this.button(`${scenario.icon}  ${scenario.name}  ▶`, () => this.runScenario(scenario)); button.disabled ||= this.running; button.className = 'scenario-quick-run'; quick.append(button);}
+    const now = new Date(); const weekAgo = now.getTime() - 7 * 24 * 60 * 60 * 1000;
+    const recentRuns = runs.filter(run => Date.parse(run.started_at) >= weekAgo);
+    const stats = el('section', '', 'scenario-rail-card scenario-stats'); stats.append(el('h2', 'Статистика · 7 дней'));
+    const metricRow = el('div', '', 'scenario-stat-metrics');
+    for (const [value, label] of [[String(recentRuns.length), 'Запусков'], [String(scenarios.filter(s => s.enabled).length), 'Активных'], [String(scenarios.filter(s => Date.parse(s.created_at ?? '') >= weekAgo).length), 'Новых']] as const) {const metric = el('div', '', 'scenario-stat'); metric.append(el('strong', value), el('small', label)); metricRow.append(metric);}
+    stats.append(metricRow);
+    const chart = el('div', '', 'scenario-week-chart'); chart.setAttribute('role', 'img'); chart.setAttribute('aria-label', 'Количество запусков по дням за семь дней');
+    const days: {date: Date; count: number}[] = [];
+    for (let back = 6; back >= 0; back--) {const date = new Date(now); date.setHours(0, 0, 0, 0); date.setDate(date.getDate() - back); const key = date.toDateString(); days.push({date, count: recentRuns.filter(run => new Date(run.started_at).toDateString() === key).length});}
+    const peak = Math.max(1, ...days.map(day => day.count));
+    for (const day of days) {const column = el('div', '', 'scenario-chart-day'); const bar = el('span'); bar.style.height = `${Math.max(4, Math.round(day.count / peak * 58))}px`; bar.title = `${day.count} запусков`; column.append(bar, el('small', day.date.toLocaleDateString('ru', {weekday: 'short'}))); chart.append(column);}
+    stats.append(chart);
+    const latest = el('section', '', 'scenario-rail-card scenario-recent'); latest.append(el('h2', 'Последние запуски'));
+    if (!runs.length) latest.append(el('p', 'История запусков появится после первого теста.'));
+    for (const run of runs.slice(0, 4)) {const row = el('div', '', 'scenario-recent-row'); row.append(el('span', run.name), el('small', `${new Date(run.started_at).toLocaleString()} · ${status[run.status] ?? run.status}`)); latest.append(row);}
+    this.overview.append(quick, stats, latest);
   }
 
   private renderEditor(): void {
     const draft = this.draft;
+    this.trackHistoryChange();
     this.editor.replaceChildren();
     if (this.dirty) this.previewRoot.replaceChildren();
     const page = document.querySelector<HTMLElement>('.automations-page')!;
     page.dataset.editing = String(!!draft);
     this.editor.parentElement!.dataset.editing = String(!!draft);
-    if (!draft) return;
+    if (!draft) {this.historySnapshot = ''; return;}
     if (!draft.variants.some(v => v.id === this.activeVariant)) this.activeVariant = '';
     const form = el('form');
-    form.addEventListener('input', () => {this.previewRoot.replaceChildren(); for (const button of form.querySelectorAll<HTMLButtonElement>('.real-run')) button.disabled = true;});
-    form.addEventListener('change', () => {this.previewRoot.replaceChildren(); for (const button of form.querySelectorAll<HTMLButtonElement>('.real-run')) button.disabled = true;});
+    form.addEventListener('input', () => {this.trackHistoryChange(); this.previewRoot.replaceChildren(); for (const button of form.querySelectorAll<HTMLButtonElement>('.real-run')) button.disabled = true;});
+    form.addEventListener('change', () => {this.trackHistoryChange(); this.previewRoot.replaceChildren(); for (const button of form.querySelectorAll<HTMLButtonElement>('.real-run')) button.disabled = true;});
+    form.addEventListener('keydown', event => {
+      const key = event as KeyboardEvent;
+      const command = key.metaKey || key.ctrlKey;
+      const target = key.target as HTMLElement;
+      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable;
+      if (command && key.key.toLowerCase() === 'z') {key.preventDefault(); key.shiftKey ? this.redo() : this.undo();}
+      else if (command && key.key.toLowerCase() === 'c' && !typing) {key.preventDefault(); this.copySelectedBlock();}
+      else if (command && key.key.toLowerCase() === 'v' && !typing) {key.preventDefault(); this.pasteSelectedBlock();}
+      else if ((key.key === 'Backspace' || key.key === 'Delete') && !typing && this.selectedBlock) {key.preventDefault(); this.deleteSelectedBlock();}
+    });
     const saveDraft = () => {
       if (!this.online || this.saving || !this.commitPhrase()) return;
       if (!form.reportValidity()) return;
@@ -405,16 +520,17 @@ export class AutomationsView {
     };
     form.onsubmit = event => {event.preventDefault(); saveDraft();};
     const heading = el('div', '', 'editor-heading');
-    const back = this.button('', () => {if (!this.discardAllowed()) return; this.draft = null; this.dirty = false; this.pendingPhrase = ''; this.previewRoot.replaceChildren(); this.renderEditor(); this.renderList();});
+    const back = this.button('', () => {if (!this.discardAllowed()) return; this.draft = null; this.dirty = false; this.pendingPhrase = ''; this.selectedBlock = null; this.previewRoot.replaceChildren(); this.renderEditor(); this.renderList();});
     back.append(this.glyph('back')); back.setAttribute('aria-label', 'Все сценарии');
     const title = el('h1', draft.id ? 'Редактирование сценария' : 'Новый сценарий');
     const save = el('button', 'Сохранить'); save.type = 'submit'; save.className = 'primary'; save.disabled = !this.online || this.saving;
-    const undo = this.button('Отменить изменения', () => {if (!this.discardAllowed()) return; const saved = this.data?.scenarios.find(s => s.id === draft.id); this.draft = saved ? this.document(saved) : newScenario(); if (!saved) this.draft.name = ''; this.pendingPhrase = ''; this.dirty = false; this.activeVariant = ''; this.previewRoot.replaceChildren(); this.renderEditor();}); undo.className = 'editor-undo';
-    heading.append(back, title, undo);
+    const undo = this.button('Отменить изменения', () => {if (!this.discardAllowed()) return; const saved = this.data?.scenarios.find(s => s.id === draft.id); this.draft = saved ? this.document(saved) : newScenario(); if (!saved) this.draft.name = ''; this.pendingPhrase = ''; this.dirty = false; this.activeVariant = ''; this.undoStack = []; this.redoStack = []; this.historySnapshot = ''; this.previewRoot.replaceChildren(); this.renderEditor();}); undo.className = 'editor-undo';
+    const testRun = this.button('▷ Тестовый запуск', () => {if (!this.commitPhrase()) return; this.send({op: 'preview', scenario: draft, variant: this.activeVariant || 'general'});}); testRun.className = 'scenario-test-run';
+    heading.append(back, title, undo, testRun);
     if (draft.id) {const remove = this.button('', () => this.remove(draft)); remove.append(this.glyph('trash')); remove.setAttribute('aria-label', 'Удалить сценарий'); remove.title = 'Удалить сценарий'; heading.append(remove);}
     heading.append(save);
     const first = el('section', '', 'editor-step scenario-basics');
-    const icons = el('details', '', 'scenario-icon-picker'); const icon = el('summary', draft.icon); icon.setAttribute('aria-label', 'Иконка сценария'); icons.append(icon);
+    const icons = el('details', '', 'scenario-icon-picker'); const icon = el('summary', draft.icon); icon.setAttribute('aria-label', 'Иконка сценария'); icon.style.color = draft.color; icons.append(icon);
     const library = el('div', '', 'scenario-icon-library');
     for (const value of ['✦', '☾', '☀', '♫', '⌂', '▶', '♡', '⚡', '◈', '☕', '☁', '◎']) {const choice = this.button(value, () => {draft.icon = value; this.dirty = true; this.renderEditor();}); choice.setAttribute('aria-label', `Выбрать иконку ${value}`); library.append(choice);} icons.append(library);
     const fields = el('div', '', 'scenario-basic-fields');
@@ -430,11 +546,16 @@ export class AutomationsView {
     entry.onkeydown = event => {if (event.key === 'Enter') {event.preventDefault(); addPhrase();}};
     const plus = this.button('+', addPhrase); plus.setAttribute('aria-label', 'Добавить фразу'); plus.title = 'Добавить фразу';
     phrases.append(entry, plus);
-    fields.append(this.label('Название', name), el('span', 'Фразы для вызова', 'field-caption'), phrases);
+    const description = el('textarea'); description.value = draft.description; description.maxLength = 1000; description.rows = 2; description.placeholder = 'Что делает этот сценарий'; description.oninput = () => {draft.description = description.value; this.dirty = true;};
+    const color = el('input'); color.type = 'color'; color.value = /^#[\da-f]{6}$/i.test(draft.color ?? '') ? draft.color : '#9B4BD3'; color.oninput = () => {draft.color = color.value.toUpperCase(); icon.style.color = color.value; this.dirty = true;};
+    const tags = el('input'); tags.type = 'text'; tags.value = draft.tags.join(', '); tags.placeholder = 'Вечер, Дом, Музыка'; tags.oninput = () => {draft.tags = tags.value.split(',').map(tag => tag.trim()).filter(Boolean).slice(0, 12); this.dirty = true;};
+    const metaFields = el('div', '', 'scenario-meta-fields');
+    metaFields.append(this.label('Описание', description), this.label('Цвет карточки', color), this.label('Теги · через запятую', tags), this.checkbox('Сценарий включён', draft.enabled, value => draft.enabled = value), this.checkbox('В избранном', draft.favorite, value => draft.favorite = value));
+    fields.append(this.label('Название', name), metaFields, el('span', 'Голосовые фразы', 'field-caption'), phrases);
     first.append(icons, fields);
     first.append(this.versionTabs(draft), this.editorLocationRoot); this.renderLocation();
     const second = el('section', '', 'editor-step scenario-constructor');
-    const blockHeading = el('div', '', 'scenario-section-heading'); const h = el('h2', 'Блоки сценария'); h.prepend(this.glyph('layers')); blockHeading.append(h, el('span', 'Выполняются по порядку ↓', 'muted')); second.append(blockHeading);
+    const blockHeading = el('div', '', 'scenario-section-heading'); const h = el('h2', 'Блок-схема'); h.prepend(this.glyph('layers')); blockHeading.append(h, el('span', 'Блоки сохраняются в действующем движке Чушпана', 'muted')); second.append(blockHeading);
     const variant = draft.variants.find(v => v.id === this.activeVariant);
     second.append(el('p', 'Запускается одна версия по текущему месту. Вкладки меняют только редактируемую версию.', 'variant-hint'));
     const targets = [{id: '', name: 'Общий'}, ...draft.variants].filter(v => v.id !== this.activeVariant);
@@ -445,7 +566,30 @@ export class AutomationsView {
     }
     if (variant) tools.append(this.button('Удалить версию', () => this.deleteVersion(draft, variant)));
     if (tools.childElementCount) second.append(tools);
-    second.append(this.blocks(variant?.actions ?? draft.actions, false));
+    const flowTools = el('div', '', 'scenario-flow-toolbar');
+    const undoStep = this.button('↶', () => this.undo()); undoStep.setAttribute('aria-label', 'Отменить последнее изменение'); undoStep.title = '⌘Z'; undoStep.disabled ||= !this.undoStack.length;
+    const redoStep = this.button('↷', () => this.redo()); redoStep.setAttribute('aria-label', 'Повторить изменение'); redoStep.title = '⌘⇧Z'; redoStep.disabled ||= !this.redoStack.length;
+    const copyStep = this.button('Копировать', () => this.copySelectedBlock()); copyStep.setAttribute('aria-label', 'Копировать выбранный блок'); copyStep.disabled ||= !this.selectedBlock;
+    const pasteStep = this.button('Вставить', () => this.pasteSelectedBlock()); pasteStep.setAttribute('aria-label', 'Вставить скопированный блок'); pasteStep.disabled ||= !this.clipboardBlock;
+    const zoomOut = this.button('−', () => this.setCanvasZoom(this.canvasZoom - 10)); zoomOut.setAttribute('aria-label', 'Уменьшить масштаб');
+    const zoomLabel = el('span', `${this.canvasZoom}%`, 'scenario-zoom-label');
+    const zoomIn = this.button('+', () => this.setCanvasZoom(this.canvasZoom + 10)); zoomIn.setAttribute('aria-label', 'Увеличить масштаб');
+    const fit = this.button('Вписать схему', () => {this.setCanvasZoom(100); const viewport = this.editor.querySelector<HTMLElement>('.scenario-flow-viewport'); if (viewport) {viewport.scrollTop = 0; viewport.scrollLeft = 0;}});
+    flowTools.append(undoStep, redoStep, copyStep, pasteStep, zoomOut, zoomLabel, zoomIn, fit);
+    const viewport = el('div', '', 'scenario-flow-viewport'); viewport.tabIndex = 0; viewport.setAttribute('aria-label', 'Полотно сценария, блоки идут сверху вниз');
+    const flow = el('div', '', 'scenario-flow-content'); flow.style.setProperty('zoom', `${this.canvasZoom}%`);
+    const triggerNode = el('div', '', 'scenario-flow-trigger'); triggerNode.append(this.glyph('shortcut'), el('strong', 'Триггеры'), el('small', this.triggerDescription(draft)));
+    flow.append(triggerNode, el('span', '', 'scenario-flow-connector'), this.blocks(variant?.actions ?? draft.actions, true));
+    const finishNode = el('div', '', 'scenario-flow-finish'); finishNode.append(this.glyph('layers'), el('strong', 'Завершение сценария'));
+    flow.append(el('span', '', 'scenario-flow-connector'), finishNode);
+    viewport.append(flow); this.enableCanvasPan(viewport);
+    const canvasWrap = el('div', '', 'scenario-flow-shell'); canvasWrap.append(flowTools, viewport);
+    if (countBlocks(variant?.actions ?? draft.actions) > 18) {
+      const map = el('div', '', 'scenario-minimap'); map.setAttribute('aria-label', 'Мини-карта блок-схемы');
+      for (const _ of Array.from({length: Math.min(48, countBlocks(variant?.actions ?? draft.actions))})) map.append(el('i'));
+      canvasWrap.append(map);
+    }
+    second.append(canvasWrap);
     const extra = el('section', '', 'editor-step scenario-options'); const extraHeading = el('h2', 'Дополнительно'); extraHeading.prepend(this.glyph('settings')); extra.append(extraHeading);
     const options = el('div', '', 'scenario-quick-options');
     const delay = this.input(String(draft.inter_block_delay_s), v => draft.inter_block_delay_s = Number(v), 'number'); delay.min = '0'; delay.max = '60'; delay.step = 'any';
@@ -457,6 +601,82 @@ export class AutomationsView {
     if (draft.id) {const run = this.runButton(draft); run.disabled ||= this.dirty; controls.append(run);}
     third.append(controls, el('p', !draft.enabled ? 'Сценарий выключен.' : !draft.triggers.some(t => t.kind === 'voice') ? 'Голосовой запуск выключен.' : 'Проверка — безопасная симуляция. Реальный запуск доступен после сохранения.', 'muted'), this.previewRoot, this.executionRoot);
     form.append(heading, first, second, extra, third); this.editor.append(form); this.renderTraining(); this.renderRuns();
+  }
+
+  private trackHistoryChange(): void {
+    if (!this.draft) return;
+    const current = JSON.stringify(this.draft);
+    if (!this.replayingHistory && this.historySnapshot && current !== this.historySnapshot) {
+      try {this.undoStack.push(JSON.parse(this.historySnapshot) as Scenario);} catch { /* Ignore a stale view snapshot. */ }
+      if (this.undoStack.length > 60) this.undoStack.shift();
+      this.redoStack = [];
+    }
+    this.historySnapshot = current;
+    const undo = this.editor.querySelector<HTMLButtonElement>('[aria-label="Отменить последнее изменение"]');
+    const redo = this.editor.querySelector<HTMLButtonElement>('[aria-label="Повторить изменение"]');
+    if (undo) undo.disabled = !this.online || !this.undoStack.length;
+    if (redo) redo.disabled = !this.online || !this.redoStack.length;
+  }
+  private undo(): void {
+    if (!this.draft || !this.undoStack.length) return;
+    this.redoStack.push(clone(this.draft)); this.draft = this.undoStack.pop()!; this.selectedBlock = null; this.dirty = true;
+    this.replayingHistory = true; this.renderEditor(); this.replayingHistory = false;
+  }
+  private redo(): void {
+    if (!this.draft || !this.redoStack.length) return;
+    this.undoStack.push(clone(this.draft)); this.draft = this.redoStack.pop()!; this.selectedBlock = null; this.dirty = true;
+    this.replayingHistory = true; this.renderEditor(); this.replayingHistory = false;
+  }
+  private copySelectedBlock(): void {
+    const selection = this.selectedBlock;
+    if (!selection || !selection.blocks[selection.index]) return;
+    this.clipboardBlock = clone(selection.blocks[selection.index]);
+    this.updateSelectionButtons();
+  }
+  private updateSelectionButtons(): void {
+    const copy = this.editor.querySelector<HTMLButtonElement>('button[aria-label="Копировать выбранный блок"]');
+    const paste = this.editor.querySelector<HTMLButtonElement>('[aria-label="Вставить скопированный блок"]');
+    if (copy) copy.disabled = !this.online || !this.selectedBlock;
+    if (paste) paste.disabled = !this.online || !this.clipboardBlock;
+  }
+  private pasteSelectedBlock(): void {
+    if (!this.clipboardBlock || !this.draft) return;
+    const target = this.selectedBlock;
+    const blocks = target?.blocks ?? (this.activeVariant ? this.draft.variants.find(v => v.id === this.activeVariant)?.actions : this.draft.actions) ?? this.draft.actions;
+    const index = target ? target.index + 1 : blocks.length;
+    blocks.splice(index, 0, clone(this.clipboardBlock)); this.dirty = true; this.renderEditor();
+  }
+  private deleteSelectedBlock(): void {
+    const target = this.selectedBlock;
+    if (!target || !target.blocks[target.index]) return;
+    target.blocks.splice(target.index, 1); this.selectedBlock = null; this.dirty = true; this.renderEditor();
+  }
+  private setCanvasZoom(value: number): void {
+    this.canvasZoom = Math.max(50, Math.min(150, Math.round(value / 10) * 10));
+    const content = this.editor.querySelector<HTMLElement>('.scenario-flow-content');
+    const label = this.editor.querySelector<HTMLElement>('.scenario-zoom-label');
+    if (content) content.style.setProperty('zoom', `${this.canvasZoom}%`);
+    if (label) label.textContent = `${this.canvasZoom}%`;
+  }
+  private triggerDescription(scenario: Scenario): string {
+    const parts = scenario.triggers.map(trigger => trigger.kind === 'schedule' ? `Время ${trigger.at}` : trigger.kind === 'voice' ? scenario.phrases[0] ? `Фраза: «${scenario.phrases[0]}»` : 'Голосовая фраза не добавлена' : trigger.kind === 'condition' ? 'При выполнении условия' : 'Ручной запуск');
+    return parts.join(' · ') || 'Триггер не настроен';
+  }
+  private enableCanvasPan(viewport: HTMLElement): void {
+    let dragging = false, lastX = 0, lastY = 0;
+    viewport.onpointerdown = event => {
+      const pointer = event as PointerEvent;
+      if (pointer.target !== viewport) return;
+      dragging = true; lastX = pointer.clientX; lastY = pointer.clientY; viewport.classList.add('is-panning');
+      viewport.setPointerCapture?.(pointer.pointerId);
+    };
+    viewport.onpointermove = event => {
+      if (!dragging) return;
+      const pointer = event as PointerEvent; viewport.scrollLeft -= pointer.clientX - lastX; viewport.scrollTop -= pointer.clientY - lastY;
+      lastX = pointer.clientX; lastY = pointer.clientY;
+    };
+    const stop = () => {dragging = false; viewport.classList.remove('is-panning');};
+    viewport.onpointerup = stop; viewport.onpointercancel = stop;
   }
 
   private advancedEditor(draft: Scenario): HTMLElement {
@@ -515,8 +735,8 @@ export class AutomationsView {
     if (kind === 'action' && capability === 'led.set') block.parameters.color = '#B48CCB';
     return block;
   }
-  private blocks(blocks: Block[], _showTools = true): HTMLElement {
-    const root = el('div', '', 'scenario-blocks');
+  private blocks(blocks: Block[], showTools = true): HTMLElement {
+    const root = el('div', '', `scenario-blocks${showTools ? ' scenario-flow-root' : ''}`);
     const add = (kind: Block['kind'], capability = '') => {
       const block = this.actionBlock(kind, capability);
       if (kind === 'action') {
@@ -534,8 +754,9 @@ export class AutomationsView {
     };
     if (!blocks.length) root.append(el('p', 'Добавь первое действие — всё остальное Чушпан выполнит по порядку.', 'blocks-empty'));
     blocks.forEach((block, index) => {
-      const card = el('details', '', 'scenario-block'); card.open = this.openedBlocks.has(block); card.dataset.enabled = String(block.enabled);
-      card.ontoggle = () => {if (card.open) this.openedBlocks.add(block); else this.openedBlocks.delete(block);};
+      const card = el('details', '', 'scenario-block'); card.tabIndex = 0; card.open = this.openedBlocks.has(block); card.dataset.enabled = String(block.enabled);
+      card.dataset.kind = block.kind;
+      card.ontoggle = () => {if (card.open) {this.openedBlocks.add(block); this.selectedBlock = {blocks, index}; this.updateSelectionButtons();} else this.openedBlocks.delete(block);};
       card.ondragover = event => {if (this.dragSource?.blocks !== blocks) return; event.preventDefault(); event.stopPropagation(); card.classList.add('drop-target');};
       card.ondragleave = () => card.classList.remove('drop-target');
       card.ondrop = event => {event.preventDefault(); event.stopPropagation(); const source = this.dragSource; this.dragSource = null; if (source?.blocks === blocks && reorderBlock(blocks, source.index, index)) {this.dirty = true; this.renderEditor();}};
@@ -577,39 +798,47 @@ export class AutomationsView {
       } else {
         if (block.kind === 'if') body.append(this.conditionEditor(block.condition!));
         if (block.kind === 'parallel') body.append(el('small', 'Ветки выполняются одновременно на разных устройствах.'));
-        body.append(el('h4', block.kind === 'if' ? 'Да' : 'Действия'), this.blocks(block.children));
-        if (block.kind === 'if') body.append(el('h4', 'Нет'), this.blocks(block.otherwise));
+        if (block.kind === 'if') {
+          const branches = el('div', '', 'scenario-branches');
+          const yes = el('section', '', 'scenario-branch'); yes.append(el('h4', 'Да'), this.blocks(block.children, false));
+          const no = el('section', '', 'scenario-branch'); no.append(el('h4', 'Нет'), this.blocks(block.otherwise, false));
+          branches.append(yes, no); body.append(branches);
+        } else {
+          const nested = el('section', '', 'scenario-nested-branch'); nested.append(el('h4', block.kind === 'parallel' ? 'Параллельные действия' : 'Действия по порядку'), this.blocks(block.children, false)); body.append(nested);
+        }
       }
       const more = this.button('⋮', () => {card.open = !card.open; extra.open = card.open;}); more.className = 'block-more'; more.setAttribute('aria-label', `Настройки блока ${index + 1}`); more.onclick = event => {event.preventDefault(); event.stopPropagation(); card.open = !card.open; extra.open = card.open;};
       heading.append(inline, more);
       card.oninput = card.onchange = () => {text.lastElementChild!.textContent = this.blockDescription(block);};
       body.append(controls, extra); card.append(heading, body); root.append(card);
     });
-    const picker = el('details', '', 'action-picker'); picker.append(el('summary', 'Добавить блок'));
-    const panel = el('div', '', 'block-catalogue'); const search = el('input'); search.type = 'search'; search.placeholder = 'Найти действие…'; search.setAttribute('aria-label', 'Поиск блоков'); panel.append(search);
-    const choices = el('div', '', 'action-choices');
-    const render = () => {
-      choices.replaceChildren();
-      const query = search.value.trim().toLocaleLowerCase('ru');
-      const categories: Record<string, {kind: Block['kind']; id: string; name: string; note: string; disabled: boolean}[]> = {'Устройства': [], 'Приложения': [], 'Система': [{kind: 'delay', id: '', name: 'Подождать', note: 'Пауза между действиями', disabled: false}], 'Логика': ['sequence', 'parallel', 'if'].map(kind => ({kind: kind as Block['kind'], id: '', name: {sequence: 'Последовательное выполнение', parallel: 'Параллельное выполнение', if: 'Условие: если / иначе'}[kind]!, note: 'Вложенные блоки', disabled: false}))};
-      for (const cap of this.data?.capabilities ?? []) {
-        const category = ['led.set', 'mac.brightness', 'display.brightness', 'mac.volume'].includes(cap.id) ? 'Устройства' : cap.id === 'mac.power' ? 'Система' : 'Приложения';
-        const unavailable = cap.availability === 'unavailable' || cap.id === 'shortcut.run' && !cap.parameters.name?.enum?.length;
-        categories[category].push({kind: 'action', id: cap.id, name: cap.name, note: unavailable ? 'Нужна настройка интеграции' : cap.device === 'shortcuts' ? 'Команды, разрешённые в Чушпане' : cap.description, disabled: unavailable});
-      }
-      let matches = 0;
-      for (const [name, items] of Object.entries(categories)) {
-        const visible = items.filter(item => `${item.name} ${name}`.toLocaleLowerCase('ru').includes(query)); if (!visible.length) continue;
-        const group = el('div', '', 'action-group'); group.append(el('h4', name));
-        for (const item of visible) {
-          const button = this.button(item.name, () => add(item.kind, item.id)); button.disabled ||= item.disabled; group.append(button); matches++;
-          if (item.disabled) group.append(el('small', item.note), this.button('Настроить', () => this.navigate('settings')));
+    if (showTools) {
+      const picker = el('details', '', 'action-picker'); picker.open = true; picker.append(el('summary', 'Блоки'));
+      const panel = el('div', '', 'block-catalogue'); const search = el('input'); search.type = 'search'; search.placeholder = 'Поиск блоков…'; search.setAttribute('aria-label', 'Поиск блоков'); panel.append(search);
+      const choices = el('div', '', 'action-choices');
+      const render = () => {
+        choices.replaceChildren();
+        const query = search.value.trim().toLocaleLowerCase('ru');
+        const categories: Record<string, {kind: Block['kind']; id: string; name: string; note: string; disabled: boolean}[]> = {'Устройства': [], 'Приложения': [], 'Система': [{kind: 'delay', id: '', name: 'Подождать', note: 'Пауза между действиями', disabled: false}], 'Логика': ['sequence', 'parallel', 'if'].map(kind => ({kind: kind as Block['kind'], id: '', name: {sequence: 'Последовательность', parallel: 'Параллельные действия', if: 'Условие: если / иначе'}[kind]!, note: 'Вложенные блоки без произвольных циклов', disabled: false}))};
+        for (const cap of this.data?.capabilities ?? []) {
+          const category = ['led.set', 'mac.brightness', 'display.brightness', 'mac.volume'].includes(cap.id) ? 'Устройства' : cap.id === 'mac.power' ? 'Система' : 'Приложения';
+          const unavailable = cap.availability === 'unavailable' || cap.id === 'shortcut.run' && !cap.parameters.name?.enum?.length;
+          categories[category].push({kind: 'action', id: cap.id, name: cap.name, note: unavailable ? 'Нужна настройка интеграции' : cap.device === 'shortcuts' ? 'Разрешённая команда из настроек Чушпана' : cap.description, disabled: unavailable});
         }
-        choices.append(group);
-      }
-      if (!matches) choices.append(el('p', 'Подходящих действий нет. Доступные интеграции находятся в разделе «Устройства».', 'muted'));
-    };
-    search.oninput = render; render(); panel.append(choices); picker.append(panel); root.append(picker);
+        let matches = 0;
+        for (const [name, items] of Object.entries(categories)) {
+          const visible = items.filter(item => `${item.name} ${name}`.toLocaleLowerCase('ru').includes(query)); if (!visible.length) continue;
+          const group = el('div', '', 'action-group'); group.append(el('h4', name));
+          for (const item of visible) {
+            const button = this.button(item.name, () => add(item.kind, item.id)); button.disabled ||= item.disabled; group.append(button); matches++;
+            if (item.disabled) group.append(el('small', item.note), this.button('Настроить', () => this.navigate('settings')));
+          }
+          choices.append(group);
+        }
+        if (!matches) choices.append(el('p', 'Подходящих блоков нет. Внешние интеграции отображаются только при реальной доступности.', 'muted'));
+      };
+      search.oninput = render; render(); panel.append(choices); picker.append(panel); root.append(picker);
+    }
     return root;
   }
   private blockTools(blocks: Block[]): HTMLElement {

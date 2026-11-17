@@ -70,6 +70,20 @@ class ScenarioStore:
             for r in self.db.execute("SELECT data FROM scenarios ORDER BY updated_at, id")
         ]
 
+    def list_with_metadata(self):
+        """Return scenario documents with timestamps already held by the local store."""
+        rows = self.db.execute(
+            "SELECT s.data,s.updated_at,(SELECT MIN(r.created_at) FROM scenario_revisions r "
+            "WHERE r.scenario_id=s.id) FROM scenarios s ORDER BY s.updated_at DESC,s.id"
+        )
+        result = []
+        for data, updated_at, created_at in rows:
+            item = self.decode(data).model_dump(mode="json")
+            item["updated_at"] = updated_at
+            item["created_at"] = created_at or updated_at
+            result.append(item)
+        return result
+
     def get(self, identifier):
         row = self.db.execute("SELECT data FROM scenarios WHERE id=?", (identifier,)).fetchone()
         if not row:
