@@ -131,6 +131,16 @@ MIGRATIONS = [
       engine TEXT NOT NULL, data TEXT NOT NULL,
       UNIQUE(site_origin,frame_host,engine));
     """,
+    """
+    CREATE TABLE cinema_playlists (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE cinema_playlist_items (
+      playlist_id TEXT NOT NULL REFERENCES cinema_playlists(id) ON DELETE CASCADE,
+      title_id TEXT NOT NULL REFERENCES cinema_titles(id) ON DELETE CASCADE,
+      added_at TEXT NOT NULL, PRIMARY KEY(playlist_id,title_id));
+    CREATE INDEX cinema_playlist_order ON cinema_playlist_items(playlist_id,added_at DESC);
+    """,
 ]
 
 
@@ -943,6 +953,73 @@ class CinemaStore:
             if query.casefold() in (item := self.detail(row[0]))["title"].casefold()
         ]
 
+    def playlists(self):
+        return [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "item_ids": [
+                    item[0]
+                    for item in self.db.execute(
+                        "SELECT title_id FROM cinema_playlist_items WHERE playlist_id=? "
+                        "ORDER BY added_at DESC",
+                        (row["id"],),
+                    )
+                ],
+            }
+            for row in self.db.execute(
+                "SELECT * FROM cinema_playlists ORDER BY name COLLATE NOCASE"
+            )
+        ]
+
+    def playlist_create(self, name):
+        name = " ".join(str(name).split())
+        if not name or len(name) > 60:
+            raise ValueError("Укажи название плейлиста длиной до 60 символов.")
+        identifier, stamp = uuid4().hex, now()
+        try:
+            with self.transaction():
+                self.db.execute(
+                    "INSERT INTO cinema_playlists VALUES(?,?,?,?)",
+                    (identifier, name, stamp, stamp),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Плейлист с таким названием уже есть.") from exc
+        return {"id": identifier, "name": name, "item_ids": []}
+
+    def playlist_delete(self, identifier):
+        with self.transaction():
+            cursor = self.db.execute("DELETE FROM cinema_playlists WHERE id=?", (identifier,))
+        if not cursor.rowcount:
+            raise ValueError("Плейлист не найден.")
+        return {"id": identifier}
+
+    def playlist_item(self, playlist_id, title_id, action="add"):
+        if action not in {"add", "remove"}:
+            raise ValueError("Неизвестное действие с плейлистом.")
+        self.title(title_id)
+        if not self.db.execute(
+            "SELECT 1 FROM cinema_playlists WHERE id=?", (playlist_id,)
+        ).fetchone():
+            raise ValueError("Плейлист не найден.")
+        with self.transaction():
+            if action == "add":
+                self.db.execute(
+                    "INSERT OR IGNORE INTO cinema_playlist_items VALUES(?,?,?)",
+                    (playlist_id, title_id, now()),
+                )
+                self.db.execute(
+                    "UPDATE cinema_playlists SET updated_at=? WHERE id=?", (now(), playlist_id)
+                )
+            else:
+                self.db.execute(
+                    "DELETE FROM cinema_playlist_items WHERE playlist_id=? AND title_id=?",
+                    (playlist_id, title_id),
+                )
+        return {"id": playlist_id, "title_id": title_id, "action": action}
+
     def recommendation_context(self, kind="all"):
         rows = self.db.execute(
             "SELECT t.catalogue_key,t.kind,t.title,t.year,u.status,u.favorite,"
@@ -1325,6 +1402,7 @@ class CinemaStore:
             row["source_name"] = json.loads(row.pop("source_data") or "{}").get("name", "") or label
         return {
             "items": self.library(),
+            "playlists": self.playlists(),
             "sources": self.sources(),
             "history": history,
             "preferences": self.preferences().model_dump(),

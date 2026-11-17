@@ -88,6 +88,9 @@ function fixture() {
       { id: "general", name: "Общие" },
       { id: "home", name: "Дом" },
     ],
+    groups: [
+      { id: "room-lights", revision: 1, name: "Подсветка комнаты", place_id: "home", device_ids: ["one", "two"] },
+    ],
     location: {
       place_id: "home",
       name: "Дом",
@@ -228,6 +231,22 @@ test("search filters live device cards and leaves device commands untouched", as
     assert.equal(cards.filter((card) => !card.hidden).length, 1);
     assert.equal(cards.find((card) => !card.hidden)?.dataset.name, "elk-bledob");
     assert.equal(f.events.length, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("lighting group controls use the existing device group driver and favorites persist", async () => {
+  const f = fixture();
+  try {
+    const row = f.window.document.querySelector(".lighting-group-row")!;
+    f.button("Включить", row);
+    assert.equal(f.events.at(-1).op, "act_group");
+    assert.equal(f.events.at(-1).id, "room-lights");
+    assert.equal(f.events.at(-1).parameters.power, true);
+    f.button("☆", f.window.document.querySelector('[data-name="elk-bleddm 39"]')!);
+    assert.equal(f.events.at(-1).op, "update");
+    assert.equal(f.events.at(-1).favorite, true);
   } finally {
     await f.close();
   }

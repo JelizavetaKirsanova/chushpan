@@ -38,6 +38,7 @@
 .lighting-hero h1 { margin:0 0 5px;font-size:30px;letter-spacing:-.7px;line-height:1.15; }
 .lighting-hero p { margin:0;font-size:13px;color:#f1e5f9; }
 .lighting-hero-icon { display:grid;place-items:center;flex:0 0 42px;width:42px;height:42px;margin-right:14px;border:2px solid #e39bff;border-radius:50%;color:#f0b8ff;font-size:24px;text-shadow:0 0 14px #e56cff; }
+.lighting-hero-icon svg { width:27px;height:27px;filter:drop-shadow(0 0 7px #e56cff); }
 .lighting-top-controls { display:flex;align-items:center;gap:10px;margin:0 0 10px; }
 .lighting-utility-actions { display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:-4px 0 10px; }
 .lighting-utility-actions button { padding:6px 10px!important;font-size:10px; }
@@ -69,6 +70,7 @@
 .lighting-card { position:relative;box-shadow:0 4px 14px #0e071725;transition:border-color .15s,box-shadow .15s,transform .15s; }
 .lighting-card-title { padding-right:34px; }
 .lighting-device-icon { display:grid;place-items:center;flex:none;width:36px;height:36px;border-radius:50%;background:#a13bca19;color:#c65bf0;font-size:24px; }
+.lighting-device-icon svg { width:26px;height:26px; }
 .lighting-shell .lighting-favorite { position:absolute;top:9px;right:9px;width:32px;height:32px;padding:0!important;background:transparent!important;border-color:transparent!important;color:#d9b6eb!important;font-size:17px; }
 .lighting-shell .lighting-favorite[aria-pressed=true] { color:#ffc75e!important; }
 .lighting-card[data-selected=true] { border-color:#d866ff;box-shadow:0 0 0 1px #c34cf080,0 7px 23px #9e3ed62b; }
@@ -107,6 +109,10 @@ html[data-theme=light] .lighting-shell .lighting-card button:hover:not(:disabled
 @media (max-width: 860px) { .lighting-shell { grid-template-columns:minmax(0,1fr); }.lighting-inspector { position:static;max-height:none; }.lighting-filters select { flex:1 1 145px;max-width:none; } }
 @media (max-width: 540px) { .lighting-shell { padding:0; }.lighting-hero { min-height:112px;padding:16px;border-radius:15px;background-position:72% center; }.lighting-hero h1 { font-size:24px; }.lighting-hero p { font-size:11px; }.lighting-hero-copy { max-width:75%; }.lighting-hero-icon { width:34px;height:34px;flex-basis:34px;margin-right:10px; }.lighting-top-controls { align-items:stretch; }.lighting-top-controls>button { white-space:normal!important;padding:8px 10px!important;font-size:11px; }.lighting-grid { grid-template-columns:repeat(auto-fill,minmax(min(100%,175px),1fr));gap:8px; }.lighting-card,.lighting-panel { padding:12px;border-radius:14px; } }
 @media (prefers-reduced-motion: reduce) { .lighting-card { transition:none; } }
+.lighting-group-list { margin:4px 0 12px; }
+.lighting-group-row { display:grid;grid-template-columns:minmax(130px,.6fr) minmax(180px,1fr) auto auto;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--light-line); }
+.lighting-group-row span { min-width:0;color:var(--light-muted);font-size:11px;overflow-wrap:anywhere; }
+@media(max-width:540px) { .lighting-group-row { grid-template-columns:1fr auto auto; }.lighting-group-row span { grid-column:1/-1;grid-row:2; } }
 .lighting-panel {
   margin: 20px 0;
 }

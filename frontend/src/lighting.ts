@@ -62,6 +62,24 @@ const el = <T extends keyof HTMLElementTagNameMap>(
   node.className = className;
   return node;
 };
+const svgIcon = (path: string): SVGSVGElement => {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.7");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const shape = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  shape.setAttribute("d", path);
+  svg.append(shape);
+  return svg;
+};
+const icons = {
+  lamp: "M9 18h6m-6 3h6M8 14c-6-8 2-15 7-10s1 9-1 10v2H9v-2Z",
+  strip: "M5 5h13a3 3 0 0 1 0 6H6a3 3 0 0 0 0 6h13M6 5h1m4 0h1m4 0h1M6 17h1m4 0h1m4 0h1",
+};
 const outcomes: Record<string, string> = {
   pending: "Ожидает",
   active: "Выполняется",
@@ -97,6 +115,8 @@ export class LightingView {
   private category = "all";
   private statusFilter = "all";
   private protocolFilter = "all";
+  private placeFilter = "all";
+  private roomFilter = "all";
   private layout: "grid" | "list" = "grid";
   private sort = "name";
   constructor(
@@ -191,7 +211,9 @@ export class LightingView {
     const hero = el("header", "", "lighting-hero");
     const copy = el("div", "", "lighting-hero-copy");
     copy.append(el("h1", "Освещение"), el("p", "Управляй светом, цветом и атмосферой в каждом уголке."));
-    hero.append(el("span", "♧", "lighting-hero-icon"), copy);
+    const heroIcon = el("span", "", "lighting-hero-icon");
+    heroIcon.append(svgIcon(icons.lamp));
+    hero.append(heroIcon, copy);
     content.append(hero, this.feedback);
     if (!this.data) {
       content.append(el("p", "Ожидаю реестр устройств…"));
@@ -217,11 +239,18 @@ export class LightingView {
     const protocols = [...new Set(available.map(d => d.ble?.driver || (d.kind === "wled" ? "WLED · Wi-Fi" : "BLE")))].sort();
     for (const [value, label] of [["all", "Протокол: Все"], ...protocols.map(p => [p, p])]) { const option = el("option", label); option.value = value; protocol.append(option); }
     protocol.value = this.protocolFilter; protocol.onchange = () => { this.protocolFilter = protocol.value; this.render(); };
+    const place = el("select"); place.setAttribute("aria-label", "Фильтр по профилю местоположения");
+    for (const [value, label] of [["all", "Место: Все"], ...this.data.places.map(p => [p.id, p.name])]) { const option = el("option", label); option.value = value; place.append(option); }
+    place.value = this.placeFilter; place.onchange = () => { this.placeFilter = place.value; this.roomFilter = "all"; this.render(); };
+    const rooms = [...new Set(available.filter(d => this.placeFilter === "all" || d.place_id === this.placeFilter).map(d => d.room).filter(Boolean))].sort((a,b) => a.localeCompare(b,"ru"));
+    const room = el("select"); room.setAttribute("aria-label", "Фильтр по комнате");
+    for (const [value, label] of [["all", "Комната: Все"], ...rooms.map(r => [r, r])]) { const option = el("option", label); option.value = value; room.append(option); }
+    room.value = this.roomFilter; room.onchange = () => { this.roomFilter = room.value; this.render(); };
     const sort = el("select"); sort.setAttribute("aria-label", "Сортировка освещения");
     for (const [value, label] of [["name", "По названию"], ["activity", "По активности"], ["brightness", "По яркости"], ["type", "По типу"]]) { const option = el("option", label); option.value = value; sort.append(option); }
     sort.value = this.sort; sort.onchange = () => { this.sort = sort.value; this.render(); };
     const layout = this.button(this.layout === "grid" ? "☷" : "▦", () => { this.layout = this.layout === "grid" ? "list" : "grid"; this.render(); }); layout.className = "lighting-layout-toggle"; layout.setAttribute("aria-label", this.layout === "grid" ? "Сетка" : "Список");
-    filters.append(status, protocol, sort, layout); content.append(filters);
+    filters.append(status, place, room, protocol, sort, layout); content.append(filters);
     const utilities = el("div", "", "lighting-utility-actions");
     utilities.append(this.button("Выбрать все здесь", () => { this.selected = new Set(available.filter(d => d.usable).map(d => d.id)); this.render(); }), this.button("Снять выбор", () => { this.selected.clear(); this.render(); }), this.button("Импорт палитры", () => this.importPalette()), this.button("Экспорт палитры", () => this.command("export")));
     content.append(utilities);
@@ -229,14 +258,12 @@ export class LightingView {
     const grid = el("div", "", "lighting-grid");
     grid.dataset.layout = this.layout;
     for (const device of lights) grid.append(this.card(device));
-    if (!lights.length)
-      grid.append(
-        el(
-          "p",
-          "Добавь ELK-BLEDOB и ELK-BLEDDM 39 в разделе «Устройства». После добавления проверь каждую функцию отдельно.",
-          "lighting-empty",
-        ),
-      );
+    if (!lights.length) {
+      grid.append(el("p", this.category === "scenes"
+        ? "Сценарии с действиями освещения доступны в конструкторе сценариев."
+        : "Добавь ELK-BLEDOB и ELK-BLEDDM 39 в разделе «Устройства». После добавления проверь каждую функцию отдельно.", "lighting-empty"));
+      if (this.category === "scenes") grid.append(this.button("Открыть сценарии", () => this.navigate("automations")));
+    }
     content.append(grid);
     const selectedDevice = lights.find(d => this.selected.has(d.id)) ?? lights[0];
     const inspector = selectedDevice ? this.inspector(selectedDevice, lights) : el("aside", "Выбери устройство, чтобы увидеть его настройки.", "lighting-inspector lighting-panel");
@@ -267,6 +294,24 @@ export class LightingView {
       );
       content.append(group);
     }
+    const lightGroups = (this.data.groups ?? []).map(group => ({
+      group,
+      members: available.filter(device => group.device_ids?.includes(device.id)),
+    })).filter(({members}) => members.length > 0);
+    if (lightGroups.length) {
+      const groupList = el("section", "", "lighting-group-list lighting-panel");
+      groupList.append(el("h2", "Группы освещения"));
+      for (const {group, members} of lightGroups) {
+        const row = el("div", "", "lighting-group-row");
+        row.append(el("strong", group.name), el("span", members.map(device => device.name).join(" · ")));
+        row.append(
+          this.button("Включить", () => this.raw({op: "act_group", id: group.id, action: "led", parameters: {power: true}}), !members.some(device => device.features.power_on === true)),
+          this.button("Выключить", () => this.raw({op: "act_group", id: group.id, action: "led", parameters: {power: false}}), !members.some(device => device.features.power_off === true)),
+        );
+        groupList.append(row);
+      }
+      content.append(groupList);
+    }
     const auxiliary = el("div", "", "lighting-auxiliary");
     this.renderPresets(); this.renderJobs(); this.renderConditions(); this.renderJournal();
     for (const node of [...this.root.children]) auxiliary.append(node);
@@ -280,7 +325,9 @@ export class LightingView {
       return (!this.searchText || d.name.toLocaleLowerCase("ru").includes(this.searchText.toLocaleLowerCase("ru"))) &&
         (this.category === "all" || (this.category === "on" ? d.state.power === true : this.category === "off" ? d.state.power === false : this.category === "scenes" ? false : d.kind === this.category)) &&
         (this.statusFilter === "all" || (this.statusFilter === "connected" ? d.connection === "observed" : this.statusFilter === "disconnected" ? d.connection === "disconnected" || d.connection === "unknown" : d.connection === "error")) &&
-        (this.protocolFilter === "all" || protocol === this.protocolFilter);
+        (this.protocolFilter === "all" || protocol === this.protocolFilter) &&
+        (this.placeFilter === "all" || d.place_id === this.placeFilter) &&
+        (this.roomFilter === "all" || d.room === this.roomFilter);
     });
     return items.sort((a,b) => this.sort === "brightness" ? (Number(b.state.brightness ?? -1)) - (Number(a.state.brightness ?? -1)) : this.sort === "type" ? a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name,"ru") : this.sort === "activity" ? String(b.last_contact ?? "").localeCompare(String(a.last_contact ?? "")) : a.name.localeCompare(b.name,"ru"));
   }
@@ -332,7 +379,9 @@ export class LightingView {
         this.render();
       }
     };
-    label.append(check, el("span", device.kind === "wled" ? "♧" : "▱", "lighting-device-icon"), el("h2", device.name));
+    const deviceIcon = el("span", "", "lighting-device-icon");
+    deviceIcon.append(svgIcon(device.kind === "wled" ? icons.lamp : icons.strip));
+    label.append(check, deviceIcon, el("h2", device.name));
     const favorite = this.button(device.favorite ? "★" : "☆", () => this.raw({ op: "update", id: device.id, revision: device.revision, favorite: !device.favorite }));
     favorite.className = "lighting-favorite";
     favorite.setAttribute("aria-label", (device.favorite ? "Убрать из избранного: " : "В избранное: ") + device.name);

@@ -186,12 +186,12 @@ export class AutomationsView {
     if (event.result || event.error) this.running = false;
     if (event.permissions) this.permissions = event.permissions;
     if (event.saved && (this.toggling.delete(event.saved) || this.listSaving.delete(event.saved))) {
-      if (this.draft?.id === event.saved && !this.dirty) {this.draft = clone(event.scenarios.find(s => s.id === event.saved)!); this.renderEditor();}
+      if (this.draft?.id === event.saved && !this.dirty) {this.draft = this.document(event.scenarios.find(s => s.id === event.saved)!); this.renderEditor();}
     } else if (event.saved && (!this.dirty || this.saving)) {
       this.draft = this.document(event.scenarios.find(s => s.id === event.saved) ?? newScenario());
       this.dirty = false; this.saving = false; this.selectedBlock = null; this.undoStack = []; this.redoStack = []; this.historySnapshot = ''; this.renderEditor();
     } else if (event.deleted && event.deleted === this.draft?.id) {this.draft = null; this.dirty = false; this.activeVariant = ''; this.previewRoot.replaceChildren(); this.renderEditor();}
-    else if (event.updated && event.updated === this.draft?.id && !this.dirty) {this.draft = clone(event.scenarios.find(s => s.id === event.updated)!); this.renderEditor();}
+    else if (event.updated && event.updated === this.draft?.id && !this.dirty) {this.draft = this.document(event.scenarios.find(s => s.id === event.updated)!); this.renderEditor();}
     if (event.error) {const wasSaving = this.saving; this.saving = false; if (wasSaving) this.renderEditor(); this.toggling.clear(); this.listSaving.clear(); this.feedback.replaceChildren(el('span', /фраз|конфликт|дубликат|уже.*использ/i.test(event.error) ? 'Эта фраза уже используется. Измени её или выбери другую.' : 'Не удалось применить изменение. Проверь заполненные поля и попробуй снова.')); const details = el('details'); details.append(el('summary', 'Подробнее'), el('p', event.error)); this.feedback.append(details); this.feedback.dataset.error = 'true';}
     else if (event.message) {this.feedback.textContent = event.message; delete this.feedback.dataset.error;}
     if (event.captured !== undefined) {
@@ -221,7 +221,9 @@ export class AutomationsView {
   }
 
   private document(scenario: Scenario): Scenario {
-    return Object.assign(newScenario(), clone(scenario));
+    const copy = Object.assign(newScenario(), clone(scenario));
+    delete copy.created_at; delete copy.updated_at;
+    return copy;
   }
   private discardAllowed(): boolean {return !this.dirty || window.confirm('Отменить несохранённые изменения сценария?');}
   private glyph(name: string): HTMLElement {
@@ -438,10 +440,10 @@ export class AutomationsView {
       text.append(el('strong', scenario.name), el('small', scenario.description || scenario.phrases.map(p => `«${p}»`).join(' · ') || 'Без описания'), el('small', `${triggerSummary} · ${total} блоков · ${usage.get(scenario.id) ?? 0} запусков`, 'scenario-meta'));
       if (scenario.tags.length) {const tags = el('span', '', 'scenario-tags'); scenario.tags.forEach(tag => tags.append(el('span', tag))); text.append(tags);}
       open.append(el('span', scenario.icon, 'scenario-icon'), text);
-      const enabled = this.button('', () => {if (this.draft?.id === scenario.id && !this.discardAllowed()) return; this.toggling.add(scenario.id); this.send({op: 'save', scenario: {...clone(scenario), enabled: !scenario.enabled}});}); enabled.className = 'scenario-switch'; enabled.setAttribute('role', 'switch'); enabled.setAttribute('aria-checked', String(scenario.enabled)); enabled.setAttribute('aria-label', `Сценарий ${scenario.name} включён`);
+      const enabled = this.button('', () => {if (this.draft?.id === scenario.id && !this.discardAllowed()) return; this.toggling.add(scenario.id); this.send({op: 'save', scenario: this.document({...clone(scenario), enabled: !scenario.enabled})});}); enabled.className = 'scenario-switch'; enabled.setAttribute('role', 'switch'); enabled.setAttribute('aria-checked', String(scenario.enabled)); enabled.setAttribute('aria-label', `Сценарий ${scenario.name} включён`);
       const menu = el('details', '', 'scenario-menu'); menu.append(el('summary', '⋯')); menu.firstElementChild!.setAttribute('aria-label', `Действия со сценарием ${scenario.name}`);
       const items = el('div', '', 'menu-items');
-      const toggleFavorite = () => {this.listSaving.add(scenario.id); this.send({op: 'save', scenario: {...clone(scenario), favorite: !scenario.favorite}});};
+      const toggleFavorite = () => {this.listSaving.add(scenario.id); this.send({op: 'save', scenario: this.document({...clone(scenario), favorite: !scenario.favorite})});};
       items.append(this.button('Редактировать', () => {menu.open = false; this.edit(scenario);}), this.button(scenario.favorite ? 'Убрать из избранного' : 'В избранное', toggleFavorite), this.button('Дублировать', () => {if (this.discardAllowed()) {this.saving = true; this.send({op: 'copy', id: scenario.id});}}), this.button('Экспортировать JSON', () => this.exportScenario(scenario)), this.button('Удалить', () => this.remove(scenario)));
       const history = el('details', '', 'scenario-card-history'); history.append(el('summary', 'История запусков'));
       const recent = (this.data?.runs ?? []).filter(run => run.scenario_id === scenario.id).slice(0, 5);
@@ -459,7 +461,7 @@ export class AutomationsView {
   }
 
   private exportScenario(scenario: Scenario): void {
-    const payload = JSON.stringify({format: 'chushpan-scenario', schema_version: scenario.schema_version, scenario}, null, 2);
+    const payload = JSON.stringify({format: 'chushpan-scenario', schema_version: scenario.schema_version, scenario: this.document(scenario)}, null, 2);
     const url = URL.createObjectURL(new Blob([payload], {type: 'application/json'}));
     const anchor = el('a'); anchor.href = url; anchor.download = `${scenario.name.replace(/[^\p{L}\p{N}-]+/gu, '-') || 'scenario'}.json`; anchor.click();
     URL.revokeObjectURL(url);
@@ -516,7 +518,7 @@ export class AutomationsView {
     const saveDraft = () => {
       if (!this.online || this.saving || !this.commitPhrase()) return;
       if (!form.reportValidity()) return;
-            this.saving = true; this.feedback.textContent = 'Сохраняю…'; this.send({op: 'save', scenario: draft}); form.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('input,button,select,textarea').forEach(control => control.disabled = true);
+            this.saving = true; this.feedback.textContent = 'Сохраняю…'; this.send({op: 'save', scenario: this.document(draft)}); form.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement>('input,button,select,textarea').forEach(control => control.disabled = true);
     };
     form.onsubmit = event => {event.preventDefault(); saveDraft();};
     const heading = el('div', '', 'editor-heading');
@@ -525,7 +527,7 @@ export class AutomationsView {
     const title = el('h1', draft.id ? 'Редактирование сценария' : 'Новый сценарий');
     const save = el('button', 'Сохранить'); save.type = 'submit'; save.className = 'primary'; save.disabled = !this.online || this.saving;
     const undo = this.button('Отменить изменения', () => {if (!this.discardAllowed()) return; const saved = this.data?.scenarios.find(s => s.id === draft.id); this.draft = saved ? this.document(saved) : newScenario(); if (!saved) this.draft.name = ''; this.pendingPhrase = ''; this.dirty = false; this.activeVariant = ''; this.undoStack = []; this.redoStack = []; this.historySnapshot = ''; this.previewRoot.replaceChildren(); this.renderEditor();}); undo.className = 'editor-undo';
-    const testRun = this.button('▷ Тестовый запуск', () => {if (!this.commitPhrase()) return; this.send({op: 'preview', scenario: draft, variant: this.activeVariant || 'general'});}); testRun.className = 'scenario-test-run';
+    const testRun = this.button('▷ Тестовый запуск', () => {if (!this.commitPhrase()) return; this.send({op: 'preview', scenario: this.document(draft), variant: this.activeVariant || 'general'});}); testRun.className = 'scenario-test-run';
     heading.append(back, title, undo, testRun);
     if (draft.id) {const remove = this.button('', () => this.remove(draft)); remove.append(this.glyph('trash')); remove.setAttribute('aria-label', 'Удалить сценарий'); remove.title = 'Удалить сценарий'; heading.append(remove);}
     heading.append(save);
@@ -597,7 +599,7 @@ export class AutomationsView {
     extra.append(options, el('p', 'Чувствительные действия всегда проходят обязательные проверки разрешений.', 'muted'));
     const advanced = el('details', '', 'editor-advanced'); advanced.open = this.advancedOpen; advanced.ontoggle = () => this.advancedOpen = advanced.open; advanced.append(el('summary', 'Другие настройки'), this.advancedEditor(draft), this.revisionRoot, this.trainingRoot); extra.append(advanced);
     const third = el('section', '', 'editor-step editor-save');
-    const controls = el('div', '', 'button-row'); controls.append(this.button('Проверить сценарий', () => {if (!this.commitPhrase()) return; this.send({op: 'preview', scenario: draft, variant: this.activeVariant || 'general'});}));
+    const controls = el('div', '', 'button-row'); controls.append(this.button('Проверить сценарий', () => {if (!this.commitPhrase()) return; this.send({op: 'preview', scenario: this.document(draft), variant: this.activeVariant || 'general'});}));
     if (draft.id) {const run = this.runButton(draft); run.disabled ||= this.dirty; controls.append(run);}
     third.append(controls, el('p', !draft.enabled ? 'Сценарий выключен.' : !draft.triggers.some(t => t.kind === 'voice') ? 'Голосовой запуск выключен.' : 'Проверка — безопасная симуляция. Реальный запуск доступен после сохранения.', 'muted'), this.previewRoot, this.executionRoot);
     form.append(heading, first, second, extra, third); this.editor.append(form); this.renderTraining(); this.renderRuns();
@@ -812,8 +814,8 @@ export class AutomationsView {
       card.oninput = card.onchange = () => {text.lastElementChild!.textContent = this.blockDescription(block);};
       body.append(controls, extra); card.append(heading, body); root.append(card);
     });
-    if (showTools) {
-      const picker = el('details', '', 'action-picker'); picker.open = true; picker.append(el('summary', 'Блоки'));
+    {
+      const picker = el('details', '', `action-picker${showTools ? '' : ' nested-action-picker'}`); picker.open = showTools; picker.append(el('summary', showTools ? 'Блоки' : 'Добавить блок'));
       const panel = el('div', '', 'block-catalogue'); const search = el('input'); search.type = 'search'; search.placeholder = 'Поиск блоков…'; search.setAttribute('aria-label', 'Поиск блоков'); panel.append(search);
       const choices = el('div', '', 'action-choices');
       const render = () => {

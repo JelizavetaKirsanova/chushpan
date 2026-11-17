@@ -177,10 +177,16 @@ test('scenario overview filters, persists favorites, exports real model metadata
     f.button('Избранные');assert.match(f.window.document.querySelector('.scenario-list')!.textContent,/Подходящих сценариев нет/);
     f.button('Все');f.button('Добавить в избранное');
     assert.equal(f.requests.at(-1)!.op,'save');
+    assert.equal('created_at' in (f.requests.at(-1)!.scenario as object),false);
+    assert.equal('updated_at' in (f.requests.at(-1)!.scenario as object),false);
     const favorited={...scenario,favorite:true,revision:2};
     f.view.receive({...f.data,scenarios:[favorited],saved:favorited.id});
     assert.equal(f.window.document.querySelector('.scenario-layout')!.getAttribute('data-editing'),'false');
     f.button('Избранные');assert.match(f.window.document.querySelector('.scenario-list')!.textContent,/Вечер/);
+    f.button('Открыть сценарий Вечер');f.button('▷ Тестовый запуск');
+    assert.equal(f.requests.at(-1)!.op,'preview');
+    assert.equal('created_at' in (f.requests.at(-1)!.scenario as object),false);
+    f.button('Все сценарии');
     f.button('▶ Запустить');assert.equal(f.requests.at(-1)!.op,'run');
   }finally{await f.window.happyDOM.close();}
 });
@@ -196,6 +202,19 @@ test('visual flow supports safe test preview and undo/redo over the saved scenar
     f.button('Повторить изменение');assert.equal(f.field('Название').value,'Ночь');
     f.button('▷ Тестовый запуск');assert.equal(f.requests.at(-1)!.op,'preview');
     assert.equal(f.requests.at(-1)!.scenario && (f.requests.at(-1)!.scenario as state.Scenario).name,'Ночь');
+  }finally{await f.window.happyDOM.close();}
+});
+
+test('nested IF branches can add supported actions in place and persist the branch tree',async()=>{
+  const f=fixture();try {
+    f.button('+ Создать сценарий');f.fill('Название','Домой');f.button('Условие: если / иначе');
+    const yes=f.window.document.querySelector('.scenario-branch:first-child .nested-action-picker') as unknown as HTMLDetailsElement;
+    assert.ok(yes);yes.open=true;yes.dispatchEvent(new f.window.Event('toggle'));
+    f.button('Яркость MacBook',yes as unknown as ParentNode);f.fill('Уровень, % *','32');f.submit();
+    const scenario=f.requests.at(-1)!.scenario as state.Scenario;
+    assert.equal(scenario.actions[0].kind,'if');
+    assert.equal(scenario.actions[0].children[0].capability,'mac.brightness');
+    assert.equal(scenario.actions[0].children[0].parameters.level,32);
   }finally{await f.window.happyDOM.close();}
 });
 
