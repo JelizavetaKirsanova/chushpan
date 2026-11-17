@@ -2757,7 +2757,7 @@
     background: var(--detail-inset);
 }
 
-.cinema-rich-dialog > .cinema-detail-tabs button {
+#cinema-root .cinema-rich-dialog > .cinema-detail-tabs button {
     min-width: 0;
     min-height: 40px;
     padding: 10px 16px;
@@ -2767,7 +2767,7 @@
     color: var(--detail-muted);
 }
 
-.cinema-rich-dialog > .cinema-detail-tabs button[aria-selected=true] {
+#cinema-root .cinema-rich-dialog > .cinema-detail-tabs button[aria-selected=true] {
     color: var(--detail-text);
     border-color: var(--detail-border);
     background: var(--detail-active);
@@ -2811,6 +2811,17 @@
     border-radius: 9px;
     font: inherit;
     font-size: 13px;
+}
+
+#cinema-root .cinema-rich-dialog select {
+    appearance: none;
+    -webkit-appearance: none;
+    height: 42px;
+    padding-right: 36px;
+    background-color: var(--detail-inset);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='m4 6 4 4 4-4' fill='none' stroke='%239f82b3' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
 }
 
 .cinema-rich-dialog :is(button, select, input, textarea, summary):focus-visible {
@@ -2944,6 +2955,17 @@
     grid-column: 1 / -1;
     margin: 0;
     color: var(--detail-muted);
+}
+
+.cinema-rich-dialog > .cinema-form-error {
+    margin: 0 30px 30px;
+    padding: 16px 18px;
+    border: 1px solid var(--detail-border);
+    border-radius: 12px;
+    background: var(--detail-surface);
+    font-size: 13px;
+    line-height: 1.7;
+    overflow-wrap: anywhere;
 }
 
 .cinema-rich-dialog .cinema-similar-grid .cinema-card {
@@ -3161,7 +3183,7 @@ html[data-theme=light] .cinema-rich-dialog {
         gap: 3px;
     }
 
-    .cinema-rich-dialog > .cinema-detail-tabs button {
+    #cinema-root .cinema-rich-dialog > .cinema-detail-tabs button {
         padding: 10px 6px;
         font-size: 11px;
     }
@@ -3170,7 +3192,7 @@ html[data-theme=light] .cinema-rich-dialog {
         grid-template-columns: minmax(0, 1fr);
     }
 
-    .cinema-detail-pane dl {
+    .cinema-detail-pane dl, .cinema-rich-dialog .cinema-rich-info dl {
         grid-template-columns: 1fr;
         gap: 4px;
     }
@@ -5120,6 +5142,14 @@ html[data-theme=light] .cinema-rich-dialog > header h2 {
 
 html[data-theme=light] .cinema-detail-hero {
     color: #f8f0ff;
+}
+
+html[data-theme=light] #cinema-root .cinema-rich-dialog .cinema-detail-intro h2 {
+    color: #f8f0ff;
+}
+
+html[data-theme=light] #cinema-root .cinema-rich-dialog .cinema-rating-edit .cinema-personal-rating {
+    color: #6b367e;
 }
 
 html[data-theme=light] .cinema-detail-hero:after {
