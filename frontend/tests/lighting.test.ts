@@ -138,7 +138,7 @@ test("cards describe capabilities and sent state without claiming physical succe
       f.window.document.querySelectorAll(".lighting-card").length,
       2,
     );
-    const second = f.window.document.querySelectorAll(".lighting-card")[1];
+    const second = f.window.document.querySelector<HTMLElement>('[data-name="elk-bleddm 39"]')!;
     assert.match(second.textContent!, /Не подтверждено \/ недоступно/);
     assert.ok(
       [...second.querySelectorAll("button")].find(
@@ -203,7 +203,7 @@ test("disconnect disables all command buttons and displays connection state", as
   try {
     f.view.connection(false);
     assert.ok(
-      [...f.window.document.querySelectorAll("button")].every(
+      [...f.window.document.querySelectorAll("button:not(.device-swatch)")].every(
         (b) => b.disabled,
       ),
     );
@@ -211,6 +211,23 @@ test("disconnect disables all command buttons and displays connection state", as
       f.window.document.querySelector(".lighting-feedback")!.textContent!,
       /Нет соединения/,
     );
+  } finally {
+    await f.close();
+  }
+});
+
+test("search filters live device cards and leaves device commands untouched", async () => {
+  const f = fixture();
+  try {
+    const search = f.window.document.querySelector<HTMLInputElement>(
+      '[aria-label="Поиск освещения по названию"]',
+    )!;
+    search.value = "bledob";
+    search.dispatchEvent(new f.window.Event("input"));
+    const cards = [...f.window.document.querySelectorAll<HTMLElement>(".lighting-card")];
+    assert.equal(cards.filter((card) => !card.hidden).length, 1);
+    assert.equal(cards.find((card) => !card.hidden)?.dataset.name, "elk-bledob");
+    assert.equal(f.events.length, 0);
   } finally {
     await f.close();
   }
@@ -304,7 +321,7 @@ test("reconnect unlocks normal power commands without assuming the strip is off"
   const f = fixture();
   try {
     const [first, second] = f.state.items;
-    const card = () => f.window.document.querySelectorAll(".lighting-card")[1];
+    const card = () => f.window.document.querySelector<HTMLElement>('[data-name="elk-bleddm 39"]')!;
     f.view.receive({
       ...f.state,
       items: [

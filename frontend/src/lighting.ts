@@ -93,6 +93,12 @@ export class LightingView {
   private feedback = el("p", "", "lighting-feedback");
   private pending = new Set<string>();
   private dialog: HTMLDialogElement | null = null;
+  private searchText = "";
+  private category = "all";
+  private statusFilter = "all";
+  private protocolFilter = "all";
+  private layout: "grid" | "list" = "grid";
+  private sort = "name";
   constructor(
     private send: (value: object) => void,
     private navigate: (view: string) => void,
@@ -180,39 +186,48 @@ export class LightingView {
   }
   private render(): void {
     this.root.replaceChildren();
-    const heading = el("header", "", "page-heading");
-    heading.append(
-      el("small", "ЧУШПАН · СВЕТ"),
-      el("h1", "Освещение"),
-      el(
-        "p",
-        "Твои ленты, цвета и ритм дня. Выбери цвет, затем нажми «Применить».",
-      ),
-    );
-    this.root.append(heading, this.feedback);
+    const page = el("div", "", "lighting-shell");
+    const content = el("main", "", "lighting-center");
+    const hero = el("header", "", "lighting-hero");
+    const copy = el("div", "", "lighting-hero-copy");
+    copy.append(el("h1", "Освещение"), el("p", "Управляй светом, цветом и атмосферой в каждом уголке."));
+    hero.append(el("span", "♧", "lighting-hero-icon"), copy);
+    content.append(hero, this.feedback);
     if (!this.data) {
-      this.root.append(el("p", "Ожидаю реестр устройств…"));
+      content.append(el("p", "Ожидаю реестр устройств…"));
+      page.append(content);
+      this.root.append(page);
       return;
     }
-    const lights = this.lights();
-    const toolbar = el("div", "", "lighting-toolbar");
-    toolbar.append(
-      this.button("Добавить / настроить ленты", () => this.navigate("devices")),
-      this.button("Выбрать все здесь", () => {
-        this.selected = new Set(
-          lights.filter((d) => d.usable).map((d) => d.id),
-        );
-        this.render();
-      }),
-      this.button("Снять выбор", () => {
-        this.selected.clear();
-        this.render();
-      }),
-      this.button("Импорт палитры", () => this.importPalette()),
-      this.button("Экспорт палитры", () => this.command("export")),
-    );
-    this.root.append(toolbar);
+    const available = this.lights();
+    const lights = this.filteredLights();
+    const controls = el("div", "", "lighting-top-controls");
+    const search = el("input"); search.type = "search"; search.placeholder = "Поиск освещения…"; search.value = this.searchText; search.setAttribute("aria-label", "Поиск освещения по названию");
+    search.oninput = () => { this.searchText = search.value; this.filterCards(); };
+    const searchBox = el("label", "", "lighting-search"); searchBox.append(el("span", "⌕"), search);
+    controls.append(searchBox, this.button("Добавить освещение", () => this.navigate("devices")));
+    content.append(controls);
+    const filters = el("div", "", "lighting-filters");
+    const tabs: [string, string, number][] = [["all", "Все", available.length], ["on", "Включены", available.filter(d => d.state.power === true).length], ["off", "Выключены", available.filter(d => d.state.power === false).length], ["led_strip", "Ленты", available.filter(d => d.kind === "led_strip").length], ["wled", "Лампы", available.filter(d => d.kind === "wled").length], ["scenes", "Сцены", 0]];
+    for (const [key, label, count] of tabs) { const tab = this.button(`${label}  ${count}`, () => { this.category = key; this.render(); }); tab.classList.add("lighting-filter"); tab.setAttribute("aria-pressed", String(this.category === key)); filters.append(tab); }
+    const status = el("select"); status.setAttribute("aria-label", "Фильтр по статусу подключения");
+    for (const [value, label] of [["all", "Статус: Все"], ["connected", "Подключены"], ["disconnected", "Отключены"], ["error", "Ошибка"]]) { const option = el("option", label); option.value = value; status.append(option); }
+    status.value = this.statusFilter; status.onchange = () => { this.statusFilter = status.value; this.render(); };
+    const protocol = el("select"); protocol.setAttribute("aria-label", "Фильтр по протоколу");
+    const protocols = [...new Set(available.map(d => d.ble?.driver || (d.kind === "wled" ? "WLED · Wi-Fi" : "BLE")))].sort();
+    for (const [value, label] of [["all", "Протокол: Все"], ...protocols.map(p => [p, p])]) { const option = el("option", label); option.value = value; protocol.append(option); }
+    protocol.value = this.protocolFilter; protocol.onchange = () => { this.protocolFilter = protocol.value; this.render(); };
+    const sort = el("select"); sort.setAttribute("aria-label", "Сортировка освещения");
+    for (const [value, label] of [["name", "По названию"], ["activity", "По активности"], ["brightness", "По яркости"], ["type", "По типу"]]) { const option = el("option", label); option.value = value; sort.append(option); }
+    sort.value = this.sort; sort.onchange = () => { this.sort = sort.value; this.render(); };
+    const layout = this.button(this.layout === "grid" ? "☷" : "▦", () => { this.layout = this.layout === "grid" ? "list" : "grid"; this.render(); }); layout.className = "lighting-layout-toggle"; layout.setAttribute("aria-label", this.layout === "grid" ? "Сетка" : "Список");
+    filters.append(status, protocol, sort, layout); content.append(filters);
+    const utilities = el("div", "", "lighting-utility-actions");
+    utilities.append(this.button("Выбрать все здесь", () => { this.selected = new Set(available.filter(d => d.usable).map(d => d.id)); this.render(); }), this.button("Снять выбор", () => { this.selected.clear(); this.render(); }), this.button("Импорт палитры", () => this.importPalette()), this.button("Экспорт палитры", () => this.command("export")));
+    content.append(utilities);
+    if (this.selected.size === 0 && available[0]) this.selected.add(available[0].id);
     const grid = el("div", "", "lighting-grid");
+    grid.dataset.layout = this.layout;
     for (const device of lights) grid.append(this.card(device));
     if (!lights.length)
       grid.append(
@@ -222,10 +237,14 @@ export class LightingView {
           "lighting-empty",
         ),
       );
-    this.root.append(grid);
+    content.append(grid);
+    const selectedDevice = lights.find(d => this.selected.has(d.id)) ?? lights[0];
+    const inspector = selectedDevice ? this.inspector(selectedDevice, lights) : el("aside", "Выбери устройство, чтобы увидеть его настройки.", "lighting-inspector lighting-panel");
+    page.append(content, inspector);
     if (this.selected.size) {
       const selected = lights.filter((device) => this.selected.has(device.id));
       const group = el("section", "", "lighting-panel");
+      group.classList.add("lighting-group-actions");
       group.append(el("h2", `Выбрано лент: ${this.selected.size}`));
       group.append(
         this.button(
@@ -246,16 +265,36 @@ export class LightingView {
           this.command("templates", { targets: [...this.selected] }),
         ),
       );
-      const target = lights.find((d) => this.selected.has(d.id));
-      if (target) group.append(this.editor(target));
-      this.root.append(group);
+      content.append(group);
     }
-    this.renderPresets();
-    this.renderJobs();
-    this.renderConditions();
-    this.renderJournal();
+    const auxiliary = el("div", "", "lighting-auxiliary");
+    this.renderPresets(); this.renderJobs(); this.renderConditions(); this.renderJournal();
+    for (const node of [...this.root.children]) auxiliary.append(node);
+    this.root.replaceChildren(page, auxiliary);
     if (this.data.lighting)
       this.root.append(el("p", this.data.lighting.notice, "lighting-notice"));
+  }
+  private filteredLights(): DeviceRecord[] {
+    const items = this.lights().filter(d => {
+      const protocol = d.ble?.driver || (d.kind === "wled" ? "WLED · Wi-Fi" : "BLE");
+      return (!this.searchText || d.name.toLocaleLowerCase("ru").includes(this.searchText.toLocaleLowerCase("ru"))) &&
+        (this.category === "all" || (this.category === "on" ? d.state.power === true : this.category === "off" ? d.state.power === false : this.category === "scenes" ? false : d.kind === this.category)) &&
+        (this.statusFilter === "all" || (this.statusFilter === "connected" ? d.connection === "observed" : this.statusFilter === "disconnected" ? d.connection === "disconnected" || d.connection === "unknown" : d.connection === "error")) &&
+        (this.protocolFilter === "all" || protocol === this.protocolFilter);
+    });
+    return items.sort((a,b) => this.sort === "brightness" ? (Number(b.state.brightness ?? -1)) - (Number(a.state.brightness ?? -1)) : this.sort === "type" ? a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name,"ru") : this.sort === "activity" ? String(b.last_contact ?? "").localeCompare(String(a.last_contact ?? "")) : a.name.localeCompare(b.name,"ru"));
+  }
+  private filterCards(): void { const query = this.searchText.toLocaleLowerCase("ru"); for (const card of this.root.querySelectorAll<HTMLElement>(".lighting-card")) card.hidden = !card.dataset.name?.includes(query); }
+  private inspector(device: DeviceRecord, lights: DeviceRecord[]): HTMLElement {
+    const panel = el("aside", "", "lighting-inspector lighting-panel");
+    panel.append(el("div", device.name, "lighting-inspector-title"), el("p", device.ble?.driver ?? (device.kind === "wled" ? "WLED · Wi-Fi" : "BLE"), "lighting-muted"));
+    panel.append(el("p", device.connection === "error" ? "Ошибка подключения" : device.connection === "observed" ? "Подключена" : "Подключение не проверено", "lighting-status"), this.editor(device));
+    const controls = el("div", "", "lighting-inspector-actions");
+    controls.append(this.button(device.state.power === true ? "Выключить" : "Включить", () => this.apply({power: device.state.power !== true}, [device.id]), !!this.powerBlock(device, device.state.power === true ? "power_off" : "power_on")));
+    controls.append(this.button("Эффект", () => { this.selected = new Set([device.id]); this.effectDialog(); }), this.button("Расписание", () => this.jobDialog(undefined, true, [device.id])));
+    panel.append(controls);
+    if (lights.length > 1) panel.append(this.button("Выбрать все устройства", () => { this.selected = new Set(lights.map(d => d.id)); this.render(); }));
+    return panel;
   }
   private powerBlock(
     device: DeviceRecord,
@@ -274,6 +313,9 @@ export class LightingView {
   }
   private card(device: DeviceRecord): HTMLElement {
     const card = el("article", "", "lighting-card");
+    card.dataset.name = device.name.toLocaleLowerCase("ru");
+    card.dataset.selected = String(this.selected.has(device.id));
+    card.dataset.power = device.state.power === true ? "on" : device.state.power === false ? "off" : "unknown";
     const label = el("label", "", "lighting-card-title");
     const check = el("input");
     check.type = "checkbox";
@@ -284,7 +326,17 @@ export class LightingView {
       else this.selected.delete(device.id);
       this.render();
     };
-    label.append(check, el("h2", device.name));
+    label.onclick = (event) => {
+      if ((event.target as HTMLElement).tagName !== "INPUT") {
+        this.selected = new Set([device.id]);
+        this.render();
+      }
+    };
+    label.append(check, el("span", device.kind === "wled" ? "♧" : "▱", "lighting-device-icon"), el("h2", device.name));
+    const favorite = this.button(device.favorite ? "★" : "☆", () => this.raw({ op: "update", id: device.id, revision: device.revision, favorite: !device.favorite }));
+    favorite.className = "lighting-favorite";
+    favorite.setAttribute("aria-label", (device.favorite ? "Убрать из избранного: " : "В избранное: ") + device.name);
+    favorite.setAttribute("aria-pressed", String(!!device.favorite));
     const status =
       (
         {
@@ -299,6 +351,7 @@ export class LightingView {
       device.place_id;
     card.append(
       label,
+      favorite,
       el(
         "p",
         place + (device.room ? " · " + device.room : ""),
