@@ -126,7 +126,7 @@ export class LocalMediaStore {
 
   private open(): Promise<IDBDatabase> {
     if (this.database) return this.database;
-    this.database = new Promise((resolve, reject) => {
+    const opening = new Promise<IDBDatabase>((resolve, reject) => {
       if (!this.supported()) { reject(new Error('Локальное хранилище недоступно в этом окне Чушпана.')); return; }
       const request = indexedDB.open(DB_NAME, 1);
       request.onupgradeneeded = () => request.result.createObjectStore(STORE_NAME, {keyPath: 'id'});
@@ -134,7 +134,8 @@ export class LocalMediaStore {
       request.onerror = () => reject(new Error('Не удалось открыть локальную медиатеку.'));
       request.onblocked = () => reject(new Error('Закрой другие окна Чушпана и повтори импорт.'));
     }).catch(error => { this.database = null; throw error; });
-    return this.database;
+    this.database = opening;
+    return opening;
   }
 
   private request<T>(request: IDBRequest<T>): Promise<T> {

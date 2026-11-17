@@ -1,7 +1,6 @@
 import type {HudEvent} from './types';
 import {icon} from './dashboard';
 import {CinemaCatalogueView} from './cinema_catalogue';
-import {posterActions} from './cinema_actions';
 import type {CataloguePage,CatalogueConfig} from './cinema_catalogue';
 import {CinemaPersonalView} from './cinema_personal';
 import type {FilmProfile,PersonalRecommendations} from './cinema_personal';
@@ -13,8 +12,8 @@ import type {BrowserDiagnosticReport} from './cinema_browser_diagnostics';
 import type {SourceDiagnosticReport} from './cinema_source_diagnostics';
 import type {PlaybackSnapshot} from './cinema_viewer';
 import type {EmbeddedPlayerState,EmbeddedControl} from './cinema_player';
-import {LocalMediaStore, classifyMedia, localMediaLabels} from './local_media';
-import type {LocalMediaItem, LocalMediaKind} from './local_media';
+import {LocalMediaStore, localMediaLabels} from './local_media';
+import type {LocalMediaItem} from './local_media';
 
 export interface CinemaSource {id:string;name:string;base_url:string;search_url:string;adapter:'manual'|'html5'|'local'|'direct';category?:'site'|'streaming'|'local';enabled:boolean;priority?:number;preferred?:boolean;search_mode?:'manual'|'archive'|'sitemap';language?:string;access_type?:string;access_status?:string;embed_allowed?:boolean;health?:{status:string;checked_at?:string;last_success?:string;reason?:string};capabilities?:{mode:string;search:boolean;embedded:boolean;progress:boolean;content_types?:string[];formats?:string[];seasons?:boolean;episodes?:boolean;voices?:boolean;controls?:string[];verification_status?:string}}
 export interface CinemaLink {id:string;episode_id:string;source_id:string;source_name:string;url:string;voice:string}
@@ -62,10 +61,7 @@ export class CinemaView {
   private tab='library';
   private query='';
   private list=false;
-  private libraryKind='all';
   private librarySort='recent';
-  private ratingMin=0;
-  private ratingMax=10;
   private libraryQuery='';
   private scrollPositions=new Map<string,number>();
   private renderedTab='';
@@ -102,7 +98,6 @@ export class CinemaView {
   private activeAudioId='';
   private audioURL='';
   private saveAudioTimer=0;
-  private activeVideoURL='';
   private audio!:HTMLAudioElement;
   private audioBar=el('section','','cinema-local-audio-bar');
   private audioTitle=el('strong');
@@ -149,14 +144,16 @@ export class CinemaView {
     this.audioPlay.type=this.audioPrevious.type=this.audioNext.type='button';this.audioPlay.setAttribute('aria-label','Воспроизвести или приостановить');this.audioPrevious.setAttribute('aria-label','Предыдущий трек');this.audioNext.setAttribute('aria-label','Следующий трек');
     const audioArtwork=el('div','♫','cinema-audio-art');const audioInfo=el('div','','cinema-audio-info');audioInfo.append(this.audioTitle,this.audioMeta);
     const audioControls=el('div','','cinema-audio-controls');audioControls.append(this.audioPrevious,this.audioPlay,this.audioNext);
-    this.audioBar.append(audioArtwork,audioInfo,audioControls,this.audioClock,this.audioSeek,this.audioVolume,this.audio);
+    const assistantMusic=el('div','','cinema-audio-assistant');assistantMusic.setAttribute('aria-label','Команды Чушпану для музыкального сервиса');
+    assistantMusic.append(this.button('Что играет?',()=>this.chat('что сейчас играет')),this.button('Пауза сервиса',()=>this.chat('пауза музыки')),this.button('Следующий трек',()=>this.chat('следующий трек')));
+    this.audioBar.append(audioArtwork,audioInfo,audioControls,this.audioClock,this.audioSeek,this.audioVolume,assistantMusic,this.audio);
     this.audioPlay.onclick=()=>{if(this.activeAudioId){if(this.audio.paused)void this.audio.play();else this.audio.pause();}};
     this.audioPrevious.onclick=()=>this.playNextAudio(-1);this.audioNext.onclick=()=>this.playNextAudio(1);
     this.audioSeek.oninput=()=>{if(this.audio.duration>0)this.audio.currentTime=this.audio.duration*Number(this.audioSeek.value)/1000;};
     this.audioVolume.oninput=()=>{this.audio.volume=Number(this.audioVolume.value);};
     this.root.append(this.audioBar);
     this.audio.onplay=()=>this.updateAudioBar();this.audio.onpause=()=>{this.persistAudioProgress();this.updateAudioBar();};this.audio.ontimeupdate=()=>{this.updateAudioBar();this.persistAudioProgress();};
-    this.audio.onended=()=>{this.persistAudioProgress(true);this.playNextAudio(1);};this.updateAudioBar();
+    this.audio.onended=()=>{this.persistAudioProgress(true);if(this.localItems.filter(item=>item.kind==='music').length>1)this.playNextAudio(1);else{this.audio.currentTime=0;this.updateAudioBar();}};this.updateAudioBar();
     void this.refreshLocal();
     document.addEventListener('cinema:settings',()=>{this.changeTab('sources');});
     document.addEventListener('cinema:integration',()=>this.changeTab('integration'));
@@ -168,7 +165,7 @@ export class CinemaView {
   private input(value='',type='text'):HTMLInputElement {const n=el('input');n.type=type;n.value=value;return n;}
   private select(options:[string,string][],value:string):HTMLSelectElement {const node=el('select');for(const [id,label]of options){const option=el('option',label);option.value=id;node.append(option);}node.value=value;return node;}
   private request(value:object):void {if(this.online){const request=value as {op:string;key?:string};if(request.op==='catalogue_detail')this.pendingDetailKey=request.key??'';if(request.op==='focus')this.pendingDetailKey='';if(['watch','open','watch_confirm','source_result_open','playback_switch'].includes((value as {op:string}).op)||((value as {op:string;action?:string}).op==='playback_control'&&(value as {action?:string}).action==='close'))this.embeddedPlayer?.prepareSwitch();this.send(value);}}
-  connection(online:boolean):void {this.online=online;this.catalogueView.connection(online);this.personalView.connection(online);this.viewer.connection(online);if(!online)this.feedback.textContent='Нет соединения с Чушпаном. Последние данные могут устареть.';else this.request({op:'refresh'});this.root.querySelectorAll<HTMLInputElement|HTMLSelectElement|HTMLButtonElement>('input,select,button').forEach(n=>n.disabled=!online);this.sourceDiagnostics.connection(online);this.render();}
+  connection(online:boolean):void {this.online=online;this.catalogueView.connection(online);this.personalView.connection(online);this.viewer.connection(online);if(!online)this.feedback.textContent='Нет соединения с Чушпаном. Последние данные могут устареть.';else this.request({op:'refresh'});this.root.querySelectorAll<HTMLInputElement|HTMLSelectElement|HTMLButtonElement>('input,select,button').forEach(n=>{n.disabled=!online&&!n.classList.contains('cinema-local-control');});this.sourceDiagnostics.connection(online);this.updateAudioBar();this.render();}
   receive(event:HudEvent):void {
     if(event.type!=='cinema')return;
     this.data=event;this.catalogueView.receive(event);this.personalView.receive(event);if(event.embedded_player)this.closeDialog(false);this.embeddedPlayer.receive(event);this.viewer.receive(event);this.sourceDiagnostics.receive(event);
@@ -212,7 +209,7 @@ export class CinemaView {
     if(event.source_options)this.sourceChoices(event.source_options);
     if(event.source_action&&this.dialog){const row=[...this.dialog.querySelectorAll<HTMLElement>('[data-result-id]')].find(n=>n.dataset.resultId===event.source_action!.result_id);if(row){let status=row.querySelector<HTMLElement>('[role=status]');if(!status){status=el('p','','cinema-muted');status.setAttribute('role','status');row.append(status);}status.textContent=event.source_action.message;}}
     if(event.source_results&&(!event.source_results.request_id||event.source_results.request_id===this.sourceRequest))this.sourceResults(event.source_results);
-    if(event.season_loaded)this.detail(event.season_loaded,event.items.find(i=>i.id===event.season_loaded)?.episodes.find(ep=>ep.season===event.loaded_season)?.id);
+    if(event.season_loaded){if(this.tab==='library'&&this.selectedMediaKey===`cinema:${event.season_loaded}`)this.render();else this.detail(event.season_loaded,event.items.find(i=>i.id===event.season_loaded)?.episodes.find(ep=>ep.season===event.loaded_season)?.id);}
     if(event.saved&&this.pendingWatch){const item=event.items.find(v=>v.id===event.saved);if(item){this.pendingWatch=null;if(this.pendingFind){this.pendingFind=false;if(this.dialog?.dataset.rich==='true')this.detail(item.id);this.open(item);}else this.open(item);}}
   }
   private changeTab(tab:string,render=true):void {
@@ -237,6 +234,7 @@ export class CinemaView {
     this.renderedTab=this.tab;
     this.tabs.hidden=this.tab==='library';
     this.root.dataset.screen=this.tab==='library'?'library':this.tab;
+    if(this.tab==='library')this.search.disabled=false;
     if(!this.data){if(this.tab==='library')this.renderLibrary();else this.content.replaceChildren(this.empty(this.online?'Загружаю твою кинотеку…':'Кинотека появится после подключения к Чушпану.'));return;}
     if(this.tab!=='sources'&&this.tab!=='integration')delete this.content.dataset.settings;
     if(this.tab==='catalogue'){this.catalogue();}
@@ -289,22 +287,22 @@ export class CinemaView {
     const hero=el('header','','cinema-library-hero');const intro=el('div');intro.append(el('small','ТВОЯ КОЛЛЕКЦИЯ','cinema-library-eyebrow'),el('h2','Медиатека'),el('p','Фильмы, сериалы и личные файлы в одном пространстве.'));const mascot=el('img');mascot.src='/assets/chushpan-icon.png';mascot.alt='';mascot.className='cinema-library-mascot';hero.append(intro,mascot);
     const typebar=el('div','','cinema-media-types');
     const types:[typeof this.mediaKind,string,string][]=[['all','Все','▦'],['music','Музыка','♫'],['video','Видео','▷'],['image','Изображения','▧'],['document','Документы','▤']];
-    for(const [id,label,glyph]of types){const button=this.button(`${glyph} ${label} ${categoryCounts[id]??0}`,()=>{this.mediaKind=id;this.render();},'cinema-media-type');button.setAttribute('aria-pressed',String(this.mediaKind===id));typebar.append(button);}
+    for(const [id,label,glyph]of types){const button=this.localControl(`${glyph} ${label} ${categoryCounts[id]??0}`,()=>{this.mediaKind=id;this.render();},'cinema-media-type');button.setAttribute('aria-pressed',String(this.mediaKind===id));typebar.append(button);}
     const libraryActions=el('div','','cinema-library-actions');
     const importButton=this.localControl('Импортировать файлы',()=>this.pickLocalFiles(),'primary');
     const create=this.button('＋ Создать плейлист',()=>this.createPlaylist());create.disabled=!this.online||!this.data?.durable;
     const catalogue=this.button('Открыть каталог',()=>this.changeTab('catalogue'));libraryActions.append(importButton,create,catalogue);
-    const upload=el('input');upload.type='file';upload.multiple=true;upload.accept='audio/*,video/*,image/*,application/pdf,text/plain,.md,.rtf,.doc,.docx,.pages,.odt,.xls,.xlsx,.ppt,.pptx';upload.hidden=true;upload.setAttribute('aria-label','Выбрать файлы для импорта');upload.onchange=()=>{if(upload.files)void this.importLocalFiles(upload.files);upload.value='';};
+    const upload=el('input');upload.type='file';upload.multiple=true;upload.accept='audio/*,video/*,image/*,application/pdf,text/plain,.md,.rtf,.doc,.docx,.pages,.odt,.xls,.xlsx,.ppt,.pptx';upload.hidden=true;upload.className='cinema-local-control';upload.setAttribute('aria-label','Выбрать файлы для импорта');upload.onchange=()=>{if(upload.files)void this.importLocalFiles(upload.files);upload.value='';};
 
     const workspace=el('div','','cinema-library-layout');
     const sidebar=el('aside','','cinema-library-playlists');const sideHeading=el('div','','cinema-playlist-heading');sideHeading.append(el('h3','Плейлисты'),this.button('+',()=>this.createPlaylist(),'cinema-playlist-create'));sidebar.append(sideHeading);
     const collections:[string,string,string][]=[['all','Все материалы',String(categoryCounts.all)],['favorites','Избранное',String(library.filter(i=>!!i.favorite).length+local.filter(i=>i.favorite).length)],['music','Моя музыка',String(categoryCounts.music)],['planned','Хочу посмотреть',String(library.filter(i=>i.watchlist==null?i.status==='planned':!!i.watchlist).length)],['watching','Смотрю',String(library.filter(i=>i.status==='watching').length)],['watched','Просмотрено',String(library.filter(i=>i.status==='watched').length)],['files','Импортированные файлы',String(local.length)]];
-    for(const [id,label,count]of collections){const button=this.button(`${label} ${count}`,()=>{this.collection=id;this.mediaKind=id==='music'?'music':'all';this.render();},'cinema-collection');button.setAttribute('aria-current',String(this.collection===id));sidebar.append(button);}
-    for(const playlist of playlists){const row=el('div','','cinema-custom-playlist');const button=this.button(`${playlist.name} ${playlist.item_ids.length+local.filter(i=>i.playlistIds.includes(playlist.id)).length}`,()=>{this.collection=`playlist:${playlist.id}`;this.mediaKind='all';this.render();},'cinema-collection');button.setAttribute('aria-current',String(this.collection===`playlist:${playlist.id}`));const remove=this.button('×',()=>this.deletePlaylist(playlist),'cinema-playlist-delete');remove.setAttribute('aria-label',`Удалить плейлист ${playlist.name}`);row.append(button,remove);sidebar.append(row);}
+    for(const [id,label,count]of collections){const button=this.localControl(`${label} ${count}`,()=>{this.collection=id;this.mediaKind=id==='music'?'music':'all';this.render();},'cinema-collection');button.setAttribute('aria-current',String(this.collection===id));sidebar.append(button);}
+    for(const playlist of playlists){const row=el('div','','cinema-custom-playlist');const button=this.localControl(`${playlist.name} ${playlist.item_ids.length+local.filter(i=>i.playlistIds.includes(playlist.id)).length}`,()=>{this.collection=`playlist:${playlist.id}`;this.mediaKind='all';this.render();},'cinema-collection');button.setAttribute('aria-current',String(this.collection===`playlist:${playlist.id}`));const remove=this.button('×',()=>this.deletePlaylist(playlist),'cinema-playlist-delete');remove.setAttribute('aria-label',`Удалить плейлист ${playlist.name}`);row.append(button,remove);sidebar.append(row);}
     sidebar.append(el('p','Импортированные файлы хранятся локально в этом приложении.','cinema-library-note'));
 
     const main=el('main','','cinema-library-main');const heading=el('div','','cinema-library-grid-heading');const collectionName=this.collection.startsWith('playlist:')?playlists.find(p=>p.id===this.collection.slice(9))?.name??'Плейлист':collections.find(([id])=>id===this.collection)?.[1]??'Все материалы';heading.append(el('h2',collectionName),el('span',String(matching.length)));
-    const tools=el('div','','cinema-library-grid-tools');const sort=this.select([['recent','По последнему изменению'],['title','По названию'],['year','По году'],['rating','По оценке']],this.librarySort);sort.onchange=()=>{this.librarySort=sort.value;this.render();};sort.setAttribute('aria-label','Сортировка медиатеки');const layout=this.button(this.list?'Карточки':'Список',()=>{this.list=!this.list;this.render();});tools.append(sort,layout);heading.append(tools);main.append(heading);
+    const tools=el('div','','cinema-library-grid-tools');const sort=this.select([['recent','По последнему изменению'],['title','По названию'],['year','По году'],['rating','По оценке']],this.librarySort);sort.onchange=()=>{this.librarySort=sort.value;this.render();};sort.setAttribute('aria-label','Сортировка медиатеки');const layout=this.localControl(this.list?'Карточки':'Список',()=>{this.list=!this.list;this.render();});tools.append(sort,layout);heading.append(tools);main.append(heading);
     const grid=el('div','',`cinema-media-grid${this.list?' is-list':''}`);grid.setAttribute('aria-label',collectionName);
     for(const item of matching)grid.append('title'in item?this.libraryCinemaCard(item):this.libraryLocalCard(item));
     if(!matching.length){const empty=el('div','','cinema-library-empty');empty.append(el('strong',this.libraryQuery?'Ничего не найдено':'Здесь пока пусто'),el('p',this.libraryQuery?'Измени запрос или выбери другой плейлист.':'Добавь фильмы из каталога или импортируй свои файлы.'),this.button('Найти фильмы и сериалы',()=>this.changeTab('catalogue'),'primary'),this.localControl('Импортировать файлы',()=>this.pickLocalFiles()));main.append(empty);}
@@ -638,19 +636,6 @@ export class CinemaView {
     form.onsubmit=e=>{e.preventDefault();if(!form.reportValidity())return;try{send();}catch(error){form.append(el('p',String((error as Error).message),'cinema-form-error'));}};
     dialog.append(el('p',item.title,'cinema-muted'),form);
   }
-  private card(item:CinemaTitle,wide=false):HTMLElement {
-    const card=el('article','',wide?'cinema-card cinema-wide':'cinema-card');card.dataset.titleId=item.id;
-    const poster=this.button(`Открыть ${item.title}`,()=>this.detail(item.id),'cinema-poster-button');poster.replaceChildren(this.poster(item));poster.setAttribute('aria-label',`Открыть ${item.title}`);
-    const artwork=el('div','','cinema-poster-wrap');artwork.append(poster);
-    const body=el('div','','cinema-card-body');body.append(this.button(item.title,()=>this.detail(item.id),'cinema-title'),el('p',`${item.year||'Год неизвестен'} · ${item.kind==='series'?'Сериал':'Фильм'}`,'cinema-card-year'));
-    const ratings=el('div','','cinema-ratings');ratings.append(el('span',item.metadata?.rating?`★ ${item.metadata.rating.toFixed(1)}`:'TMDB —','cinema-tmdb-rating'));
-    if(item.user_rating)ratings.append(el('span',`★ ${item.user_rating.toFixed(1)}`,'cinema-personal-rating'));body.append(ratings,el('small',item.status==='planned'&&item.watchlist===0?'':statuses[item.status],'cinema-library-badge'));
-    if(wide||item.kind==='series')body.append(el('small',episodeCaption(item)));
-    if(wide||item.kind==='series'||item.status==='watching'||(item.current?.position??0)>0){body.append(this.progress(item.current),el('small',`${playbackTime(item.current?.position??0)} из ${item.current?.duration?playbackTime(item.current.duration):'—'}`));}
-    body.append(this.button('✎ Изменить прогресс',()=>this.editProgress(item,item.current)),posterActions(()=>this.data?.items.find(i=>i.id===item.id),values=>this.request({op:'update',id:item.id,values}),()=>this.open(this.data?.items.find(i=>i.id===item.id)??item),this.online));
-    card.append(artwork,body);return card;
-  }
-
   private deleteTitle(item:CinemaTitle):void {const dialog=this.showDialog('Удалить из медиатеки?');dialog.append(el('p',`«${item.title}»: будут удалены прогресс и привязки этого названия.`),this.button('Удалить',()=>{this.request({op:'delete',id:item.id});this.closeDialog();}),this.button('Отмена',()=>this.closeDialog()));}
   private open(item:CinemaTitle,ep=item.current,linkId?:string,device?:string):void {
     if(linkId||device==='airplay'){this.request({op:'open',title_id:item.id,episode_id:ep?.id,link_id:linkId,device});return;}
