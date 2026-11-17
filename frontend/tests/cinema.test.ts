@@ -9,7 +9,7 @@ function fixture() {
   const window=new Window({url:'http://127.0.0.1:8879'});
   window.document.body.innerHTML='<div id="cinema-root"></div>';
   const localMedia=stripTypeScriptTypes(readFileSync(new URL('../src/local_media.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^export /gm,'');
-  const sandbox={exports:{} as Record<string,any>,document:window.document,window,URL:window.URL,icon:()=>'<svg></svg>'};
+  const sandbox={exports:{} as Record<string,any>,document:window.document,window,navigator:window.navigator,URL:window.URL,icon:()=>'<svg></svg>'};
   vm.runInNewContext(`${localMedia}\nglobalThis.LocalMediaStore=LocalMediaStore;globalThis.localMediaLabels=localMediaLabels;`,sandbox);
   const code=stripTypeScriptTypes(readFileSync(new URL('../src/cinema.ts',import.meta.url),'utf8'),{mode:'transform'})
     .replace(/^import .*;\n/gm,'').replace(/^export /gm,'')+'\nexports.api={CinemaView,playbackTime,parsePlaybackTime,viewingProgress};';
@@ -617,5 +617,58 @@ test('maximum quality preference defaults on and viewer distinguishes confirmed 
     assert.doesNotMatch(panel.textContent,/максимум подтверждён/);assert.match(panel.textContent,/качество не подтверждено/);
     button(f,'Настройки').click();button(f,'Воспроизведение').click();
     const input=f.window.document.querySelector<HTMLInputElement>('[aria-label="Автоматически выбирать максимальное качество видео"]');assert.ok(input?.checked);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('local playlist membership changes only after SQLite confirms deletion',async()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((value:any)=>sent.push(value),()=>{},()=>{},()=>{});view.connection(true);
+    const playlist={id:'weekend',name:'Выходные',item_ids:[]};
+    const file={id:'notes',name:'notes.txt',kind:'document',mime:'text/plain',size:10,addedAt:'2026-11-17',favorite:true,playlistIds:['weekend'],position:0,duration:0};
+    const removed:string[]=[];
+    view.localItems=[file];view.localStore={supported:()=>true,file:async()=>null,removePlaylist:async(id:string)=>{removed.push(id);file.playlistIds=[];},list:async()=>[file]};
+    view.receive({...snapshot(),playlists:[playlist]});
+    f.window.document.querySelector('[aria-label="Удалить плейлист Выходные"]')!.click();button(f,'Удалить плейлист').click();
+    assert.equal(sent.at(-1).op,'playlist_delete');assert.deepEqual(removed,[]);assert.deepEqual(file.playlistIds,['weekend']);
+    view.receive({...snapshot(),playlists:[playlist],error:'SQLite временно недоступна'});
+    assert.deepEqual(removed,[]);assert.deepEqual(file.playlistIds,['weekend']);assert.ok(f.window.document.querySelector('dialog'));
+    button(f,'Удалить плейлист').click();view.receive({...snapshot(),playlists:[],saved:playlist.id});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(removed,['weekend']);assert.deepEqual(file.playlistIds,[]);assert.equal(file.favorite,true);
+    assert.equal(f.window.document.querySelector('dialog'),null);
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('manual series expose stored seasons and season selection belongs to its title',()=>{
+  const f=fixture();try{
+    const sent:any[]=[];const view=new f.CinemaView((value:any)=>sent.push(value),()=>{},()=>{},()=>{});view.connection(true);
+    const first:any={...movie('First series','watching'),kind:'series'};first.current.season=2;first.current.episode=1;
+    first.episodes=[{...first.current,id:'special',season:0,episode:1},first.current];
+    const second:any={...movie('Second series','watching'),kind:'series'};second.current.season=1;second.current.episode=4;
+    view.receive(snapshot([first,second]));button(f,'Сезоны').click();
+    let select=f.window.document.querySelector('[aria-label="Выбрать сезон"]') as HTMLSelectElement;
+    assert.equal(select.value,'2');assert.equal(select.options.length,2);
+    select.value='0';select.dispatchEvent(new f.window.Event('change'));
+    assert.equal((f.window.document.querySelector('[aria-label="Выбрать сезон"]') as HTMLSelectElement).value,'0');
+    assert.match(f.window.document.querySelector('.cinema-episode-row')!.textContent,/Серия 1/);
+    f.window.document.querySelector('[aria-label="Подробнее: Second series"]')!.click();button(f,'Сезоны').click();
+    select=f.window.document.querySelector('[aria-label="Выбрать сезон"]') as HTMLSelectElement;
+    assert.equal(select.value,'1');assert.match(f.window.document.querySelector('.cinema-episode-row')!.textContent,/Серия 4/);
+    assert.ok(!sent.some(value=>value.op==='season'));
+  }finally{f.window.happyDOM.abort();}
+});
+
+test('background cinema updates keep the playing local video connected',()=>{
+  const f=fixture();try{
+    const view=new f.CinemaView(()=>{},()=>{},()=>{},()=>{});view.connection(true);
+    const file={id:'clip',name:'clip.mp4',kind:'video',mime:'video/mp4',size:20,addedAt:'2026-11-17',favorite:false,playlistIds:[],position:30,duration:100};
+    view.localItems=[file];view.localStore={supported:()=>false,file:async()=>null};view.receive(snapshot());
+    const video=f.window.document.querySelector('.cinema-local-preview video')!;const detail=video.closest('.cinema-library-detail')!;
+    let detached=false;const observer=new f.window.MutationObserver(records=>{for(const record of records)for(const node of record.removedNodes)if(node===video||node.contains(video))detached=true;});
+    observer.observe(f.window.document.body,{childList:true,subtree:true});
+    view.receive({...snapshot(),message:'Прогресс обновлён'});
+    assert.equal(f.window.document.querySelector('.cinema-local-preview video'),video);assert.equal(video.closest('.cinema-library-detail'),detail);assert.ok(video.isConnected);
+    const records=observer.takeRecords();for(const record of records)for(const node of record.removedNodes)if(node===video||node.contains(video))detached=true;
+    assert.equal(detached,false);observer.disconnect();
   }finally{f.window.happyDOM.abort();}
 });
