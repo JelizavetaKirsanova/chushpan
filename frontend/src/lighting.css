@@ -366,3 +366,17 @@ html[data-theme=light] #lighting-root .error,
 html[data-theme=light] .lighting-dialog .error {
   color: #a42c35;
 }
+
+html[data-theme=light] #lighting-root .device-rgb-code output,
+html[data-theme=light] #lighting-root .device-color-reason,
+html[data-theme=light] #lighting-root .device-hint { color:var(--light-muted); }
+html[data-theme=light] #lighting-root .device-rgb-channel[data-channel=R] strong { color:#a52e43; }
+html[data-theme=light] #lighting-root .device-rgb-channel[data-channel=G] strong { color:#28673c; }
+html[data-theme=light] #lighting-root .device-rgb-channel[data-channel=B] strong { color:#5340a0; }
+html[data-theme=light] #lighting-root input:not([type=range],[type=color],[type=checkbox]),
+html[data-theme=light] #lighting-root select { background:var(--light-surface-raised);color:var(--light-text);border-color:var(--light-line); }
+html[data-theme=light] #lighting-root .lighting-search input { background:transparent; }
+html[data-theme=light] #lighting-root .device-color-error { color:#a42c35; }
+
+html[data-theme=light] #lighting-root .lighting-filter[aria-pressed=true],
+html[data-theme=light] #lighting-root .lighting-layout-toggle { background:linear-gradient(115deg,#9848c6,#8532bd);color:#fff; }

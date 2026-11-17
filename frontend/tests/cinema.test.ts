@@ -730,3 +730,21 @@ test('an obsolete audio play rejection cannot overwrite the current track status
     assert.equal(view.activeAudioId,second.id);assert.equal(view.feedback.textContent,'Текущий трек');assert.equal(view.feedback.dataset.error,'false');
   }finally{f.window.happyDOM.abort();}
 });
+
+test('production CSS order keeps light cinema controls readable',async()=>{
+  const window=new Window({settings:{disableJavaScriptEvaluation:true,disableCSSFileLoading:true,disableJavaScriptFileLoading:true}});
+  try{
+    window.document.documentElement.dataset.theme='light';
+    window.document.body.innerHTML='<div class="hud" data-view="cinema"><section class="workspace-page cinema-page"><button id="settings">Настройки</button><button id="play" class="primary">Смотреть</button><select id="sort"><option>По названию</option></select><div class="cinema-library-playlists"><button id="selected" class="cinema-collection" aria-current="true">Избранное</button></div><article class="cinema-media-card"><button id="title" class="cinema-media-title">Название фильма</button></article><div class="cinema-detail-tabs"><button id="tab" aria-current="true">О фильме</button></div><button id="category" class="cinema-media-type" aria-pressed="true">Всё</button></section></div>';
+    const main=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
+    for(const [,name]of main.matchAll(/import\s+['"]\.\/([^'"]+\.css)['"]/g)){
+      const style=window.document.createElement('style');style.textContent=readFileSync(new URL(`../src/${name}`,import.meta.url),'utf8');window.document.head.append(style);
+    }
+    const style=(id:string)=>window.getComputedStyle(window.document.getElementById(id)!);
+    for(const id of ['settings','sort']){assert.equal(style(id).color,'#352140');assert.equal(style(id).backgroundColor,'#fffaff');}
+    assert.equal(style('selected').color,'#612077');assert.equal(style('selected').backgroundColor,'#ecdcf5');
+    assert.equal(style('title').color,'#352140');assert.equal(style('title').backgroundColor,'transparent');
+    assert.equal(style('tab').color,'#542064');assert.equal(style('tab').backgroundColor,'#ebd9f5');
+    for(const id of ['play','category']){assert.equal(style(id).color,'#fff');assert.match(style(id).backgroundImage,/#a020cb.*#7b19b8/);}
+  }finally{await window.happyDOM.close();}
+});

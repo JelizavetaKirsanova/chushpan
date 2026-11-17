@@ -299,7 +299,7 @@ html[data-theme="light"] .scenario-hero-art span:nth-child(2) { background:radia
 html[data-theme="light"] .automations-page .page-toolbar input,
 html[data-theme="light"] .automations-page .page-toolbar select,
 html[data-theme="light"] .automations-page .scenario-filter-row>select { border-color:var(--line);background:#fffaff;color:var(--text); }
-html[data-theme="light"] .automations-page input,
+html[data-theme="light"] .automations-page input:not([type="range"]):not([type="checkbox"]):not([type="radio"]),
 html[data-theme="light"] .automations-page select,
 html[data-theme="light"] .automations-page textarea { background:#fffaff !important;color:var(--text) !important; }
 html[data-theme="light"] .automations-page .page-toolbar input::placeholder { color:var(--subtle); }
@@ -312,6 +312,74 @@ html[data-theme="light"] .scenario-flow-viewport { background-color:#fffaff;back
 html[data-theme="light"] .scenario-flow-root>.scenario-block>.action-fields { background:#fffaff; }
 html[data-theme="light"] .scenario-editor .editor-heading { background:color-mix(in srgb,var(--bg) 92%,transparent); }
 html[data-theme="light"] .scenario-flow-root>.scenario-block { box-shadow:0 5px 16px #58306b12; }
+
+/* Override the retained dark editor palette without changing any component geometry. */
+html[data-theme="light"] .hud .automations-page button.primary {
+  background:linear-gradient(140deg,#9848c6,#8532bd);color:#fff;
+}
+html[data-theme="light"] .hud .automations-page .scenario-filters [aria-pressed=true],
+html[data-theme="light"] .hud .automations-page .scenario-view-toggle [aria-pressed=true] {
+  background:linear-gradient(135deg,#9848c6,#883ac1);color:#fff;
+}
+html[data-theme="light"] .hud .automations-page .scenario-card,
+html[data-theme="light"] .hud .automations-page .scenario-editor .editor-step {
+  border-color:var(--line);background:linear-gradient(145deg,var(--panel),var(--panel-soft));color:var(--text);
+}
+html[data-theme="light"] .hud .automations-page .scenario-summary strong,
+html[data-theme="light"] .hud .automations-page .field-caption,
+html[data-theme="light"] .hud .automations-page .scenario-editor .action-title strong { color:var(--text); }
+html[data-theme="light"] .hud .automations-page .scenario-summary small,
+html[data-theme="light"] .hud .automations-page .scenario-summary .scenario-meta,
+html[data-theme="light"] .hud .automations-page .scenario-editor label,
+html[data-theme="light"] .hud .automations-page .scenario-editor .action-title small,
+html[data-theme="light"] .hud .automations-page .scenario-editor .action-extra>summary,
+html[data-theme="light"] .hud .automations-page .scenario-editor .parameter-source>summary,
+html[data-theme="light"] .hud .automations-page .scenario-editor .editor-advanced>summary,
+html[data-theme="light"] .hud .automations-page .scenario-editor .version-tabs-editor button>small,
+html[data-theme="light"] .hud .automations-page .scenario-editor .version-create>small,
+html[data-theme="light"] .hud .automations-page .scenario-editor .editor-location-current,
+html[data-theme="light"] .hud .automations-page .scenario-editor .variant-editor p,
+html[data-theme="light"] .hud .automations-page .scenario-editor .command-training>small,
+html[data-theme="light"] .hud .automations-page .scenario-editor .scenario-recognition small,
+html[data-theme="light"] .hud .automations-page .scenario-editor .blocks-empty,
+html[data-theme="light"] .hud .automations-page .legacy-ritual>summary,
+html[data-theme="light"] .hud .automations-page .scenario-feedback:not([data-error=true]) { color:var(--muted); }
+html[data-theme="light"] .hud .automations-page .scenario-icon,
+html[data-theme="light"] .hud .automations-page .scenario-editor .action-number {
+  border-color:var(--line);background:var(--accent-soft);color:var(--accent-strong);
+}
+html[data-theme="light"] .hud .automations-page .scenario-menu .menu-items,
+html[data-theme="light"] .hud .automations-page .scenario-icon-library,
+html[data-theme="light"] .hud .automations-page .scenario-editor .scenario-block,
+html[data-theme="light"] .hud .automations-page .scenario-editor .block-catalogue {
+  border-color:var(--line);background:var(--panel);color:var(--text);
+}
+html[data-theme="light"] .hud .automations-page .scenario-editor .action-extra,
+html[data-theme="light"] .hud .automations-page .scenario-editor .editor-advanced,
+html[data-theme="light"] .hud .automations-page .scenario-editor .editor-location-current { border-color:var(--line); }
+html[data-theme="light"] .hud .automations-page .scenario-editor .editor-heading button:not(.primary):not(.scenario-test-run),
+html[data-theme="light"] .hud .automations-page .scenario-editor .version-tabs-editor .variant-tabs button {
+  border-color:var(--line);background:var(--panel-soft);color:var(--text);
+}
+html[data-theme="light"] .hud .automations-page .scenario-editor .version-tabs-editor .variant-tabs [aria-selected=true] {
+  border-color:var(--accent);background:var(--accent-soft);color:var(--text);box-shadow:inset 0 -2px 0 var(--accent);
+}
+html[data-theme="light"] .hud .automations-page .scenario-editor .phrase-tag button,
+html[data-theme="light"] .hud .automations-page .scenario-editor .block-more,
+html[data-theme="light"] .hud .automations-page .scenario-editor .editor-heading .editor-undo { color:var(--muted); }
+html[data-theme="light"] .hud .automations-page .scenario-editor .action-picker>summary,
+html[data-theme="light"] .hud .automations-page .scenario-editor .action-group h4,
+html[data-theme="light"] .hud .automations-page .scenario-editor .location-connect,
+html[data-theme="light"] .hud .automations-page .scenario-editor .editor-location-current>a,
+html[data-theme="light"] .hud .automations-page .scenario-editor .editor-save button:first-child { color:var(--accent-strong);border-color:var(--line-strong); }
+html[data-theme="light"] .hud .automations-page .scenario-editor .phrase-tag input,
+html[data-theme="light"] .hud .automations-page .scenario-editor .phrase-entry,
+html[data-theme="light"] .hud .automations-page .scenario-editor input.slider-number { background:transparent!important; }
+html[data-theme="light"] .hud .automations-page .scenario-editor input[type=range] {
+  background:linear-gradient(to right,var(--accent) var(--progress,50%),var(--line-strong) var(--progress,50%));
+}
+html[data-theme="light"] .hud .automations-page .scenario-editor .editor-save { background:none;box-shadow:none; }
+html[data-theme="light"] .hud .automations-page .scenario-editor .error { color:var(--red); }
 
 @media(max-width:1120px) {
   .automations-page .scenario-layout { grid-template-columns:minmax(0,1fr) 245px;gap:12px; }

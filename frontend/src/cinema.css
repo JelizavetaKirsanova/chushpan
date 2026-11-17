@@ -555,3 +555,43 @@ html[data-theme=light] .cinema-audio-assistant button { color:#352140; }
   .cinema-local-audio-bar { grid-template-columns:36px minmax(0,1fr) auto; }
   .cinema-audio-assistant { grid-column:1/-1; justify-content:center; }
 }
+
+/* Light media controls must keep their own palette after the shared workspace CSS. */
+html[data-theme=light] .cinema-page { --cinema-panel:#fff; --cinema-border:#dccce6; }
+html[data-theme=light] :is(.cinema-page,.cinema-dialog,.cinema-filter-drawer) button {
+  color:#352140; background:#fffaff; border-color:#d9c9e3;
+}
+html[data-theme=light] :is(.cinema-page,.cinema-dialog,.cinema-filter-drawer) button:where(:hover):not(:disabled) {
+  color:#352140; background:#efe1f7; border-color:#b992cf;
+}
+html[data-theme=light] :is(.cinema-page,.cinema-dialog,.cinema-filter-drawer) :is(select,textarea,input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color])) {
+  color:#352140; background:#fffaff; border-color:#d9c9e3;
+}
+html[data-theme=light] :is(.cinema-page,.cinema-dialog,.cinema-filter-drawer) :is(input,textarea)::placeholder { color:#75627e; }
+html[data-theme=light] :is(.cinema-page,.cinema-dialog,.cinema-filter-drawer) :is(button.primary,.cinema-playlist-create,.cinema-audio-play) {
+  color:#fff; background:linear-gradient(110deg,#a020cb,#7b19b8); border-color:#8e30ae;
+}
+html[data-theme=light] .cinema-page :is(button[aria-current=true],button[aria-current=page],button[aria-pressed=true]) {
+  color:#542064; background:#ebd9f5; border-color:#c7a4dc;
+}
+html[data-theme=light] .cinema-page .cinema-media-type[aria-pressed=true] {
+  color:#fff; background:linear-gradient(110deg,#a020cb,#7b19b8); border-color:#8e30ae;
+}
+html[data-theme=light] .cinema-page :is(.cinema-media-title,.cinema-title,.cinema-collection:not([aria-current=true])) {
+  color:#352140; background:transparent;
+}
+html[data-theme=light] .cinema-page :is(.cinema-media-title,.cinema-title,.cinema-collection):where(:hover) { color:#542064; background:#efe1f7; }
+html[data-theme=light] .cinema-page button.cinema-media-heart { color:#fff; background:#3d1d50df; border-color:#ffffff99; }
+html[data-theme=light] .cinema-page button.cinema-media-heart[aria-pressed=true] { color:#fff; background:#8a209f; }
+html[data-theme=light] .cinema-library-grid-heading>span { color:#66267e; background:#ecdaf5; }
+html[data-theme=light] .cinema-page .cinema-search input { background:transparent; }
+html[data-theme=light] .cinema-page .cinema-poster { color:#f8f0ff; }
+html[data-theme=light] .cinema-page .cinema-local-glyph { color:#64217d; text-shadow:none; }
+html[data-theme=light] :is(.cinema-filter-drawer,.cinema-rich-dialog,.cinema-preference-card,.cinema-source-card,.cinema-source-option,.cinema-empty,.cinema-display,.cinema-profile-stats article,.cinema-profile-panel,.cinema-embedded,.cinema-history article) {
+  color:#352140; background:#fffaff; border-color:#d9c9e3;
+}
+html[data-theme=light] :is(.cinema-catalogue-hero,.cinema-profile-hero,.cinema-profile-insight) { color:#352140; background:linear-gradient(115deg,#ecdaf7,#faf3ff); border-color:#d9c9e3; }
+html[data-theme=light] :is(.cinema-catalogue-filters,.cinema-type-switch,.cinema-genre-panel[open],.cinema-tabs,.cinema-filter-drawer footer,.cinema-context[open]) { background:#f7effc; border-color:#d9c9e3; }
+html[data-theme=light] :is(.cinema-field,.cinema-switch>span,.cinema-filter-drawer output,.cinema-profile-hero p,.cinema-profile-insight p,.cinema-profile-insight small,.cinema-preference-card>p,.cinema-source-option p,.cinema-source-card p,.cinema-source-card small,.cinema-detail-summary>p) { color:#6e5c79; }
+html[data-theme=light] .cinema-catalogue-hero>small { color:#73378a; }
+html[data-theme=light] .cinema-feedback[data-error=true],html[data-theme=light] .cinema-form-error { color:#a13725; }

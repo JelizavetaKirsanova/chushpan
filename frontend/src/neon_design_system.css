@@ -437,7 +437,7 @@ button:disabled { opacity: .48; cursor: default; }
   max-width: 100%;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-control);
-  background: #151117;
+  background: var(--control-input, #151117);
   color: var(--text);
 }
 .page-toolbar input, .page-toolbar select, .workspace-page input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), .workspace-page select, .workspace-page textarea { padding: 9px 11px; font-size: 12px; }
@@ -452,14 +452,16 @@ button:disabled { opacity: .48; cursor: default; }
 #settings-center button:not(:disabled):not(.text-button):not(.icon-button), .module-page button:not(:disabled):not(.text-button):not(.icon-button) {
   border: 1px solid var(--line-strong);
   border-radius: 10px;
-  background: #29212d;
-  color: var(--text);
   cursor: pointer;
 }
+html:not([data-theme="light"]) .workspace-page button:not(:disabled):not(.text-button):not(.icon-button):not(.calendar-day):not(.calendar-event):not(.conversation):not(.cinema-poster-button):not(.cinema-favorite):not(.switch):not(.scenario-switch):not(.device-power-switch):not(.send-button):not(.mic-button):not(.speak-toggle):not(.tool-button):not(.copy):not(.scenario-open):not(.chart-bar),
+html:not([data-theme="light"]) #settings-center button:not(:disabled):not(.text-button):not(.icon-button),
+html:not([data-theme="light"]) .module-page button:not(:disabled):not(.text-button):not(.icon-button) { background: #29212d; color: var(--text); }
 .workspace-page button.primary, #settings-center button.primary, .module-page button.primary { border-color: #9b7aa4; background: linear-gradient(120deg, #aa7fbb, #84618e); color: white; }
 .workspace-page button.danger, #settings-center button.danger { border-color: #67444d; color: #e2a2aa; }
-.workspace-page button:hover:not(:disabled):not(.text-button):not(.icon-button):not(.calendar-day):not(.calendar-event):not(.conversation):not(.cinema-poster-button):not(.cinema-favorite):not(.switch):not(.scenario-switch):not(.device-power-switch):not(.send-button):not(.mic-button):not(.speak-toggle):not(.tool-button):not(.copy):not(.scenario-open):not(.chart-bar),
-#settings-center button:hover:not(:disabled):not(.text-button):not(.icon-button), .module-page button:hover:not(:disabled):not(.text-button):not(.icon-button) { border-color: #745f7a; background: #33263a; }
+html:not([data-theme="light"]) .workspace-page button:hover:not(:disabled):not(.text-button):not(.icon-button):not(.calendar-day):not(.calendar-event):not(.conversation):not(.cinema-poster-button):not(.cinema-favorite):not(.switch):not(.scenario-switch):not(.device-power-switch):not(.send-button):not(.mic-button):not(.speak-toggle):not(.tool-button):not(.copy):not(.scenario-open):not(.chart-bar),
+html:not([data-theme="light"]) #settings-center button:hover:not(:disabled):not(.text-button):not(.icon-button),
+html:not([data-theme="light"]) .module-page button:hover:not(:disabled):not(.text-button):not(.icon-button) { border-color: #745f7a; background: #33263a; }
 .text-button { border: 0 !important; background: transparent !important; color: #c4a2d0 !important; padding: 5px 7px; font-size: 10px; cursor: pointer; }
 .text-button:hover { color: #f0d9f5 !important; }
 .icon-button { display: inline-grid; place-items: center; width: 31px; height: 31px; padding: 4px; border: 1px solid var(--line) !important; border-radius: 9px; background: #211922 !important; color: var(--accent-strong) !important; cursor: pointer; }
@@ -816,7 +818,7 @@ dialog::backdrop { background: #09070acc; backdrop-filter: blur(6px); }
 .hud[data-view="home"] .home-invitation { font-size: clamp(25px, 2.5vw, 38px); }
 .hud[data-view="home"] .talk { grid-column: 1; grid-row: 2; display: flex; flex-direction: column; max-height: none; min-height: 0; padding: 14px 16px 12px; border-color: var(--line); border-radius: 23px; background: var(--panel); }
 .hud[data-view="home"] .talk-tools { min-height: 0; margin: 0; padding: 0; border: 0; }
-.hud[data-view="home"] > .top .status { position: static !important; inset: auto !important; margin: 0 !important; flex: 0 0 auto; }
+.hud[data-view] > .top .status { position: static !important; inset: auto !important; margin: 0 !important; flex: 0 0 auto; }
 .hud[data-view="home"] .transcript { flex: 1 1 auto; gap: 12px; padding: 8px 3px 14px; }
 .hud[data-view="home"] .transcript:empty::before { display: none; }
 .hud[data-view="home"] .line { max-width: min(90%, 640px); padding: 11px 14px; border-radius: 17px; font-size: 13px; }
@@ -859,14 +861,15 @@ html[data-theme="light"] {
   --bg: #f5f0fa; --bg-raised: #fffaff; --panel: #fffaff; --panel-soft: #f5effa; --panel-hover: #eee2f7;
   --text: #241b2c; --muted: #5e5265; --subtle: #7b6d81; --accent: #9136c2; --accent-strong: #a43bd3;
   --accent-soft: #8b35bd18; --line: #e1d3eb; --line-strong: #cdb4dc; --shadow-card: 0 8px 22px #5c34701b;
-  --green: #418b59; --amber: #987027; --red: #b44c5d;
+  --green: #418b59; --amber: #987027; --red: #b44c5d; --control-input: #fffaff;
 }
 html[data-theme="light"] body, html[data-theme="light"] .hud { background: var(--bg); color: var(--text); }
+html[data-theme="light"] .hud[data-state] { --accent: inherit; --line: inherit; }
 html[data-theme="light"] .hud { background-image: radial-gradient(ellipse at 80% 0%,#d7bce53b,transparent 43%); }
 html[data-theme="light"] .workspace-nav { border-color: #e4d8ec; background: linear-gradient(180deg,#fbf8ff,#f3edf9); }
-html[data-theme="light"] .workspace-nav > button { color: #382b42; }
+html[data-theme="light"] .hud[data-view] .workspace-nav > button { color: #382b42; }
 html[data-theme="light"] .workspace-nav > button > span[data-icon] { color: #754090; }
-html[data-theme="light"] .workspace-nav > button[aria-current="page"] { border-color: #d4b8e4; background: linear-gradient(110deg,#ead7f6,#dcb9f1); color: #2b1736; box-shadow: 0 4px 14px #85509b20; }
+html[data-theme="light"] .hud[data-view] .workspace-nav > button[aria-current="page"] { border-color: #d4b8e4; background: linear-gradient(110deg,#ead7f6,#dcb9f1); color: #2b1736; box-shadow: 0 4px 14px #85509b20; }
 html[data-theme="light"] .top, html[data-theme="light"] .hud[data-view] > .top { border-color: #e5d9ec; background: #fffbffed; }
 html[data-theme="light"] .top .status { border-color: #c7dfcd; background: #eff8f0; color: #386d45; }
 html[data-theme="light"] .hud[data-state="offline"] .top .status { border-color: #e0d5e3; background: #f5eff7; color: #64576a; }
@@ -886,6 +889,25 @@ html[data-theme="light"] dialog { background: #fffaff; color: var(--text); }
 html[data-theme="light"] .action-confirmation { border-color: var(--line-strong); background: #fffaffef; color: var(--text); }
 html[data-theme="light"] .bottom { background: #fffaffed; }
 html[data-theme="light"] .hud[data-view="home"] .room-art { filter: brightness(1.18) saturate(1.08); }
+
+/* Light control paint stays below each redesigned section's own controls. */
+html[data-theme="light"] :where(.workspace-page, #settings-center, .module-page) button:where(:not(:disabled):not(.text-button):not(.icon-button):not(.calendar-day):not(.calendar-event):not(.conversation):not(.cinema-poster-button):not(.cinema-favorite):not(.switch):not(.scenario-switch):not(.device-power-switch):not(.send-button):not(.mic-button):not(.speak-toggle):not(.tool-button):not(.copy):not(.scenario-open):not(.chart-bar)) { background: var(--panel-soft); color: var(--text); border-color: var(--line-strong); }
+html[data-theme="light"] :where(.workspace-page, #settings-center, .module-page) button:where(:hover:not(:disabled):not(.text-button):not(.icon-button):not(.calendar-day):not(.calendar-event):not(.conversation):not(.cinema-poster-button):not(.cinema-favorite):not(.switch):not(.scenario-switch):not(.device-power-switch):not(.send-button):not(.mic-button):not(.speak-toggle):not(.tool-button):not(.copy):not(.scenario-open):not(.chart-bar)) { background: var(--panel-hover); border-color: var(--accent); }
+html[data-theme="light"] .hud[data-view] .workspace-nav > button:hover:not([aria-current="page"]) { color: var(--text); border-color: var(--line-strong); background: var(--panel-hover); }
+html[data-theme="light"] .workspace-nav > button svg { color: currentColor; }
+html[data-theme="light"] .workspace-nav > button kbd { color: var(--muted); }
+html[data-theme="light"] .hud:not([data-ambient="true"]) > .top #time { color: var(--text); text-shadow: none; }
+html[data-theme="light"] .hud:not([data-ambient="true"]) > .top #date { color: var(--muted); text-shadow: none; }
+html[data-theme="light"] .chat-navigation button[data-action="new-chat"] { background: var(--panel-soft); border-color: var(--line-strong); color: var(--accent); }
+html[data-theme="light"] .text-button { color: #76358d !important; }
+html[data-theme="light"] .text-button:hover { color: #482055 !important; }
+html[data-theme="light"] .icon-button { background: var(--panel-soft) !important; color: var(--accent) !important; }
+html[data-theme="light"] .tool-button, html[data-theme="light"] #talk-note { color: var(--muted); border-color: var(--line-strong); }
+html[data-theme="light"] .speak-toggle { color: var(--accent); }
+html[data-theme="light"] .speak-toggle:has(input:checked) { background: #704284; color: white; }
+html[data-theme="light"] .workspace-page h1 { color: var(--text); }
+html[data-theme="light"] .search-field { background: var(--panel); }
+
 
 @media (max-width: 1080px) {
   .hud[data-view="home"] .home-view { grid-template-columns: minmax(0,1.25fr) minmax(290px,.9fr); gap: 12px; padding: 12px; }

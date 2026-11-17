@@ -298,3 +298,11 @@ html[data-theme=light] .device-discovery-row {background:#faf5fd;border-color:#6
 
 .device-color-observation:not([hidden]) {padding:14px;border:1px solid #c665f144;border-radius:14px;background:rgba(151,112,204,.08);}
 .device-color-observation p,.device-action-feedback {line-height:1.5;overflow-wrap:anywhere;}
+
+/* Override legacy shared dark paint without changing device layout. */
+html[data-theme=light] #devices-root .devices-hero h1 { color:#251d2b; }
+html[data-theme=light] #devices-root .device-output-banner,
+html[data-theme=light] #devices-root .device-favorite-tile { background:linear-gradient(145deg,#fff,#faf6fd)!important; border-color:var(--device-line)!important; }
+html[data-theme=light] #devices-root .device-output-banner .device-symbol { color:#76358d;background:#eadcf2; }
+html[data-theme=light] #devices-root .device-filter[aria-pressed=true] { background:linear-gradient(115deg,#8e2abd,#7431aa)!important; border-color:#873ab1!important; }
+html[data-theme=light] #devices-root .device-command-bar>span { color:#786287; }
