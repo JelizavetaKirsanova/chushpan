@@ -57,3 +57,65 @@ def test_custom_playlist_names_and_actions_are_validated(tmp_path):
     with pytest.raises(ValueError, match="Неизвестное действие"):
         store.playlist_item("missing", "missing", "move")
     store.close()
+
+
+def test_playlist_backup_round_trip_merges_without_replacing_existing_lists(tmp_path):
+    source = CinemaStore(tmp_path / "source.sqlite")
+    target = CinemaStore(tmp_path / "target.sqlite")
+    first = source.add({"title": "Первый", "year": 2026})
+    second = source.add({"title": "Второй", "year": 2025})
+    weekend = source.playlist_create("На выходные")
+    source.playlist_item(weekend["id"], first["id"])
+    source.playlist_item(weekend["id"], second["id"])
+    source.playlist_create("Пустой список")
+    document = source.export_library()
+    existing_title = target.add({"title": "Мой фильм", "year": 2024})
+    existing_list = target.playlist_create("на выходные")
+    target.playlist_item(existing_list["id"], existing_title["id"])
+    target.import_library(document)
+    restored = {playlist["name"]: playlist for playlist in target.playlists()}
+    assert restored["на выходные"]["id"] == existing_list["id"]
+    assert len(restored["на выходные"]["item_ids"]) == 3
+    assert existing_title["id"] in restored["на выходные"]["item_ids"]
+    assert restored["Пустой список"]["item_ids"] == []
+    titles = {item["id"]: item["title"] for item in target.library()}
+    assert {titles[identifier] for identifier in restored["на выходные"]["item_ids"]} == {
+        "Первый",
+        "Второй",
+        "Мой фильм",
+    }
+    target.import_library(document)
+    assert len(target.playlists()) == 2
+    assert (
+        len(next(p for p in target.playlists() if p["id"] == existing_list["id"])["item_ids"]) == 3
+    )
+    source.close()
+    target.close()
+
+
+def test_legacy_cinema_backup_without_playlists_still_imports(tmp_path):
+    source = CinemaStore(tmp_path / "source.sqlite")
+    source.add({"title": "Старый экспорт", "year": 2020})
+    document = source.export_library()
+    del document["playlists"]
+    target = CinemaStore(tmp_path / "target.sqlite")
+    assert target.import_library(document)["added"] == 1
+    assert target.playlists() == []
+    source.close()
+    target.close()
+
+
+@pytest.mark.parametrize("invalid", ["unknown-title", ["not-a-string"]])
+def test_invalid_playlist_membership_rejects_entire_import(tmp_path, invalid):
+    source = CinemaStore(tmp_path / "source.sqlite")
+    source.add({"title": "Не импортировать", "year": 2026})
+    source.playlist_create("Список")
+    document = source.export_library()
+    document["playlists"][0]["item_ids"] = [invalid]
+    target = CinemaStore(tmp_path / "target.sqlite")
+    with pytest.raises(ValueError, match="плейлиста"):
+        target.import_library(document)
+    assert target.library() == []
+    assert target.playlists() == []
+    source.close()
+    target.close()

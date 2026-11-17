@@ -147,7 +147,10 @@ def _validate_document(document):
         if (
             not isinstance(item_ids, list)
             or len(item_ids) > 10000
-            or any(not isinstance(identifier, str) or identifier not in titles for identifier in item_ids)
+            or any(
+                not isinstance(identifier, str) or identifier not in titles
+                for identifier in item_ids
+            )
             or len(set(item_ids)) != len(item_ids)
         ):
             raise ValueError("Некорректные материалы плейлиста в копии.")
@@ -419,7 +422,9 @@ def import_library(store, document):
                             "UPDATE cinema_source_memory SET pinned_source_id=? WHERE title_id=?",
                             (source_map[memory["pinned_source_id"]], identifier),
                         )
-        existing_playlists = {playlist["name"].casefold(): playlist for playlist in store.playlists()}
+        existing_playlists = {
+            playlist["name"].casefold(): playlist for playlist in store.playlists()
+        }
         for playlist in data["playlists"]:
             existing = existing_playlists.get(playlist["name"].casefold())
             saved = existing or store.playlist_create(playlist["name"])

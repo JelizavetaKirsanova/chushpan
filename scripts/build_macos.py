@@ -63,6 +63,7 @@ MANIFEST_SOURCES = (
     "frontend/src/cinema_source_diagnostics.ts",
     "frontend/src/cinema_player.ts",
     "frontend/src/cinema.css",
+    "backend/cinema/transfer.py",
     "frontend/src/local_media.ts",
     "backend/automation/models.py",
     "backend/automation/store.py",
@@ -123,6 +124,9 @@ MANIFEST_SOURCES = (
     "frontend/src/workspace.css",
     "frontend/src/workspace.ts",
     "frontend/index.html",
+    "frontend/public/assets/chushpan-room.png",
+    "frontend/public/assets/chushpan-icon.png",
+    "frontend/public/assets/devices-hero.png",
     "frontend/dist/index.html",
     "packaging/macos/Chushpan.spec",
 )

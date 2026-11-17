@@ -680,3 +680,22 @@ test('background updates keep local video connected and refresh playlist actions
     assert.equal(detached,false);observer.disconnect();
   }finally{f.window.happyDOM.abort();}
 });
+
+test('queued pause from the old audio source cannot erase the next track resume point',async()=>{
+  const f=fixture();try{
+    const view=new f.CinemaView(()=>{},()=>{},()=>{},()=>{});view.connection(true);
+    const first={id:'first',name:'first.wav',kind:'music',mime:'audio/wav',size:20,addedAt:'2026-11-17',favorite:false,playlistIds:[],position:10,duration:100};
+    const second={...first,id:'second',name:'second.wav',position:50};
+    const saves:any[]=[];view.localItems=[first,second];view.localStore={supported:()=>false,file:async()=>new f.window.Blob(['test'],{type:'audio/wav'}),update:async(id:string,values:object)=>{saves.push({id,...values});}};
+    const audio=view.audio;let duration=100;let currentTime=10;let paused=false;
+    Object.defineProperties(audio,{duration:{get:()=>duration},currentTime:{get:()=>currentTime,set:(value:number)=>{currentTime=value;}},paused:{get:()=>paused}});
+    audio.canPlayType=()=> 'probably';audio.pause=()=>{paused=true;};audio.load=()=>{duration=NaN;currentTime=0;};audio.play=async()=>{};
+    view.activeAudioId=first.id;view.audioReady=true;
+    await view.playLocalAudio(second);
+    audio.dispatchEvent(new f.window.Event('pause'));audio.dispatchEvent(new f.window.Event('timeupdate'));
+    assert.equal(second.position,50);assert.ok(!saves.some(value=>value.id==='second'));
+    duration=100;audio.dispatchEvent(new f.window.Event('loadedmetadata'));
+    assert.equal(currentTime,50);assert.equal(second.position,50);assert.equal(saves.at(-1).position,50);
+    assert.ok(saves.some(value=>value.id==='first'&&value.position===10));
+  }finally{f.window.happyDOM.abort();}
+});
