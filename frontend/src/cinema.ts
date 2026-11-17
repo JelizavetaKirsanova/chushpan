@@ -1,5 +1,6 @@
 import type {HudEvent} from './types';
 import {icon} from './dashboard';
+import {posterActions} from './cinema_actions';
 import {CinemaCatalogueView} from './cinema_catalogue';
 import type {CataloguePage,CatalogueConfig} from './cinema_catalogue';
 import {CinemaPersonalView} from './cinema_personal';
@@ -61,7 +62,10 @@ export class CinemaView {
   private tab='library';
   private query='';
   private list=false;
+  private libraryKind='all';
   private librarySort='recent';
+  private ratingMin=0;
+  private ratingMax=10;
   private libraryQuery='';
   private scrollPositions=new Map<string,number>();
   private renderedTab='';
@@ -97,7 +101,7 @@ export class CinemaView {
   private detailPane:'about'|'seasons'|'files'='about';
   private activeAudioId='';
   private audioURL='';
-  private saveAudioTimer=0;
+  private lastAudioSaveAt=0;
   private audio!:HTMLAudioElement;
   private audioBar=el('section','','cinema-local-audio-bar');
   private audioTitle=el('strong');
@@ -152,8 +156,8 @@ export class CinemaView {
     this.audioSeek.oninput=()=>{if(this.audio.duration>0)this.audio.currentTime=this.audio.duration*Number(this.audioSeek.value)/1000;};
     this.audioVolume.oninput=()=>{this.audio.volume=Number(this.audioVolume.value);};
     this.root.append(this.audioBar);
-    this.audio.onplay=()=>this.updateAudioBar();this.audio.onpause=()=>{this.persistAudioProgress();this.updateAudioBar();};this.audio.ontimeupdate=()=>{this.updateAudioBar();this.persistAudioProgress();};
-    this.audio.onended=()=>{this.persistAudioProgress(true);if(this.localItems.filter(item=>item.kind==='music').length>1)this.playNextAudio(1);else{this.audio.currentTime=0;this.updateAudioBar();}};this.updateAudioBar();
+    this.audio.onplay=()=>this.updateAudioBar();this.audio.onpause=()=>{this.persistAudioProgress(false,true);this.updateAudioBar();};this.audio.ontimeupdate=()=>{this.updateAudioBar();this.persistAudioProgress();};
+    this.audio.onended=()=>{this.persistAudioProgress(true,true);if(this.localItems.filter(item=>item.kind==='music').length>1)this.playNextAudio(1);else{this.audio.currentTime=0;this.updateAudioBar();}};this.updateAudioBar();
     void this.refreshLocal();
     document.addEventListener('cinema:settings',()=>{this.changeTab('sources');});
     document.addEventListener('cinema:integration',()=>this.changeTab('integration'));
@@ -271,6 +275,8 @@ export class CinemaView {
       return !isCinema&&item.kind===this.mediaKind;
     };
     const matching=[...library,...local].filter(item=>collectionItems(item)&&categoryMatches(item)&&
+      (this.libraryKind==='all'||!('title'in item)||item.kind===this.libraryKind)&&
+      (this.collection!=='watched'||!this.ratingMin&&this.ratingMax===10||'title'in item&&item.user_rating!=null&&item.user_rating>=this.ratingMin&&item.user_rating<=this.ratingMax)&&
       ('title' in item?item.title:item.name).toLocaleLowerCase('ru').includes(this.libraryQuery.toLocaleLowerCase('ru')));
     matching.sort((a,b)=>{
       const name=(item:CinemaTitle|LocalMediaItem)=>'title' in item?item.title:item.name;
@@ -278,12 +284,12 @@ export class CinemaView {
       if(this.librarySort==='year')return ('title' in b?b.year:0)-('title' in a?a.year:0)||name(a).localeCompare(name(b),'ru');
       if(this.librarySort==='rating')return ('title' in b?b.user_rating??-1:-1)-('title' in a?a.user_rating??-1:-1)||name(a).localeCompare(name(b),'ru');
       const date=(item:CinemaTitle|LocalMediaItem)=>'title' in item?item.current?.last_viewed??item.added_at??'':item.addedAt;
-      return date(b).localeCompare(date(a))||name(a).localeCompare(name(b),'ru');
+      return date(b).localeCompare(date(a));
     });
     if(!matching.some(item=>this.mediaKey(item)===this.selectedMediaKey))this.selectedMediaKey=matching[0]?this.mediaKey(matching[0]):'';
     for(const url of this.previewURLs)URL.revokeObjectURL(url);this.previewURLs.clear();
 
-    const section=el('section','','cinema-library-shell');
+    const section=el('section','','cinema-library-shell cinema-library');
     const hero=el('header','','cinema-library-hero');const intro=el('div');intro.append(el('small','ТВОЯ КОЛЛЕКЦИЯ','cinema-library-eyebrow'),el('h2','Медиатека'),el('p','Фильмы, сериалы и личные файлы в одном пространстве.'));const mascot=el('img');mascot.src='/assets/chushpan-icon.png';mascot.alt='';mascot.className='cinema-library-mascot';hero.append(intro,mascot);
     const typebar=el('div','','cinema-media-types');
     const types:[typeof this.mediaKind,string,string][]=[['all','Все','▦'],['music','Музыка','♫'],['video','Видео','▷'],['image','Изображения','▧'],['document','Документы','▤']];
@@ -291,7 +297,7 @@ export class CinemaView {
     const libraryActions=el('div','','cinema-library-actions');
     const importButton=this.localControl('Импортировать файлы',()=>this.pickLocalFiles(),'primary');
     const create=this.button('＋ Создать плейлист',()=>this.createPlaylist());create.disabled=!this.online||!this.data?.durable;
-    const catalogue=this.button('Открыть каталог',()=>this.changeTab('catalogue'));libraryActions.append(importButton,create,catalogue);
+    const catalogue=this.button('Открыть каталог',()=>this.changeTab('catalogue'));const add=this.button('+ Добавить',()=>this.addForm());libraryActions.append(importButton,create,catalogue,add);
     const upload=el('input');upload.type='file';upload.multiple=true;upload.accept='audio/*,video/*,image/*,application/pdf,text/plain,.md,.rtf,.doc,.docx,.pages,.odt,.xls,.xlsx,.ppt,.pptx';upload.hidden=true;upload.className='cinema-local-control';upload.setAttribute('aria-label','Выбрать файлы для импорта');upload.onchange=()=>{if(upload.files)void this.importLocalFiles(upload.files);upload.value='';};
 
     const workspace=el('div','','cinema-library-layout');
@@ -302,10 +308,16 @@ export class CinemaView {
     sidebar.append(el('p','Импортированные файлы хранятся локально в этом приложении.','cinema-library-note'));
 
     const main=el('main','','cinema-library-main');const heading=el('div','','cinema-library-grid-heading');const collectionName=this.collection.startsWith('playlist:')?playlists.find(p=>p.id===this.collection.slice(9))?.name??'Плейлист':collections.find(([id])=>id===this.collection)?.[1]??'Все материалы';heading.append(el('h2',collectionName),el('span',String(matching.length)));
-    const tools=el('div','','cinema-library-grid-tools');const sort=this.select([['recent','По последнему изменению'],['title','По названию'],['year','По году'],['rating','По оценке']],this.librarySort);sort.onchange=()=>{this.librarySort=sort.value;this.render();};sort.setAttribute('aria-label','Сортировка медиатеки');const layout=this.localControl(this.list?'Карточки':'Список',()=>{this.list=!this.list;this.render();});tools.append(sort,layout);heading.append(tools);main.append(heading);
+    const tools=el('div','','cinema-library-grid-tools');for(const [id,label]of [['all','Все типы'],['movie','Фильмы'],['series','Сериалы']]){const filter=this.button(label,()=>{this.libraryKind=id;this.render();},'cinema-video-kind');filter.setAttribute('aria-pressed',String(this.libraryKind===id));tools.append(filter);}const sort=this.select([['recent','По последнему изменению'],['title','По названию'],['year','По году'],['rating','По оценке']],this.librarySort);sort.onchange=()=>{this.librarySort=sort.value;this.render();};sort.setAttribute('aria-label','Сортировка медиатеки');const layout=this.localControl(this.list?'Карточки':'Список',()=>{this.list=!this.list;this.render();});tools.append(sort,layout);heading.append(tools);main.append(heading);
+    if(this.collection==='watched'){
+      const filters=el('details','','cinema-display');filters.append(el('summary','Поиск и оценка'));
+      const search=this.input(this.libraryQuery,'search');search.placeholder='Название в просмотренном';search.onchange=()=>{this.libraryQuery=search.value;this.render();};filters.append(this.field('Поиск в просмотренном',search));
+      const options=[['0','Любая'],...Array.from({length:19},(_,i)=>[String(1+i*.5),String(1+i*.5)])] as [string,string][];
+      const min=this.select(options,String(this.ratingMin));const max=this.select(options.slice(1),String(this.ratingMax));min.setAttribute('aria-label','Моя оценка от');max.setAttribute('aria-label','Моя оценка до');min.onchange=()=>{this.ratingMin=Number(min.value);this.ratingMax=Math.max(this.ratingMin,this.ratingMax);this.render();};max.onchange=()=>{this.ratingMax=Number(max.value);this.ratingMin=Math.min(this.ratingMin,this.ratingMax);this.render();};const range=el('div','','cinema-rating-range');range.append(this.field('Моя оценка от',min),this.field('Моя оценка до',max));filters.append(range);if(this.ratingMin||this.ratingMax!==10)filters.append(this.button('Сбросить оценки',()=>{this.ratingMin=0;this.ratingMax=10;this.render();}));main.append(filters);
+    }
     const grid=el('div','',`cinema-media-grid${this.list?' is-list':''}`);grid.setAttribute('aria-label',collectionName);
     for(const item of matching)grid.append('title'in item?this.libraryCinemaCard(item):this.libraryLocalCard(item));
-    if(!matching.length){const empty=el('div','','cinema-library-empty');empty.append(el('strong',this.libraryQuery?'Ничего не найдено':'Здесь пока пусто'),el('p',this.libraryQuery?'Измени запрос или выбери другой плейлист.':'Добавь фильмы из каталога или импортируй свои файлы.'),this.button('Найти фильмы и сериалы',()=>this.changeTab('catalogue'),'primary'),this.localControl('Импортировать файлы',()=>this.pickLocalFiles()));main.append(empty);}
+    if(!matching.length){const empty=el('div','','cinema-library-empty');empty.append(el('strong',this.libraryQuery?'Ничего не найдено':'Здесь пока пусто'),el('p',this.libraryQuery?'Измени запрос или выбери другой плейлист.':'Вечер начинается с новой истории. Добавь фильм или импортируй свой файл.'),this.button('Найти фильмы и сериалы',()=>this.changeTab('catalogue'),'primary'),this.localControl('Импортировать файлы',()=>this.pickLocalFiles()));main.append(empty);}
     main.append(grid);
     const selected=matching.find(item=>this.mediaKey(item)===this.selectedMediaKey);
     const detail=el('aside','','cinema-library-detail');detail.setAttribute('aria-label','Подробности выбранного материала');
@@ -322,30 +334,29 @@ export class CinemaView {
   private localControl(label:string,action:()=>void,cls=''):HTMLButtonElement {const button=this.button(label,action,cls);button.disabled=false;button.classList.add('cinema-local-control');return button;}
 
   private async refreshLocal():Promise<void> {
-    try{if(!this.localStore.supported())return;this.localItems=await this.localStore.list();this.render();}
+    try{if(!this.localStore.supported())return;this.localItems=await this.localStore.list();this.updateAudioBar();this.render();}
     catch(error){this.feedback.textContent=error instanceof Error?error.message:'Не удалось загрузить локальную медиатеку.';this.feedback.dataset.error='true';}
   }
 
   private pickLocalFiles():void {this.content.querySelector<HTMLInputElement>('input[type=file]')?.click();}
 
   private async importLocalFiles(files:FileList|File[]):Promise<void> {
-    try{const added=await this.localStore.import(files);this.feedback.textContent=`Импортировано файлов: ${added.length}. Они сохранены в медиатеке этого приложения.`;this.feedback.dataset.error='false';this.localItems=await this.localStore.list();this.collection='files';this.mediaKind='all';this.selectedMediaKey=added[0]?`local:${added[0].id}`:'';this.render();}
+    try{const added=await this.localStore.import(files);this.feedback.textContent=`Импортировано файлов: ${added.length}. Они сохранены в медиатеке этого приложения.`;this.feedback.dataset.error='false';this.localItems=await this.localStore.list();this.updateAudioBar();this.collection='files';this.mediaKind='all';this.selectedMediaKey=added[0]?`local:${added[0].id}`:'';this.render();}
     catch(error){this.feedback.textContent=error instanceof Error?error.message:'Не удалось импортировать файлы.';this.feedback.dataset.error='true';}
   }
 
   private libraryCinemaCard(item:CinemaTitle):HTMLElement {
-    const selected=this.selectedMediaKey===this.mediaKey(item);const card=el('article','',`cinema-media-card${selected?' is-selected':''}`);card.dataset.titleId=item.id;
+    const selected=this.selectedMediaKey===this.mediaKey(item);const card=el('article','',`cinema-media-card cinema-card${selected?' is-selected':''}`);card.dataset.titleId=item.id;
     const poster=this.button(`Выбрать ${item.title}`,()=>{this.selectedMediaKey=this.mediaKey(item);this.detailPane='about';this.render();},'cinema-media-art');poster.replaceChildren(this.poster(item));poster.setAttribute('aria-label',`Подробнее: ${item.title}`);
-    const favorite=this.button(item.favorite?'♥':'♡',()=>this.request({op:'update',id:item.id,values:{favorite:!item.favorite}}),'cinema-media-heart');favorite.setAttribute('aria-label',item.favorite?'Убрать из избранного':'Добавить в избранное');favorite.setAttribute('aria-pressed',String(!!item.favorite));
-    const details=el('div','','cinema-media-card-body');const title=this.button(item.title,()=>{this.selectedMediaKey=this.mediaKey(item);this.detailPane='about';this.render();},'cinema-media-title');details.append(title,el('p',`${item.kind==='series'?'Сериал':'Фильм'} · ${item.year||'Год не указан'}`));
+    const details=el('div','','cinema-card-body cinema-media-card-body');const title=this.button(item.title,()=>this.detail(item.id),'cinema-media-title');details.append(title,el('p',`${item.kind==='series'?'Сериал':'Фильм'} · ${item.year||'Год не указан'}`));
     const caption=item.kind==='series'&&item.current?`Сезон ${item.current.season}, серия ${item.current.episode}`:item.status==='watched'?'Просмотрено':item.status==='watching'?'Смотрю':'Хочу посмотреть';details.append(el('small',caption,'cinema-media-caption'));
     if(item.current?.duration){const progress=el('progress');progress.max=100;progress.value=viewingProgress(item.current);progress.setAttribute('aria-label',`Прогресс ${Math.round(progress.value)} процентов`);details.append(progress);}
-    const actions=el('div','','cinema-media-card-actions');actions.append(this.button(item.current?.position?'Продолжить':'Смотреть',()=>this.open(item),'primary'),this.button('⋯',()=>this.detail(item.id),'cinema-more'));
-    card.append(poster,favorite,details,actions);return card;
+    const actions=el('div','','cinema-media-card-actions');const play=this.button(item.current?.position?'Продолжить':'Смотреть',()=>this.open(item),'primary cinema-quick-play');actions.append(play,this.button('⋯',()=>this.detail(item.id),'cinema-more'));
+    details.append(posterActions(()=>this.data?.items.find(i=>i.id===item.id),values=>this.request({op:'update',id:item.id,values}),()=>this.open(this.data?.items.find(i=>i.id===item.id)??item),this.online));card.append(poster,details,actions);return card;
   }
 
   private libraryLocalCard(item:LocalMediaItem):HTMLElement {
-    const card=el('article','',`cinema-media-card cinema-local-card${this.selectedMediaKey===this.mediaKey(item)?' is-selected':''}`);card.dataset.mediaId=item.id;
+    const card=el('article','',`cinema-media-card cinema-card cinema-local-card${this.selectedMediaKey===this.mediaKey(item)?' is-selected':''}`);card.dataset.mediaId=item.id;
     const art=this.localControl(item.name,()=>{this.selectedMediaKey=this.mediaKey(item);this.detailPane='about';this.render();},'cinema-media-art');art.setAttribute('aria-label',`Подробнее: ${item.name}`);art.append(el('span',{music:'♫',video:'▷',image:'▧',document:'▤'}[item.kind],'cinema-local-glyph'));
     if(item.kind==='image')void this.localStore.file(item.id).then(blob=>{if(!blob||!art.isConnected)return;const image=el('img');const url=URL.createObjectURL(blob);this.previewURLs.add(url);image.src=url;image.alt='';art.replaceChildren(image);}).catch(()=>{});
     const favorite=this.localControl(item.favorite?'♥':'♡',()=>{void this.updateLocal(item,{favorite:!item.favorite});},'cinema-media-heart');favorite.setAttribute('aria-label',item.favorite?'Убрать из избранного':'Добавить в избранное');favorite.setAttribute('aria-pressed',String(item.favorite));
@@ -380,7 +391,7 @@ export class CinemaView {
     if(lists.length){const select=this.select([['','Добавить в плейлист…'],...lists.map(list=>[list.id,list.name] as [string,string])],'');const add=this.button('Добавить',()=>{if(select.value)this.request({op:'playlist_item',playlist_id:select.value,title_id:item.id,action:'add'});});playlistBox.append(select,add);}
     else playlistBox.append(el('p','Создай плейлист, чтобы собирать фильмы и сериалы.','cinema-muted'));
     parent.append(playlistBox);
-    const actions=el('div','','cinema-detail-actions');actions.append(this.button('Изменить прогресс',()=>this.editProgress(item,item.current)),this.button('Убрать из медиатеки',()=>this.deleteTitle(item)));parent.append(actions);
+    const actions=el('div','','cinema-detail-actions');actions.append(this.button('Найти источники',()=>this.findSources(item,item.current),'primary'),this.button('✎ Изменить прогресс',()=>this.editProgress(item,item.current)),this.button('Оценить фильм',()=>this.ratingModal(item)),this.button('Трейлер',()=>this.request({op:'trailer',key:item.catalogue_key,title_id:item.id})),this.button('Убрать из медиатеки',()=>this.deleteTitle(item)));parent.append(actions);
   }
 
   private renderLocalDetails(parent:HTMLElement,item:LocalMediaItem):void {
@@ -389,7 +400,7 @@ export class CinemaView {
     if(item.kind==='music')parent.append(this.localControl(this.activeAudioId===item.id&&!this.audio.paused?'Приостановить':'Воспроизвести',()=>void this.playLocalAudio(item),'primary cinema-detail-play'));
     else if(item.kind==='video'){
       const video=el('video');video.controls=true;video.preload='metadata';video.setAttribute('aria-label',`Видео ${item.name}`);preview.append(video);
-      void this.localStore.file(item.id).then(blob=>{if(!blob||!video.isConnected)return;const url=URL.createObjectURL(blob);this.previewURLs.add(url);video.src=url;video.onloadedmetadata=()=>{if(item.position>0&&item.position<video.duration-3)video.currentTime=item.position;void this.localStore.update(item.id,{duration:Number.isFinite(video.duration)?video.duration:0});};let saved=0;video.ontimeupdate=()=>{if(video.currentTime-saved<5&&video.currentTime<video.duration-2)return;saved=video.currentTime;void this.localStore.update(item.id,{position:video.currentTime,duration:Number.isFinite(video.duration)?video.duration:0});};video.onended=()=>void this.localStore.update(item.id,{position:0,duration:Number.isFinite(video.duration)?video.duration:0});}).catch(()=>{});
+      void this.localStore.file(item.id).then(blob=>{if(!blob||!video.isConnected)return;const url=URL.createObjectURL(blob);this.previewURLs.add(url);video.src=url;video.onloadedmetadata=()=>{if(item.position>0&&item.position<video.duration-3)video.currentTime=item.position;item.duration=Number.isFinite(video.duration)?video.duration:0;void this.localStore.update(item.id,{duration:item.duration});};let saved=0;video.ontimeupdate=()=>{if(video.currentTime-saved<5&&video.currentTime<video.duration-2)return;saved=video.currentTime;item.position=video.currentTime;item.duration=Number.isFinite(video.duration)?video.duration:0;void this.localStore.update(item.id,{position:item.position,duration:item.duration});};video.onended=()=>{item.position=0;item.duration=Number.isFinite(video.duration)?video.duration:0;void this.localStore.update(item.id,{position:0,duration:item.duration});};video.onerror=()=>{if(video.isConnected)preview.append(el('p','Встроенный просмотр не поддерживает этот формат. Файл можно скачать и открыть в подходящем приложении.','cinema-muted'));};}).catch(()=>{});
     }else if(item.kind==='image'){
       const image=el('img');image.alt=item.name;preview.append(image);void this.loadLocalBlob(item,image).catch(()=>{});
     }else if(item.mime==='application/pdf'||item.name.toLocaleLowerCase().endsWith('.pdf')){
@@ -408,13 +419,13 @@ export class CinemaView {
 
   private async removeLocal(item:LocalMediaItem):Promise<void>{try{await this.localStore.remove(item.id);this.localItems=await this.localStore.list();if(this.activeAudioId===item.id){this.audio.pause();this.audio.removeAttribute('src');this.activeAudioId='';this.audioURL='';}this.selectedMediaKey='';this.render();}catch(error){this.feedback.textContent=error instanceof Error?error.message:'Не удалось удалить файл.';this.feedback.dataset.error='true';}}
 
-  private async playLocalAudio(item:LocalMediaItem):Promise<void>{try{if(this.activeAudioId===item.id){if(this.audio.paused)await this.audio.play();else this.audio.pause();return;}const blob=await this.localStore.file(item.id);if(!blob)throw new Error('Файл не найден в локальном хранилище.');if(this.audioURL)URL.revokeObjectURL(this.audioURL);this.audioURL=URL.createObjectURL(blob);this.activeAudioId=item.id;this.audio.src=this.audioURL;this.audio.onloadedmetadata=()=>{if(item.position>0&&item.position<this.audio.duration-3)this.audio.currentTime=item.position;void this.localStore.update(item.id,{duration:Number.isFinite(this.audio.duration)?this.audio.duration:0});};this.audio.load();await this.audio.play();this.updateAudioBar();}catch(error){this.feedback.textContent=error instanceof Error?error.message:'Не удалось воспроизвести аудиофайл.';this.feedback.dataset.error='true';}}
+  private async playLocalAudio(item:LocalMediaItem):Promise<void>{try{if(this.activeAudioId===item.id){if(this.audio.paused)await this.audio.play();else this.audio.pause();return;}const blob=await this.localStore.file(item.id);if(!blob)throw new Error('Файл не найден в локальном хранилище.');if(item.mime&&this.audio.canPlayType(item.mime)==='')throw new Error('Этот аудиоформат не поддерживается встроенным плеером. Файл останется в медиатеке.');if(this.audioURL)URL.revokeObjectURL(this.audioURL);this.audioURL=URL.createObjectURL(blob);this.activeAudioId=item.id;this.audio.src=this.audioURL;this.audio.onloadedmetadata=()=>{if(item.position>0&&item.position<this.audio.duration-3)this.audio.currentTime=item.position;item.duration=Number.isFinite(this.audio.duration)?this.audio.duration:0;void this.localStore.update(item.id,{duration:item.duration});};this.audio.load();await this.audio.play();this.updateAudioBar();}catch(error){this.feedback.textContent=error instanceof Error?error.message:'Не удалось воспроизвести аудиофайл.';this.feedback.dataset.error='true';}}
 
   private playNextAudio(direction:number):void{const tracks=this.localItems.filter(item=>item.kind==='music').sort((a,b)=>a.addedAt.localeCompare(b.addedAt));if(!tracks.length)return;let index=tracks.findIndex(item=>item.id===this.activeAudioId);index=(index+direction+tracks.length)%tracks.length;void this.playLocalAudio(tracks[index]);}
 
   private updateAudioBar():void{const item=this.localItems.find(value=>value.id===this.activeAudioId);this.audioTitle.textContent=item?.name??'Выбери аудиофайл';this.audioMeta.textContent=item?'Локальный файл · прогресс сохраняется':'Импортируй или выбери файл в разделе «Музыка»';this.audioPlay.textContent=this.activeAudioId&&!this.audio.paused?'Ⅱ':'▶';this.audioPlay.disabled=!item;this.audioPrevious.disabled=!item;this.audioNext.disabled=!item;this.audioSeek.disabled=!item||!this.audio.duration;this.audioSeek.value=this.audio.duration?String(Math.round(this.audio.currentTime/this.audio.duration*1000)):'0';this.audioClock.textContent=`${playbackTime(this.audio.currentTime||0)} / ${playbackTime(this.audio.duration||0)}`;}
 
-  private persistAudioProgress(ended=false):void{if(!this.activeAudioId)return;window.clearTimeout(this.saveAudioTimer);this.saveAudioTimer=window.setTimeout(()=>{const item=this.localItems.find(value=>value.id===this.activeAudioId);if(item)void this.localStore.update(item.id,{position:ended?0:this.audio.currentTime||0,duration:Number.isFinite(this.audio.duration)?this.audio.duration:0});},500);}
+  private persistAudioProgress(ended=false,immediate=false):void{if(!this.activeAudioId)return;const now=Date.now();if(!immediate&&!ended&&now-this.lastAudioSaveAt<5000)return;this.lastAudioSaveAt=now;const item=this.localItems.find(value=>value.id===this.activeAudioId);if(item){item.position=ended?0:this.audio.currentTime||0;item.duration=Number.isFinite(this.audio.duration)?this.audio.duration:0;void this.localStore.update(item.id,{position:item.position,duration:item.duration});}}
 
   private async downloadLocal(item:LocalMediaItem):Promise<void>{const blob=await this.localStore.file(item.id);if(!blob)return;const url=URL.createObjectURL(blob);const link=el('a');link.href=url;link.download=item.name;link.click();window.setTimeout(()=>URL.revokeObjectURL(url),10000);}
 

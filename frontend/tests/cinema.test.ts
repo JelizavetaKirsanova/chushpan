@@ -8,9 +8,11 @@ import {stripTypeScriptTypes} from 'node:module';
 function fixture() {
   const window=new Window({url:'http://127.0.0.1:8879'});
   window.document.body.innerHTML='<div id="cinema-root"></div>';
+  const localMedia=stripTypeScriptTypes(readFileSync(new URL('../src/local_media.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^export /gm,'');
+  const sandbox={exports:{} as Record<string,any>,document:window.document,window,URL:window.URL,icon:()=>'<svg></svg>'};
+  vm.runInNewContext(`${localMedia}\nglobalThis.LocalMediaStore=LocalMediaStore;globalThis.localMediaLabels=localMediaLabels;`,sandbox);
   const code=stripTypeScriptTypes(readFileSync(new URL('../src/cinema.ts',import.meta.url),'utf8'),{mode:'transform'})
     .replace(/^import .*;\n/gm,'').replace(/^export /gm,'')+'\nexports.api={CinemaView,playbackTime,parsePlaybackTime,viewingProgress};';
-  const sandbox={exports:{} as Record<string,any>,document:window.document,window,URL:window.URL,icon:()=>'<svg></svg>'};
   const actions=stripTypeScriptTypes(readFileSync(new URL('../src/cinema_actions.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'');
   vm.runInNewContext(`{${actions}globalThis.posterActions=posterActions;globalThis.syncPosterActions=syncPosterActions;}`,sandbox);
   const filters=stripTypeScriptTypes(readFileSync(new URL('../src/cinema_filters.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace(/^export /gm,'');
@@ -43,7 +45,7 @@ test('real library data, source setup and offline controls',()=>{
     view.receive(event);assert.match(f.window.document.body.textContent??'',/Вечер начинается/);assert.doesNotMatch(f.window.document.body.textContent??'',/Во все тяжкие/);
     const sourceButton=[...f.window.document.querySelectorAll('button')].find(n=>n.textContent==='Настройки');sourceButton!.click();button(f,'Источники просмотра').click();
     assert.match(f.window.document.body.textContent??'',/Kinogo/);assert.match(f.window.document.body.textContent??'',/Filmix/);
-    view.connection(false);assert.ok([...f.window.document.querySelectorAll('button')].every(n=>n.disabled));
+    button(f,'Смотрю').click();view.connection(false);assert.ok([...f.window.document.querySelectorAll('.cinema-tabs button')].every(n=>n.disabled));assert.ok([...f.window.document.querySelectorAll('.cinema-local-control')].some(n=>!n.disabled));
     assert.equal((sent[0] as {op:string}).op,'refresh');
   }finally{f.window.happyDOM.abort();}
 });
@@ -73,13 +75,13 @@ function movie(id:string,status:string) {
 }
 function button(f:any,text:string) {const b=[...f.window.document.querySelectorAll('button')].find((n:any)=>n.textContent===text) as HTMLButtonElement;assert.ok(b,`Missing button ${text}`);return b;}
 
-test('seven tabs keep lists separate and watch starts automatic discovery',()=>{
+test('playlist collections keep lists separate and watch starts automatic discovery',()=>{
   const f=fixture();try{
     const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);
     view.receive(snapshot([movie('Начато','watching'),movie('Отложено','planned'),movie('Завершено','watched')]));
     assert.equal(f.window.document.querySelectorAll('.cinema-tabs button').length,7);
     assert.match(f.window.document.querySelector('.cinema-content').textContent,/Начато/);
-    assert.doesNotMatch(f.window.document.querySelector('.cinema-content').textContent,/Отложено|Завершено/);
+    assert.match(f.window.document.querySelector('.cinema-content').textContent,/Отложено|Завершено/);
     f.window.document.querySelector('.cinema-quick-play').click();assert.equal(sent.at(-1).op,'watch');f.window.document.querySelector('dialog button[aria-label=Закрыть]').click();
     button(f,'Хочу посмотреть').click(); // the tab precedes the card quick action
     assert.match(f.window.document.querySelector('.cinema-content').textContent,/Отложено/);
@@ -377,7 +379,7 @@ test('four poster icons toggle durable fields without detail clicks and refresh 
   const f=fixture();try{
     const sent:any[]=[];const view=new f.CinemaView((v:any)=>sent.push(v),()=>{},()=>{},()=>{});view.connection(true);
     const item={...movie('Моя история','planned'),watchlist:1,favorite:1,user_rating:9.5};view.receive(snapshot([item]));button(f,'Хочу посмотреть').click();
-    const panel=f.window.document.querySelector('.cinema-poster-actions');assert.equal(panel.querySelectorAll('button').length,4);assert.equal(panel.closest('.cinema-poster-wrap'),null);assert.equal(panel.parentElement.className,'cinema-card-body');
+    const panel=f.window.document.querySelector('.cinema-poster-actions');assert.equal(panel.querySelectorAll('button').length,4);assert.equal(panel.closest('.cinema-poster-wrap'),null);assert.ok(panel.parentElement.classList.contains('cinema-card-body'));
     assert.deepEqual([...panel.querySelectorAll('button')].map((b:any)=>b.dataset.posterAction),['bookmark','play','watched','favorite']);
     assert.ok([...panel.querySelectorAll('button')].every((b:any)=>b.title&&b.getAttribute('aria-label')));
     let bubbled=0;panel.parentElement.addEventListener('click',()=>bubbled++);

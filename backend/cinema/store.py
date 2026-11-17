@@ -981,6 +981,11 @@ class CinemaStore:
         identifier, stamp = uuid4().hex, now()
         try:
             with self.transaction():
+                if any(
+                    row[0].casefold() == name.casefold()
+                    for row in self.db.execute("SELECT name FROM cinema_playlists")
+                ):
+                    raise ValueError("Плейлист с таким названием уже есть.")
                 self.db.execute(
                     "INSERT INTO cinema_playlists VALUES(?,?,?,?)",
                     (identifier, name, stamp, stamp),
