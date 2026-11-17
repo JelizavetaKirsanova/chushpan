@@ -903,7 +903,8 @@ html[data-theme="light"] .hud[data-view="home"] .room-art { filter: brightness(1
 }
 @media (min-width: 821px) {
   .hud[data-sidebar="collapsed"] .theme-control { justify-content: center; padding-inline: 0; }
-  .hud[data-sidebar="collapsed"] .theme-control > span:nth-child(2), .hud[data-sidebar="collapsed"] .theme-control select { display: none; }
+  .hud[data-sidebar="collapsed"] .theme-control > span { display: none; }
+  .hud[data-sidebar="collapsed"] .theme-control select { width: 100%; margin: 0; padding-inline: 2px; font-size: 9px; }
 }
 @media (max-width: 520px) {
   .hud[data-view="home"] .home-view { padding: 10px; gap: 10px; }

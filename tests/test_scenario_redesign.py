@@ -314,3 +314,58 @@ def test_editor_websocket_save_reopen_and_simulate_without_device_effects(rig, t
     rig.brightness.assert_not_awaited()
     rig.power.assert_not_awaited()
     assert not rig.service.store.history()
+
+
+def test_editor_snapshot_metadata_is_read_only_and_unknown_fields_still_rejected(rig):
+    scenario = independent(rig)
+    snapshot = next(
+        item for item in rig.service.store.list_with_metadata() if item["id"] == scenario.id
+    )
+    snapshot.update(created_at="forged", updated_at="forged", name="Новое имя")
+    rig.service.bus = HudBus()
+    queue = rig.service.bus.subscribe()
+    asyncio.run(rig.service.dispatch({"op": "save", "scenario": snapshot}))
+    reply = queue.get_nowait()
+    assert reply["saved"] == scenario.id
+    updated = next(item for item in reply["scenarios"] if item["id"] == scenario.id)
+    assert updated["name"] == "Новое имя"
+    assert updated["created_at"] != "forged" and updated["updated_at"] != "forged"
+    with pytest.raises(ValidationError):
+        rig.service.editor_document({**snapshot, "unknown_action": "do not ignore"})
+    rig.brightness.assert_not_awaited()
+
+
+def test_nested_else_sequence_and_parallel_execute_only_selected_branches(rig):
+    scenario = independent(
+        rig,
+        variants=[],
+        actions=[
+            Block(
+                kind="if",
+                condition=Condition(source="time", key="hour", operator="lt", value=0),
+                children=[Block(capability="mac.brightness", parameters={"level": 99})],
+                otherwise=[
+                    Block(
+                        kind="parallel",
+                        children=[
+                            Block(
+                                kind="sequence",
+                                children=[
+                                    Block(capability="mac.brightness", parameters={"level": 10}),
+                                    Block(capability="mac.brightness", parameters={"level": 20}),
+                                ],
+                            ),
+                            Block(capability="led.set", parameters={"power": False}),
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+    plan = asyncio.run(preview(rig.service.engine, scenario))
+    asyncio.run(ask(rig.conv, "Время тихого вечера"))
+    run = rig.service.store.history(scenario.id)[0]
+    assert [call.kwargs["level"] for call in rig.brightness.await_args_list] == [10, 20]
+    rig.led.assert_awaited_once()
+    assert run["status"] == "sent"  # Mock BLE write has no physical feedback.
+    assert {step["path"] for step in run["steps"]} == {step["path"] for step in plan["steps"]}

@@ -466,3 +466,37 @@ test('location controls request macOS consent only by an explicit click and pres
     f.button('Обновить город');assert.deepEqual(f.requests.at(-1),{op:'location_refresh'});
   }finally{await f.window.happyDOM.close();}
 });
+
+test('JSON import validates nested blocks before replacing a draft and respects unsaved edits',async()=>{
+  const f=fixture();try {
+    f.button('+ Создать сценарий'); f.fill('Название','Несохранённый сценарий');
+    const input=f.window.document.querySelector('[aria-label="Выбрать JSON сценария"]')!;
+    const importDocument=async(scenario:unknown)=>{
+      const text=JSON.stringify({format:'chushpan-scenario',schema_version:2,scenario});
+      Object.defineProperty(input,'files',{configurable:true,value:[{size:text.length,text:async()=>text}]});
+      await (input as unknown as HTMLInputElement).onchange!.call(input as unknown as HTMLInputElement,new f.window.Event('change') as unknown as Event);
+    };
+    const incoming={...state.newScenario(),name:'Импорт',actions:[state.newBlock('if')]};
+    await importDocument({...incoming,actions:[{...state.newBlock('if'),children:null}]});
+    assert.equal(f.field('Название').value,'Несохранённый сценарий');
+    assert.match(f.window.document.querySelector('.automations-page > .scenario-feedback')!.textContent,/JSON/);
+    f.window.confirm=()=>false;
+    await importDocument(incoming); assert.equal(f.field('Название').value,'Несохранённый сценарий');
+    f.window.confirm=()=>true;
+    await importDocument(incoming); assert.equal(f.field('Название').value,'Импорт');
+    f.submit(); const doc=f.requests.at(-1)!.scenario as state.Scenario;
+    assert.equal(doc.id,''); assert.equal(doc.revision,0); assert.equal(doc.actions[0].condition!.source,'time');
+    assert.equal(f.requests.some(request=>request.op==='run'),false);
+  }finally{await f.window.happyDOM.close();}
+});
+
+test('advanced IF and conditions start with valid time conditions when no variables exist',async()=>{
+  const f=fixture();try {
+    f.button('+ Создать сценарий'); f.fill('Название','Условие');
+    disclosure(f,'.editor-advanced'); f.button('Если / иначе'); f.button('Добавить условие');
+    f.submit(); const doc=f.requests.at(-1)!.scenario as state.Scenario;
+    assert.equal(doc.actions[0].condition!.source,'time'); assert.equal(doc.actions[0].condition!.key,'hour');
+    assert.equal(doc.conditions[0].source,'time'); assert.equal(doc.conditions[0].key,'hour');
+    assert.deepEqual(doc.variables,[]);
+  }finally{await f.window.happyDOM.close();}
+});

@@ -3,7 +3,8 @@
 }
 
 /* Lighting workspace: one component tree with theme-only paint changes. */
-.lighting-shell {
+#lighting-root,
+.lighting-dialog {
   --light-bg: #21182a;
   --light-surface: #251d31;
   --light-surface-raised: #2c2239;
@@ -11,6 +12,9 @@
   --light-text: #f7f0fc;
   --light-muted: #c5b6d2;
   --light-accent: #c34cf0;
+  color: var(--light-text);
+}
+.lighting-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(300px, 365px);
   align-items: start;
@@ -94,10 +98,12 @@
 .lighting-shell .lighting-card-title { cursor:pointer; }
 .lighting-shell .lighting-card-title h2 { overflow-wrap:anywhere; }
 .lighting-shell .lighting-status { display:flex;align-items:center;gap:7px; }
-.lighting-shell .lighting-status::before { content:"";width:8px;height:8px;flex:none;border-radius:50%;background:#28db70;box-shadow:0 0 9px #28db7070; }
+.lighting-shell .lighting-status::before { content:"";width:8px;height:8px;flex:none;border-radius:50%;background:var(--light-muted); }
+.lighting-shell [data-connection=observed]>.lighting-status::before { background:#28db70;box-shadow:0 0 9px #28db7070; }
+.lighting-shell [data-connection=error]>.lighting-status::before { background:#efa893; }
 .lighting-shell .lighting-status:has(+.error)::before { background:#efa893; }
 .lighting-shell .lighting-empty { grid-column:1/-1;border:1px dashed var(--light-line);border-radius:16px;padding:26px;color:var(--light-muted); }
-html[data-theme=light] .lighting-shell { --light-bg:#f7f2fb;--light-surface:#ffffffb8;--light-surface-raised:#f1e9f8;--light-line:#9c64b42b;--light-text:#21172c;--light-muted:#665575;--light-accent:#9f34d8; }
+html[data-theme=light] #lighting-root,html[data-theme=light] .lighting-dialog { --light-bg:#f7f2fb;--light-surface:#ffffffb8;--light-surface-raised:#f1e9f8;--light-line:#9c64b42b;--light-text:#21172c;--light-muted:#665575;--light-accent:#9f34d8; }
 html[data-theme=light] .lighting-hero { background-image:url('/assets/devices-hero.png');box-shadow:0 9px 28px #77429a1a; }
 html[data-theme=light] .lighting-hero::before { background:linear-gradient(90deg,#f0dcf9f5 0%,#edddf8cf 48%,#66418012 100%); }
 html[data-theme=light] .lighting-hero p { color:#38254c; }
@@ -316,4 +322,47 @@ html[data-theme=light] .lighting-shell .lighting-card button:hover:not(:disabled
   .lighting-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* Keep the auxiliary panels and body-mounted dialogs on the same theme. */
+#lighting-root .lighting-card,
+#lighting-root .lighting-panel {
+  background: var(--light-surface);
+  border-color: var(--light-line);
+  color: var(--light-text);
+}
+#lighting-root .lighting-auxiliary button {
+  background: var(--light-surface-raised);
+  border-color: var(--light-line);
+  color: var(--light-text);
+}
+#lighting-root .lighting-row > span,
+#lighting-root .lighting-card summary,
+#lighting-root .lighting-capabilities dd,
+#lighting-root .lighting-muted,
+#lighting-root .lighting-status,
+#lighting-root .lighting-notice,
+#lighting-root .lighting-feedback:not(.error) {
+  color: var(--light-muted);
+}
+dialog.lighting-dialog {
+  background: var(--light-bg);
+  color: var(--light-text);
+  border-color: var(--light-line);
+}
+dialog.lighting-dialog input,
+dialog.lighting-dialog select,
+dialog.lighting-dialog .preset-color-picker,
+#lighting-root .lighting-panel input[type="text"] {
+  background: var(--light-surface-raised);
+  border-color: var(--light-line);
+  color: var(--light-text);
+}
+dialog.lighting-dialog p,
+dialog.lighting-dialog .preset-rgb label {
+  color: var(--light-muted);
+}
+html[data-theme=light] #lighting-root .error,
+html[data-theme=light] .lighting-dialog .error {
+  color: #a42c35;
 }

@@ -107,6 +107,7 @@ export class LightingView {
   private data: LightEvent | null = null;
   private online = false;
   private selected = new Set<string>();
+  private initializedSelection = false;
   private drafts = new Map<string, ColorDraft>();
   private feedback = el("p", "", "lighting-feedback");
   private pending = new Set<string>();
@@ -142,7 +143,7 @@ export class LightingView {
   receive(event: HudEvent): void {
     if (event.type !== "devices") return;
     this.data = event as LightEvent;
-    if (event.operation_id && this.pending.delete(event.operation_id)) {
+    if (event.operation_id && !event.running && this.pending.delete(event.operation_id)) {
       const result = this.data.result;
       this.feedback.textContent =
         event.error || result?.error || result?.message || event.message || "";
@@ -155,6 +156,10 @@ export class LightingView {
       if (result?.palette) this.download(result.palette);
     }
     const ids = new Set(this.lights().map((d) => d.id));
+    if (!this.initializedSelection && ids.size) {
+      this.selected.add(this.lights()[0].id);
+      this.initializedSelection = true;
+    }
     this.selected.forEach((id) => {
       if (!ids.has(id)) this.selected.delete(id);
     });
@@ -225,7 +230,17 @@ export class LightingView {
     const lights = this.filteredLights();
     const controls = el("div", "", "lighting-top-controls");
     const search = el("input"); search.type = "search"; search.placeholder = "Поиск освещения…"; search.value = this.searchText; search.setAttribute("aria-label", "Поиск освещения по названию");
-    search.oninput = () => { this.searchText = search.value; this.filterCards(); };
+    search.oninput = () => {
+      this.searchText = search.value;
+      const focused = document.activeElement === search;
+      const start = search.selectionStart, end = search.selectionEnd;
+      this.render();
+      if (focused) {
+        const replacement = this.root.querySelector<HTMLInputElement>('.lighting-search input')!;
+        replacement.focus();
+        replacement.setSelectionRange(start, end);
+      }
+    };
     const searchBox = el("label", "", "lighting-search"); searchBox.append(el("span", "⌕"), search);
     controls.append(searchBox, this.button("Добавить освещение", () => this.navigate("devices")));
     content.append(controls);
@@ -252,24 +267,25 @@ export class LightingView {
     const layout = this.button(this.layout === "grid" ? "☷" : "▦", () => { this.layout = this.layout === "grid" ? "list" : "grid"; this.render(); }); layout.className = "lighting-layout-toggle"; layout.setAttribute("aria-label", this.layout === "grid" ? "Сетка" : "Список");
     filters.append(status, place, room, protocol, sort, layout); content.append(filters);
     const utilities = el("div", "", "lighting-utility-actions");
-    utilities.append(this.button("Выбрать все здесь", () => { this.selected = new Set(available.filter(d => d.usable).map(d => d.id)); this.render(); }), this.button("Снять выбор", () => { this.selected.clear(); this.render(); }), this.button("Импорт палитры", () => this.importPalette()), this.button("Экспорт палитры", () => this.command("export")));
+    utilities.append(this.button("Выбрать все здесь", () => { const visible = new Set(this.filteredLights().map(d => d.id)); this.selected = new Set(available.filter(d => d.usable && visible.has(d.id)).map(d => d.id)); this.render(); }), this.button("Снять выбор", () => { this.selected.clear(); this.render(); }), this.button("Импорт палитры", () => this.importPalette()), this.button("Экспорт палитры", () => this.command("export")));
     content.append(utilities);
-    if (this.selected.size === 0 && available[0]) this.selected.add(available[0].id);
     const grid = el("div", "", "lighting-grid");
     grid.dataset.layout = this.layout;
     for (const device of lights) grid.append(this.card(device));
     if (!lights.length) {
       grid.append(el("p", this.category === "scenes"
         ? "Сценарии с действиями освещения доступны в конструкторе сценариев."
-        : "Добавь ELK-BLEDOB и ELK-BLEDDM 39 в разделе «Устройства». После добавления проверь каждую функцию отдельно.", "lighting-empty"));
+        : available.length
+          ? "Ничего не найдено. Измени поиск или фильтры."
+          : "Добавь ELK-BLEDOB и ELK-BLEDDM 39 в разделе «Устройства». После добавления проверь каждую функцию отдельно.", "lighting-empty"));
       if (this.category === "scenes") grid.append(this.button("Открыть сценарии", () => this.navigate("automations")));
     }
     content.append(grid);
-    const selectedDevice = lights.find(d => this.selected.has(d.id)) ?? lights[0];
+    const selectedDevice = available.find(d => this.selected.has(d.id)) ?? lights[0];
     const inspector = selectedDevice ? this.inspector(selectedDevice, lights) : el("aside", "Выбери устройство, чтобы увидеть его настройки.", "lighting-inspector lighting-panel");
     page.append(content, inspector);
     if (this.selected.size) {
-      const selected = lights.filter((device) => this.selected.has(device.id));
+      const selected = available.filter((device) => this.selected.has(device.id));
       const group = el("section", "", "lighting-panel");
       group.classList.add("lighting-group-actions");
       group.append(el("h2", `Выбрано лент: ${this.selected.size}`));
@@ -331,11 +347,11 @@ export class LightingView {
     });
     return items.sort((a,b) => this.sort === "brightness" ? (Number(b.state.brightness ?? -1)) - (Number(a.state.brightness ?? -1)) : this.sort === "type" ? a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name,"ru") : this.sort === "activity" ? String(b.last_contact ?? "").localeCompare(String(a.last_contact ?? "")) : a.name.localeCompare(b.name,"ru"));
   }
-  private filterCards(): void { const query = this.searchText.toLocaleLowerCase("ru"); for (const card of this.root.querySelectorAll<HTMLElement>(".lighting-card")) card.hidden = !card.dataset.name?.includes(query); }
   private inspector(device: DeviceRecord, lights: DeviceRecord[]): HTMLElement {
     const panel = el("aside", "", "lighting-inspector lighting-panel");
+    panel.dataset.connection = device.connection;
     panel.append(el("div", device.name, "lighting-inspector-title"), el("p", device.ble?.driver ?? (device.kind === "wled" ? "WLED · Wi-Fi" : "BLE"), "lighting-muted"));
-    panel.append(el("p", device.connection === "error" ? "Ошибка подключения" : device.connection === "observed" ? "Подключена" : "Подключение не проверено", "lighting-status"), this.editor(device));
+    panel.append(el("p", device.connection === "error" ? "Ошибка подключения" : device.connection === "observed" ? "Последний контакт подтверждён" : "Подключение не проверено", "lighting-status"), this.editor(device));
     const controls = el("div", "", "lighting-inspector-actions");
     controls.append(this.button(device.state.power === true ? "Выключить" : "Включить", () => this.apply({power: device.state.power !== true}, [device.id]), !!this.powerBlock(device, device.state.power === true ? "power_off" : "power_on")));
     controls.append(this.button("Эффект", () => { this.selected = new Set([device.id]); this.effectDialog(); }), this.button("Расписание", () => this.jobDialog(undefined, true, [device.id])));
@@ -361,6 +377,7 @@ export class LightingView {
   private card(device: DeviceRecord): HTMLElement {
     const card = el("article", "", "lighting-card");
     card.dataset.name = device.name.toLocaleLowerCase("ru");
+    card.dataset.connection = device.connection;
     card.dataset.selected = String(this.selected.has(device.id));
     card.dataset.power = device.state.power === true ? "on" : device.state.power === false ? "off" : "unknown";
     const label = el("label", "", "lighting-card-title");
@@ -513,7 +530,7 @@ export class LightingView {
     brightness.type = "range";
     brightness.min = "0";
     brightness.max = "100";
-    brightness.value = String(device.sent.brightness ?? 50);
+    brightness.value = String(device.state.brightness ?? device.sent.brightness ?? 50);
     brightness.setAttribute("aria-label", "Выбрать яркость " + device.name);
     brightness.disabled =
       !this.online || !device.features.brightness || !device.usable;

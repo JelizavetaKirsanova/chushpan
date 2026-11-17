@@ -88,12 +88,19 @@ export class LocalMediaStore {
   }
 
   async update(id: string, values: Partial<Pick<LocalMediaItem, 'favorite' | 'playlistIds' | 'position' | 'duration'>>): Promise<void> {
-    const item = await this.getStored(id);
-    if (!item) throw new Error('Файл больше не найден в медиатеке.');
     const db = await this.open();
     const tx = db.transaction(STORE_NAME, 'readwrite');
-    tx.objectStore(STORE_NAME).put({...item, ...values});
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.get(id);
+    let found = false;
+    request.onsuccess = () => {
+      const item = request.result as StoredMediaItem | undefined;
+      if (!item) return;
+      found = true;
+      store.put({...item, ...values});
+    };
     await this.complete(tx);
+    if (!found) throw new Error('Файл больше не найден в медиатеке.');
   }
 
   async remove(id: string): Promise<void> {
@@ -104,13 +111,17 @@ export class LocalMediaStore {
   }
 
   async removePlaylist(id: string): Promise<void> {
-    const items = await this.allStored();
     const db = await this.open();
     const tx = db.transaction(STORE_NAME, 'readwrite');
     const store = tx.objectStore(STORE_NAME);
-    for (const item of items) {
-      if (item.playlistIds.includes(id)) store.put({...item, playlistIds: item.playlistIds.filter(value => value !== id)});
-    }
+    const request = store.openCursor();
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      const item = cursor.value as StoredMediaItem;
+      if (item.playlistIds.includes(id)) cursor.update({...item, playlistIds: item.playlistIds.filter(value => value !== id)});
+      cursor.continue();
+    };
     await this.complete(tx);
   }
 

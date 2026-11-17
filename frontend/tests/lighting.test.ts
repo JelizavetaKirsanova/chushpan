@@ -381,3 +381,98 @@ test("reconnect unlocks normal power commands without assuming the strip is off"
     await f.close();
   }
 });
+
+test("select all respects active search and clear selection stays empty after refresh", async () => {
+  const f = fixture();
+  try {
+    const search = f.window.document.querySelector<HTMLInputElement>('.lighting-search input')!;
+    search.value = 'bledob';
+    search.dispatchEvent(new f.window.Event('input'));
+    f.button('Выбрать все здесь');
+    f.button('Применить');
+    assert.deepEqual(Array.from(f.events.at(-1).targets), ['one']);
+    f.button('Снять выбор');
+    f.view.receive(f.state);
+    assert.equal(f.window.document.querySelector('.lighting-group-actions'), null);
+    assert.equal(f.window.document.querySelectorAll('.lighting-card input:checked').length, 0);
+    const before = f.events.length;
+    f.button('Применить');
+    assert.equal(f.events.length, before);
+    assert.match(f.window.document.querySelector('.lighting-feedback')!.textContent!, /Выбери хотя бы одну/);
+  } finally {
+    await f.close();
+  }
+});
+
+test("clearing search restores cards after sorting and preserves typing focus", async () => {
+  const f = fixture();
+  try {
+    let search = f.window.document.querySelector<HTMLInputElement>('.lighting-search input')!;
+    search.focus();
+    search.value = 'bledob';
+    search.setSelectionRange(6, 6);
+    search.dispatchEvent(new f.window.Event('input'));
+    search = f.window.document.querySelector<HTMLInputElement>('.lighting-search input')!;
+    assert.equal(f.window.document.activeElement, search);
+    assert.equal(search.selectionStart, 6);
+    const sort = f.window.document.querySelector<HTMLSelectElement>('[aria-label="Сортировка освещения"]')!;
+    sort.value = 'activity';
+    sort.dispatchEvent(new f.window.Event('change'));
+    assert.equal(f.window.document.querySelectorAll('.lighting-card').length, 1);
+    search = f.window.document.querySelector<HTMLInputElement>('.lighting-search input')!;
+    search.value = '';
+    search.dispatchEvent(new f.window.Event('input'));
+    assert.equal(f.window.document.querySelectorAll('.lighting-card').length, 2);
+  } finally {
+    await f.close();
+  }
+});
+
+test("hidden selected devices still constrain shared power commands", async () => {
+  const f = fixture();
+  try {
+    f.button('Выбрать все здесь');
+    const search = f.window.document.querySelector<HTMLInputElement>('.lighting-search input')!;
+    search.value = 'bledob';
+    search.dispatchEvent(new f.window.Event('input'));
+    const power = f.button('Включить выбранные');
+    assert.equal(power.disabled, true);
+    assert.equal(f.events.length, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("brightness editor prefers observed state and command feedback waits for completion", async () => {
+  const f = fixture();
+  try {
+    f.view.receive({...f.state, items: [{...f.state.items[0], state: {brightness: 73}}, f.state.items[1]]});
+    const brightness = f.window.document.querySelector<HTMLInputElement>('[aria-label="Выбрать яркость ELK-BLEDOB"]')!;
+    assert.equal(brightness.value, '73');
+    f.button('Переподключить', f.window.document.querySelector('[data-name="elk-bledob"]')!);
+    const operation_id = f.events.at(-1).request_id;
+    f.view.receive({...f.state, operation_id, running: true});
+    f.view.receive({...f.state, operation_id, result: {message: 'Контакт подтверждён', result_status: 'success'}});
+    assert.equal(f.window.document.querySelector('.lighting-feedback')!.textContent, 'Контакт подтверждён');
+  } finally {
+    await f.close();
+  }
+});
+
+test("filtering keeps inspector identity aligned with the selected command target", async () => {
+  const f = fixture();
+  try {
+    const search = f.window.document.querySelector<HTMLInputElement>('.lighting-search input')!;
+    search.value = 'bleddm';
+    search.dispatchEvent(new f.window.Event('input'));
+    assert.equal(f.window.document.querySelector('.lighting-inspector-title')!.textContent, 'ELK-BLEDOB');
+    f.button('Применить');
+    assert.deepEqual(Array.from(f.events.at(-1).targets), ['one']);
+    f.button('Цвет / настройки', f.window.document.querySelector('.lighting-card')!);
+    assert.equal(f.window.document.querySelector('.lighting-inspector-title')!.textContent, 'ELK-BLEDDM 39');
+    f.button('Применить');
+    assert.deepEqual(Array.from(f.events.at(-1).targets), ['two']);
+  } finally {
+    await f.close();
+  }
+});

@@ -62,6 +62,12 @@ def test_build_manifest_hashes_shipped_code_and_records_revision(tmp_path, monke
         "backend/analytics_activity.swift",
         "frontend/src/memory_library.ts",
         "frontend/src/module_ui.ts",
+        "frontend/src/automations.ts",
+        "frontend/src/automation_state.ts",
+        "frontend/src/scenario_editor.css",
+        "frontend/src/local_media.ts",
+        "backend/automation/engine.py",
+        "backend/automation/service.py",
     }
     spec = (Path(__file__).resolve().parents[1] / "packaging/macos/Chushpan.spec").read_text()
     assert "build-info.json" in spec

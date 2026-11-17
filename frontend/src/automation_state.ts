@@ -8,10 +8,67 @@ export interface Scenario {id: string; revision: number; name: string; descripti
 export const clone = <T>(value: T): T => structuredClone(value);
 export const newId = (): string => crypto.randomUUID().replaceAll('-', '');
 export function newBlock(kind: Block['kind'] = 'action', capability = ''): Block {
-  return {kind, capability, parameters: {}, seconds: 1, condition: kind === 'if' ? {source: 'variable', key: '', operator: 'eq', value: true} : null, children: [], otherwise: [], on_error: 'stop', enabled: true, required: true};
+  return {kind, capability, parameters: {}, seconds: 1, condition: kind === 'if' ? {source: 'time', key: 'hour', operator: 'gt', value: 21} : null, children: [], otherwise: [], on_error: 'stop', enabled: true, required: true};
 }
 export function newScenario(): Scenario {
   return {id: '', revision: 0, name: 'Новый сценарий', description: '', icon: '✦', color: '#9B4BD3', tags: [], favorite: false, enabled: true, mode: 'smart', phrases: [], actions: [], variants: [], conditions: [], triggers: [{kind: 'voice', at: '22:00', weekdays: [0,1,2,3,4,5,6]}, {kind: 'manual', at: '22:00', weekdays: [0,1,2,3,4,5,6]}], variables: [], confirmation: 'auto', schema_version: 2, version_policy: 'fallback', general_enabled: true, inter_block_delay_s: 0, show_status: true, error_policy: 'block', timeout_s: 3600};
+}
+
+/** Guard the renderer before replacing a draft; semantic validation remains on the backend. */
+export function parseScenarioImport(text: string): Scenario {
+  const fail = (): never => {throw new Error('Некорректная структура JSON сценария. Проверь файл экспорта.');};
+  const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : fail();
+  const array = (value: unknown): unknown[] => Array.isArray(value) ? value : fail();
+  const shape = (value: unknown, template: object): void => {
+    const record = object(value);
+    for (const [key, expected] of Object.entries(template)) {
+      if (expected === null) continue;
+      if (Array.isArray(expected)) array(record[key]);
+      else if (typeof record[key] !== typeof expected || record[key] === null) fail();
+    }
+  };
+  const condition = (value: unknown): void => {
+    shape(value, {source: '', key: '', operator: ''});
+    const record = object(value);
+    if (!['variable', 'available', 'time', 'location'].includes(String(record.source)) || !['eq', 'ne', 'gt', 'lt'].includes(String(record.operator)) || !('value' in record)) fail();
+  };
+  let total = 0;
+  const blocks = (value: unknown, depth = 0): void => {
+    const items = array(value); total += items.length;
+    if (depth > 12 || total > 500) fail();
+    for (const item of items) {
+      shape(item, newBlock());
+      const block = object(item);
+      if (!['action', 'delay', 'sequence', 'parallel', 'if'].includes(String(block.kind))) fail();
+      object(block.parameters);
+      if (block.kind === 'if') condition(block.condition);
+      blocks(block.children, depth + 1); blocks(block.otherwise, depth + 1);
+    }
+  };
+  const parsed = object(JSON.parse(text));
+  if (parsed.format !== 'chushpan-scenario' || parsed.schema_version !== 2) fail();
+  const imported = {...newScenario(), ...object(parsed.scenario), id: '', revision: 0};
+  shape(imported, newScenario());
+  if (imported.schema_version !== 2) fail();
+  for (const key of ['tags', 'phrases'] as const) if (array(imported[key]).some(value => typeof value !== 'string')) fail();
+  array(imported.conditions).forEach(condition);
+  blocks(imported.actions);
+  for (const item of array(imported.variants)) {
+    shape(item, {id: '', name: '', place_id: '', enabled: true, actions: [], conditions: []});
+    const variant = object(item); total = 0; blocks(variant.actions); array(variant.conditions).forEach(condition);
+  }
+  for (const item of array(imported.variables)) {
+    shape(item, {name: '', kind: ''});
+    const variable = object(item);
+    if (!['number', 'string', 'boolean'].includes(String(variable.kind)) || typeof variable.default !== variable.kind) fail();
+  }
+  for (const item of array(imported.triggers)) {
+    shape(item, {kind: '', at: '', weekdays: []});
+    const trigger = object(item);
+    if (!['voice', 'manual', 'schedule', 'condition'].includes(String(trigger.kind)) || array(trigger.weekdays).some(day => !Number.isInteger(day) || Number(day) < 0 || Number(day) > 6)) fail();
+  }
+  delete imported.created_at; delete imported.updated_at;
+  return imported;
 }
 export function addVariant(scenario: Scenario, place: Place, source?: Variant): Variant {
   if (scenario.variants.some(v => v.place_id === place.id)) throw new Error('Для этого места уже есть версия.');

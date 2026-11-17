@@ -152,6 +152,13 @@ class Automations:
             self.capabilities.validate(scenario)
         return scenario
 
+    @staticmethod
+    def editor_document(value):
+        """Accept a published snapshot without trusting its read-only timestamps."""
+        if isinstance(value, dict):
+            value = {k: v for k, v in value.items() if k not in {"created_at", "updated_at"}}
+        return Scenario.model_validate(value)
+
     def recognize(self, text, *, exact_only=False):
         with measure("scenario_search"):
             return self.matcher.match(text, exact_only=exact_only)
@@ -336,7 +343,7 @@ class Automations:
         try:
             op = value.get("op")
             if op == "save":
-                scenario = Scenario.model_validate(value["scenario"])
+                scenario = self.editor_document(value["scenario"])
                 self.validate_document(scenario)
                 saved = self.store.save(scenario)
                 self.publish(
@@ -398,7 +405,7 @@ class Automations:
             elif op == "preview":
                 from backend.automation.preview import preview
 
-                scenario = Scenario.model_validate(value["scenario"])
+                scenario = self.editor_document(value["scenario"])
                 result = await preview(
                     self.engine,
                     scenario,

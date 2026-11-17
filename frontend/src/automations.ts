@@ -1,7 +1,7 @@
 import {permissionCenter, type PermissionFilters} from './permission_center';
 import type {HudEvent} from './types';
 import './automations.css';
-import {addVariant, clone, newBlock, newId, newScenario, searchCommands, moveBlock, reorderBlock, countBlocks, normalizePhrase} from './automation_state';
+import {addVariant, clone, newBlock, newId, newScenario, searchCommands, moveBlock, reorderBlock, countBlocks, normalizePhrase, parseScenarioImport} from './automation_state';
 import type {Json, Block, Condition, Place, Scenario, Variant} from './automation_state';
 export type {Scenario, Block, Condition} from './automation_state';
 export {newBlock, newScenario, moveBlock} from './automation_state';
@@ -109,7 +109,22 @@ export class AutomationsView {
     }
     const filtersRow = el('div', '', 'scenario-filter-row'); filtersRow.append(filterBar, placeFilter, viewToggle);
     const importFile = el('input'); importFile.type = 'file'; importFile.accept = 'application/json,.json'; importFile.hidden = true; importFile.setAttribute('aria-label', 'Выбрать JSON сценария');
-    importFile.onchange = async () => {const file = importFile.files?.[0]; if (!file) return; try {if (file.size > 1_000_000) throw new Error('Файл сценария должен быть меньше 1 МБ.'); const parsed = JSON.parse(await file.text()) as {format?: string; schema_version?: number; scenario?: Partial<Scenario>}; if (parsed.format !== 'chushpan-scenario' || parsed.schema_version !== 2 || !parsed.scenario || typeof parsed.scenario.name !== 'string') throw new Error('Формат сценария или версия схемы не поддерживается.'); const imported = Object.assign(newScenario(), parsed.scenario, {id: '', revision: 0, created_at: undefined, updated_at: undefined}); this.draft = imported; this.dirty = true; this.undoStack = []; this.redoStack = []; this.historySnapshot = ''; this.activeVariant = ''; this.previewRoot.replaceChildren(); this.feedback.textContent = 'JSON загружен в черновик. Проверь блоки и настройки, затем сохрани сценарий.'; this.renderEditor();} catch (error) {this.feedback.textContent = error instanceof Error ? error.message : 'Не удалось прочитать сценарий JSON.'; this.feedback.dataset.error = 'true';} importFile.value = '';};
+    importFile.onchange = async () => {
+      const file = importFile.files?.[0]; if (!file) return;
+      try {
+        if (file.size > 1_000_000) throw new Error('Файл сценария должен быть меньше 1 МБ.');
+        const imported = parseScenarioImport(await file.text());
+        if (!this.discardAllowed()) return;
+        this.draft = imported; this.dirty = true; this.undoStack = []; this.redoStack = []; this.historySnapshot = '';
+        this.activeVariant = ''; this.pendingPlace = ''; this.pendingPhrase = ''; this.selectedBlock = null;
+        this.previewRoot.replaceChildren(); this.revisionRoot.replaceChildren();
+        this.feedback.textContent = 'JSON загружен в черновик. Проверь блоки и настройки, затем сохрани сценарий.';
+        delete this.feedback.dataset.error; this.renderEditor();
+      } catch (error) {
+        this.feedback.textContent = error instanceof Error ? error.message : 'Не удалось прочитать сценарий JSON.';
+        this.feedback.dataset.error = 'true';
+      } finally {importFile.value = '';}
+    };
     const importButton = this.button('Импорт JSON', () => importFile.click()); importButton.className = 'scenario-import';
     toolbar.append(search, sort, importButton, create, importFile);
     const layout = el('div', '', 'scenario-layout'); layout.append(this.list, this.overview, this.editor);
@@ -719,7 +734,7 @@ export class AutomationsView {
 
   private conditionList(root: HTMLElement, conditions: Condition[]): void {
     conditions.forEach((condition, i) => {const row = el('div', '', 'scenario-condition'); row.append(this.conditionEditor(condition), this.button('Удалить условие', () => {conditions.splice(i, 1); this.dirty = true; this.renderEditor();})); root.append(row);});
-    root.append(this.button('Добавить условие', () => {conditions.push({source: 'variable', key: this.draft?.variables[0]?.name ?? '', operator: 'eq', value: true}); this.dirty = true; this.renderEditor();}));
+    root.append(this.button('Добавить условие', () => {const variable = this.draft?.variables[0]; conditions.push(variable ? {source: 'variable', key: variable.name, operator: 'eq', value: variable.default} : {source: 'time', key: 'hour', operator: 'gt', value: 21}); this.dirty = true; this.renderEditor();}));
   }
   private conditionEditor(condition: Condition): HTMLElement {
     const row = el('div', '', 'condition-fields');
@@ -750,7 +765,6 @@ export class AutomationsView {
         }
         if (capability === 'mac.volume') block.parameters.level = 20;
       }
-      if (kind === 'if') block.condition = {source: 'time', key: 'hour', operator: 'gt', value: 21};
       blocks.push(block); if (!['delay', 'action'].includes(kind) || capability === 'led.set') this.openedBlocks.add(block);
       this.dirty = true; this.renderEditor();
     };
