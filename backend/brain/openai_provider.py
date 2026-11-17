@@ -72,6 +72,7 @@ class OpenAIClient:
     def __init__(self, cfg: OpenAIConfig, key: str, *, client: Any = None):
         self.cfg, self._key, self._client = cfg, key, client
         self.on_usage = None
+        self.key_state = "saved" if key else "unavailable"
 
     @property
     def available(self):
@@ -109,6 +110,19 @@ class OpenAIClient:
     async def wait_ready(self, timeout_s: float, interval_s: float = 1.0) -> bool:
         del timeout_s, interval_s
         return self.available
+
+    async def refresh_key(self) -> str:
+        """Retry a bounded Keychain read after an earlier startup timeout."""
+        if self.available:
+            return "saved"
+        from backend.brain.providers import _read_openai_key_bounded
+
+        key, state = await _read_openai_key_bounded(3.0)
+        self.key_state = state
+        if key:
+            self._key = key
+            return "saved"
+        return state
 
     async def prime(self, system_prompt: str, tools=None, history=None):
         del system_prompt, tools, history
@@ -192,6 +206,11 @@ class OpenAIClient:
         ]
 
     async def _stream(self, payload):
+        if not self.available:
+            reason = "ключ OpenAI не прочитан из macOS Keychain: " + (
+                "время ожидания истекло" if self.key_state == "timeout" else "ключ недоступен"
+            )
+            raise OpenAIRequestError(None, transient=False, reason=reason)
         try:
             return await self._sdk().responses.create(**payload)
         except Exception as exc:
@@ -241,6 +260,27 @@ class OpenAIClient:
                 else "запрос не поддержан выбранной моделью"
                 if status == 400
                 else "служба API вернула ошибку"
+            )
+            profile = current.get()
+            log.error(
+                "OPENAI_REQUEST_FAILED request_id=%s stage=responses_create "
+                "exception_type=%s status=%s category=%s",
+                profile.request_id if profile else "-",
+                type(exc).__name__,
+                status,
+                "missing_api_key"
+                if "api_key" in message and ("must be set" in message or "required" in message)
+                else "authentication"
+                if status in {401, 403}
+                else "quota"
+                if status == 402 or no_credits
+                else "rate_limit"
+                if status == 429
+                else "transport"
+                if transient
+                else "unsupported_request"
+                if status == 400
+                else "provider_error",
             )
             raise OpenAIRequestError(status, transient=transient, reason=reason) from None
 

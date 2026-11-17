@@ -461,6 +461,28 @@ class FallbackClient:
         candidates: list[LLMClient] = [self.primary]
         if pinned is not None:
             candidates = [pinned]
+        elif getattr(self.primary, "provider", None) == "openai" and not self.primary.available:
+            state = await self.primary.refresh_key()
+            log.warning(
+                "OPENAI_CREDENTIAL_RETRY request_id=%s stage=keychain_read state=%s",
+                request_id or "-",
+                state,
+            )
+            if not self.primary.available:
+                if self.enabled:
+                    self.last_error = (
+                        "Ключ OpenAI временно недоступен; используется локальная Ollama."
+                    )
+                    candidates = [self.local]
+                    self.switch_reason = "ключ OpenAI временно недоступен"
+                else:
+                    reason = (
+                        "Время ожидания чтения ключа OpenAI из macOS Keychain истекло."
+                        if state == "timeout"
+                        else "Ключ OpenAI недоступен в macOS Keychain."
+                    )
+                    self.last_error = reason
+                    raise LLMError(reason + " Запрос к модели не отправлен.") from None
         elif not self.primary.available and self.enabled:
             setup = (
                 "OpenAI не настроен. Добавь ключ в настройках Чушпана."
@@ -508,6 +530,7 @@ class FallbackClient:
                 and self.enabled
                 and pinned is None
                 and time.perf_counter() < self._cooldown_until.get(candidate, 0)
+                and any(other is not candidate for other in candidates[index + 1 :])
             ):
                 record(f"{provider}_cooldown_skipped_{index + 1}", 0)
                 self.switch_reason = "Облачная модель временно исключена после сбоя"
@@ -668,11 +691,14 @@ class FallbackClient:
                     "Сетевая ошибка или таймаут" if transient else "Ошибка модели или конфигурации",
                 )
                 log.warning(
-                    "LLM failed provider=%s model=%s status=%s transient=%s",
+                    "LLM failed request_id=%s stage=provider_request provider=%s "
+                    "model=%s status=%s transient=%s exception_type=%s",
+                    request_id or "-",
                     provider,
                     model,
                     code,
                     transient,
+                    type(exc).__name__,
                 )
                 if cloud:
                     self.last_error = (
@@ -786,7 +812,10 @@ async def create_llm_async(s: Settings, *, keychain_timeout_s: float = 3.0) -> L
         key, state = await _read_openai_key_bounded(keychain_timeout_s)
         if state != "saved":
             log.warning("OPENAI_KEYCHAIN state=%s; local fallback remains available", state)
-        return create_llm(s, openai_key=key)
+        client = create_llm(s, openai_key=key)
+        if isinstance(client, FallbackClient) and hasattr(client.primary, "key_state"):
+            client.primary.key_state = state
+        return client
     return await asyncio.to_thread(create_llm, s)
 
 

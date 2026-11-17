@@ -3,6 +3,7 @@ import json
 from types import SimpleNamespace
 
 import httpx
+import pytest
 
 from backend.brain.openai_keychain import OpenAIKeychain
 from backend.brain.openai_provider import (
@@ -127,6 +128,76 @@ def test_streaming_maps_text_tool_call_and_usage_without_live_api():
 
 async def _collect(stream):
     return [chunk async for chunk in stream]
+
+
+def test_empty_key_fails_before_sdk_and_explains_keychain_state():
+    client = OpenAIClient(OpenAIConfig(), "", client=SimpleNamespace())
+    client.key_state = "timeout"
+
+    async def run():
+        with pytest.raises(OpenAIRequestError, match="Keychain.*ожидания"):
+            await client._stream({"model": "gpt-4.1-mini"})
+
+    asyncio.run(run())
+
+
+def test_keychain_timeout_is_retried_on_next_text_request(monkeypatch):
+    from backend.brain import providers
+
+    class Stream:
+        def __init__(self):
+            self.events = [
+                SimpleNamespace(type="response.output_text.delta", delta="Модель отвечает."),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(
+                        usage=SimpleNamespace(input_tokens=1, output_tokens=2)
+                    ),
+                ),
+            ]
+
+        def __aiter__(self):
+            self._iterator = iter(self.events)
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._iterator)
+            except StopIteration:
+                raise StopAsyncIteration from None
+
+    class Responses:
+        def __init__(self):
+            self.calls = 0
+
+        async def create(self, **_payload):
+            self.calls += 1
+            return Stream()
+
+    async def scenario():
+        states = iter([("", "timeout"), ("test-key", "saved")])
+
+        async def read_key(_timeout):
+            return next(states)
+
+        monkeypatch.setattr(providers, "_read_openai_key_bounded", read_key)
+        responses = Responses()
+        primary = OpenAIClient(OpenAIConfig(), "", client=SimpleNamespace(responses=responses))
+        fallback = FallbackClient(primary, SimpleNamespace(), enabled=False)
+        message = [{"role": "user", "content": "Проверка"}]
+
+        with pytest.raises(LLMError, match="ожидания.*Keychain"):
+            await _collect(fallback.chat_stream(message))
+        assert responses.calls == 0
+
+        chunks = await _collect(fallback.chat_stream(message))
+        assert "".join(chunk.content for chunk in chunks) == "Модель отвечает."
+        assert responses.calls == 1
+        assert primary.available
+
+    from backend.brain.llm import LLMError
+
+    asyncio.run(scenario())
 
 
 class FakeSecurity:
