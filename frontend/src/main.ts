@@ -21,6 +21,7 @@ import { PerformancePanel } from './performance';
 import {StatisticsDashboard} from './statistics';
 import './statistics.css';
 import './neon_design_system.css';
+import './theme';
 
 import type { Mode } from "./core";
 import { Character } from './character';

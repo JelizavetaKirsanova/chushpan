@@ -95,6 +95,7 @@ MANIFEST_SOURCES = (
     "frontend/src/character.ts",
     "frontend/src/dashboard.ts",
     "frontend/src/dashboard.css",
+    "frontend/src/theme.ts",
     "frontend/src/main.ts",
     "frontend/src/neon_design_system.css",
     "frontend/src/i18n.ts",
