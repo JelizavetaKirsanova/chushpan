@@ -534,8 +534,11 @@ export class CinemaView {
     actions.append(this.button('Трейлер',()=>this.request({op:'trailer',key:item.catalogue_key,title_id:'id' in item?item.id:undefined})));
     for(const [status,label]of Object.entries(statuses)){const b=this.button(label,()=>this.changeTitle(item,{status}));b.dataset.statusAction=status;actions.append(b);}actions.append(this.detailFavorite(item));body.append(actions);hero.append(poster,body);
     const tabs=el('div','','cinema-detail-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Подробности фильма');
-    const watch=el('section','','cinema-detail-pane');watch.dataset.detailPane='watch';const sourceSlot=el('div','','cinema-watch-sources');sourceSlot.append(el('p','Нажми «Найти и смотреть», чтобы проверить подключённые источники.','cinema-muted'));watch.append(sourceSlot);
-    for(const label of [...legacy.querySelectorAll('label')])if(['Сезон','Серия','Источник','Озвучка'].includes(label.querySelector('select')?.getAttribute('aria-label')??''))watch.insertBefore(label,sourceSlot);
+    const watch=el('section','','cinema-detail-pane');watch.dataset.detailPane='watch';const sourceSlot=el('div','','cinema-watch-sources');sourceSlot.append(el('p','Нажми «Найти и смотреть», чтобы проверить подключённые источники.','cinema-muted'));
+    const choices=el('div','','cinema-detail-choices cinema-watch-choices');
+    for(const label of [...legacy.querySelectorAll('label')])if(['Сезон','Серия','Источник','Озвучка'].includes(label.querySelector('select')?.getAttribute('aria-label')??''))choices.append(label);
+    for(const group of legacy.querySelectorAll('.cinema-detail-choices'))if(!group.children.length)group.remove();
+    if(choices.children.length)watch.append(choices);watch.append(sourceSlot);
     if('id' in item){
       watch.append(this.button(item.site_recipe?'Изменить сохранённый сценарий сайта':'Научить Чушпана смотреть на этом сайте',()=>{
         const current=this.libraryItem(item)??item;

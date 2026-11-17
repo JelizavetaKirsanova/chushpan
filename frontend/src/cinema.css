@@ -2540,6 +2540,12 @@
 }
 
 .cinema-rich-dialog {
+    --detail-surface: #211a2b;
+    --detail-inset: #17121e;
+    --detail-border: #b68acd30;
+    --detail-muted: #bfb0cb;
+    --detail-text: #e9dfef;
+    --detail-active: #9b59d52b;
     width: min(1060px, 94vw);
     max-width: 1060px;
     padding: 0;
@@ -2741,6 +2747,227 @@
     gap: 16px;
 }
 
+/* Full title dialogs and the compact library sidebar use separate spacing. */
+.cinema-rich-dialog > .cinema-detail-tabs {
+    gap: 6px;
+    margin: 0 30px;
+    padding: 6px;
+    border: 1px solid var(--detail-border);
+    border-radius: 14px;
+    background: var(--detail-inset);
+}
+
+.cinema-rich-dialog > .cinema-detail-tabs button {
+    min-width: 0;
+    min-height: 40px;
+    padding: 10px 16px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--detail-muted);
+}
+
+.cinema-rich-dialog > .cinema-detail-tabs button[aria-selected=true] {
+    color: var(--detail-text);
+    border-color: var(--detail-border);
+    background: var(--detail-active);
+    box-shadow: 0 2px 8px #00000012;
+}
+
+.cinema-rich-dialog > .cinema-detail-pane {
+    min-width: 0;
+    padding: 24px 30px 30px;
+    color: var(--detail-text);
+    line-height: 1.6;
+}
+
+.cinema-rich-dialog [hidden] {
+    display: none;
+}
+
+.cinema-rich-dialog .cinema-watch-choices {
+    gap: 18px;
+    padding: 18px;
+    border: 1px solid var(--detail-border);
+    border-radius: 14px;
+    background: var(--detail-surface);
+}
+
+.cinema-rich-dialog .cinema-field {
+    min-width: 0;
+    margin: 0;
+    color: var(--detail-muted);
+    line-height: 1.5;
+}
+
+.cinema-rich-dialog :is(select, textarea, input:not([type=checkbox]):not([type=radio]):not([type=range])) {
+    box-sizing: border-box;
+    min-width: 0;
+    min-height: 42px;
+    padding: 10px 12px;
+    color: var(--detail-text);
+    background: var(--detail-inset);
+    border: 1px solid var(--detail-border);
+    border-radius: 9px;
+    font: inherit;
+    font-size: 13px;
+}
+
+.cinema-rich-dialog :is(button, select, input, textarea, summary):focus-visible {
+    outline: 2px solid #b981e8;
+    outline-offset: 3px;
+}
+
+.cinema-rich-dialog .cinema-watch-sources {
+    margin: 18px 0;
+}
+
+.cinema-rich-dialog .cinema-watch-sources > p {
+    margin: 0;
+    padding: 16px 18px;
+    border: 1px solid var(--detail-border);
+    border-radius: 12px;
+    background: var(--detail-inset);
+    color: var(--detail-muted);
+    font-size: 13px;
+    line-height: 1.7;
+}
+
+.cinema-rich-dialog .cinema-watch-sources .cinema-source-option {
+    margin: 12px 0;
+    background: var(--detail-surface);
+    border-color: var(--detail-border);
+}
+
+.cinema-rich-dialog .cinema-watch-sources .cinema-source-option p {
+    color: var(--detail-muted);
+    overflow-wrap: anywhere;
+}
+
+.cinema-rich-dialog .cinema-detail-pane > button {
+    max-width: 100%;
+    min-height: 42px;
+    padding: 11px 16px;
+    white-space: normal;
+    line-height: 1.5;
+    text-align: left;
+}
+
+.cinema-rich-dialog .cinema-playback-details {
+    margin-top: 22px;
+    padding: 0 18px;
+    border: 1px solid var(--detail-border);
+    border-radius: 14px;
+    background: var(--detail-surface);
+}
+
+.cinema-rich-dialog .cinema-playback-details > summary {
+    margin: 0;
+    padding: 17px 0;
+    color: var(--detail-text);
+    font-size: 13px;
+    line-height: 1.6;
+    cursor: pointer;
+}
+
+.cinema-rich-dialog .cinema-playback-details[open] > summary {
+    margin-bottom: 18px;
+    border-bottom: 1px solid var(--detail-border);
+}
+
+.cinema-rich-dialog .cinema-playback-details > :not(summary) {
+    margin-top: 16px;
+    margin-bottom: 18px;
+}
+
+.cinema-rich-dialog .cinema-playback-details :is(.cinema-detail-choices, .cinema-actions) {
+    gap: 14px;
+    align-items: end;
+}
+
+.cinema-rich-dialog .cinema-playback-details .cinema-resume-detail {
+    padding: 18px;
+    background: var(--detail-inset);
+    border: 1px solid var(--detail-border);
+    border-radius: 12px;
+}
+
+.cinema-rich-dialog .cinema-playback-details details {
+    padding: 16px 0 0;
+    border-color: var(--detail-border);
+}
+
+.cinema-rich-dialog .cinema-playback-details details > summary {
+    padding-bottom: 16px;
+    cursor: pointer;
+}
+
+.cinema-rich-dialog .cinema-rich-info > h3 {
+    margin: 0 0 12px;
+    font-size: 17px;
+}
+
+.cinema-rich-dialog .cinema-rich-info > p {
+    margin: 0 0 22px;
+    color: var(--detail-muted);
+    font-size: 13px;
+    line-height: 1.85;
+}
+
+.cinema-rich-dialog .cinema-rich-info dl {
+    margin: 0 0 22px;
+    padding: 18px;
+    border: 1px solid var(--detail-border);
+    border-radius: 14px;
+    background: var(--detail-surface);
+}
+
+.cinema-rich-dialog .cinema-rich-info :is(dt, dd) {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    text-align: left;
+}
+
+.cinema-rich-dialog .cinema-rich-info dt {
+    color: var(--detail-muted);
+}
+
+.cinema-rich-dialog .cinema-rich-info dd {
+    color: var(--detail-text);
+}
+
+.cinema-rich-dialog .cinema-rich-info > button + h3 {
+    margin-top: 24px;
+}
+
+.cinema-rich-dialog .cinema-similar-grid > p {
+    grid-column: 1 / -1;
+    margin: 0;
+    color: var(--detail-muted);
+}
+
+.cinema-rich-dialog .cinema-similar-grid .cinema-card {
+    min-width: 0;
+    border-color: var(--detail-border);
+    background: var(--detail-surface);
+}
+
+.cinema-rich-dialog .cinema-similar-grid .cinema-card-body {
+    padding: 14px;
+    line-height: 1.5;
+    text-align: center;
+    overflow-wrap: anywhere;
+}
+
+html[data-theme=light] .cinema-rich-dialog {
+    --detail-surface: #f6effa;
+    --detail-inset: #fffaff;
+    --detail-border: #d9c9e3;
+    --detail-muted: #6e5c79;
+    --detail-text: #352140;
+    --detail-active: #ebd9f5;
+}
+
 .cinema-rating-dialog {
     width: min(510px, 94vw);
     background: radial-gradient(ellipse at 70% 0, #55307933, transparent), #17111f;
@@ -2875,8 +3102,12 @@
         padding: 22px;
     }
 
-    .cinema-detail-pane {
+    .cinema-rich-dialog > .cinema-detail-pane {
         padding: 20px;
+    }
+
+    .cinema-rich-dialog > .cinema-detail-tabs {
+        margin: 0 20px;
     }
 
     .cinema-similar-grid {
@@ -2919,6 +3150,24 @@
 
     .cinema-detail-tabs {
         margin: 0 14px;
+    }
+
+    .cinema-rich-dialog > .cinema-detail-pane {
+        padding: 18px;
+    }
+
+    .cinema-rich-dialog > .cinema-detail-tabs {
+        margin: 0 18px;
+        gap: 3px;
+    }
+
+    .cinema-rich-dialog > .cinema-detail-tabs button {
+        padding: 10px 6px;
+        font-size: 11px;
+    }
+
+    .cinema-rich-dialog .cinema-detail-choices {
+        grid-template-columns: minmax(0, 1fr);
     }
 
     .cinema-detail-pane dl {
@@ -4229,19 +4478,19 @@
     background: #9623c543;
 }
 
-.cinema-detail-pane {
+.cinema-library-detail .cinema-detail-pane {
     min-height: 98px;
     padding: 4px 2px;
 }
 
-.cinema-detail-pane > p {
+.cinema-library-detail .cinema-detail-pane > p {
     margin: 3px 0 10px;
     color: var(--media-muted, #b9adca);
     font-size: 11px;
     line-height: 1.6;
 }
 
-.cinema-detail-pane dl {
+.cinema-library-detail .cinema-detail-pane dl {
     display: grid;
     grid-template-columns:75px minmax(0, 1fr);
     gap: 6px 9px;
@@ -4249,16 +4498,16 @@
     font-size: 10px;
 }
 
-.cinema-detail-pane dt {
+.cinema-library-detail .cinema-detail-pane dt {
     color: var(--media-muted, #b9adca);
 }
 
-.cinema-detail-pane dd {
+.cinema-library-detail .cinema-detail-pane dd {
     margin: 0;
     text-align: right;
 }
 
-.cinema-detail-pane select, .cinema-detail-playlists select {
+.cinema-library-detail .cinema-detail-pane select, .cinema-detail-playlists select {
     width: 100%;
     padding: 8px;
     font-size: 10px;
