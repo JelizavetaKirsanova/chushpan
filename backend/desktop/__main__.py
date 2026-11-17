@@ -21,6 +21,12 @@ def main():
     parser.add_argument("--parent", type=int, default=0)
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument(
+        "--developer-mode",
+        action="store_true",
+        default=None,
+        help="enable Safari Web Inspector for this launch (automatic when running from source)",
+    )
+    parser.add_argument(
         "--no-auto-listen",
         action="store_true",
         help="suppress microphone auto-start for this launch; keep preferences",
@@ -120,7 +126,11 @@ def main():
         )
     from backend.desktop.app import Application
 
-    return Application(smoke=args.smoke, no_auto_listen=args.no_auto_listen).run()
+    return Application(
+        smoke=args.smoke,
+        no_auto_listen=args.no_auto_listen,
+        developer_mode=args.developer_mode,
+    ).run()
 
 
 if __name__ == "__main__":

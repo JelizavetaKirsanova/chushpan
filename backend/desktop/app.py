@@ -94,10 +94,13 @@ class Bridge(_Api):
 
 
 class Application(_Api):
-    def __init__(self, *, smoke=False, no_auto_listen=False):
+    def __init__(self, *, smoke=False, no_auto_listen=False, developer_mode: bool | None = None):
         super().__init__()
         self.smoke = smoke
         self.no_auto_listen = no_auto_listen
+        self.developer_mode = (
+            not getattr(sys, "frozen", False) if developer_mode is None else developer_mode
+        )
         self.root = USER_ROOT
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.runtime = self.root / "runtime"
@@ -918,6 +921,19 @@ class Application(_Api):
         if self.prefs.ambient_hotkey_enabled:
             self.start_global_hotkey()
 
+    def _configure_web_inspector(self):
+        """before_show runs synchronously on Cocoa's main thread, before navigation."""
+        from webview.platforms.cocoa import BrowserView
+
+        # window.native is an NSWindow; its contentView is only attached after
+        # navigation. Use the WKWebView already owned by pywebview instead.
+        view = BrowserView.instances[self.window.uid].webview
+        if hasattr(view, "setInspectable_"):
+            view.setInspectable_(self.developer_mode)
+            log.info("DESKTOP_WEB_INSPECTOR enabled=%s", bool(view.isInspectable()))
+        elif self.developer_mode:
+            log.warning("Safari Web Inspector requires macOS 13.3 or newer")
+
     def run(self):
         import webview
         from PyObjCTools.AppHelper import callAfter
@@ -944,6 +960,7 @@ class Application(_Api):
             hidden=self.prefs.start_hidden or not self.prefs.show_window,
         )
         bridge.window = self.window
+        self.window.events.before_show += self._configure_web_inspector
         self.window.events.closing += self.close_window
         self.window.events.loaded += self._on_frontend_loaded
         self.window.events.minimized += lambda: setattr(self, "minimized", True)

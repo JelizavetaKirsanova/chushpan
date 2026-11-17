@@ -102,7 +102,7 @@ def test_native_start_preserves_webkit_store_including_smoke_launch(tmp_path, mo
             return self
 
     events = SimpleNamespace(
-        **{name: Event() for name in ("closing", "loaded", "minimized", "restored")}
+        **{name: Event() for name in ("before_show", "closing", "loaded", "minimized", "restored")}
     )
     calls = []
     fake_webview = SimpleNamespace(
