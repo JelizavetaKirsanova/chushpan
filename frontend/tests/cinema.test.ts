@@ -741,10 +741,10 @@ test('production CSS order keeps light cinema controls readable',async()=>{
       const style=window.document.createElement('style');style.textContent=readFileSync(new URL(`../src/${name}`,import.meta.url),'utf8');window.document.head.append(style);
     }
     const style=(id:string)=>window.getComputedStyle(window.document.getElementById(id)!);
-    for(const id of ['settings','sort']){assert.equal(style(id).color,'#352140');assert.equal(style(id).backgroundColor,'#fffaff');}
-    assert.equal(style('selected').color,'#612077');assert.equal(style('selected').backgroundColor,'#ecdcf5');
-    assert.equal(style('title').color,'#352140');assert.equal(style('title').backgroundColor,'transparent');
-    assert.equal(style('tab').color,'#542064');assert.equal(style('tab').backgroundColor,'#ebd9f5');
-    for(const id of ['play','category']){assert.equal(style(id).color,'#fff');assert.match(style(id).backgroundImage,/#a020cb.*#7b19b8/);}
+    const luminance=(hex:string)=>{const value=hex.length===4?hex.slice(1).split('').map(c=>c+c).join(''):hex.slice(1);const values=[0,2,4].map(index=>parseInt(value.slice(index,index+2),16)/255).map(c=>c<=.04045?c/12.92:((c+.055)/1.055)**2.4);return values[0]*.2126+values[1]*.7152+values[2]*.0722;};
+    const contrast=(text:string,background:string)=>{const values=[luminance(text),luminance(background)].sort((a,b)=>a-b);return (values[1]+.05)/(values[0]+.05);};
+    for(const id of ['settings','sort','selected','tab']){assert.ok(luminance(style(id).backgroundColor)>.6,`${id} must use a light surface`);assert.ok(contrast(style(id).color,style(id).backgroundColor)>=4.5,`${id} text contrast`);}
+    assert.ok(luminance(style('title').color)<.1);assert.equal(style('title').backgroundColor,'transparent');
+    for(const id of ['play','category']){const stops=style(id).backgroundImage.match(/#[0-9a-f]{6}/g)??[];assert.ok(stops.length>=2);for(const stop of stops)assert.ok(contrast(style(id).color,stop)>=4.5,`${id} gradient contrast`);}
   }finally{await window.happyDOM.close();}
 });

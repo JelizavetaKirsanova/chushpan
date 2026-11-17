@@ -595,3 +595,10 @@ html[data-theme=light] :is(.cinema-catalogue-filters,.cinema-type-switch,.cinema
 html[data-theme=light] :is(.cinema-field,.cinema-switch>span,.cinema-filter-drawer output,.cinema-profile-hero p,.cinema-profile-insight p,.cinema-profile-insight small,.cinema-preference-card>p,.cinema-source-option p,.cinema-source-card p,.cinema-source-card small,.cinema-detail-summary>p) { color:#6e5c79; }
 html[data-theme=light] .cinema-catalogue-hero>small { color:#73378a; }
 html[data-theme=light] .cinema-feedback[data-error=true],html[data-theme=light] .cinema-form-error { color:#a13725; }
+html[data-theme=light] .cinema-page :is(.cinema-card,dialog) { color:#352140; background:#fffaff; border-color:#d9c9e3; }
+html[data-theme=light] .cinema-rich-dialog>header h2 { color:#6e5c79; }
+html[data-theme=light] .cinema-detail-hero { color:#f8f0ff; }
+html[data-theme=light] .cinema-detail-hero:after { background:linear-gradient(0deg,#24132e 0%,#24132ed9 60%,#24132e99); }
+html[data-theme=light] .cinema-page :is(.cinema-tmdb-rating,.cinema-personal-rating) { color:#764b12; }
+html[data-theme=light] .cinema-detail-hero :is(.cinema-tmdb-rating,.cinema-personal-rating) { color:#f5d781; }
+html[data-theme=light] .cinema-library-badge { color:#783b8f!important; }
