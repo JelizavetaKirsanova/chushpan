@@ -169,7 +169,7 @@ export class CinemaView {
     document.addEventListener('workspace:navigate',event=>{if((event as CustomEvent).detail==='cinema'&&this.online)this.request({op:'refresh'});});
     this.connection(false);
   }
-  private button(label:string,action:()=>void,cls=''):HTMLButtonElement {const b=el('button',label,cls);b.type='button';b.disabled=!this.online;b.onclick=action;if(cls==='cinema-media-title'){b.replaceChildren(el('span',label,'cinema-media-title-label'));b.title=label;}return b;}
+  private button(label:string,action:()=>void,cls=''):HTMLButtonElement {const b=el('button',label,cls);b.type='button';b.disabled=!this.online;b.onclick=action;if(cls.split(' ').includes('cinema-media-title')){b.replaceChildren(el('span',label,'cinema-media-title-label'));b.title=label;}return b;}
   private field(label:string,input:HTMLElement):HTMLLabelElement {input.setAttribute('aria-label',label);const node=el('label','','cinema-field');node.append(el('span',label),input);return node;}
   private input(value='',type='text'):HTMLInputElement {const n=el('input');n.type=type;n.value=value;return n;}
   private select(options:[string,string][],value:string):HTMLSelectElement {const node=el('select');for(const [id,label]of options){const option=el('option',label);option.value=id;node.append(option);}node.value=value;return node;}
@@ -373,9 +373,9 @@ export class CinemaView {
   }
 
   private libraryCinemaCard(item:CinemaTitle):HTMLElement {
-    const selected=this.selectedMediaKey===this.mediaKey(item);const card=el('article','',`cinema-media-card cinema-card${selected?' is-selected':''}`);card.dataset.titleId=item.id;
-    const poster=this.button(`Выбрать ${item.title}`,()=>{this.selectedMediaKey=this.mediaKey(item);this.detailPane='about';this.render();},'cinema-media-art');poster.replaceChildren(this.poster(item));poster.setAttribute('aria-label',`Подробнее: ${item.title}`);
-    const details=el('div','','cinema-card-body cinema-media-card-body');const title=this.button(item.title,()=>this.detail(item.id),'cinema-media-title');details.append(title,el('p',`${item.kind==='series'?'Сериал':'Фильм'} · ${item.year||'Год не указан'}`));
+    const selected=this.selectedMediaKey===this.mediaKey(item);const card=el('article','',`cinema-media-card cinema-card cinema-catalogue-card cinema-library-film-card${selected?' is-selected':''}`);card.dataset.titleId=item.id;
+    const poster=this.button(`Выбрать ${item.title}`,()=>{this.selectedMediaKey=this.mediaKey(item);this.detailPane='about';this.render();},'cinema-poster-button cinema-media-art');poster.replaceChildren(this.poster(item));poster.setAttribute('aria-label',`Подробнее: ${item.title}`);
+    const details=el('div','','cinema-card-body cinema-media-card-body');const title=this.button(item.title,()=>this.detail(item.id),'cinema-title cinema-media-title');details.append(title,el('p',`${item.year||'Год не указан'} · ${item.kind==='series'?'Сериал':'Фильм'}`,'cinema-card-year'));
     const caption=item.kind==='series'&&item.current?`Сезон ${item.current.season}, серия ${item.current.episode}`:item.status==='watched'?'Просмотрено':item.status==='watching'?'Смотрю':'Хочу посмотреть';details.append(el('small',caption,'cinema-media-caption'));
     if(item.current?.duration){const progress=el('progress');progress.max=100;progress.value=viewingProgress(item.current);progress.setAttribute('aria-label',`Прогресс ${Math.round(progress.value)} процентов`);details.append(progress);}
     const actions=el('div','','cinema-media-card-actions');const play=this.button(item.current?.position?'Продолжить':'Смотреть',()=>this.open(item),'primary cinema-quick-play');actions.append(play,this.button('⋯',()=>this.detail(item.id),'cinema-more'));
