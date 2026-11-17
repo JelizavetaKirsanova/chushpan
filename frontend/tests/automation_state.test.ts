@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {addVariant, clone, moveBlock, newBlock, newScenario, searchCommands} from '../src/automation_state.ts';
+import {addVariant, clone, moveBlock, newBlock, newScenario, searchCommands, parseScenarioImport} from '../src/automation_state.ts';
 
 const dorm = {id:'dorm',revision:1,name:'Общага',cities:[]};
 const home = {id:'home',revision:1,name:'Дом',cities:[]};
@@ -51,4 +51,13 @@ test('search finds command by Russian phrase and user-defined version name', () 
   assert.equal(searchCommands([command],'ЛОЖИТЬСЯ').length,1);
   assert.equal(searchCommands([command],'домашняя').length,1);
   assert.equal(searchCommands([command],'работать').length,0);
+});
+
+test('exported scenarios without a timeout round-trip through JSON import', () => {
+  const saved={...newScenario(),id:'a'.repeat(32),revision:3,name:'Без ограничения',timeout_s:null,actions:[{...newBlock('if'),otherwise:[newBlock('delay')]}]};
+  const encode=(scenario:unknown)=>JSON.stringify({format:'chushpan-scenario',schema_version:2,scenario});
+  const imported=parseScenarioImport(encode(saved));
+  assert.deepEqual(imported,{...saved,id:'',revision:0});
+  assert.equal(parseScenarioImport(encode({...saved,timeout_s:120})).timeout_s,120);
+  assert.throws(()=>parseScenarioImport(encode({...saved,timeout_s:'none'})),/JSON/);
 });

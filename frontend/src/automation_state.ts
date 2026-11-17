@@ -48,7 +48,8 @@ export function parseScenarioImport(text: string): Scenario {
   const parsed = object(JSON.parse(text));
   if (parsed.format !== 'chushpan-scenario' || parsed.schema_version !== 2) fail();
   const imported = {...newScenario(), ...object(parsed.scenario), id: '', revision: 0};
-  shape(imported, newScenario());
+  shape(imported, {...newScenario(), timeout_s: null});
+  if (imported.timeout_s !== null && typeof imported.timeout_s !== 'number') fail();
   if (imported.schema_version !== 2) fail();
   for (const key of ['tags', 'phrases'] as const) if (array(imported[key]).some(value => typeof value !== 'string')) fail();
   array(imported.conditions).forEach(condition);
