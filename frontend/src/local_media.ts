@@ -19,6 +19,8 @@ interface StoredMediaItem extends LocalMediaItem {
 
 const DB_NAME = 'chushpan-local-media';
 const STORE_NAME = 'files';
+const STATE_STORE = 'state';
+type MediaState = Pick<LocalMediaItem, 'favorite' | 'playlistIds' | 'position' | 'duration'>;
 const MEDIA_KIND: Record<LocalMediaKind, string> = {
   music: 'Музыка', video: 'Видео', image: 'Изображения', document: 'Документы',
 };
@@ -40,8 +42,15 @@ export class LocalMediaStore {
   }
 
   async list(): Promise<LocalMediaItem[]> {
-    const rows = await this.allStored();
-    return rows.map(({blob: _blob, ...item}) => item).sort((a, b) => b.addedAt.localeCompare(a.addedAt));
+    const db = await this.open();
+    const tx = db.transaction([STORE_NAME, STATE_STORE]);
+    const [rows, states] = await Promise.all([
+      this.request<StoredMediaItem[]>(tx.objectStore(STORE_NAME).getAll()),
+      this.request<Array<MediaState & {id: string}>>(tx.objectStore(STATE_STORE).getAll()),
+    ]);
+    const byId = new Map(states.map(state => [state.id, state]));
+    return rows.map(({blob: _blob, ...item}) => ({...item, ...byId.get(item.id)}))
+      .sort((a, b) => b.addedAt.localeCompare(a.addedAt));
   }
 
   async import(files: FileList | File[]): Promise<LocalMediaItem[]> {
@@ -89,15 +98,19 @@ export class LocalMediaStore {
 
   async update(id: string, values: Partial<Pick<LocalMediaItem, 'favorite' | 'playlistIds' | 'position' | 'duration'>>): Promise<void> {
     const db = await this.open();
-    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const tx = db.transaction([STORE_NAME, STATE_STORE], 'readwrite');
     const store = tx.objectStore(STORE_NAME);
+    const state = tx.objectStore(STATE_STORE);
     const request = store.get(id);
     let found = false;
     request.onsuccess = () => {
       const item = request.result as StoredMediaItem | undefined;
       if (!item) return;
       found = true;
-      store.put({...item, ...values});
+      // Rewriting a File returned by WKWebView's IndexedDB can fail after restart.
+      // Keep the original payload untouched and serialize only mutable metadata.
+      const current = state.get(id);
+      current.onsuccess = () => state.put({id, ...current.result, ...values});
     };
     await this.complete(tx);
     if (!found) throw new Error('Файл больше не найден в медиатеке.');
@@ -105,29 +118,30 @@ export class LocalMediaStore {
 
   async remove(id: string): Promise<void> {
     const db = await this.open();
-    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const tx = db.transaction([STORE_NAME, STATE_STORE], 'readwrite');
     tx.objectStore(STORE_NAME).delete(id);
+    tx.objectStore(STATE_STORE).delete(id);
     await this.complete(tx);
   }
 
   async removePlaylist(id: string): Promise<void> {
     const db = await this.open();
-    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const tx = db.transaction([STORE_NAME, STATE_STORE], 'readwrite');
     const store = tx.objectStore(STORE_NAME);
+    const state = tx.objectStore(STATE_STORE);
     const request = store.openCursor();
     request.onsuccess = () => {
       const cursor = request.result;
       if (!cursor) return;
       const item = cursor.value as StoredMediaItem;
-      if (item.playlistIds.includes(id)) cursor.update({...item, playlistIds: item.playlistIds.filter(value => value !== id)});
-      cursor.continue();
+      const current = state.get(item.id);
+      current.onsuccess = () => {
+        const playlistIds: string[] = current.result?.playlistIds ?? item.playlistIds;
+        if (playlistIds.includes(id)) state.put({id: item.id, ...current.result, playlistIds: playlistIds.filter(value => value !== id)});
+        cursor.continue();
+      };
     };
     await this.complete(tx);
-  }
-
-  private async allStored(): Promise<StoredMediaItem[]> {
-    const db = await this.open();
-    return this.request<StoredMediaItem[]>(db.transaction(STORE_NAME).objectStore(STORE_NAME).getAll());
   }
 
   private async getStored(id: string): Promise<StoredMediaItem | null> {
@@ -139,8 +153,12 @@ export class LocalMediaStore {
     if (this.database) return this.database;
     const opening = new Promise<IDBDatabase>((resolve, reject) => {
       if (!this.supported()) { reject(new Error('Локальное хранилище недоступно в этом окне Чушпана.')); return; }
-      const request = indexedDB.open(DB_NAME, 1);
-      request.onupgradeneeded = () => request.result.createObjectStore(STORE_NAME, {keyPath: 'id'});
+      const request = indexedDB.open(DB_NAME, 2);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME, {keyPath: 'id'});
+        if (!db.objectStoreNames.contains(STATE_STORE)) db.createObjectStore(STATE_STORE, {keyPath: 'id'});
+      };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(new Error('Не удалось открыть локальную медиатеку.'));
       request.onblocked = () => reject(new Error('Закрой другие окна Чушпана и повтори импорт.'));

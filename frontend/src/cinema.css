@@ -547,10 +547,14 @@ html[data-theme=light] .cinema-audio-info strong,html[data-theme=light] .cinema-
 html[data-theme=light] .cinema-audio-info small,html[data-theme=light] .cinema-audio-clock { color:#6e5c79; }
 html[data-theme=light] .cinema-library-empty strong { color:#21162b; }
 @media(prefers-reduced-motion:reduce) { .cinema-media-card { transition:none; } }
-.cinema-local-audio-bar { grid-template-columns:40px minmax(105px,1fr) auto auto minmax(80px,.8fr) minmax(60px,.4fr) minmax(185px,1.3fr); }
-.cinema-audio-assistant { display:flex; justify-content:flex-end; gap:4px; min-width:0; }
+.cinema-local-audio-bar { grid-template-columns:40px minmax(105px,1fr) auto auto minmax(80px,.8fr) minmax(60px,.4fr) minmax(max-content,1.3fr); }
+.cinema-audio-assistant { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; min-width:0; }
 .cinema-audio-assistant button { padding:6px 7px; font-size:9px; white-space:nowrap; }
 html[data-theme=light] .cinema-audio-assistant button { color:#352140; }
+@media(max-width:1180px) {
+  .cinema-local-audio-bar { grid-template-columns:40px minmax(105px,1fr) auto auto minmax(80px,.8fr) minmax(60px,.4fr); }
+  .cinema-audio-assistant { grid-column:1/-1; }
+}
 @media(max-width:760px) {
   .cinema-local-audio-bar { grid-template-columns:36px minmax(0,1fr) auto; }
   .cinema-audio-assistant { grid-column:1/-1; justify-content:center; }
