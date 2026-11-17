@@ -3261,7 +3261,7 @@
     width: 100%;
     min-height: 2.8em;
     margin: 0 !important;
-    padding: 0 !important;
+    padding: 6px 8px !important;
     border: 0 !important;
     border-radius: 0 !important;
     background: transparent !important;
@@ -3844,7 +3844,7 @@
 
 .cinema-media-grid {
     display: grid;
-    grid-template-columns:repeat(4, minmax(0, 1fr));
+    grid-template-columns:repeat(3, minmax(0, 1fr));
     gap: 9px;
     min-width: 0;
 }
@@ -3939,7 +3939,7 @@
     display: -webkit-box;
     width: 100%;
     min-height: 2.5em;
-    padding: 0;
+    padding: 6px 8px;
     overflow: hidden;
     border: 0;
     background: transparent;
