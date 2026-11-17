@@ -69,4 +69,6 @@ def test_developer_flag_reaches_shell(monkeypatch, arguments, expected):
     monkeypatch.setattr(desktop_main.multiprocessing, "freeze_support", lambda: None)
     monkeypatch.setattr(desktop_app, "Application", App)
     assert desktop_main.main() == 0
-    assert calls == [{"smoke": False, "no_auto_listen": False, "developer_mode": expected}]
+    assert calls == [
+        {"smoke": False, "no_auto_listen": False, "developer_mode": expected, "frontend_dev": False}
+    ]

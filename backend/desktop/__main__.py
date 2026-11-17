@@ -21,6 +21,11 @@ def main():
     parser.add_argument("--parent", type=int, default=0)
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument(
+        "--frontend-dev",
+        action="store_true",
+        help="run the source frontend through owned loopback Vite with HMR",
+    )
+    parser.add_argument(
         "--developer-mode",
         action="store_true",
         default=None,
@@ -40,6 +45,13 @@ def main():
     parser.add_argument("--permission-status", type=Path)
     parser.add_argument("--ble-runtime", type=Path, help="read-only BLE runtime identity, no scan")
     args = parser.parse_args()
+    if args.frontend_dev:
+        if getattr(sys, "frozen", False) or args.desktop_worker:
+            parser.error("--frontend-dev is available only for a source desktop launch")
+        os.environ.setdefault(
+            "CHUSHPAN_APP_DATA",
+            str(Path(__file__).resolve().parents[2] / "private/frontend-dev.noindex/profile"),
+        )
     os.environ["CHUSHPAN_DESKTOP"] = "1"
     os.umask(0o077)
     if args.install_cinema_browser:
@@ -130,6 +142,7 @@ def main():
         smoke=args.smoke,
         no_auto_listen=args.no_auto_listen,
         developer_mode=args.developer_mode,
+        frontend_dev=args.frontend_dev,
     ).run()
 
 

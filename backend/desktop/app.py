@@ -94,13 +94,28 @@ class Bridge(_Api):
 
 
 class Application(_Api):
-    def __init__(self, *, smoke=False, no_auto_listen=False, developer_mode: bool | None = None):
+    def __init__(
+        self,
+        *,
+        smoke=False,
+        no_auto_listen=False,
+        developer_mode: bool | None = None,
+        frontend_dev=False,
+    ):
         super().__init__()
+        if frontend_dev and getattr(sys, "frozen", False):
+            raise ValueError("frontend-dev is available only when running from source")
         self.smoke = smoke
         self.no_auto_listen = no_auto_listen
-        self.developer_mode = (
+        self.developer_mode = frontend_dev or (
             not getattr(sys, "frozen", False) if developer_mode is None else developer_mode
         )
+        self.frontend_server = None
+        if frontend_dev:
+            from backend.desktop.frontend_dev import FrontendDevServer
+            from backend.paths import RESOURCE_ROOT
+
+            self.frontend_server = FrontendDevServer(RESOURCE_ROOT)
         self.root = USER_ROOT
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.runtime = self.root / "runtime"
@@ -228,6 +243,8 @@ class Application(_Api):
 
     def stop_worker(self):
         with self.worker_lock:
+            if self.frontend_server:
+                self.frontend_server.stop()
             proc = self.proc
             if proc and proc.poll() is None:
                 # Only this child's session; never pkill Python, Ollama or other apps.
@@ -606,7 +623,7 @@ class Application(_Api):
             return None
 
     @staticmethod
-    def _probe_frontend(url: str) -> tuple[bool, str, str]:
+    def _probe_frontend(url: str, *, dev_url: str | None = None) -> tuple[bool, str, str]:
         """Require a responsive health route, real HTML, and the shipped static assets."""
         try:
             with local_urlopen(url + "/_desktop/health", timeout=HEALTH_TIMEOUT_S) as response:
@@ -619,20 +636,25 @@ class Application(_Api):
             if health.get("backend") != "ready":
                 return False, "Backend ещё не подтвердил готовность.", voice_stage
             frontend = health.get("frontend")
-            if not isinstance(frontend, dict) or frontend.get("ready") is not True:
+            if not dev_url and (
+                not isinstance(frontend, dict) or frontend.get("ready") is not True
+            ):
                 return False, "В bundle не найдены index.html или frontend assets.", voice_stage
-            with local_urlopen(url + "/", timeout=HEALTH_TIMEOUT_S) as response:
+            with local_urlopen((dev_url or url) + "/", timeout=HEALTH_TIMEOUT_S) as response:
                 content_type = response.headers.get("Content-Type", "")
                 document = response.read(128_000)
                 if response.status != 200 or "text/html" not in content_type:
                     return False, "Frontend не вернул HTML документа.", voice_stage
             if b"<html" not in document.lower() and b"<!doctype html" not in document.lower():
                 return False, "Ответ frontend не содержит HTML-документ.", voice_stage
-            for asset in frontend.get("assets", [])[:8]:
+            assets = (
+                ["/@vite/client", "/src/main.ts"] if dev_url else frontend.get("assets", [])[:8]
+            )
+            for asset in assets:
                 if not isinstance(asset, str) or not asset.startswith("/"):
                     continue
                 with local_urlopen(
-                    urljoin(url + "/", asset.lstrip("/")), timeout=HEALTH_TIMEOUT_S
+                    urljoin((dev_url or url) + "/", asset.lstrip("/")), timeout=HEALTH_TIMEOUT_S
                 ) as response:
                     if response.status != 200:
                         return False, "Один из frontend assets недоступен.", voice_stage
@@ -660,7 +682,7 @@ class Application(_Api):
             return
         try:
             current_url = self.window.get_current_url()
-            expected = urlsplit(self.url or "")
+            expected = urlsplit(getattr(self, "frontend_url", None) or self.url or "")
             current = urlsplit(current_url or "")
         except Exception as exc:
             log.warning("DESKTOP_BOOT stage=loaded_event_unverified type=%s", type(exc).__name__)
@@ -678,10 +700,11 @@ class Application(_Api):
         self.frontend_error_shown = False
         log.info("DESKTOP_BOOT stage=frontend_loaded attempt=%d", self.frontend_attempts)
 
-    def _request_frontend_load(self, url: str) -> None:
+    def _request_frontend_load(self, url: str, *, frontend_url: str | None = None) -> None:
         from PyObjCTools.AppHelper import callAfter
 
         self.url = url
+        self.frontend_url = frontend_url or url
         self.frontend_attempts += 1
         self.frontend_load_pending = True
         self.frontend_load_started_at = time.monotonic()
@@ -689,7 +712,7 @@ class Application(_Api):
         self.frontend_error_shown = False
         self.loaded = False
         log.info("DESKTOP_BOOT stage=webview_load_requested attempt=%d", self.frontend_attempts)
-        callAfter(self._load_url_on_gui_thread, url)
+        callAfter(self._load_url_on_gui_thread, self.frontend_url)
 
     def _show_startup_error(self, message: str) -> None:
         if self.frontend_error_shown or not self.window:
@@ -715,6 +738,8 @@ class Application(_Api):
 
     def _handle_frontend_retry(self) -> None:
         self.frontend_retry_requested.clear()
+        if self.frontend_server:
+            self.frontend_server.stop()
         if self.proc is None or self.proc.poll() is not None:
             self.stop_worker()
             self.start_worker()
@@ -762,12 +787,40 @@ class Application(_Api):
                         and not self.frontend_load_pending
                         and time.monotonic() >= self.frontend_retry_after
                     ):
-                        ready, reason, voice_stage = self._probe_frontend(endpoint_url)
+                        dev_url = None
+                        if self.frontend_server:
+                            try:
+                                dev_ready = self.frontend_server.start(endpoint_url, self._log_file)
+                            except (OSError, ValueError, RuntimeError) as exc:
+                                self._show_startup_error(str(exc))
+                                time.sleep(1)
+                                continue
+                            if not dev_ready:
+                                if (
+                                    self.worker_started_at
+                                    and time.monotonic() - self.worker_started_at
+                                    > BACKEND_READY_TIMEOUT_S
+                                ):
+                                    self._show_startup_error(
+                                        "Vite не подтвердил запуск. Проверь application.log."
+                                    )
+                                time.sleep(0.2)
+                                continue
+                            dev_url = self.frontend_server.url
+                        if dev_url:
+                            ready, reason, voice_stage = self._probe_frontend(
+                                endpoint_url, dev_url=dev_url
+                            )
+                        else:
+                            ready, reason, voice_stage = self._probe_frontend(endpoint_url)
                         if ready:
                             if not self.initial_splash_loaded:
                                 reason = "Ожидаю загрузку стартового окна WebView."
                             elif self.url != endpoint_url or not self.loaded:
-                                self._request_frontend_load(endpoint_url)
+                                if dev_url:
+                                    self._request_frontend_load(endpoint_url, frontend_url=dev_url)
+                                else:
+                                    self._request_frontend_load(endpoint_url)
                             self.worker_state = self.control({"op": "status"})
                             if voice_stage == "voice_error":
                                 self._show_startup_error(
@@ -960,6 +1013,10 @@ class Application(_Api):
             hidden=self.prefs.start_hidden or not self.prefs.show_window,
         )
         bridge.window = self.window
+        if self.frontend_server:
+            # PyCharm Stop / Ctrl+C must unwind owned Node and worker processes.
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                signal.signal(sig, lambda *_args: callAfter(self.quit))
         self.window.events.before_show += self._configure_web_inspector
         self.window.events.closing += self.close_window
         self.window.events.loaded += self._on_frontend_loaded
