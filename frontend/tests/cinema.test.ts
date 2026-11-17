@@ -658,15 +658,23 @@ test('manual series expose stored seasons and season selection belongs to its ti
   }finally{f.window.happyDOM.abort();}
 });
 
-test('background cinema updates keep the playing local video connected',()=>{
+test('background updates keep local video connected and refresh playlist actions',async()=>{
   const f=fixture();try{
     const view=new f.CinemaView(()=>{},()=>{},()=>{},()=>{});view.connection(true);
     const file={id:'clip',name:'clip.mp4',kind:'video',mime:'video/mp4',size:20,addedAt:'2026-11-17',favorite:false,playlistIds:[],position:30,duration:100};
-    view.localItems=[file];view.localStore={supported:()=>false,file:async()=>null};view.receive(snapshot());
+    let rows:any[]=[file];
+    view.localItems=rows;view.localStore={supported:()=>false,file:async()=>null,update:async(id:string,values:object)=>{rows=rows.map(row=>row.id===id?{...row,...values}:row);},list:async()=>rows};
+    const first={id:'A',name:'Первый плейлист',item_ids:[]};const second={id:'B',name:'Второй плейлист',item_ids:[]};
+    view.receive({...snapshot(),playlists:[first]});
     const video=f.window.document.querySelector('.cinema-local-preview video')!;const detail=video.closest('.cinema-library-detail')!;
     let detached=false;const observer=new f.window.MutationObserver(records=>{for(const record of records)for(const node of record.removedNodes)if(node===video||node.contains(video))detached=true;});
     observer.observe(f.window.document.body,{childList:true,subtree:true});
-    view.receive({...snapshot(),message:'Прогресс обновлён'});
+    let select=detail.querySelector('select') as HTMLSelectElement;select.value='A';button(f,'Добавить').click();
+    await new Promise(resolve=>setImmediate(resolve));
+    view.receive({...snapshot(),message:'Прогресс обновлён',playlists:[first,second]});
+    select=detail.querySelector('select') as HTMLSelectElement;assert.equal(select.options.length,3);select.value='B';button(f,'Добавить').click();
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(Array.from(rows[0].playlistIds),['A','B']);
     assert.equal(f.window.document.querySelector('.cinema-local-preview video'),video);assert.equal(video.closest('.cinema-library-detail'),detail);assert.ok(video.isConnected);
     const records=observer.takeRecords();for(const record of records)for(const node of record.removedNodes)if(node===video||node.contains(video))detached=true;
     assert.equal(detached,false);observer.disconnect();

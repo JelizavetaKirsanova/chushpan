@@ -74,6 +74,7 @@ def export_library(store):
         "version": 1,
         "exported_at": now(),
         "items": items,
+        "playlists": store.playlists(),
         "sources": [store.source(s["id"]).model_dump() for s in store.sources()],
         "history": [dict(r) for r in store.db.execute("SELECT * FROM cinema_history ORDER BY id")],
         "ratings": [
@@ -101,6 +102,7 @@ def _validate_document(document):
             "version",
             "exported_at",
             "items",
+            "playlists",
             "sources",
             "history",
             "ratings",
@@ -111,11 +113,13 @@ def _validate_document(document):
     if len(json.dumps(document, ensure_ascii=False).encode()) > LIMIT:
         raise ValueError("Размер копии должен быть до 5 МБ.")
     data = json.loads(json.dumps(document))
+    data.setdefault("playlists", [])  # Older version 1 exports predate custom playlists.
     for key, maximum in (
         ("items", 10000),
         ("sources", 500),
         ("history", 10000),
         ("ratings", 20000),
+        ("playlists", 1000),
     ):
         if not isinstance(data.get(key), list) or len(data[key]) > maximum:
             raise ValueError("В копии слишком много записей.")
@@ -127,6 +131,28 @@ def _validate_document(document):
     episode_ids, link_ids, identities = set(), set(), set()
     episode_owner, link_owner = {}, {}
     titles = {i["id"] for i in data["items"]}
+    unique(data["playlists"])
+    playlist_names = set()
+    for playlist in data["playlists"]:
+        if set(playlist) - {"id", "name", "created_at", "updated_at", "item_ids"}:
+            raise ValueError("Некорректная структура плейлиста в копии.")
+        name = playlist["name"]
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 60:
+            raise ValueError("Некорректное название плейлиста в копии.")
+        playlist["name"] = name = " ".join(name.split())
+        if name.casefold() in playlist_names:
+            raise ValueError("Повторные названия плейлистов в копии.")
+        playlist_names.add(name.casefold())
+        item_ids = playlist["item_ids"]
+        if (
+            not isinstance(item_ids, list)
+            or len(item_ids) > 10000
+            or any(not isinstance(identifier, str) or identifier not in titles for identifier in item_ids)
+            or len(set(item_ids)) != len(item_ids)
+        ):
+            raise ValueError("Некорректные материалы плейлиста в копии.")
+        playlist["created_at"] = date(playlist.get("created_at"))
+        playlist["updated_at"] = date(playlist.get("updated_at"))
     for item in data["items"]:
         clean = Entry.model_validate({key: item[key] for key in ENTRY_FIELDS}).model_dump()
         item.update({key: clean[key] for key in ENTRY_FIELDS})
@@ -393,6 +419,18 @@ def import_library(store, document):
                             "UPDATE cinema_source_memory SET pinned_source_id=? WHERE title_id=?",
                             (source_map[memory["pinned_source_id"]], identifier),
                         )
+        existing_playlists = {playlist["name"].casefold(): playlist for playlist in store.playlists()}
+        for playlist in data["playlists"]:
+            existing = existing_playlists.get(playlist["name"].casefold())
+            saved = existing or store.playlist_create(playlist["name"])
+            for identifier in playlist["item_ids"]:
+                store.playlist_item(saved["id"], title_map[identifier])
+            if not existing:
+                store.db.execute(
+                    "UPDATE cinema_playlists SET created_at=COALESCE(?,created_at),"
+                    "updated_at=COALESCE(?,updated_at) WHERE id=?",
+                    (playlist["created_at"], playlist["updated_at"], saved["id"]),
+                )
         for event in data["history"]:
             values = (
                 episode_map[event["episode_id"]],
