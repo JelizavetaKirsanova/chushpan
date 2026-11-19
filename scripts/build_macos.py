@@ -25,6 +25,7 @@ from scripts.macos_release import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+_ACTIVE_BUILD_ROOT: Path | None = None
 MANIFEST_SOURCES = (
     "backend/cinema/service.py",
     "backend/cinema/sources.py",
@@ -215,6 +216,8 @@ def _build() -> Path:
     run("npm", "--prefix", "frontend", "ci")
     run("npm", "--prefix", "frontend", "run", "build")
     build_root = new_build_directory()
+    global _ACTIVE_BUILD_ROOT
+    _ACTIVE_BUILD_ROOT = build_root
     build_manifest(build_root)
     native = build_root / "native"
     native.mkdir(parents=True, exist_ok=True)
@@ -369,7 +372,19 @@ def build() -> Path:
     base.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (base.parent / "build.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return _build()
+        global _ACTIVE_BUILD_ROOT
+        _ACTIVE_BUILD_ROOT = None
+        try:
+            return _build()
+        except BaseException:
+            # The exclusive lock proves no other build/install can own this root.
+            # A failed or cancelled build is disposable; a successful one is kept
+            # until install() has verified and published it.
+            if _ACTIVE_BUILD_ROOT is not None and _ACTIVE_BUILD_ROOT.exists():
+                shutil.rmtree(_ACTIVE_BUILD_ROOT)
+            raise
+        finally:
+            _ACTIVE_BUILD_ROOT = None
 
 
 def main():

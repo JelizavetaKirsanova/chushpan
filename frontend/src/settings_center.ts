@@ -7,7 +7,7 @@ import {permissionCenter, type PermissionReport, type PermissionFilters} from '.
 type Values = Record<string, unknown>;
 export interface PersonalityProfile {id:string; revision:number; name:string; description:string; builtin:boolean; traits:Record<string,number>; communication:Values; instructions:string; technical_detail:number}
 type Memory = {id:number; content:string; category:string; revision:number; status:string; source:string};
-export interface SettingsState {type:'settings_center'; version:number; storage_report?:any; storage_preview?:any; storage_result?:any; storage_auto_cleanup?:boolean; values:Record<string,Values>; profiles:PersonalityProfile[];
+export interface SettingsState {type:'settings_center'; version:number; storage_report?:any; storage_preview?:any; storage_result?:any; storage_snapshot_detail?:any; storage_auto_cleanup?:boolean; values:Record<string,Values>; profiles:PersonalityProfile[];
   active:{id:string;reason:string;locked:boolean}; traits:Record<string,{name:string;group:string}>;
   memory:Memory[]; memory_pending:{id:string;content:string}[]; habits_opt_in:boolean;
   engine:string; voices:string[]; voice_support:{rate:boolean;pitch:boolean;expression:boolean};
@@ -62,6 +62,7 @@ export class SettingsCenterUI {
   private lastLatency='Последний отклик ещё не измерен в этой сессии.';
   private group='Стиль';
   private memoryTab='about';
+  private storageDetailLimit=100;
   private previews=new Map<string,Preview>();
   private previewText='Я опять отложила учёбу на последний момент. Что скажешь?';
   private capturedText='';
@@ -135,7 +136,13 @@ export class SettingsCenterUI {
       if(event.message)this.feedback(event.message);if(event.error)this.feedback(event.error,true);return;
     }
     if(event.type!=='settings_center')return;
-    this.state=event;
+    const previous=this.state;
+    this.state={...event,
+      storage_report:'storage_report' in event?event.storage_report:previous?.storage_report,
+      storage_preview:'storage_preview' in event?event.storage_preview:previous?.storage_preview,
+      storage_result:'storage_result' in event?event.storage_result:previous?.storage_result,
+      storage_snapshot_detail:'storage_snapshot_detail' in event?event.storage_snapshot_detail:previous?.storage_snapshot_detail,
+      storage_auto_cleanup:'storage_auto_cleanup' in event?event.storage_auto_cleanup:previous?.storage_auto_cleanup};
     this.renderPermissionOnboarding();
     if(!event.message&&!event.error&&/Подключаюсь|Нет связи|Загружаю/.test(id('settings-feedback').textContent??''))this.feedback('Сохранённые настройки загружены.');
     if(event.selected){this.selected=event.selected;this.draft=null;this.dirty=false;this.saving=false;}
@@ -183,19 +190,29 @@ export class SettingsCenterUI {
   private bytes(n:number):string {if(n<1024)return `${n} Б`;const units=['КБ','МБ','ГБ','ТБ'];let x=n/1024,i=0;while(x>=1024&&i<units.length-1){x/=1024;i++;}return `${x.toFixed(1)} ${units[i]}`;}
   private storage(root:HTMLElement):void {
     const state=this.state!,report=state.storage_report;
-    const controls=this.section('Хранение резервов','При включении во время периодической проверки останутся 3 последние проверенные копии и все закреплённые. По умолчанию эта политика выключена.');
-    const auto=this.input(!!(state.storage_auto_cleanup??report?.auto_cleanup),'checkbox');auto.onchange=()=>this.write({op:'storage_auto',enabled:auto.checked});controls.append(this.label('Автоматически хранить 3 проверенные копии',auto));
+    const controls=this.section('Хранение резервов','При включении сохраняются три последние проверенные точки, одна самая старая независимая точка и закреплённые копии. После успешного обновления устаревшие пакеты обновления очищаются автоматически.');
+    const auto=this.input(!!(state.storage_auto_cleanup??report?.auto_cleanup),'checkbox');
+    const maxCount=this.input(report?.backup_max_count??8,'number');maxCount.min='4';maxCount.max='100';
+    const maxSize=this.input(Math.round((report?.backup_max_bytes??16*1024**3)/1024**3),'number');maxSize.min='4';maxSize.max='500';
+    const savePolicy=()=>this.write({op:'storage_auto',enabled:auto.checked,max_count:Number(maxCount.value),max_bytes:Number(maxSize.value)*1024**3});
+    auto.onchange=savePolicy;maxCount.onchange=savePolicy;maxSize.onchange=savePolicy;
+    controls.append(this.label('Автоматически очищать проверенные старые снимки',auto),this.label('Максимум снимков',maxCount),this.label('Максимальный объём, ГБ',maxSize));
     controls.append(this.button('Обновить измерения',()=>this.send({op:'storage_scan'}),true));root.append(controls);
     if(report){const section=this.section('Занимаемое место','Размеры APFS могут отличаться от реального освобождения из-за snapshots, clones и hard links.');
-      const labels:Record<string,string>={application:'Приложение',builds:'Временные сборки',updates:'Сохранённые обновления',backups:'Резервные копии',cache:'Кеши'};
+      const labels:Record<string,string>={application:'Установленное приложение',builds:'Временные сборки',updates:'Обновления',backups:'Резервные копии',cache:'Кеши'};
       for(const key of Object.keys(labels)){const row=el('div','','settings-row');row.append(el('span',labels[key]),el('strong',this.bytes(report[key]?.logical_bytes??0)),el('small',`Блоки: ${this.bytes(report[key]?.allocated_bytes??0)}`));section.append(row);}
       section.append(el('p',`Всего: ${this.bytes(report.total_logical_bytes)} · свободно: ${this.bytes(report.free_bytes)}`,'settings-help'));
-      for(const backup of report.backups_list??[]){const row=el('div','','settings-row');row.append(el('span',`${backup.path.split('/').pop()} · ${this.bytes(backup.size)} · ${backup.verified?'проверена':'не проверена'}`));const pin=this.button(backup.pinned?'Открепить':'Закрепить',()=>this.write({op:'storage_pin',path:backup.path,pinned:!backup.pinned}),true);pin.disabled=!backup.verified;row.append(pin);section.append(row);}
+      if(report.low_space)section.append(el('p',`На SSD осталось мало места: ${this.bytes(report.free_bytes)} свободно (${report.free_percent}%). Проверь временные сборки и предварительный просмотр очистки.`,'settings-help'));
+      if(report.backup_limit_exceeded)section.append(el('p',`Резервное хранилище превышает лимит: ${report.backups.count} снимков, ${this.bytes(report.backups.logical_bytes)} из ${report.backup_max_count} снимков / ${this.bytes(report.backup_max_bytes)}.`,'settings-help'));
+      section.append(el('p',`Снимков: ${report.backups.count??0} · проверено: ${report.backups.verified_count??0} · обновлений: ${report.updates.count??0} · сборок: ${report.builds.count??0}`,'settings-help'));
+      for(const backup of report.backups_list??[]){const row=el('div','','settings-row');row.append(el('span',`${backup.path.split('/').pop()} · ${this.bytes(backup.size)} · ${backup.file_count??0} файлов · ${backup.verified?'проверена':'не проверена'}`));const contents=this.button('Содержимое',()=>{this.storageDetailLimit=100;this.send({op:'storage_snapshot',path:backup.path});},true);row.append(contents);const pin=this.button(backup.pinned?'Открепить':'Закрепить',()=>this.write({op:'storage_pin',path:backup.path,pinned:!backup.pinned}),true);pin.disabled=!backup.verified;row.append(pin);section.append(row);}
       root.append(section);
+      const detail=state.storage_snapshot_detail;
+      if(detail){const view=this.section(`Содержимое ${detail.path.split('/').pop()}`,`${detail.files.length} файлов · ${this.bytes(detail.size)}`);for(const file of detail.files.slice(0,this.storageDetailLimit))view.append(el('div',`${file.path} · ${this.bytes(file.size)}`,'settings-row'));if(detail.files.length>this.storageDetailLimit)view.append(this.button('Показать ещё',()=>{this.storageDetailLimit+=100;this.render();},true));root.append(view);}
     } else root.append(el('p','Полное измерение выполняется только по запросу, без фонового сканирования.','settings-empty'));
     const preview=state.storage_preview,cleanup=this.section('Безопасная очистка','Сначала получите предварительный список. Данные пользователя и единственная копия для отката исключаются.');
     cleanup.append(this.button('Предварительный просмотр',()=>this.send({op:'storage_preview'}),true));
-    if(preview){cleanup.append(el('p',`Кандидатов: ${preview.candidates.length} · логически: ${this.bytes(preview.estimated_logical_bytes)} · выделено: ${this.bytes(preview.estimated_allocated_bytes)}`));for(const item of preview.candidates)cleanup.append(el('p',`${item.kind}: ${item.path} · ${this.bytes(item.size)}`));for(const path of preview.protected_active_paths??[])cleanup.append(el('p',`Защищено: файл открыт активным процессом · ${path}`));if(!preview.process_scan_available)cleanup.append(el('p','Не удалось проверить открытые процессы: очистка пакетов обновления будет заблокирована.'));if(!preview.backup_scan_available)cleanup.append(el('p','Резервные копии заняты или не проверены; очистка резервов недоступна.'));cleanup.append(el('small',preview.message));cleanup.append(this.button('Освободить место',()=>{if(window.confirm(`Удалить только перечисленные ${preview.candidates.length} кандидата?`))this.write({op:'storage_clean',token:preview.token});},true));}
+    if(preview){cleanup.append(el('p',`Кандидатов: ${preview.candidates.length} · логически: ${this.bytes(preview.estimated_logical_bytes)} · выделено: ${this.bytes(preview.estimated_allocated_bytes)}`));for(const item of preview.candidates)cleanup.append(el('p',`${item.kind}: ${item.path} · ${this.bytes(item.size)}`));for(const path of preview.protected_active_paths??[])cleanup.append(el('p',`Защищено: файл открыт активным процессом · ${path}`));if(!preview.process_scan_available)cleanup.append(el('p','Не удалось проверить открытые процессы: очистка будет заблокирована.'));if(!preview.update_scan_available)cleanup.append(el('p',`Старые обновления исключены из очистки: ${preview.update_scan_error??'не удалось проверить рабочую версию и откат'}`));if(!preview.backup_scan_available)cleanup.append(el('p','Резервные копии заняты или не проверены; очистка резервов недоступна.'));cleanup.append(el('small',preview.message));cleanup.append(this.button('Освободить место',()=>{if(window.confirm(`Удалить только перечисленные ${preview.candidates.length} кандидата?`))this.write({op:'storage_clean',token:preview.token});},true));}
     if(state.storage_result)cleanup.append(el('p',`Удалено: ${state.storage_result.removed.length} · ${this.bytes(state.storage_result.freed_logical_bytes)}`));root.append(cleanup);
   }
   private label(title:string,input:HTMLElement,description=''):HTMLElement {const label=el('label','','settings-field');label.append(el('span',title),input);if(description)label.append(el('small',description));return label;}

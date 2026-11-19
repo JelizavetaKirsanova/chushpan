@@ -218,6 +218,11 @@ class SettingsCenter:
         elif op == "storage_preview":
             preview = await asyncio.to_thread(storage_manager.preview_cleanup)
             self.publish(storage_preview=preview)
+        elif op == "storage_snapshot":
+            detail = await asyncio.to_thread(
+                storage_manager.snapshot_contents, value.get("path", "")
+            )
+            self.publish(storage_snapshot_detail=detail)
         elif op == "storage_clean":
             result = await asyncio.to_thread(
                 storage_manager.apply_cleanup, None, None, value.get("token")
@@ -226,6 +231,8 @@ class SettingsCenter:
             self.publish(
                 storage_result=result,
                 storage_report=report,
+                storage_preview=None,
+                storage_snapshot_detail=None,
                 message="Безопасная очистка завершена.",
             )
         elif op == "storage_pin":
@@ -244,6 +251,12 @@ class SettingsCenter:
             except (OSError, ValueError):
                 doc = {"pinned": []}
             doc["auto_cleanup"] = value.get("enabled") is True
+            count = int(value.get("max_count", doc.get("backup_max_count", 8)))
+            maximum = int(value.get("max_bytes", doc.get("backup_max_bytes", 16 * 1024**3)))
+            if not 4 <= count <= 100 or not 4 * 1024**3 <= maximum <= 500 * 1024**3:
+                raise ValueError("Лимит резервов должен быть от 4 до 100 копий и от 4 до 500 ГБ.")
+            doc["backup_max_count"] = count
+            doc["backup_max_bytes"] = maximum
             temporary = policy.with_name(policy.name + ".tmp")
             temporary.write_text(json.dumps(doc, indent=2))
             temporary.chmod(0o600)

@@ -189,6 +189,29 @@ def test_sqlite_wal_backup_restores_committed_conversation(repo):
     assert not path.with_name("jarvis.db-wal").exists()
 
 
+def test_backup_source_signature_includes_sqlite_wal_changes(repo):
+    sync, _ = repo
+    (sync.root / "data").mkdir()
+    db_path = sync.root / "data/jarvis.db"
+    db = sqlite3.connect(db_path)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA wal_autocheckpoint=0")
+    db.execute("CREATE TABLE conversation (text TEXT)")
+    db.execute("INSERT INTO conversation VALUES ('first')")
+    db.commit()
+    first = Path(sync.backup())
+    db.execute("INSERT INTO conversation VALUES ('second')")
+    db.commit()
+    second = Path(sync.backup())
+    db.close()
+    assert second != first
+    with sqlite3.connect(second / "data/jarvis.db") as restored:
+        assert restored.execute("SELECT text FROM conversation ORDER BY rowid").fetchall() == [
+            ("first",),
+            ("second",),
+        ]
+
+
 def test_backups_skip_symlinks_and_unchanged_snapshots(repo, tmp_path):
     sync, _ = repo
     (sync.root / "private").mkdir()
@@ -222,13 +245,13 @@ def test_backups_skip_renamed_app_bundles_and_never_prune_existing_snapshots(rep
     assert json.loads((sync.state / "backup-retention-candidates.json").read_text())["candidates"]
 
 
-def test_backup_retention_is_opt_in_keeps_three_verified_and_pins(repo):
+def test_backup_retention_enforces_limit_and_preserves_oldest_three_recent_and_pins(repo):
     sync, _ = repo
     base = Path(sync.cfg["backups"])
     policy = base.parent / "storage-policy.json"
     policy.write_text(json.dumps({"auto_cleanup": True, "pinned": [], "retention_interval_s": 0}))
     first = None
-    for index in range(5):
+    for index in range(10):
         (sync.root / "config.yaml").write_text(f"revision: {index}\n")
         current = Path(sync.backup())
         if first is None:
@@ -243,9 +266,10 @@ def test_backup_retention_is_opt_in_keeps_three_verified_and_pins(repo):
                 )
             )
     snapshots = list(base.glob("snapshot-*"))
-    assert len(snapshots) == 4
+    assert len(snapshots) == 8
     assert first is not None and first.exists()
-    assert len([path for path in snapshots if Sync._backup_valid(path)]) == 4
+    assert len([path for path in snapshots if Sync._backup_valid(path)]) == 8
+    assert all(path.exists() for path in sorted(base.glob("snapshot-*"))[-3:])
 
 
 def test_backup_retention_never_deletes_a_corrupt_or_pinned_copy(repo):
@@ -290,6 +314,50 @@ def test_backups_skip_nested_backup_and_app_artifacts_but_keep_sqlite(repo):
         assert user_db.execute("SELECT value FROM preserved").fetchone()[0] == "user data"
     with sqlite3.connect(snapshot / "data/jarvis.db") as restored:
         assert restored.execute("SELECT value FROM memory").fetchone()[0] == "retain"
+
+
+def test_backups_skip_dated_integration_staging_and_deduplicate_nonconsecutive_contents(repo):
+    sync, _ = repo
+    transient = sync.root / "private/integration-20261117.noindex/payload.bin"
+    transient.parent.mkdir(parents=True)
+    transient.write_bytes(b"large rebuildable integration export")
+    config = sync.root / "config.yaml"
+    config.write_text("restore-point: one\n")
+    first = Path(sync.backup())
+    assert not (first / "private/integration-20261117.noindex").exists()
+    assert sync.backup() == str(first)
+    config.write_text("restore-point: two\n")
+    second = Path(sync.backup())
+    assert second != first
+    config.write_text("restore-point: one\n")
+    assert Path(sync.backup()) == first
+    assert len(list(Path(sync.cfg["backups"]).glob("snapshot-*"))) == 2
+
+
+def test_backup_retention_preserves_oldest_plus_three_recent_under_both_limits(repo):
+    sync, _ = repo
+    base = Path(sync.cfg["backups"])
+    policy = base.parent / "storage-policy.json"
+    policy.write_text(
+        json.dumps(
+            {
+                "auto_cleanup": True,
+                "pinned": [],
+                "retention_interval_s": 0,
+                "backup_max_count": 4,
+                "backup_max_bytes": 1024 * 1024,
+            }
+        )
+    )
+    snapshots = []
+    for index in range(7):
+        (sync.root / "config.yaml").write_text(f"revision: {index}\n")
+        snapshots.append(Path(sync.backup()))
+    kept = sorted(base.glob("snapshot-*"))
+    assert len(kept) == 4
+    assert snapshots[0] in kept
+    assert all(path in kept for path in snapshots[-3:])
+    assert all(Sync._backup_valid(path) for path in kept)
 
 
 def test_checkpoint_keeps_index_and_worktree_unchanged_and_is_local(repo):

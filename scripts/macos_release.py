@@ -268,6 +268,26 @@ def install(app: Path, *, cleanup: bool = False, allow_downgrade: bool = False) 
             build_guard.close()
 
 
+def _remove_installed_build_source(app: Path) -> bool:
+    """Remove only a completed release staging directory after successful install."""
+    app = app.absolute()
+    base = build_cache().resolve()
+    if app.is_symlink() or app.name != APP_NAME or not app.resolve().is_relative_to(base):
+        return False
+    root = app.parent.parent if app.parent.name == "dist" else app.parent
+    if root.parent != base or not root.name.startswith("release-") or root.is_symlink():
+        return False
+    from backend.storage_manager import in_use, open_paths
+
+    opened = open_paths()
+    if in_use(root, opened):
+        return False
+    import shutil
+
+    shutil.rmtree(root)
+    return True
+
+
 def _install(app: Path, *, cleanup: bool = False, allow_downgrade: bool = False) -> dict:
     """Verify before and after atomic replacement; preserve the old app even on success."""
     destination = INSTALLED_APP
@@ -337,6 +357,7 @@ def _install(app: Path, *, cleanup: bool = False, allow_downgrade: bool = False)
     receipt = {
         **installed,
         "status": "installed",
+        "transaction": str(record),
         "source": str(app),
         "previous": str(previous) if had_previous else None,
         "installed_at": datetime.now(UTC).isoformat(),
@@ -349,8 +370,23 @@ def _install(app: Path, *, cleanup: bool = False, allow_downgrade: bool = False)
     }
     write_receipt(record / "receipt.json", receipt)
     write_receipt(state / "last-install.json", receipt)
+    try:
+        from backend.storage_manager import prune_update_history_after_success
+
+        cleanup_result = prune_update_history_after_success(app=destination)
+        receipt["old_update_cleanup"] = {
+            "removed": len(cleanup_result["removed"]),
+            "deferred": len(cleanup_result["deferred"]),
+        }
+    except Exception as exc:
+        receipt["old_update_cleanup"] = {"removed": 0, "deferred": 1, "reason": type(exc).__name__}
+    if not cleanup:
+        receipt["build_source_removed"] = _remove_installed_build_source(app)
+        write_receipt(record / "receipt.json", receipt)
+        write_receipt(state / "last-install.json", receipt)
     if cleanup:
         receipt["trashed_build"] = trash_build(app, receipt)
+        receipt["build_source_removed"] = _remove_installed_build_source(app)
         write_receipt(record / "receipt.json", receipt)
         write_receipt(state / "last-install.json", receipt)
     return receipt

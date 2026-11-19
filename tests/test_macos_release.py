@@ -35,10 +35,22 @@ def installation(tmp_path, monkeypatch):
     from backend import storage_manager
 
     monkeypatch.setattr(storage_manager, "open_paths", lambda: set())
+    cache = tmp_path / "Library/Caches/Chushpan"
+    support = tmp_path / "Library/Application Support/Chushpan"
+    monkeypatch.setattr(
+        storage_manager,
+        "roots",
+        lambda home=None: {
+            "builds": cache / "Builds.noindex",
+            "updates": state,
+            "backups": support / "Backups.noindex",
+            "cache": cache,
+        },
+    )
     applications = tmp_path / "Applications"
     applications.mkdir()
     main = bundle(applications / release.APP_NAME, "18", b"working-old")
-    source = bundle(tmp_path / "Builds.noindex/release/dist" / release.APP_NAME)
+    source = bundle(tmp_path / "Builds.noindex/release-current/dist" / release.APP_NAME)
     state = tmp_path / "Updates.noindex"
     monkeypatch.setattr(release, "INSTALLED_APP", main)
     monkeypatch.setattr(release, "update_state", lambda: state)
@@ -82,7 +94,7 @@ def test_update_preserves_previous_and_registers_only_canonical_path(installatio
     result = release.install(i.source)
     assert (i.main / "Contents/MacOS/Chushpan").read_bytes() == b"new"
     assert (Path(result["previous"]) / "Contents/MacOS/Chushpan").read_bytes() == b"working-old"
-    assert i.source.exists()  # cleanup is opt-in
+    assert not i.source.exists()  # successful installation retires its staging tree
     assert i.registrations == i.removed == [i.main]
     assert i.checks == [i.main]  # executing a test bundle can implicitly register it with macOS
     assert any(part.endswith(".noindex") for part in i.copies[0].parts)
@@ -90,7 +102,7 @@ def test_update_preserves_previous_and_registers_only_canonical_path(installatio
     assert len(list(i.main.parent.glob("*.app"))) == 1
 
 
-def test_successful_update_preserves_older_verified_rollback_packages(installation):
+def test_successful_update_prunes_obsolete_transactions_and_keeps_current_rollback(installation):
     i = installation
     older = i.state / "20260101T000000Z-old"
     previous = bundle(older / release.APP_NAME, "17", b"older")
@@ -99,9 +111,10 @@ def test_successful_update_preserves_older_verified_rollback_packages(installati
         {"status": "installed", "build": "18", "previous": str(previous)},
     )
     result = release.install(i.source)
-    assert older.exists()
-    assert previous.exists()
+    assert not older.exists()
+    assert not previous.exists()
     assert Path(result["previous"]).exists()
+    assert result["old_update_cleanup"]["removed"] == 1
 
 
 @pytest.mark.parametrize("failure", ["installed-check", "registration"])
@@ -109,6 +122,12 @@ def test_failed_update_restores_old_app_and_preserves_failed_new_bundle(
     installation, monkeypatch, failure
 ):
     i = installation
+    older = i.state / "20260101T000000Z-old"
+    previous = bundle(older / release.APP_NAME, "17", b"older")
+    release.write_receipt(
+        older / "receipt.json",
+        {"status": "installed", "build": "18", "previous": str(previous)},
+    )
     if failure == "installed-check":
 
         def check(app, directory):
@@ -134,6 +153,7 @@ def test_failed_update_restores_old_app_and_preserves_failed_new_bundle(
     failed = list(i.main.parent.glob(".chushpan-*.noindex/failed.app"))
     assert len(failed) == 1 and (failed[0] / "Contents/MacOS/Chushpan").read_bytes() == b"new"
     assert i.source.exists()
+    assert older.exists() and previous.exists()
     assert not (i.state / "last-install.json").exists()
 
 
@@ -224,7 +244,8 @@ def test_explicit_rollback_preserves_both_versions(installation):
     assert restored["build"] == "18"
     assert (i.main / "Contents/MacOS/Chushpan").read_bytes() == b"working-old"
     assert (Path(restored["previous"]) / "Contents/MacOS/Chushpan").read_bytes() == b"new"
-    assert Path(first["previous"]).exists()
+    assert not Path(first["previous"]).exists()
+    assert Path(restored["previous"]).exists()
 
 
 def test_failed_first_install_does_not_leave_bad_canonical_app(installation, monkeypatch):
@@ -291,7 +312,6 @@ def test_explicit_cleanup_trashes_only_successful_build_and_removes_its_ls_recor
     installation, monkeypatch, tmp_path
 ):
     i = installation
-    receipt = release.install(i.source)
     target = tmp_path / "Trash" / release.APP_NAME
     target.parent.mkdir()
 
@@ -308,7 +328,8 @@ def test_explicit_cleanup_trashes_only_successful_build_and_removes_its_ls_recor
             NSFileManager=SimpleNamespace(defaultManager=Manager),
         ),
     )
-    assert release.trash_build(i.source, receipt) == str(target)
+    receipt = release.install(i.source, cleanup=True)
+    assert receipt["trashed_build"] == str(target)
     assert target.exists() and not i.source.exists() and Path(receipt["previous"]).exists()
     assert i.removed[-2:] == [i.source, target]
     assert i.registrations[-1] == i.main

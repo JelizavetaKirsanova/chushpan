@@ -22,6 +22,10 @@ ORIGIN = "https://github.com/JelizavetaKirsanova/chushpan.git"
 ROOT = Path(__file__).resolve().parents[1]
 PRIVATE_NAMES = {"config.local.yaml", "auth.json", "credentials.json"}
 PRIVATE_DIRS = {"data", "private", "backups", ".venv", "venv", "node_modules"}
+BACKUP_KEEP_RECENT = 3
+BACKUP_KEEP_OLDER = 1
+BACKUP_MAX_COUNT = 8
+BACKUP_MAX_BYTES = 16 * 1024**3
 
 
 class Blocked(RuntimeError):
@@ -294,22 +298,42 @@ class Sync:
             "Caches.noindex",
             "swift-cache",
         }
+        source_signature = self._backup_source_signature(sources, skip_dirs)
+        previous = self.state / "last-backup.json"
+        policy_path = base.parent / "storage-policy.json"
+        try:
+            policy = json.loads(policy_path.read_text())
+        except (OSError, ValueError):
+            policy = {"pinned": [], "auto_cleanup": False}
+        now = dt.datetime.now(dt.UTC)
+        try:
+            last_check = dt.datetime.fromisoformat(policy.get("last_retention_check", ""))
+            check_due = (now - last_check).total_seconds() >= float(
+                policy.get("retention_interval_s", 86400)
+            )
+        except (TypeError, ValueError):
+            check_due = True
+        if previous.exists():
+            try:
+                last = json.loads(previous.read_text())
+                last_path = Path(last["path"])
+                if (
+                    last.get("source_signature") == source_signature
+                    and last_path.is_dir()
+                    and not last_path.is_symlink()
+                    and not (policy.get("auto_cleanup") is True and check_due)
+                ):
+                    return str(last_path)
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        final = None
         with tempfile.TemporaryDirectory(prefix=".pending-", dir=base) as directory:
             staging = Path(directory)
             manifest = {}
             for label, source in sources.items():
                 if not source.exists() or source.is_symlink():
                     continue
-                paths = source.rglob("*") if source.is_dir() else [source]
-                for path in paths:
-                    relative = path.relative_to(source) if source.is_dir() else Path()
-                    if (
-                        set(relative.parts) & skip_dirs
-                        or any(part.endswith(".app") for part in relative.parts)
-                        or path.is_symlink()
-                        or not path.is_file()
-                    ):
-                        continue
+                for path, relative in self._backup_files(source, skip_dirs):
                     if path.name.endswith(("-wal", "-shm", ".lock")):
                         continue
                     dest = staging / label / relative
@@ -332,72 +356,165 @@ class Sync:
                         dest.read_bytes()
                     ).hexdigest()
             digest = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
-            previous = self.state / "last-backup.json"
-            if previous.exists():
-                last = json.loads(previous.read_text())
-                if last["digest"] == digest and Path(last["path"]).is_dir():
-                    return last["path"]
-            write_json(staging / "manifest.json", {"sha256": manifest, "digest": digest})
-            for folder in staging.rglob("*"):
-                if folder.is_dir():
-                    folder.chmod(0o700)
-            stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S%fZ")
-            final = base / ("snapshot-" + stamp)
-            staging.rename(final)
-            write_json(previous, {"digest": digest, "path": str(final)})
+            for candidate in sorted(base.glob("snapshot-*"), reverse=True):
+                if candidate.is_symlink() or not candidate.is_dir():
+                    continue
+                try:
+                    old = json.loads((candidate / "manifest.json").read_text())
+                    same = (
+                        old.get("digest") == digest
+                        and hashlib.sha256(
+                            json.dumps(old.get("sha256", {}), sort_keys=True).encode()
+                        ).hexdigest()
+                        == digest
+                    )
+                except (OSError, ValueError, TypeError):
+                    same = False
+                if same and self._backup_valid(candidate):
+                    final = candidate
+                    write_json(
+                        previous,
+                        {
+                            "digest": digest,
+                            "path": str(candidate),
+                            "source_signature": source_signature,
+                        },
+                    )
+                    break
+            if final is None:
+                write_json(staging / "manifest.json", {"sha256": manifest, "digest": digest})
+                for folder in staging.rglob("*"):
+                    if folder.is_dir():
+                        folder.chmod(0o700)
+                stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S%fZ")
+                final = base / ("snapshot-" + stamp)
+                staging.rename(final)
+                write_json(
+                    previous,
+                    {"digest": digest, "path": str(final), "source_signature": source_signature},
+                )
         # Validate before recording retention candidates. Automatic retention is opt-in
         # and never considers a pinned or unverified copy.
-        snapshots = sorted(base.glob("snapshot-*"), reverse=True)
-        policy_path = base.parent / "storage-policy.json"
-        try:
-            policy = json.loads(policy_path.read_text())
-        except (OSError, ValueError):
-            policy = {"pinned": [], "auto_cleanup": False}
+        snapshots = sorted(
+            (path for path in base.glob("snapshot-*") if path.is_dir() and not path.is_symlink()),
+            reverse=True,
+        )
         pins = set(policy.get("pinned", []))
         verified = []
         candidates = []
-        now = dt.datetime.now(dt.UTC)
-        try:
-            last_check = dt.datetime.fromisoformat(policy.get("last_retention_check", ""))
-            check_due = (now - last_check).total_seconds() >= float(
-                policy.get("retention_interval_s", 86400)
-            )
-        except (TypeError, ValueError):
-            check_due = True
         if policy.get("auto_cleanup") is True and check_due:
             for path in snapshots:
                 if self._backup_valid(path):
                     verified.append(path)
-            candidates = [p for p in verified if p.name not in pins and p not in verified[:3]]
+            protected = set(verified[:BACKUP_KEEP_RECENT] + verified[-BACKUP_KEEP_OLDER:])
+            protected.update(path for path in verified if path.name in pins)
+            sizes = {path: self._backup_size(path) for path in verified}
+            kept = set(protected)
+            kept_size = sum(sizes[path] for path in kept)
+            for path in verified:
+                if path in kept:
+                    continue
+                if len(kept) < int(policy.get("backup_max_count", BACKUP_MAX_COUNT)) and (
+                    kept_size + sizes[path] <= int(policy.get("backup_max_bytes", BACKUP_MAX_BYTES))
+                ):
+                    kept.add(path)
+                    kept_size += sizes[path]
+            candidates = [path for path in verified if path not in kept]
             write_json(
                 self.state / "backup-retention-candidates.json",
                 {"candidates": [str(p) for p in candidates]},
             )
-            # Re-verify the three retained copies immediately before any deletion.
-            retained = [p for p in verified if p.name in pins or p in verified[:3]]
-            retained_ok = all(self._backup_valid(p) for p in retained) and len(verified[:3]) >= min(
-                3, len(verified)
-            )
+            # Re-verify every protected recovery point immediately before deletion.
+            retained_ok = all(self._backup_valid(p) for p in protected)
             if retained_ok:
                 from backend.storage_manager import open_paths
 
                 opened = open_paths()
-                for path in candidates:
-                    if opened is None or any(
-                        item == path.resolve() or item.is_relative_to(path.resolve())
-                        for item in opened
-                    ):
-                        continue
-                    shutil.rmtree(path)
-            policy["last_retention_check"] = now.isoformat()
-            write_json(policy_path, policy)
+                if opened is not None:
+                    for path in candidates:
+                        if path.is_symlink() or any(
+                            item == path.resolve() or item.is_relative_to(path.resolve())
+                            for item in opened
+                        ):
+                            continue
+                        shutil.rmtree(path)
+                    policy["last_retention_check"] = now.isoformat()
+                    write_json(policy_path, policy)
         else:
-            candidates = snapshots[3:]
+            verified = snapshots
+            protected = set(verified[:BACKUP_KEEP_RECENT] + verified[-BACKUP_KEEP_OLDER:])
+            protected.update(path for path in verified if path.name in pins)
+            candidates = [path for path in verified if path not in protected]
             write_json(
                 self.state / "backup-retention-candidates.json",
-                {"candidates": [str(p) for p in candidates], "review_only": True},
+                {
+                    "candidates": [str(p) for p in candidates],
+                    "protected": [str(p) for p in sorted(protected)],
+                    "review_only": True,
+                },
             )
         return str(final)
+
+    @staticmethod
+    def _excluded_backup_parts(parts, skip_dirs):
+        return any(
+            part in skip_dirs
+            or (part.startswith("integration-") and part.endswith(".noindex"))
+            or part.endswith(".app")
+            for part in parts
+        )
+
+    @classmethod
+    def _backup_files(cls, source: Path, skip_dirs: set[str]):
+        if source.is_file() and not source.is_symlink():
+            yield source, Path()
+            return
+        if not source.is_dir() or source.is_symlink():
+            return
+        for root, directories, files in os.walk(source, followlinks=False):
+            root_path = Path(root)
+            relative_root = root_path.relative_to(source)
+            directories[:] = [
+                name
+                for name in directories
+                if not (root_path / name).is_symlink()
+                and not cls._excluded_backup_parts((*relative_root.parts, name), skip_dirs)
+            ]
+            for name in files:
+                path = root_path / name
+                relative = path.relative_to(source)
+                if (
+                    not path.is_symlink()
+                    and path.is_file()
+                    and not cls._excluded_backup_parts(relative.parts, skip_dirs)
+                ):
+                    yield path, relative
+
+    @classmethod
+    def _backup_source_signature(cls, sources: dict[str, Path], skip_dirs: set[str]) -> str:
+        rows = []
+        for label, source in sorted(sources.items()):
+            for path, relative in cls._backup_files(source, skip_dirs):
+                # SQLite online backup consumes committed WAL pages, so WAL
+                # metadata must invalidate the fast unchanged-source check.
+                if path.name.endswith(("-shm", ".lock")):
+                    continue
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                rows.append(
+                    (label, str(relative), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+                )
+        return hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest()
+
+    @staticmethod
+    def _backup_size(path: Path) -> int:
+        try:
+            manifest = json.loads((path / "manifest.json").read_text())
+            return sum((path / relative).stat().st_size for relative in manifest["sha256"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return 0
 
     @staticmethod
     def _backup_valid(path: Path) -> bool:

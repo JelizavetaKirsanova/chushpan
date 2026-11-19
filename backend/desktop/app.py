@@ -994,6 +994,12 @@ class Application(_Api):
         if not self.singleton():
             return 0
         self._configure_startup_logging()
+        try:
+            from backend.storage_manager import cleanup_stale_builds
+
+            cleanup_stale_builds()
+        except Exception:
+            log.exception("STORAGE_STARTUP stale build cleanup failed")
         atexit.register(self.stop_worker)
         bridge = Bridge(self)
         self.webview_started_at = time.monotonic()

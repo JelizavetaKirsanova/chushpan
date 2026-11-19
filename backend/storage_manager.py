@@ -11,10 +11,16 @@ import plistlib
 import shutil
 import sqlite3
 import subprocess
+import time
 from pathlib import Path
 
 APP_NAME = "Чушпан.app"
 APP = Path("/Applications") / APP_NAME
+STALE_BUILD_AGE_SECONDS = 24 * 60 * 60
+BACKUP_KEEP_RECENT = 3
+BACKUP_KEEP_OLDER = 1
+BACKUP_MAX_COUNT = 8
+BACKUP_MAX_BYTES = 16 * 1024**3
 
 
 def roots(home: Path | None = None) -> dict[str, Path]:
@@ -132,10 +138,22 @@ def backup_catalog(base: Path) -> list[dict]:
         if path.is_symlink():
             continue
         good = verified_backup(path)
+        try:
+            manifest = json.loads((path / "manifest.json").read_text())
+            contents = [
+                {"path": relative, "size": (path / relative).stat().st_size}
+                for relative in manifest.get("sha256", {})
+                if (path / relative).resolve().is_relative_to(path.resolve())
+                and (path / relative).is_file()
+            ]
+        except (OSError, ValueError, TypeError):
+            contents = []
         rows.append(
             {
                 "path": str(path),
                 "size": logical_size(path),
+                "file_count": len(contents),
+                "contents_preview": contents[:8],
                 "verified": good,
                 "pinned": path.name in pins,
                 "restorable": good,
@@ -199,17 +217,126 @@ def storage_report(home: Path | None = None, app: Path | None = None) -> dict:
         "allocated_bytes": allocated_size(app),
     }
     report["backups_list"] = backup_catalog(dirs["backups"])
+    report["backups"]["count"] = len(report["backups_list"])
+    report["backups"]["verified_count"] = sum(
+        1 for row in report["backups_list"] if row["verified"]
+    )
+    report["updates"]["count"] = (
+        sum(1 for path in dirs["updates"].iterdir() if path.is_dir() and not path.is_symlink())
+        if dirs["updates"].is_dir() and not dirs["updates"].is_symlink()
+        else 0
+    )
+    report["builds"]["count"] = (
+        sum(
+            1
+            for path in dirs["builds"].glob("release-*")
+            if path.is_dir() and not path.is_symlink()
+        )
+        if dirs["builds"].is_dir() and not dirs["builds"].is_symlink()
+        else 0
+    )
     try:
         report["auto_cleanup"] = json.loads(
             (dirs["backups"].parent / "storage-policy.json").read_text()
         ).get("auto_cleanup", False)
     except (OSError, ValueError):
         report["auto_cleanup"] = False
+    try:
+        policy = json.loads((dirs["backups"].parent / "storage-policy.json").read_text())
+    except (OSError, ValueError):
+        policy = {}
+    report["backup_max_count"] = int(policy.get("backup_max_count", BACKUP_MAX_COUNT))
+    report["backup_max_bytes"] = int(policy.get("backup_max_bytes", BACKUP_MAX_BYTES))
+    report["backup_limit_exceeded"] = report["backups"]["count"] > report["backup_max_count"] or (
+        report["backups"]["logical_bytes"] > report["backup_max_bytes"]
+    )
     report["total_logical_bytes"] = (
         sum(report[k]["logical_bytes"] for k in dirs) + report["application"]["logical_bytes"]
     )
-    report["free_bytes"] = shutil.disk_usage(home or Path.home()).free
+    disk = shutil.disk_usage(home or Path.home())
+    report["free_bytes"] = disk.free
+    report["free_percent"] = round(100 * disk.free / max(1, disk.total), 1)
+    report["low_space"] = disk.free < 10 * 1024**3 or report["free_percent"] < 10
     return report
+
+
+def snapshot_contents(path: str, home: Path | None = None) -> dict:
+    base = roots(home)["backups"]
+    raw = Path(path)
+    if raw.is_symlink() or raw.name[:9] != "snapshot-":
+        raise ValueError("Можно просматривать только каталог snapshot-*.")
+    target = raw.resolve()
+    if target.parent != base.resolve() or not target.is_dir() or not verified_backup(target):
+        raise ValueError("Снимок отсутствует или не прошёл проверку целостности.")
+    manifest = json.loads((target / "manifest.json").read_text())
+    files = []
+    for relative in sorted(manifest["sha256"]):
+        candidate = (target / relative).resolve()
+        if candidate.is_relative_to(target) and candidate.is_file():
+            files.append({"path": relative, "size": candidate.stat().st_size})
+    return {"path": str(target), "files": files, "size": sum(row["size"] for row in files)}
+
+
+def prune_update_history_after_success(home: Path | None = None, app: Path | None = None) -> dict:
+    """Delete only obsolete successful update transactions after a committed install."""
+    home, app = home or Path.home(), app or APP
+    dirs = roots(home)
+    state = dirs["updates"]
+    if state.is_symlink() or not state.is_dir():
+        return {"removed": [], "deferred": ["update directory unavailable"]}
+    opened = open_paths()
+    if opened is None:
+        return {"removed": [], "deferred": ["process scan unavailable"]}
+    rows = _updates_plan(state, app)
+    removed, deferred = [], []
+    root = state.resolve()
+    for row in rows:
+        folder = Path(row["path"])
+        if folder.is_symlink() or folder.resolve().parent != root:
+            deferred.append(str(folder))
+            continue
+        if in_use(folder, opened):
+            deferred.append(str(folder))
+            continue
+        allocated = allocated_size(folder)
+        shutil.rmtree(folder)
+        removed.append({**row, "allocated_size": allocated})
+    return {"removed": removed, "deferred": deferred}
+
+
+def cleanup_stale_builds(home: Path | None = None) -> dict:
+    """Remove abandoned release directories only when no builder or user has them open."""
+    dirs = roots(home)
+    base = dirs["builds"]
+    if base.is_symlink() or not base.exists():
+        return {"removed": [], "deferred": []}
+    lock = (base.parent / "build.lock").open("a")
+    try:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"removed": [], "deferred": ["build.lock"]}
+        opened = open_paths()
+        if opened is None:
+            return {"removed": [], "deferred": ["process scan unavailable"]}
+        removed, deferred = [], []
+        now = time.time()
+        for folder in base.glob("release-*"):
+            if folder.is_symlink() or not folder.is_dir():
+                continue
+            if in_use(folder, opened):
+                deferred.append(str(folder))
+                continue
+            completion = folder / "build-complete.json"
+            marker_mtime = completion.stat().st_mtime if completion.is_file() else 0
+            if now - max(folder.stat().st_mtime, marker_mtime) < STALE_BUILD_AGE_SECONDS:
+                deferred.append(str(folder))
+                continue
+            shutil.rmtree(folder)
+            removed.append(str(folder))
+        return {"removed": removed, "deferred": deferred}
+    finally:
+        lock.close()
 
 
 def _updates_plan(state: Path, installed: Path) -> list[dict]:
@@ -221,7 +348,22 @@ def _updates_plan(state: Path, installed: Path) -> list[dict]:
             continue
         if value.get("status") == "installed":
             receipts.append((receipt, value))
-    latest = max(receipts, key=lambda pair: pair[0].parent.name, default=None)
+    latest = None
+    try:
+        last_install = json.loads((state / "last-install.json").read_text())
+        transaction = Path(last_install.get("transaction") or "")
+        if (
+            transaction.parent.resolve() == state.resolve()
+            and not transaction.is_symlink()
+            and transaction.is_dir()
+        ):
+            latest = next(
+                (pair for pair in receipts if pair[0].parent.resolve() == transaction.resolve()),
+                None,
+            )
+    except (OSError, ValueError, TypeError):
+        pass
+    latest = latest or max(receipts, key=lambda pair: pair[0].parent.name, default=None)
     keep = Path(latest[1].get("previous") or "").resolve() if latest else None
     candidates = []
     for receipt, value in receipts:
@@ -250,6 +392,54 @@ def _updates_plan(state: Path, installed: Path) -> list[dict]:
     return candidates
 
 
+def _update_recovery_ready(state: Path, installed: Path) -> tuple[bool, str | None]:
+    """Require the installed bundle and latest rollback package to verify before pruning."""
+    try:
+        receipts = []
+        for path in state.glob("*/receipt.json"):
+            try:
+                value = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            if value.get("status") == "installed":
+                receipts.append((path, value))
+        latest = None
+        last_install = json.loads((state / "last-install.json").read_text())
+        transaction = Path(last_install.get("transaction") or "")
+        if transaction.parent.resolve() == state.resolve() and not transaction.is_symlink():
+            latest = next(
+                (item for item in receipts if item[0].parent.resolve() == transaction.resolve()),
+                None,
+            )
+        latest = latest or max(receipts, key=lambda item: item[0].parent.name, default=None)
+        if not latest:
+            return False, "Нет подтверждённой успешной транзакции обновления."
+        from scripts.macos_release import verify_bundle
+
+        current = verify_bundle(installed)
+        if current["build"] != str(latest[1].get("build")) or current[
+            "executable_sha256"
+        ] != latest[1].get("executable_sha256"):
+            return False, "Установленное приложение не совпадает с последним receipt."
+        previous = Path(latest[1].get("previous") or "")
+        if previous != latest[0].parent / APP_NAME or not previous.is_dir():
+            return False, "Рабочая копия для отката отсутствует или находится вне транзакции."
+        rollback = verify_bundle(previous)
+        if rollback["bundle_id"] != "ee.chushpan.desktop":
+            return False, "Копия для отката не прошла проверку bundle ID."
+        expected = latest[1].get("previous_code_identity") or {}
+        actual = rollback.get("code_identity") or {}
+        for key in ("Identifier", "CDHash", "requirement"):
+            if expected.get(key) and actual.get(key) != expected[key]:
+                return False, "Идентичность копии для отката не совпадает с receipt."
+        return True, None
+    except Exception as exc:
+        return (
+            False,
+            f"Проверка установленной или откатной версии не прошла ({type(exc).__name__}).",
+        )
+
+
 def preview_cleanup(
     home: Path | None = None,
     app: Path | None = None,
@@ -259,7 +449,8 @@ def preview_cleanup(
     home, app = home or Path.home(), app or APP
     dirs = roots(home)
     state = dirs["updates"]
-    candidates = [] if state.is_symlink() else _updates_plan(state, app)
+    update_integrity_ok, update_integrity_error = _update_recovery_ready(state, app)
+    candidates = _updates_plan(state, app) if update_integrity_ok and not state.is_symlink() else []
     opened = open_paths()
     protected = [row["path"] for row in candidates if in_use(Path(row["path"]), opened)]
     candidates = [row for row in candidates if row["path"] not in protected]
@@ -284,7 +475,9 @@ def preview_cleanup(
                 "pinned_count": len(pinned),
                 "bytes": sum(row["size"] for row in backup_rows),
             }
-            keep = {row["path"] for row in verified[:3]} | pinned
+            keep = {row["path"] for row in verified[:BACKUP_KEEP_RECENT]} | pinned
+            if verified:
+                keep.add(verified[-1]["path"])
             backup_candidates = [
                 {
                     "path": row["path"],
@@ -348,6 +541,8 @@ def preview_cleanup(
         "backup_candidates": backup_candidates,
         "backup_summary": backup_summary,
         "backup_scan_available": backup_lock_ok and opened is not None,
+        "update_scan_available": update_integrity_ok,
+        "update_scan_error": update_integrity_error,
         "protected_active_paths": protected,
         "process_scan_available": opened is not None,
         "message": "APFS snapshots и clones могут уменьшить реально освобождаемое место.",

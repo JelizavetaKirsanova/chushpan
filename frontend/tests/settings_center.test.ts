@@ -195,7 +195,13 @@ test('all settings links keep the established icon text chevron grid structure',
 
 test('storage settings show a preview and require explicit confirmation for its exact plan',async()=>{
   const f=fixture();try{
+    f.view.receive({...f.state,storage_report:{application:{logical_bytes:100},builds:{logical_bytes:200,count:2},updates:{logical_bytes:300,count:3},backups:{logical_bytes:400,count:9,verified_count:9},cache:{logical_bytes:50},total_logical_bytes:1050,free_bytes:1000,free_percent:0.1,low_space:true,backup_limit_exceeded:true,backup_max_count:8,backup_max_bytes:16*1024**3,backups_list:[{path:'/tmp/snapshot-1',size:400,file_count:1,verified:true,pinned:false}]}});
     f.view.open('storage');
+    assert.match(f.window.document.querySelector('#settings-content')!.textContent!,/На SSD осталось мало места/);
+    assert.match(f.window.document.querySelector('#settings-content')!.textContent!,/превышает лимит/);
+    f.button('Содержимое');assert.deepEqual(f.requests.at(-1),{op:'storage_snapshot',path:'/tmp/snapshot-1'});
+    f.view.receive({...f.state,storage_snapshot_detail:{path:'/tmp/snapshot-1',size:42,files:[{path:'private/notes.txt',size:42}]}});
+    assert.match(f.window.document.querySelector('#settings-content')!.textContent!,/private\/notes.txt · 42 Б/);
     f.button('Предварительный просмотр');assert.deepEqual(f.requests.at(-1),{op:'storage_preview'});
     f.view.receive({...f.state,storage_preview:{token:'plan-1',candidates:[{path:'/tmp/old',size:2048,kind:'старая сборка'}],estimated_logical_bytes:2048,estimated_allocated_bytes:1024,message:'APFS snapshots may affect the result.'}});
     assert.match(f.window.document.querySelector('#settings-content')!.textContent!,/старая сборка: \/tmp\/old/);
