@@ -3,3 +3,21 @@
 .application-time-list{display:grid;gap:0;max-height:440px;overflow-y:auto;overflow-x:hidden;min-width:0}.application-time-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(60px,1.3fr) max-content;align-items:center;gap:12px;min-width:0;padding:10px 2px;border-bottom:1px solid color-mix(in srgb,var(--line),transparent 38%)}.application-time-identity{display:flex;align-items:center;gap:10px;min-width:0}.application-time-icon{display:grid;place-items:center;width:30px;height:30px;flex:0 0 30px;border-radius:9px;background:color-mix(in srgb,var(--app-accent),transparent 78%);color:var(--app-accent);font-size:12px;font-weight:650}.application-time-name{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--text)}.application-time-track{display:block;min-width:0;height:13px;overflow:hidden;border-radius:6px;background:color-mix(in srgb,var(--accent),transparent 91%)}.application-time-fill{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--app-accent),color-mix(in srgb,var(--app-accent),#fff 18%));transition:width .36s ease}.application-time-value{min-width:62px;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;font-size:11px;font-weight:550;color:var(--ice)}.application-system-details{margin-top:14px;border:1px solid color-mix(in srgb,var(--line),transparent 20%);border-radius:12px;padding:0 12px;background:color-mix(in srgb,var(--panel),var(--bg) 24%)}.application-system-details>summary{padding:12px 0;color:var(--dim);font-size:11px;cursor:pointer}.application-system-list{max-height:240px}.application-time-note{margin:13px 0 0;color:var(--dim);font-size:10px;line-height:1.65}
 @media(max-width:640px){.application-time-row{grid-template-columns:minmax(0,1fr) max-content;gap:8px 12px;padding:11px 2px}.application-time-track{grid-column:1/-1;width:100%}.application-time-icon{width:28px;height:28px;flex-basis:28px}.application-time-value{min-width:58px}.application-system-details{padding-inline:10px}}
 @media(prefers-reduced-motion:reduce){.application-time-fill{transition:none}}
+
+/* Analytics cards must shrink with the app panel and keep long labels readable. */
+.module-analytics,
+.module-analytics * { box-sizing: border-box; }
+.module-analytics,
+.module-analytics .module-content,
+.module-analytics .module-grid,
+.module-analytics .module-card,
+.module-analytics .module-metric { min-width: 0; }
+.module-analytics .module-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); }
+.module-analytics .module-card :is(h2, p, small, strong, span, summary) { overflow-wrap: anywhere; }
+.module-analytics .chart-bar { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
+.module-analytics .application-time-row { grid-template-columns: minmax(0, 1fr) minmax(48px, 1.3fr) max-content; }
+@media(max-width:640px) {
+  .module-analytics .module-grid { grid-template-columns: minmax(0, 1fr); }
+  .module-analytics .application-time-row { grid-template-columns: minmax(0, 1fr) max-content; }
+  .module-analytics .application-time-track { grid-column: 1 / -1; }
+}

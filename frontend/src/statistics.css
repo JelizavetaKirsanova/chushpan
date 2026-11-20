@@ -65,6 +65,44 @@
 .statistics-card > button { color: #ebd8fa; background: #74429666; border: 1px solid #aa76ce44; border-radius: 10px; margin: 12px 12px 0 0; padding: 11px 16px; cursor: pointer; }
 .statistics-diagnostic-heading h2 { font-size: 20px; margin: 24px 0 8px; }.statistics-diagnostic-heading p { font-size: 12px; color: #b499c6; }#performance-requests { margin-top: 14px; }#statistics-pane-performance > label { font-size: 12px; }#statistics-pane-performance .performance-layout { grid-template-columns: minmax(220px, 1fr) minmax(280px, 1fr); }#performance-detail { padding: 12px 0; background: transparent; border: 0; }#statistics-pane-performance .performance-summary { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }#statistics-pane-performance .perf-latency-chart:has(.perf-note) { min-height: 0; height: auto; }
 #statistics-root [hidden] { display: none !important; }
+
+/* Let the statistics layout follow the available panel width, not the window. */
+.performance-page,
+.performance-page *,
+#statistics-root,
+#statistics-root * {
+  box-sizing: border-box;
+}
+.performance-page,
+.statistics-content,
+.statistics-grid,
+.statistics-card,
+.statistics-kpi,
+.statistics-kpi > div {
+  min-width: 0;
+}
+.statistics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.statistics-card :is(h2, p, summary, small, span, strong) { overflow-wrap: anywhere; }
+.statistics-donut-layout { min-width: 0; }
+.statistics-donut-legend { min-width: 0; }
+.statistics-donut-legend > div { min-width: 0; }
+.statistics-donut-legend > div > span { min-width: 0; }
+.statistics-kpi small,
+.statistics-kpi-foot > span:first-child { overflow-wrap: anywhere; }
+.performance-page .statistics-tabs button { min-width: max-content; flex: 0 0 auto; }
+.performance-page .statistics-request { min-width: 0; }
+.statistics-request > * { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 1100px) {
+  .statistics-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 680px) {
+  .statistics-grid { grid-template-columns: minmax(0, 1fr); }
+  .statistics-kpis { grid-template-columns: minmax(0, 1fr); }
+  .statistics-donut-layout { flex-direction: column; }
+  .statistics-donut-legend { width: 100%; }
+  .statistics-request { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  .statistics-app { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 58px; }
+}
 @media(max-width:1200px) { .statistics-heading { flex-wrap: wrap; }.statistics-heading .statistics-periods { margin-left: auto; }.statistics-kpi { padding: 16px 14px; gap: 10px; }.statistics-kpi > .statistics-icon { width: 40px; height: 40px; }.statistics-donut-layout { gap: 15px; }.statistics-donut { width: 135px; height: 135px; }.statistics-donut > div { width: 97px; height: 97px; }.statistics-tabs .statistics-icon { display: none; } }
 @media(max-width:950px) { .statistics-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }.statistics-grid { grid-template-columns: 1fr; }.statistics-periods { width: 100%; overflow-x: auto; }.performance-page .statistics-periods button { flex: 1; }.statistics-donut-layout { justify-content: start; gap: 32px; }.statistics-tabs { max-width: 100%; }.statistics-tabs button { flex: 0 0 auto !important; }.statistics-request { grid-template-columns: 1fr 1fr !important; }#statistics-pane-performance .performance-layout { grid-template-columns: 1fr; } }
 @media(max-width:540px) { .hud[data-view=performance] .performance-page { padding: 20px 14px 30px; }.statistics-heading h1 { font-size: 22px; }.statistics-heading { gap: 18px; }.statistics-title { gap: 12px; }.statistics-kpi > .statistics-icon { display: none; }.statistics-kpi strong { font-size: 25px; }.statistics-card { padding: 18px 15px; }.statistics-donut-layout { flex-direction: column; gap: 20px; }.statistics-donut-legend { width: 100%; }.statistics-app { grid-template-columns: 1fr 1fr 50px; gap: 10px; }.statistics-series { gap: 6px; } }
