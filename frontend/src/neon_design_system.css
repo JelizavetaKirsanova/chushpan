@@ -9,6 +9,10 @@
   --text: #f4edf5;
   --muted: #b8acbc;
   --subtle: #908595;
+  --white: var(--text);
+  --dim: var(--muted);
+  --ice: var(--accent-strong);
+  --bg-2: var(--bg-raised);
   --accent: #b487c7;
   --accent-strong: #c89ad7;
   --accent-soft: #b487c71c;
@@ -862,6 +866,7 @@ html[data-theme="light"] {
   --text: #241b2c; --muted: #5e5265; --subtle: #7b6d81; --accent: #9136c2; --accent-strong: #a43bd3;
   --accent-soft: #8b35bd18; --line: #e1d3eb; --line-strong: #cdb4dc; --shadow-card: 0 8px 22px #5c34701b;
   --green: #418b59; --amber: #987027; --red: #b44c5d; --control-input: #fffaff;
+  --white: var(--text); --dim: var(--muted); --ice: var(--accent-strong); --bg-2: var(--bg-raised);
 }
 html[data-theme="light"] body, html[data-theme="light"] .hud { background: var(--bg); color: var(--text); }
 html[data-theme="light"] .hud[data-state] { --accent: inherit; --line: inherit; }
@@ -907,6 +912,46 @@ html[data-theme="light"] .speak-toggle { color: var(--accent); }
 html[data-theme="light"] .speak-toggle:has(input:checked) { background: #704284; color: white; }
 html[data-theme="light"] .workspace-page h1 { color: var(--text); }
 html[data-theme="light"] .search-field { background: var(--panel); }
+
+/* Older workspace pages still carry a few dark-only surface and text colors. */
+html[data-theme="light"] .hud .workspace-page { background: var(--bg); color: var(--text); }
+html[data-theme="light"] .workspace-page .page-heading p,
+html[data-theme="light"] .recent-dialogues,
+html[data-theme="light"] .recent-conversation,
+html[data-theme="light"] .settings-page .settings-card > p { color: var(--muted); }
+html[data-theme="light"] .settings-page .settings-card { border-color: var(--line); }
+html[data-theme="light"] .settings-page .settings-card > summary { color: var(--text); }
+
+html[data-theme="light"] #settings-center { color: var(--text); }
+html[data-theme="light"] #settings-center .settings-sidebar,
+html[data-theme="light"] #settings-center .settings-workspace,
+html[data-theme="light"] #settings-center .settings-active,
+html[data-theme="light"] #settings-center .settings-home-note,
+html[data-theme="light"] #settings-center .settings-group,
+html[data-theme="light"] #settings-center .settings-feedback {
+  border-color: var(--line) !important;
+  background: linear-gradient(145deg, #fff, #faf6fd 90%) !important;
+  color: var(--text);
+}
+html[data-theme="light"] #settings-center :is(.settings-heading h1, .settings-heading h2, .settings-detail-heading h1, .settings-group h2, .settings-group h3, .settings-home-note h2, .settings-active strong, .settings-category strong, .settings-field, .settings-row, .settings-permission strong, .settings-disclosure summary, .settings-tabs button[aria-selected="true"]) { color: var(--text) !important; }
+html[data-theme="light"] #settings-center :is(.settings-heading p, .settings-detail-heading p, .settings-kicker, .settings-help, .settings-group > small, .settings-field > small, .settings-active > span, .settings-active small, .settings-category small, .settings-home-note p, .settings-permission small, .settings-empty, .settings-memory-row, .settings-range output) { color: var(--muted); }
+html[data-theme="light"] #settings-center :is(input:not([type="checkbox"]):not([type="range"]), select, textarea) { border-color: var(--line-strong); background: #fff; color: var(--text); }
+html[data-theme="light"] #settings-center .settings-category:hover { background: var(--panel-hover); }
+html[data-theme="light"] #settings-center .settings-category-icon { background: var(--accent-soft); color: var(--accent); }
+html[data-theme="light"] #settings-center .settings-tabs { background: var(--panel-soft); }
+html[data-theme="light"] #settings-center .settings-tabs button[aria-selected="true"] { border-color: var(--line-strong) !important; background: #ead7f6 !important; color: var(--text) !important; }
+html[data-theme="light"] #settings-center .settings-feedback[data-error="true"],
+html[data-theme="light"] #settings-center .settings-error { color: var(--red); }
+
+html[data-theme="light"] .module-page .module-tabs { background: var(--panel-soft); border-color: var(--line); }
+html[data-theme="light"] .module-page .module-tabs button[aria-selected="true"] { color: #fff; }
+html[data-theme="light"] .module-page .module-feedback { border-color: var(--line); background: var(--panel-soft); color: var(--muted); }
+html[data-theme="light"] .module-page .chart-bar-track { background: #e5d9ec; }
+html[data-theme="light"] .module-page .screen-preview img { background: var(--panel-soft); }
+html[data-theme="light"] .scenario-menu > summary { color: var(--muted); }
+html[data-theme="light"] .scenario-menu .menu-items { border-color: var(--line); background: #fffaff; box-shadow: var(--shadow-card); }
+html[data-theme="light"] .scenario-menu .menu-items button { color: var(--text); }
+html[data-theme="light"] .scenario-menu .menu-items button:hover { background: var(--panel-hover); }
 
 
 @media (max-width: 1080px) {
