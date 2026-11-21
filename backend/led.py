@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field, ValidationError
 from backend.ble_diagnostics import device_key, runtime_info, trace
 from backend.ble_profiles import BLEProfile, candidate_profile, gatt_fingerprint
 from backend.config import LEDConfig, Settings
+from backend.devices.classification import classify_ble
 from backend.latency import measure
 from backend.security import Risk, command_text, control_text
 from backend.tools.registry import DeviceUnavailable, Tool, ToolError
@@ -1188,24 +1189,27 @@ class LEDStrip:
                     name = (adv.local_name or device.name or "Без имени").strip()
                     name = "".join(c for c in name if ord(c) >= 32)[:80] or "Без имени"
                     services = [str(s).lower() for s in getattr(adv, "service_uuids", [])]
-                    family = not show_all_ble and bool(re.match(r"^ELK-BLE", name, re.IGNORECASE))
-                    service_match = not show_all_ble and str(self.cfg.service).lower() in services
+                    classification = classify_ble(
+                        name, services, getattr(adv, "manufacturer_data", {})
+                    )
+                    family = not show_all_ble and classification.kind == "led_strip"
                     candidates.append(
                         {
                             "name": name,
                             "address": device.address,
                             "rssi": getattr(adv, "rssi", None),
                             "service_uuids": services,
+                            "kind": classification.kind,
+                            "confidence": classification.confidence,
+                            "classification_evidence": list(classification.evidence),
                             "connection": "not_checked",
-                            "compatibility": "candidate" if family or service_match else "unknown",
+                            "compatibility": "candidate" if family else "unknown",
                             "compatibility_reason": (
                                 "Диагностический режим: совместимость не определялась."
                                 if show_all_ble
                                 else "Семейство ELK BLE; требуется проверка GATT и протокола."
                                 if family
-                                else "Рекламируется FFF0; протокол ещё не проверен."
-                                if service_match
-                                else "Профиль неизвестен; совместимость не определена."
+                                else classification.reason
                             ),
                         }
                     )

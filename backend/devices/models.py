@@ -11,8 +11,26 @@ class Device(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex, pattern=r"^[a-z0-9-]{1,64}$")
     revision: int = Field(default=0, ge=0)
     name: str = Field(min_length=1, max_length=80)
-    kind: Literal["led_strip", "mac", "external_display", "airplay", "audio_output", "wled"]
-    protocol: Literal["ble", "local", "betterdisplay", "bonjour", "coreaudio", "http"]
+    kind: Literal[
+        "led_strip",
+        "mac",
+        "external_display",
+        "airplay",
+        "audio_output",
+        "wled",
+        "smartphone",
+        "computer",
+        "lamp",
+        "television",
+        "speaker",
+        "vacuum",
+        "sensor",
+        "socket",
+        "unknown",
+    ]
+    protocol: Literal[
+        "ble", "local", "betterdisplay", "bonjour", "coreaudio", "http", "home_assistant"
+    ]
     endpoint: str = Field(max_length=240)
     place_id: str = Field(default="general", max_length=64)
     room: str = Field(default="", max_length=60)
@@ -37,6 +55,15 @@ class Device(BaseModel):
             "airplay": "bonjour",
             "audio_output": "coreaudio",
             "wled": "http",
+            "smartphone": "ble",
+            "computer": "ble",
+            "lamp": "ble",
+            "television": "ble",
+            "speaker": "ble",
+            "vacuum": "home_assistant",
+            "sensor": "ble",
+            "socket": "ble",
+            "unknown": "ble",
         }
         if self.protocol != expected[self.kind]:
             raise ValueError("Протокол не соответствует типу устройства.")
@@ -95,3 +122,25 @@ class DeviceCommand(BaseModel):
 class DeviceAdapter(Protocol):
     async def inspect(self, device: Device) -> dict: ...
     async def execute(self, device: Device, action: str, parameters: dict) -> dict: ...
+
+
+class VacuumAdapter(Protocol):
+    """Vacuum integrations expose only model-specific capabilities they verified."""
+
+    async def inspect(self, device: Device) -> dict: ...
+    async def capabilities(self, device: Device) -> set[str]: ...
+    async def execute(
+        self,
+        device: Device,
+        action: Literal[
+            "start",
+            "pause",
+            "stop",
+            "return_to_dock",
+            "clean_room",
+            "set_power",
+            "schedule",
+            "map",
+        ],
+        parameters: dict,
+    ) -> dict: ...

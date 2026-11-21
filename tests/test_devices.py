@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -13,6 +14,9 @@ from bleak.exc import BleakError
 from backend.automation.models import Block, Scenario
 from backend.brain.conversation import Conversation
 from backend.context import RequestContext, request_scope
+from backend.devices.classification import ELK_FFF0, classify_ble
+from backend.devices.models import Device
+from backend.devices.store import DeviceStore
 from backend.hud.bus import HudBus
 from backend.led import LEDState
 from backend.mac import MacDesktop
@@ -102,6 +106,85 @@ def test_catalogue_startup_has_no_hardware_reads_or_fictitious_state(devices):
     )
 
 
+@pytest.mark.parametrize(
+    "name,services,expected",
+    [
+        ("iPhone", ["1800", ELK_FFF0], "unknown"),
+        ("ELK-BLEDDM 39", [ELK_FFF0], "led_strip"),
+        ("Unknown BLE", ["1800", "1801"], "unknown"),
+        ("iPhone", [ELK_FFF0], "unknown"),
+    ],
+)
+def test_ble_classification_requires_independent_evidence(name, services, expected):
+    assert classify_ble(name, services).kind == expected
+
+
+def test_manual_ble_classification_is_persisted_and_has_no_invented_capabilities(devices):
+    async def run():
+        token = "manual-classification-token"
+        endpoint = str(uuid4())
+        devices.service.scans[token] = {
+            "name": "Unrecognized BLE peripheral",
+            "endpoint": endpoint,
+            "kind": "unknown",
+            "expires": time.monotonic() + 300,
+        }
+        answer = await request(
+            devices,
+            op="add",
+            token=token,
+            manual_kind="smartphone",
+            name="Мой телефон",
+        )
+        assert "error" not in answer
+        saved = devices.service.store.get(answer["saved"])
+        assert saved.kind == "smartphone" and saved.protocol == "ble"
+        assert DeviceStore(devices.store).get(saved.id).kind == "smartphone"
+        assert devices.service.features(saved) == {}
+
+    asyncio.run(run())
+
+
+def test_vacuum_without_home_assistant_adapter_is_rejected_without_connection(devices):
+    async def run():
+        token = "vacuum-no-adapter-token"
+        devices.service.scans[token] = {
+            "name": "Vacuum",
+            "endpoint": str(uuid4()),
+            "kind": "unknown",
+            "expires": time.monotonic() + 300,
+        }
+        result = await request(
+            devices, op="check", token=token, manual_kind="vacuum", kind="vacuum"
+        )
+        assert "error" in result and "адаптера" in result["error"].lower()
+        devices.factory.assert_not_called()
+        devices.desktop.bridge.request.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_unclassified_device_cannot_receive_control_commands(devices):
+    async def run():
+        device = devices.service.store.save(
+            Device(
+                name="Unknown BLE",
+                kind="unknown",
+                protocol="ble",
+                endpoint=str(uuid4()),
+            )
+        )
+        assert devices.service.features(device) == {}
+        with request_scope(RequestContext(device=devices.conv.device, text="control")):
+            result = await devices.service.device_command(target=device.id, action="vacuum_start")
+            assert result["result_status"] == "failed"
+            assert "драйвера" in result["message"].lower()
+        devices.factory.assert_not_called()
+        devices.desktop.bridge.request.assert_not_awaited()
+
+    asyncio.run(run())
+
+
 def test_rename_room_location_favorites_and_delete_survive_restart(devices):
     async def run():
         r = devices
@@ -142,7 +225,7 @@ def test_rename_room_location_favorites_and_delete_survive_restart(devices):
 @pytest.mark.parametrize(
     "payload",
     [
-        {"kind": "socket", "endpoint": "local"},
+        {"kind": "oven", "endpoint": "local"},
         {"kind": "led_strip", "endpoint": "not-a-uuid"},
         {"kind": "led_strip", "endpoint": "https://token@example.test"},
         {"kind": "mac", "endpoint": "another-computer"},

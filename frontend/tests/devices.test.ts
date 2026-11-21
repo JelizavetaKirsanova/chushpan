@@ -17,7 +17,7 @@ function fixture() {
   const sandbox={exports:{} as Record<string,unknown>,document:window.document,window,crypto,DeviceWriter,setTimeout,clearTimeout,icon:()=>'<svg></svg>'};vm.runInNewContext('const {ColorEditor,colorDraft}=(()=>{'+editorCode+';return {ColorEditor,colorDraft};})();'+code,sandbox);
   const View=sandbox.exports.View as new(...args:unknown[])=>{connection:(v:boolean)=>void;receive:(v:unknown)=>void};
   const view=new View((v:Record<string,unknown>)=>requests.push(structuredClone(v)));
-  const state:DevicesEvent={type:'devices',places:[{id:'general',name:'Общие устройства'},{id:'dorm',name:'Общага'},{id:'home',name:'Дом'}],location:{place_id:'dorm',name:'Общага',mode:'manual',status:'ready'},kinds:[{id:'led_strip',name:'LED-лента',protocol:'ble'},{id:'mac',name:'MacBook',protocol:'local'},{id:'external_display',name:'Внешний дисплей',protocol:'betterdisplay'}],items:[{id:'led-test',revision:1,name:'Свет у стола',kind:'led_strip',protocol:'ble',endpoint:'11111111-1111-4111-8111-111111111111',place_id:'dorm',room:'Спальня',state:{},sent:{},last_contact:null,state_at:null,result_status:null,favorites:[],features:{power_on:true,power_off:true,brightness:true,color:true,colors:['rgb','on','off','brightness'],warm_white:'rgb_approximation',probe:true},connection:'unknown',usable:true,reason:'',busy:false},{id:'mac-local',revision:1,name:'MacBook',kind:'mac',protocol:'local',endpoint:'local-mac',place_id:'general',room:'',state:{brightness:55,volume_percent:30,muted:false,battery:{percent:80,on_power_adapter:true}},sent:{},last_contact:null,state_at:null,result_status:null,favorites:[],features:{volume:true,mute:true,brightness:true,playback:true,battery:true,lock:true},connection:'unknown',usable:true,reason:'',busy:false}]};
+  const state:DevicesEvent={type:'devices',places:[{id:'general',name:'Общие устройства'},{id:'dorm',name:'Общага'},{id:'home',name:'Дом'}],location:{place_id:'dorm',name:'Общага',mode:'manual',status:'ready'},kinds:[{id:'led_strip',name:'LED-лента',protocol:'ble'},{id:'mac',name:'MacBook',protocol:'local'},{id:'external_display',name:'Внешний дисплей',protocol:'betterdisplay'},{id:'unknown',name:'Неизвестное устройство',protocol:'ble'},{id:'smartphone',name:'Смартфон',protocol:'ble'},{id:'vacuum',name:'Робот-пылесос',protocol:'home_assistant'}],items:[{id:'led-test',revision:1,name:'Свет у стола',kind:'led_strip',protocol:'ble',endpoint:'11111111-1111-4111-8111-111111111111',place_id:'dorm',room:'Спальня',state:{},sent:{},last_contact:null,state_at:null,result_status:null,favorites:[],features:{power_on:true,power_off:true,brightness:true,color:true,colors:['rgb','on','off','brightness'],warm_white:'rgb_approximation',probe:true},connection:'unknown',usable:true,reason:'',busy:false},{id:'mac-local',revision:1,name:'MacBook',kind:'mac',protocol:'local',endpoint:'local-mac',place_id:'general',room:'',state:{brightness:55,volume_percent:30,muted:false,battery:{percent:80,on_power_adapter:true}},sent:{},last_contact:null,state_at:null,result_status:null,favorites:[],features:{volume:true,mute:true,brightness:true,playback:true,battery:true,lock:true},connection:'unknown',usable:true,reason:'',busy:false}]};
   view.connection(true);view.receive(state);
   const button=(label:string,scope:ParentNode=window.document)=>{const b=[...scope.querySelectorAll('button')].find(n=>n.textContent===label);assert.ok(b,label);b.click();return b;};
   const open=(name:string)=>{const b=window.document.querySelector<HTMLButtonElement>(`button[aria-label="Открыть ${name}"]`);assert.ok(b);b.click();};
@@ -217,6 +217,19 @@ test('BLE discovery shows signal and unknown group, connects explicitly and igno
     assert.match(dialog.textContent!,/FFF3 не найден/);assert.equal(f.requests.some(r=>r.op==='act'||r.op==='probe_led'),false);
     f.button('Проверить подключение',dialog);assert.equal(f.requests.at(-1)!.op,'check');
     assert.doesNotMatch(dialog.textContent!,/FFF3 не найден/);
+  }finally{await f.close();}
+});
+
+test('unknown BLE device can be manually classified and saved without enabling control',async()=>{
+  const f=fixture();try{
+    f.button('Найти устройства');const scan=f.requests.at(-1)!;const dialog=f.window.document.querySelector('dialog')!;
+    f.view.receive({...f.state,operation_id:scan.request_id as string,candidates:[{token:'phone',name:'iPhone',kind:'unknown',protocol:'ble',compatibility:'unknown',confidence:0.25,compatibility_reason:'Недостаточно признаков.'}]});
+    assert.match(dialog.textContent!,/Неизвестные Bluetooth LE устройства/);
+    const category=dialog.querySelector<HTMLSelectElement>('[aria-label="Категория устройства"]')!;category.value='smartphone';
+    f.button('Выбрать тип',dialog);assert.match(dialog.textContent!,/Подключение ещё не проверено/);
+    f.button('Добавить с непроверенным подключением',dialog);const form=dialog.querySelector('form')!;form.dispatchEvent(new f.window.Event('submit',{bubbles:true,cancelable:true}));
+    const add=f.requests.at(-1)!;assert.equal(add.op,'add');assert.equal(add.manual_kind,'smartphone');
+    assert.equal(f.requests.some(r=>r.op==='act'||r.op==='probe_led'),false);
   }finally{await f.close();}
 });
 

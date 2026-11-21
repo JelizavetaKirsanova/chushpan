@@ -314,6 +314,21 @@ class DeviceCenter:
             device = self.store.get(identifier)
             try:
                 self.check_location(device)
+                if device.kind in {
+                    "smartphone",
+                    "computer",
+                    "lamp",
+                    "television",
+                    "speaker",
+                    "vacuum",
+                    "sensor",
+                    "socket",
+                    "unknown",
+                }:
+                    raise ToolError(
+                        "Для выбранной категории нет подтверждённого драйвера; "
+                        "команда не отправлена."
+                    )
                 lock = self.command_locks.setdefault(identifier, asyncio.Lock())
                 if lock.locked():
                     raise ToolError("Устройство занято другой командой.")
@@ -396,7 +411,23 @@ class DeviceCenter:
                 result = {
                     "result_status": "failed",
                     "error": str(exc)
-                    if isinstance(exc, ToolError) and device.kind == "led_strip" and action == "led"
+                    if isinstance(exc, ToolError)
+                    and (
+                        device.kind == "led_strip"
+                        and action == "led"
+                        or device.kind
+                        in {
+                            "smartphone",
+                            "computer",
+                            "lamp",
+                            "television",
+                            "speaker",
+                            "vacuum",
+                            "sensor",
+                            "socket",
+                            "unknown",
+                        }
+                    )
                     else "Действие недоступно или не подтверждено. "
                     "Проверь возможности, место и подключение.",
                 }

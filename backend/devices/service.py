@@ -41,6 +41,15 @@ KINDS = {
     "audio_output": ("Вывод звука macOS", "coreaudio"),
     "wled": ("Wi-Fi / HTTP · WLED", "http"),
     "external_display": ("Внешний дисплей", "betterdisplay"),
+    "smartphone": ("Смартфон", "ble"),
+    "computer": ("Компьютер", "ble"),
+    "lamp": ("Лампа", "ble"),
+    "television": ("Телевизор", "ble"),
+    "speaker": ("Колонка", "ble"),
+    "vacuum": ("Робот-пылесос", "home_assistant"),
+    "sensor": ("Датчик", "ble"),
+    "socket": ("Розетка", "ble"),
+    "unknown": ("Неизвестное устройство", "ble"),
 }
 TOOLS = {
     "led_control": "led_strip",
@@ -469,6 +478,18 @@ class Devices(DeviceCenter):
                 "color": confirmed,
                 "physical_feedback": True,
             }
+        if device.kind in {
+            "smartphone",
+            "computer",
+            "lamp",
+            "television",
+            "speaker",
+            "vacuum",
+            "sensor",
+            "socket",
+            "unknown",
+        }:
+            return {}
         return {
             "brightness": enabled("set_external_brightness"),
             "volume": False,
@@ -592,11 +613,26 @@ class Devices(DeviceCenter):
             return [item for result in results if isinstance(result, list) for item in result]
         if kind not in KINDS:
             raise ValueError("Для этого типа нет подключённого протокола управления.")
-        if kind == "led_strip":
+        if kind == "vacuum":
+            raise ValueError("Интеграция роботов-пылесосов Home Assistant пока не настроена.")
+        if kind in {
+            "led_strip",
+            "smartphone",
+            "computer",
+            "lamp",
+            "television",
+            "speaker",
+            "sensor",
+            "socket",
+            "unknown",
+        }:
             strip = LEDStrip(self.s.model_copy(deep=True))
             strip.cfg = strip.cfg.model_copy(update={"enabled": True})
             async with self.discovery_lock:
-                result = await strip.discover(scan_id=scan_id, show_all_ble=show_all_ble)
+                result = await strip.discover(
+                    scan_id=scan_id,
+                    show_all_ble=show_all_ble or kind != "led_strip",
+                )
             raw = result["candidates"]
             items = []
             excluded = 0
@@ -617,7 +653,15 @@ class Devices(DeviceCenter):
                     {
                         **{
                             k: v[k]
-                            for k in ("rssi", "compatibility", "compatibility_reason", "connection")
+                            for k in (
+                                "rssi",
+                                "compatibility",
+                                "compatibility_reason",
+                                "connection",
+                                "confidence",
+                                "classification_evidence",
+                                "kind",
+                            )
                             if k in v
                         },
                         "name": v.get("name") or "Без имени",
@@ -673,7 +717,8 @@ class Devices(DeviceCenter):
         self.scans = {k: v for k, v in self.scans.items() if v["expires"] > time.monotonic()}
         for item in items if kind == "led_strip" else items[:30]:
             token = uuid4().hex
-            self.scans[token] = {**item, "kind": kind, "expires": time.monotonic() + 300}
+            detected_kind = item.get("kind", kind)
+            self.scans[token] = {**item, "kind": detected_kind, "expires": time.monotonic() + 300}
             if kind == "led_strip":
                 trace(
                     "backend_token",
@@ -686,12 +731,20 @@ class Devices(DeviceCenter):
                 {
                     "token": token,
                     "name": item["name"],
-                    "kind": kind,
-                    "protocol": KINDS[kind][1],
+                    "kind": detected_kind,
+                    "protocol": KINDS[detected_kind][1],
                     "status": "discovered",
                     **{
                         k: item[k]
-                        for k in ("rssi", "compatibility", "compatibility_reason", "connection")
+                        for k in (
+                            "rssi",
+                            "compatibility",
+                            "compatibility_reason",
+                            "connection",
+                            "confidence",
+                            "classification_evidence",
+                            "kind",
+                        )
                         if k in item
                     },
                 }
@@ -703,12 +756,15 @@ class Devices(DeviceCenter):
             found = self.scans.get(value["token"])
             if not found or found["expires"] < time.monotonic():
                 raise ValueError("Результат поиска устарел. Повтори поиск.")
+            selected_kind = value.get("manual_kind", value.get("kind", found["kind"]))
+            if selected_kind not in KINDS:
+                raise ValueError("Выбери тип из списка.")
             return Device(
                 name=found["name"],
-                kind=found["kind"],
-                protocol=KINDS[found["kind"]][1],
+                kind=selected_kind,
+                protocol=KINDS[selected_kind][1],
                 endpoint=found["endpoint"],
-                ble_name=found["name"] if found["kind"] == "led_strip" else None,
+                ble_name=found["name"] if selected_kind == "led_strip" else None,
             )
         kind = value.get("kind")
         if kind not in KINDS:
@@ -1041,6 +1097,18 @@ class Devices(DeviceCenter):
             if op == "check":
                 self.require_adapter()
                 candidate = self.candidate(value)
+                if candidate.kind not in {
+                    "led_strip",
+                    "external_display",
+                    "wled",
+                    "airplay",
+                    "audio_output",
+                    "mac",
+                }:
+                    raise ToolError(
+                        "Для выбранной категории нет подключённого совместимого "
+                        "адаптера. Устройство не подключалось."
+                    )
                 if candidate.kind == "led_strip":
                     settings = self.s.model_copy(deep=True)
                     settings.led.enabled, settings.led.address = True, UUID(candidate.endpoint)
