@@ -1,8 +1,11 @@
 """Validated local UI preferences; no credentials or arbitrary executable settings."""
 
+import ipaddress
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import Field, model_validator
+from cryptography import x509
+from pydantic import Field, field_validator, model_validator
 
 from backend.brain.privacy import contains_secret
 from backend.personality import Strict
@@ -110,6 +113,59 @@ class Models(Strict):
     local_idle_s: float | None = Field(default=None, ge=1, le=120)
 
 
+class CoreServer(Strict):
+    mode: Literal["local", "server", "auto"] = "local"
+    address: str = "https://100.117.129.107:8765"
+    certificate_pem: str = Field(default="", max_length=4096)
+    device_name: str = Field(default="MacBook", min_length=1, max_length=80)
+    paired_device_id: str = Field(default="", pattern=r"^(?:[a-f0-9]{64})?$")
+    last_import_id: str = Field(
+        default="",
+        pattern=r"^(?:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})?$",
+    )
+
+    @field_validator("address")
+    @classmethod
+    def tailnet_endpoint(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        try:
+            address = ipaddress.ip_address(parsed.hostname or "")
+        except ValueError:
+            raise ValueError("Укажи HTTPS-адрес Huawei из диапазона Tailscale.") from None
+        if (
+            parsed.scheme != "https"
+            or address.version != 4
+            or address not in ipaddress.ip_network("100.64.0.0/10")
+            or parsed.port != 8765
+            or parsed.username
+            or parsed.password
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("Core API разрешён только по HTTPS на адресе Tailscale.")
+        return value.rstrip("/")
+
+    @field_validator("certificate_pem")
+    @classmethod
+    def validate_public_certificate(cls, value: str) -> str:
+        if not value:
+            return value
+        try:
+            certificate = x509.load_pem_x509_certificate(value.encode("ascii"))
+        except (ValueError, UnicodeEncodeError):
+            raise ValueError("Вставь публичный TLS-сертификат Huawei, полученный по SSH.") from None
+        if certificate.subject != certificate.issuer:
+            raise ValueError("Сертификат Huawei должен быть самоподписанным.")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def server_mode_requires_pairing(self):
+        if self.mode != "local" and (not self.certificate_pem or not self.paired_device_id):
+            raise ValueError("Сначала сопряги MacBook с Core API по SSH-приглашению.")
+        return self
+
+
 class Access(Strict):
     disabled_tools: list[str] = Field(default_factory=list, max_length=100)
     blocked_apps: list[str] = Field(default_factory=list, max_length=100)
@@ -159,6 +215,7 @@ CATEGORIES = {
     "studio": Studio,
     "memory": MemoryPolicy,
     "models": Models,
+    "server": CoreServer,
     "access": Access,
     "quiet": QuietHours,
     "notifications": Notifications,

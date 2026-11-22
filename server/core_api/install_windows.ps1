@@ -42,12 +42,15 @@ $root = Join-Path $env:ProgramData 'Chushpan\CoreServer'
 $app = Join-Path $root 'app'
 $logs = Join-Path $root 'logs'
 $secrets = Join-Path $root 'secrets'
+$data = Join-Path $root 'data'
+$tls = Join-Path $root 'tls'
 $taskName = 'ChushpanCoreServer'
 $firewallName = 'Chushpan Core API - Tailscale Mac'
 $python = (Get-Command python.exe -ErrorAction Stop).Source
 $uv = (Get-Command uv.exe -ErrorAction Stop).Source
+$pythonInVenv = Join-Path $app '.venv\Scripts\python.exe'
 
-foreach ($directory in @($app, $logs, $secrets)) {
+foreach ($directory in @($app, $logs, $secrets, $data, $tls)) {
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
 }
 
@@ -65,15 +68,52 @@ if ((Test-Path (Join-Path $app 'pyproject.toml')) -and
 }
 
 $previousTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+$existingListenerPids = @(
+    Get-NetTCPConnection -State Listen -LocalAddress $TailnetAddress -LocalPort $Port `
+        -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique
+)
+$expectedProcess = ('^(?:"?{0}"?)\s+-m\s+chushpan(?:\.server)?\s+' +
+    '--host\s+{1}\s+--port\s+{2}(?:\s|$)') -f `
+        [regex]::Escape($pythonInVenv), [regex]::Escape($TailnetAddress), $Port
+$coreProcesses = @(
+    Get-CimInstance Win32_Process | Where-Object {
+        $_.CommandLine -and $_.CommandLine -match $expectedProcess
+    }
+)
+foreach ($listenerId in $existingListenerPids) {
+    if ($listenerId -notin $coreProcesses.ProcessId) {
+        throw "Process $listenerId holds the Core API port but is not the expected Chushpan Core process."
+    }
+}
 if ($previousTask -and $previousTask.State -eq 'Running') {
     Stop-ScheduledTask -TaskName $taskName
-    for ($attempt = 0; $attempt -lt 30; $attempt++) {
-        Start-Sleep -Milliseconds 500
-        $previousTask = Get-ScheduledTask -TaskName $taskName
-        if ($previousTask.State -ne 'Running') { break }
-    }
-    if ($previousTask.State -eq 'Running') { throw 'The existing Core Server task did not stop cleanly.' }
 }
+
+# Task Scheduler may leave the Core supervisor or its previous worker alive.
+# Stop only processes whose exact venv command and endpoint match this service.
+foreach ($coreProcess in $coreProcesses) {
+    Stop-Process -Id $coreProcess.ProcessId -Force -ErrorAction SilentlyContinue
+}
+
+$listenerStopped = $false
+for ($attempt = 0; $attempt -lt 30; $attempt++) {
+    $previousTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    $listeners = @(Get-NetTCPConnection -State Listen -LocalAddress $TailnetAddress `
+        -LocalPort $Port -ErrorAction SilentlyContinue)
+    $remainingCoreProcesses = @(
+        Get-CimInstance Win32_Process | Where-Object {
+            $_.CommandLine -and $_.CommandLine -match $expectedProcess
+        }
+    )
+    if ((-not $previousTask -or $previousTask.State -ne 'Running') -and
+        $listeners.Count -eq 0 -and $remainingCoreProcesses.Count -eq 0) {
+        $listenerStopped = $true
+        break
+    }
+    Start-Sleep -Milliseconds 500
+}
+if (-not $listenerStopped) { throw 'The existing Core Server task or listener did not stop cleanly.' }
 
 $tokenPath = Join-Path $secrets 'api-token.dpapi'
 if (-not (Test-Path $tokenPath)) {
@@ -130,9 +170,18 @@ foreach ($file in Get-ChildItem -LiteralPath $root -File -Recurse -Force) {
 }
 & icacls.exe $logs /grant:r "${userSid}:(OI)(CI)(M)" /Q > $null
 if ($LASTEXITCODE -ne 0) { throw 'Could not grant the service write access to its log directory.' }
+& icacls.exe $secrets /grant:r "${userSid}:(OI)(CI)(M)" /Q > $null
+if ($LASTEXITCODE -ne 0) { throw 'Could not allow the service account to provision protected credentials.' }
+foreach ($writableDirectory in @($data, $tls)) {
+    & icacls.exe $writableDirectory /grant:r "${userSid}:(OI)(CI)(M)" /Q > $null
+    if ($LASTEXITCODE -ne 0) { throw "Could not grant the service access to $writableDirectory." }
+}
 
 & $uv sync --project $app --locked --no-dev --python $python
 if ($LASTEXITCODE -ne 0) { throw 'uv could not synchronize the locked Core API environment.' }
+
+& $pythonInVenv -m chushpan_core.admin ensure-tls --host $TailnetAddress
+if ($LASTEXITCODE -ne 0) { throw 'Could not provision the pinned Core TLS identity.' }
 
 foreach ($file in Get-ChildItem -LiteralPath $app -File -Recurse -Force) {
     & icacls.exe $file.FullName /grant:r "${systemSid}:F" "${administratorsSid}:F" "${userSid}:RX" /Q > $null
@@ -165,7 +214,6 @@ else {
         -InterfaceAlias $InterfaceAlias -EdgeTraversalPolicy Block | Out-Null
 }
 
-$pythonInVenv = Join-Path $app '.venv\Scripts\python.exe'
 $arguments = "-m chushpan_core --host $TailnetAddress --port $Port"
 $action = New-ScheduledTaskAction -Execute $pythonInVenv -Argument $arguments -WorkingDirectory $app
 $trigger = New-ScheduledTaskTrigger -AtStartup -RandomDelay (New-TimeSpan -Seconds 30)

@@ -77,6 +77,37 @@ def test_openai_keychain_status_is_loaded_off_event_loop(monkeypatch):
     asyncio.run(run())
 
 
+def test_core_memory_preview_filters_without_sending_or_changing_local_records():
+    _, store, bus, _, _, center = fixture(":memory:")
+    eligible, _ = store.save_memory(
+        "This selected fact stays on Mac until I confirm", category="preference"
+    )
+    sensitive, _ = store.save_memory(
+        "Sensitive memory remains local", category="profile", sensitive=True
+    )
+    unsupported, _ = store.save_memory(
+        "Personality memory is not supported in this transfer", category="personality"
+    )
+    inactive, _ = store.save_memory("Inactive memory remains local", category="project")
+    store.db.execute("UPDATE facts SET status='forgotten' WHERE id=?", (inactive,))
+    store.db.commit()
+    before = len(store.memories())
+
+    center.preview_core_memory()
+
+    preview = {item["id"]: item for item in center.server_status["memory_preview"]}
+    assert preview[eligible]["eligible"] is True
+    assert preview[sensitive]["eligible"] is False
+    assert preview[unsupported]["eligible"] is False
+    assert preview[inactive]["eligible"] is False
+    assert center.server_status["memory_preview_count"] == 1
+    assert len(store.memories()) == before
+    assert not any(item.get("op") == "core_memory_import" for item in bus.snapshot())
+
+    asyncio.run(center.close())
+    store.close()
+
+
 def test_profiles_migrate_legacy_independently_and_survive_restart(tmp_path):
     path = tmp_path / "memory.db"
     store = MemoryStore(path)

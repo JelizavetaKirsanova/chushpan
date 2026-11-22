@@ -6,12 +6,13 @@ import argparse
 import gzip
 import ipaddress
 import re
+import ssl
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.request import HTTPSHandler, ProxyHandler, Request, build_opener
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 PROJECT = REPOSITORY / "server" / "core_api"
@@ -130,19 +131,39 @@ def deploy(
         input=loader_command().encode("utf-8") + b"\n",
         check=True,
     )
-    verify_api(huawei_address)
+    verify_api(huawei_address, read_server_certificate(ssh_host))
 
 
-def verify_api(huawei_address: str) -> None:
-    """Check the public probe and confirm protected status rejects no-token calls."""
+def read_server_certificate(ssh_host: str) -> str:
+    """Fetch only the public TLS trust anchor over authenticated SSH."""
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "[Console]::Out.Write((Get-Content -Raw "
+        "'C:\\ProgramData\\Chushpan\\CoreServer\\tls\\server-cert.pem'))"
+    )
+    result = subprocess.run(
+        ["ssh", ssh_host, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "-"],
+        input=script.encode("utf-8") + b"\n",
+        capture_output=True,
+        check=True,
+    )
+    certificate = result.stdout.decode("ascii", errors="strict")
+    if "-----BEGIN CERTIFICATE-----" not in certificate:
+        raise RuntimeError("Huawei did not return its public TLS certificate.")
+    return certificate
+
+
+def verify_api(huawei_address: str, certificate: str) -> None:
+    """Check HTTPS liveness and that protected status rejects no-token calls."""
     address = _validate_tailnet_ipv4(huawei_address)
-    opener = build_opener(ProxyHandler({}))
-    with opener.open(f"http://{address}:8765/health", timeout=5) as response:
+    context = ssl.create_default_context(cadata=certificate)
+    opener = build_opener(ProxyHandler({}), HTTPSHandler(context=context))
+    with opener.open(f"https://{address}:8765/health", timeout=5) as response:
         health = response.read().decode("utf-8")
         if response.status != 200 or '"service":"chushpan-core"' not in health.replace(" ", ""):
             raise RuntimeError("Huawei Core /health did not return the expected service status")
 
-    request = Request(f"http://{address}:8765/v1/status")
+    request = Request(f"https://{address}:8765/v1/status")
     try:
         opener.open(request, timeout=5)
     except HTTPError as exc:

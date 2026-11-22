@@ -9,6 +9,7 @@ import json
 import sqlite3
 import time
 from datetime import UTC, datetime
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from backend.brain.privacy import contains_secret
@@ -18,6 +19,7 @@ from backend.settings_models import (
     CATEGORIES,
     AboutMe,
     CommandControls,
+    CoreServer,
     Models,
     Studio,
     apply_persisted,
@@ -57,6 +59,12 @@ class SettingsCenter:
             "storage": "keychain",
         }
         self.openai_credentials_task = None
+        self.server_status = {
+            "paired": bool((store.preference("settings", "server") or {}).get("paired_device_id")),
+            "reachable": None,
+            "latency_ms": None,
+            "devices": [],
+        }
         self.defaults = {
             "commands": CommandControls(
                 context_s=settings.tools.control_context_s,
@@ -98,6 +106,7 @@ class SettingsCenter:
                 local_first_result_s=settings.llm.first_result_timeout_s,
                 local_idle_s=settings.llm.stream_idle_timeout_s,
             ).model_dump(),
+            "server": CoreServer().model_dump(),
             "about": AboutMe(
                 name=settings.user.name or "", address=settings.user.form_of_address or ""
             ).model_dump(),
@@ -177,6 +186,7 @@ class SettingsCenter:
                 },
                 "openai_usage": self.openai_monthly_usage(),
             },
+            "server_status": dict(self.server_status),
             "location": automations.locations.current() if automations else {},
             "places": [p.model_dump() for p in automations.locations.list()] if automations else [],
             "signals": automations.locations.signal_observation if automations else {},
@@ -652,6 +662,27 @@ class SettingsCenter:
                 self.model_status["openai_pricing"] = result
                 self.publish(message=f"Тарифы OpenAI обновлены: {result['models']} моделей.")
                 return
+            elif op == "core_pair":
+                await self.pair_core(value)
+                return
+            elif op == "core_check":
+                await self.check_core()
+                return
+            elif op == "core_revoke":
+                await self.revoke_core_device(value)
+                return
+            elif op == "core_unpair":
+                await self.unpair_core(value)
+                return
+            elif op == "core_memory_preview":
+                self.preview_core_memory()
+                return
+            elif op == "core_memory_import":
+                await self.import_core_memory(value)
+                return
+            elif op == "core_memory_rollback":
+                await self.rollback_core_memory(value)
+                return
             if op == "save":
                 await self.save(value["category"], value["value"])
             elif op == "profile_save":
@@ -904,6 +935,24 @@ class SettingsCenter:
         previous_tts_engine = self.s.tts.engine
         if category == "access" and set(selected.disabled_tools) - set(self.conv.tools.names):
             raise ValueError("Неизвестное действие.")
+        if category == "server":
+            from backend.brain.providers import create_llm_async
+
+            await self.conv.settle()
+            client = await create_llm_async(
+                self.s,
+                core_server=None if selected.mode == "local" else selected.model_dump(),
+            )
+            self.store.set_preference("settings", category, selected.model_dump())
+            self.clients.append(client)
+            self.conv.llm = client
+            self.server_status["mode"] = selected.mode
+            self.server_status["paired"] = bool(selected.paired_device_id)
+            self.attach_openai_usage(client)
+            if hasattr(client, "on_status"):
+                client.on_status = self.bus.publish
+            self.publish(message="Режим сервера Чушпана сохранён.")
+            return
         self.store.set_preference("settings", category, selected.model_dump())
         if category in {"studio", "models", "about", "commands"}:
             apply_persisted(self.s, self.store)
@@ -918,12 +967,296 @@ class SettingsCenter:
             from backend.brain.providers import create_llm_async
 
             await self.conv.settle()
-            client = await create_llm_async(self.s)
+            client = await create_llm_async(
+                self.s, core_server=self.store.preference("settings", "server")
+            )
             self.attach_openai_usage(client)
             if hasattr(client, "on_status"):
                 client.on_status = self.bus.publish
             self.clients.append(client)
             self.conv.llm = client
+
+    async def pair_core(self, value):
+        from backend.core_client import CoreAPIClient, CoreKeychainIdentity
+
+        code = value.get("code", "")
+        address = value.get("address", "")
+        certificate = value.get("certificate_pem", "")
+        if not isinstance(code, str) or len(code) > 64:
+            raise ValueError("Проверь одноразовый код сопряжения.")
+
+        def create_client():
+            return CoreAPIClient(
+                address,
+                certificate,
+                identity_store=CoreKeychainIdentity(),
+            )
+
+        client = await asyncio.to_thread(create_client)
+        try:
+            result = await client.pair(code)
+        finally:
+            await client.aclose()
+        selected = CoreServer.model_validate(self.value("server"))
+        selected = selected.model_copy(
+            update={
+                "address": address,
+                "certificate_pem": certificate,
+                "device_name": result.get("device_name", "MacBook"),
+                "paired_device_id": result["device_id"],
+                "mode": "local",
+            }
+        )
+        self.store.set_preference("settings", "server", selected.model_dump())
+        self.server_status = {
+            "paired": True,
+            "reachable": True,
+            "latency_ms": None,
+            "devices": [],
+            "fingerprint": result["fingerprint"],
+        }
+        self.publish(message="MacBook сопряжён. Локальный режим остаётся активным.")
+
+    async def check_core(self):
+        from backend.core_client import CoreAPIClient, CoreKeychainIdentity
+
+        selected = CoreServer.model_validate(self.value("server"))
+        if not selected.paired_device_id:
+            raise ValueError("Сначала сопряги MacBook с Huawei.")
+
+        def create_client():
+            return CoreAPIClient(
+                selected.address,
+                selected.certificate_pem,
+                identity_store=CoreKeychainIdentity(),
+            )
+
+        client = await asyncio.to_thread(create_client)
+        try:
+            if not client.identity or client.identity["device_id"] != selected.paired_device_id:
+                raise ValueError("Идентичность Mac в Keychain не совпадает с настройкой сервера.")
+            status = await client.status()
+            devices = await client.devices()
+        finally:
+            await client.aclose()
+        self.server_status = {
+            **status,
+            "paired": True,
+            "reachable": True,
+            "devices": devices,
+            "last_success_at": time.time(),
+            "fingerprint": client.fingerprint,
+        }
+        self.publish(message=f"Huawei отвечает · {status['latency_ms']:.0f} мс.")
+
+    async def revoke_core_device(self, value):
+        from backend.core_client import CoreAPIClient, CoreKeychainIdentity
+
+        identity = value.get("id", "")
+        selected = CoreServer.model_validate(self.value("server"))
+        if identity == selected.paired_device_id:
+            raise ValueError("Отключи этот Mac кнопкой «Отвязать MacBook».")
+
+        def create_client():
+            return CoreAPIClient(
+                selected.address,
+                selected.certificate_pem,
+                identity_store=CoreKeychainIdentity(),
+            )
+
+        client = await asyncio.to_thread(create_client)
+        try:
+            if not client.identity or client.identity["device_id"] != selected.paired_device_id:
+                raise ValueError("Идентичность Mac в Keychain не совпадает с настройкой сервера.")
+            await client.revoke(identity)
+            devices = await client.devices()
+        finally:
+            await client.aclose()
+        self.server_status.update(devices=devices, reachable=True)
+        self.publish(message="Доступ устройства отозван.")
+
+    async def unpair_core(self, value):
+        from backend.core_client import CoreAPIClient, CoreKeychainIdentity
+
+        if value.get("confirm") is not True:
+            raise ValueError("Подтверди отключение MacBook от Huawei Core.")
+        selected = CoreServer.model_validate(self.value("server"))
+
+        def create_client():
+            return CoreAPIClient(
+                selected.address,
+                selected.certificate_pem,
+                identity_store=CoreKeychainIdentity(),
+            )
+
+        client = await asyncio.to_thread(create_client)
+        try:
+            if not client.identity or client.identity["device_id"] != selected.paired_device_id:
+                raise ValueError("Идентичность Mac в Keychain не совпадает с настройкой сервера.")
+            await client.revoke(selected.paired_device_id)
+        finally:
+            await client.aclose()
+        await asyncio.to_thread(CoreKeychainIdentity().delete)
+        unpaired = selected.model_copy(update={"mode": "local", "paired_device_id": ""})
+        await self.save("server", unpaired.model_dump())
+        self.server_status = {"paired": False, "reachable": True, "devices": []}
+        self.publish(message="MacBook отключён от Core. Локальный режим восстановлен.")
+
+    def preview_core_memory(self):
+        """Build a local-only, read-only preview for a user-selected memory import."""
+        supported = {"profile", "preference", "project", "episode", "habit", "correction"}
+        preview = []
+        all_rows = self.store.memories()
+        for row in all_rows[:500]:
+            content = row.get("content", "")
+            category = row.get("category", "")
+            reason = None
+            if row.get("status") != "active":
+                reason = "Запись неактивна"
+            elif not isinstance(content, str) or not content.strip() or len(content) > 300:
+                reason = "Содержимое вне допустимого диапазона"
+            elif row.get("sensitive") or contains_secret(content):
+                reason = "Чувствительная запись или похожа на секрет"
+            elif contains_secret(str(row.get("source", ""))):
+                reason = "Источник содержит значение, похожее на секрет"
+            elif category not in supported:
+                reason = "Категория пока не поддерживается"
+            preview.append(
+                {
+                    "id": row.get("id"),
+                    "content": content,
+                    "category": category,
+                    "source": row.get("source", ""),
+                    "eligible": reason is None,
+                    "reason": reason,
+                }
+            )
+        eligible = sum(item["eligible"] for item in preview)
+        self.server_status["memory_preview"] = preview
+        self.server_status["memory_preview_count"] = eligible
+        self.server_status["memory_preview_truncated"] = len(all_rows) > len(preview)
+        self.publish(
+            message=(
+                f"Предварительный просмотр готов: можно выбрать до {eligible} записей. "
+                "Ничего не отправлено."
+            )
+        )
+
+    async def import_core_memory(self, value):
+        if value.get("confirm") is not True:
+            raise ValueError("Подтверди перенос выбранных записей памяти.")
+        identifiers = value.get("ids")
+        if (
+            not isinstance(identifiers, list)
+            or not 1 <= len(identifiers) <= 50
+            or any(type(item) is not int for item in identifiers)
+            or len(set(identifiers)) != len(identifiers)
+        ):
+            raise ValueError("Выбери от 1 до 50 уникальных записей.")
+        supported = {"profile", "preference", "project", "episode", "habit", "correction"}
+        local = {row["id"]: row for row in self.store.memories()}
+        entries = []
+        for identifier in identifiers:
+            row = local.get(identifier)
+            if (
+                row is None
+                or row.get("status") != "active"
+                or row.get("sensitive")
+                or row.get("category") not in supported
+                or contains_secret(row.get("content", ""))
+                or contains_secret(str(row.get("source", "")))
+            ):
+                raise ValueError("Выбранная запись изменилась или не допускается к переносу.")
+            entries.append(
+                {
+                    "content": row["content"],
+                    "category": row["category"],
+                    "source": row.get("source") or "unknown",
+                }
+            )
+
+        from backend.core_client import CoreAPIClient, CoreKeychainIdentity
+
+        selected = CoreServer.model_validate(self.value("server"))
+        if not selected.paired_device_id:
+            raise ValueError("Сначала сопряги MacBook с Huawei.")
+
+        def create_client():
+            return CoreAPIClient(
+                selected.address,
+                selected.certificate_pem,
+                identity_store=CoreKeychainIdentity(),
+            )
+
+        client = await asyncio.to_thread(create_client)
+        migration_id = str(uuid4())
+        try:
+            if not client.identity or client.identity["device_id"] != selected.paired_device_id:
+                raise ValueError("Идентичность Mac в Keychain не совпадает с настройкой сервера.")
+            result = await client.import_memory(migration_id, entries)
+            updated = selected.model_copy(update={"last_import_id": migration_id})
+            self.store.set_preference("settings", "server", updated.model_dump())
+            status = await client.status()
+        finally:
+            await client.aclose()
+        self.server_status.update(
+            paired=True,
+            reachable=True,
+            memory=status.get("memory"),
+            last_import={
+                "migration_id": migration_id,
+                "created": len(result.get("created", [])),
+                "duplicates": result.get("duplicates", 0),
+                "already_imported": result.get("already_imported", False),
+            },
+        )
+        self.publish(
+            message=(
+                f"Перенос завершён: новых записей {len(result.get('created', []))}, "
+                f"дубликатов пропущено {result.get('duplicates', 0)}. "
+                "Можно отменить последний перенос."
+            )
+        )
+
+    async def rollback_core_memory(self, value):
+        if value.get("confirm") is not True:
+            raise ValueError("Подтверди отмену последнего переноса памяти.")
+        selected = CoreServer.model_validate(self.value("server"))
+        migration_id = selected.last_import_id
+        if not migration_id:
+            raise ValueError("Нет переноса, который можно отменить.")
+
+        from backend.core_client import CoreAPIClient, CoreKeychainIdentity
+
+        def create_client():
+            return CoreAPIClient(
+                selected.address,
+                selected.certificate_pem,
+                identity_store=CoreKeychainIdentity(),
+            )
+
+        client = await asyncio.to_thread(create_client)
+        try:
+            if not client.identity or client.identity["device_id"] != selected.paired_device_id:
+                raise ValueError("Идентичность Mac в Keychain не совпадает с настройкой сервера.")
+            result = await client.rollback_memory_import(migration_id)
+            status = await client.status()
+        finally:
+            await client.aclose()
+        updated = selected.model_copy(update={"last_import_id": ""})
+        self.store.set_preference("settings", "server", updated.model_dump())
+        self.server_status.update(
+            paired=True,
+            reachable=True,
+            memory=status.get("memory"),
+            last_import=None,
+        )
+        self.publish(
+            message=(
+                f"Перенос отменён: удалено {result['deleted']} неизменённых записей; "
+                f"изменённые записи оставлены ({result['preserved_modified']})."
+            )
+        )
 
     def validate_studio(self, values):
         selected = Studio.model_validate(values)

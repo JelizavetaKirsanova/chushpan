@@ -2515,7 +2515,8 @@ async def _run_voice(
     llm = await create_llm_async(
         s.model_copy(
             update={"llm": s.llm.model_copy(update={"keep_alive": s.resources.keep_alive})}
-        )
+        ),
+        core_server=store.preference("settings", "server"),
     )
     boot.start("ollama")
     if at_login and not await llm.wait_ready(0):

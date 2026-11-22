@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import re
 from ctypes import POINTER, Structure, byref, c_void_p
 from ctypes.wintypes import BOOL, DWORD, LPWSTR
 from pathlib import Path
@@ -66,3 +67,55 @@ def load_api_token() -> str:
     if len(token) != 43:
         raise RuntimeError("The protected API token has an unexpected length.")
     return token
+
+
+def _provider_key_path(provider: str) -> Path:
+    if provider != "openai":
+        raise ValueError("Unsupported Core LLM provider.")
+    return token_path().parent / "openai-api-key.dpapi"
+
+
+def save_openai_key(value: str) -> None:
+    """Store an OpenAI key with machine-scope DPAPI; callers must not log it."""
+    if not isinstance(value, str) or not 20 <= len(value) <= 512:
+        raise ValueError("The OpenAI key length is outside the accepted range.")
+    if any(char.isspace() or ord(char) < 33 or ord(char) > 126 for char in value):
+        raise ValueError("The OpenAI key contains unsupported characters.")
+    from chushpan_core.identity import _dpapi
+
+    path = _provider_key_path("openai")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = bytearray(value.encode("ascii"))
+    try:
+        protected = _dpapi(bytes(raw), protect=True)
+    finally:
+        raw[:] = bytes(len(raw))
+    temporary = path.with_suffix(".dpapi.tmp")
+    temporary.write_bytes(protected)
+    temporary.replace(path)
+
+
+def load_openai_key() -> str:
+    """Decrypt the manually provisioned provider key for the duration of a request."""
+    path = _provider_key_path("openai")
+    if os.name != "nt":
+        raise RuntimeError("Core provider credentials are available only on Windows.")
+    protected = path.read_bytes()
+    if not protected or len(protected) > 4096:
+        raise RuntimeError("Core provider credentials are unavailable or invalid.")
+    from chushpan_core.identity import _dpapi
+
+    raw = bytearray(_dpapi(protected, protect=False))
+    try:
+        value = raw.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError("The provider credential is invalid.") from exc
+    finally:
+        raw[:] = bytes(len(raw))
+    if not re.fullmatch(r"[^\s\x00-\x1f\x7f]{20,512}", value):
+        raise RuntimeError("The provider credential is invalid.")
+    return value
+
+
+def openai_key_configured() -> bool:
+    return _provider_key_path("openai").is_file()

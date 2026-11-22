@@ -16,6 +16,7 @@ export interface SettingsState {type:'settings_center'; version:number; storage_
   permission_onboarding?:{visible:boolean;missing:string[];fingerprint:string}|null;
   music_application?:{name?:string;path?:string;bundle_id?:string;kind?:string;mode?:string;allow_browser:boolean}|null;
   models:{installed?:string[];ollama?:string;tts?:string;gemini?:{models?:{model:string;provider:string;status:string;latency_s?:number|null;error?:string|null}[]};openai?:{models?:string[];status?:string;credentials?:{configured:boolean;state:string;storage:string}};openai_usage?:{estimated_spend_usd:number|null;unknown_price_requests:number;limit_usd:number;warning:boolean};openai_pricing?:{checked_at?:string;models?:number};streaming?:boolean};
+  server_status?:{paired:boolean;reachable?:boolean|null;latency_ms?:number|null;devices?:{device_id:string;device_name:string;device_type:string;active:boolean}[];memory?:{available:boolean;entries:number;schema_version:number};llm?:{provider:string;configured:boolean};last_success_at?:number|null;fingerprint?:string;last_import?:{migration_id:string;created:number;duplicates:number;already_imported:boolean}|null;memory_preview?:{id:number;content:string;category:string;source:string;eligible:boolean;reason?:string|null}[];memory_preview_count?:number;memory_preview_truncated?:boolean};
   location:{name?:string|null;place_id?:string|null;mode?:string;message?:string;reason?:string}; places:Place[];
   signals:{signals?:Signal[];error?:string}; rules:Scenario[];
   integrations:{id:string;name:string;tools:string[];enabled:boolean;supported:boolean;status:string;error:string|null;details:string[]}[];
@@ -35,6 +36,7 @@ const categories = [
   ['commands','Команды и устройства','Выбор устройства, контекст и последние действия','settings'],
   ['memory','Память и обучение','Важное о тебе и то, чему Чушпан научился','heart'],
   ['models','ИИ и модели','Провайдер, качество и доступность моделей','cpu'],
+  ['server','Сервер Huawei','Core API, сопряжение и режим работы','link'],
   ['access','Доступ и безопасность','Разрешения, приложения и границы самостоятельности','shield'],
   ['places','Места и контекст','Дом, общага и подходящие версии сценариев','pin'],
   ['integrations','Интеграции','Устройства и сервисы, которые уже подключены','link'],
@@ -180,6 +182,7 @@ export class SettingsCenterUI {
     if(this.page==='commands')this.commands(content);
     if(this.page==='memory')this.memory(content);
     if(this.page==='models')this.models(content);
+    if(this.page==='server')this.server(content);
     if(this.page==='access')this.access(content);
     if(this.page==='places')this.places(content);
     if(this.page==='integrations')this.integrations(content);
@@ -249,6 +252,51 @@ export class SettingsCenterUI {
     if(!this.state!.command_history?.length)history.append(el('p','Действий пока нет.','settings-empty'));
     history.append(this.button('Открыть диагностику команд',()=>this.navigate('performance')));root.append(history);
   }
+  private server(root:HTMLElement):void {
+    const state=this.state!,config=state.values.server as Values,status=state.server_status??{paired:false};
+    const pairing=this.section('Сопряжение с Huawei','Одноразовый код, имя устройства и публичный сертификат получи через SSH. Код действует пять минут и не сохраняется в настройках. Приватный ключ Mac остаётся в macOS Keychain.');
+    const address=this.input(config.address??'https://100.117.129.107:8765');address.maxLength=120;
+    const cert=this.textarea(config.certificate_pem??'');cert.rows=5;cert.maxLength=4096;cert.autocomplete='off';cert.setAttribute('aria-label','Публичный TLS-сертификат Huawei');
+    const code=this.input('','password');code.maxLength=64;code.autocomplete='one-time-code';code.name='core-pair-code';code.setAttribute('aria-label','Одноразовый код сопряжения');
+    const pair=this.button('Сопрячь MacBook',()=>{if(!code.value||!cert.value){this.feedback('Вставь одноразовый код и публичный сертификат Huawei.',true);return;}this.send({op:'core_pair',address:address.value,certificate_pem:cert.value,code:code.value});code.value='';this.feedback('Проверяю TLS-сертификат и одноразовое приглашение…');},true);
+    pairing.append(this.label('HTTPS-адрес Huawei',address),this.label('Публичный TLS-сертификат',cert,'Его можно получить командой SSH, указанной в документации Core Server.'),this.label('Одноразовый код из SSH-приглашения',code),pair);
+    root.append(pairing);
+    if(status.paired){
+      const connected=status.reachable===true?'Подключено':status.reachable===false?'Недоступен':'Статус ещё не проверен';
+      const detail=this.section('Состояние сервера');detail.append(el('p',`${connected}${status.latency_ms==null?'':` · ${Math.round(status.latency_ms)} мс`}`,'settings-help'));
+      if(status.fingerprint)detail.append(el('p',`SHA-256 сертификата: ${status.fingerprint}`,'settings-help'));
+      if(status.last_success_at)detail.append(el('p',`Последняя успешная проверка: ${new Date(status.last_success_at*1000).toLocaleString('ru-RU')}`,'settings-help'));
+      if(status.memory)detail.append(el('p',`Центральная память: ${status.memory.available?'доступна':'недоступна'} · записей ${status.memory.entries} · схема ${status.memory.schema_version}`,'settings-help'));
+      if(status.llm)detail.append(el('p',`Провайдер Huawei: ${status.llm.provider} · ${status.llm.configured?'настроен':'не настроен'}`,'settings-help'));
+      detail.append(this.button('Проверить сервер и устройства',()=>this.send({op:'core_check'}),true));
+      for(const device of status.devices??[]){const row=el('div','','settings-row');row.append(el('span',`${device.device_name} · ${device.device_type} · ${device.active?'доступ разрешён':'отозван'}`));if(device.active&&device.device_id!==config.paired_device_id)row.append(this.button('Отозвать доступ',()=>{if(window.confirm(`Отозвать доступ устройства «${device.device_name}»?`))this.send({op:'core_revoke',id:device.device_id});},true));detail.append(row);}
+      detail.append(this.button('Отвязать MacBook',()=>{if(window.confirm('Отозвать доступ Mac на Huawei и удалить его идентичность из Keychain? Текущие локальные данные сохранятся.'))this.send({op:'core_unpair',confirm:true});},true));root.append(detail);
+      const modes=this.form('server',[['mode','Режим работы','select',[["local","Локально — текущая работа Mac"],["server","Huawei Core — ИИ через сервер"],["auto","Автоматически — Huawei, затем локальная Ollama"]]]]);
+      modes.querySelector<HTMLSelectElement>('[data-field="mode"]')!.value=String(config.mode??'local');
+      root.append(modes);
+      const transfer=this.section('Выборочная память Mac → Huawei','Ничего не переносится автоматически. Сначала открой предварительный просмотр, отметь записи и отдельно подтверди передачу. Записи с секретами, чувствительные, неактивные и неподдерживаемые категории исключаются.');
+      transfer.append(this.button('Подготовить предварительный просмотр',()=>this.send({op:'core_memory_preview'}),true));
+      if(status.memory_preview){
+        const selected=new Set<number>();
+        for(const item of status.memory_preview){
+          const row=el('div','','settings-row');
+          if(item.eligible){const checkbox=this.input(false,'checkbox');checkbox.setAttribute('aria-label',`Перенести: ${item.content}`);checkbox.onchange=()=>{if(checkbox.checked&&selected.size>=50){checkbox.checked=false;this.feedback('За один раз можно перенести не более 50 записей.',true);return;}checkbox.checked?selected.add(item.id):selected.delete(item.id);};row.append(checkbox);}
+          row.append(el('span',`${item.content} · ${item.category} · ${item.source}${item.reason?` · ${item.reason}`:''}`));transfer.append(row);
+        }
+        transfer.append(el('p',`В предварительном просмотре: ${status.memory_preview_count??0} записей можно выбрать. За раз можно перенести не более 50. ${status.memory_preview_truncated?'Показаны первые 500 локальных записей; остальные ещё не просмотрены. ':''}Просмотр ничего не отправляет.`,'settings-help'));
+        transfer.append(this.button('Перенести отмеченные записи',()=>{if(!selected.size){this.feedback('Сначала отметь записи для переноса.',true);return;}if(window.confirm(`Передать ${selected.size} выбранных записей памяти на Huawei по TLS? Их можно будет отменить ниже, если они не изменены.`))this.send({op:'core_memory_import',ids:[...selected],confirm:true});},true));
+      }
+      if(config.last_import_id){
+        const previous=status.last_import;
+        transfer.append(el('p',previous?`Последний перенос: добавлено ${previous.created}, дубликатов пропущено ${previous.duplicates}.`:'Есть последний перенос, доступный для отмены.','settings-help'));
+        transfer.append(this.button('Отменить последний перенос',()=>{if(window.confirm('Удалить только записи последнего переноса, которые на Huawei не менялись? Изменённые записи будут сохранены.'))this.send({op:'core_memory_rollback',confirm:true});},true));
+      }
+      root.append(transfer);
+    }else{
+      root.append(el('p','До сопряжения Чушпан продолжает работать в локальном режиме. Центральная память Huawei пока пуста; перенос данных не выполнялся.','settings-help'));
+    }
+    root.append(el('p','Микрофон, STT/TTS, wake word, разрешения, Safari и выполнение команд остаются на Mac. В серверном режиме текст запроса и сформированный контекст передаются через TLS Huawei, затем запрос уходит выбранному на Core провайдеру. Для выбранной памяти используется отдельный предпросмотр и подтверждение.','settings-help'));
+  }
   private personality(root:HTMLElement):void {
     const state=this.state!;this.draft??=clone(state.profiles.find(p=>p.id===this.selected)??state.profiles[0]);const draft=this.draft;
     const bar=el('div','','settings-profile-bar');const picker=this.select(state.profiles.map(p=>[p.id,p.name+(p.builtin?' · готовый':'')]),draft.id);picker.id='personality-profile';picker.onchange=()=>{if(this.dirty&&!window.confirm('Отменить несохранённые изменения?')){picker.value=this.selected;return;}this.selected=picker.value;this.draft=null;this.dirty=false;this.render();};
@@ -308,6 +356,7 @@ export class SettingsCenterUI {
   }
   private models(root:HTMLElement):void {
     const state=this.state!;const installed=state.models.installed??[];const current=String(state.values.models.local_model);const models=[...new Set([current,...installed])];const openaiModels=state.models.openai?.models??[];const selectedOpenAI=String(state.values.models.openai_model??'gpt-4.1-mini');root.append(this.form('models',[['provider','Активный ИИ','select',[['gemini','Gemini'],['ollama','Ollama (локально)'],['openai','OpenAI API']]],['cloud_model','Модель Gemini','select',['gemini-3.8-flash','gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite'].map(v=>[v,v])],['cloud_fallback','Резервная модель Gemini','select',[['','Без второй облачной попытки'],['gemini-3.5-flash','gemini-3.5-flash']]],['local_model','Локальная модель','select',models.map(v=>[v,v])],['openai_model','Модель OpenAI','select',[...new Set([selectedOpenAI,...openaiModels])].map(v=>[v,v])],['openai_temperature','OpenAI: температура','number'],['openai_max_output','OpenAI: максимум выходных токенов','number'],['openai_fallback','Переключаться на Ollama при недоступности OpenAI','checkbox'],['fallback','Резервная Ollama для Gemini','checkbox'],['mode','Режим обработки','select',[['fast','Быстрый'],['balanced','Сбалансированный'],['quality','Качественный']]],['streaming','Начинать озвучку до завершения ответа','checkbox'],['thinking','Рассуждения Ollama','select',[['auto','Автоматически: простые вопросы без рассуждений'],['on','Всегда включены'],['off','Выключены по моему выбору']]],['cloud_thinking','Рассуждения Gemini для сложных запросов','select',[['auto','По умолчанию модели'],['low','Низкий уровень'],['medium','Средний уровень'],['high','Высокий уровень']]],['cloud_timeout_s','Gemini: тайм-аут ответа, с','number'],['cloud_first_result_s','Gemini: общий бюджет до первого результата, с','number'],['cloud_idle_s','Gemini: ожидание следующего фрагмента, с','number'],['local_first_result_s','Ollama: ожидание первого результата, с','number'],['local_idle_s','Ollama: ожидание следующего фрагмента, с','number']]));root.append(el('p','Чушпан сохраняет свою личность и единую память при смене модели. Облачной модели передаётся только контекст текущего запроса. Действия выполняются через существующие проверки и подтверждения.','settings-help'));
+    const serverConfig=(state.values.server??{}) as Values;if(serverConfig.mode==='server'||serverConfig.mode==='auto')root.append(el('p','Настройки Gemini, OpenAI и Ollama ниже действуют только в локальном режиме. Серверный режим использует провайдер Huawei Core; в автоматическом режиме при недоступности Huawei выбирается локальная Ollama.','settings-help'));
     if(state.models.openai?.credentials?.configured&&!state.models.openai?.models&&!this.openaiModelsRequested){this.openaiModelsRequested=true;this.send({op:'openai_models'});}
     const form=root.querySelector('form[data-category="models"]')!;
     const advanced=el('details','','settings-group');advanced.append(el('summary','Дополнительные настройки скорости'));

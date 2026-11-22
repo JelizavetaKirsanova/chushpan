@@ -806,8 +806,51 @@ async def _read_openai_key_bounded(timeout_s: float) -> tuple[str, str]:
         return "", "timeout"
 
 
-async def create_llm_async(s: Settings, *, keychain_timeout_s: float = 3.0) -> LLMClient:
+async def create_llm_async(
+    s: Settings,
+    *,
+    keychain_timeout_s: float = 3.0,
+    core_server: dict | None = None,
+) -> LLMClient:
     """Construct providers without making Keychain part of the event loop."""
+    if core_server and core_server.get("mode") in {"server", "auto"}:
+        from backend.core_client import (
+            CoreAPIClient,
+            CoreAutoClient,
+            CoreKeychainIdentity,
+            RemoteCoreClient,
+        )
+
+        mode = core_server["mode"]
+
+        def make_remote():
+            return RemoteCoreClient(
+                CoreAPIClient(
+                    core_server["address"],
+                    core_server["certificate_pem"],
+                    identity_store=CoreKeychainIdentity(),
+                )
+            )
+
+        try:
+            remote = await asyncio.to_thread(make_remote)
+            if (
+                not remote.available
+                or remote.api.identity["device_id"] != core_server["paired_device_id"]
+            ):
+                await remote.aclose()
+                raise RuntimeError("Mac Core identity is not available in this Keychain.")
+        except Exception as exc:
+            if mode == "server":
+                raise LLMError(
+                    "Huawei mode is selected, but the paired Mac identity is unavailable. "
+                    "Check the Server settings or select local mode."
+                ) from exc
+            return await create_llm_async(s, keychain_timeout_s=keychain_timeout_s)
+        if mode == "server":
+            return remote
+        local = await asyncio.to_thread(create_llm, s)
+        return CoreAutoClient(remote, local)
     if s.llm.provider == "openai":
         key, state = await _read_openai_key_bounded(keychain_timeout_s)
         if state != "saved":
@@ -857,6 +900,10 @@ def create_llm(s: Settings, *, openai_key: str | None = None) -> LLMClient:
 
 
 def configured_label(s: Settings, client: LLMClient) -> str:
+    if getattr(client, "provider", None) == "huawei_core":
+        return "Huawei Core · OpenAI"
+    if getattr(client, "provider", None) == "huawei_core_auto":
+        return "Huawei Core → локальная Ollama"
     if s.llm.provider == "ollama":
         return f"Ollama {s.llm.model}"
     if s.llm.provider == "openai":

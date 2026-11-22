@@ -22,16 +22,35 @@ function fixture() {
   const profile={id:'mine',revision:1,name:'Мой характер',description:'Локальный профиль',builtin:false,traits:Object.fromEntries(traitEntries.map(([key])=>[key,50])),communication:{address:'ты',preferred_addresses:[],unwanted_addresses:[],favorite_expressions:[],forbidden_expressions:[],jokes:'normal',allow_profanity:true,response_style:'adaptive',use_context:true,errors:'direct',irritation:'calm',serious:'supportive'},instructions:'',technical_detail:70};
   const state:SettingsState={type:'settings_center',version:1,profiles:[profile,{...structuredClone(profile),id:'calm',name:'Спокойный помощник',builtin:true}],active:{id:'mine',reason:'Выбран вручную',locked:false},traits:Object.fromEntries(traitEntries.map(([key,name,group])=>[key,{name,group}])),values:{
     commands:{context_s:60,default_brightness_device:'ask',ambiguity_rule:'context_then_ask'},studio:{voice:'eugene',rate:'medium',pitch:'medium',volume:100,pause_ms:0,pronunciations:{},normalize_numbers:true,normalize_english:true,wake_phrase:'эй чушпан',silence_ms:650,adaptive_endpoint:true,text_only:false},
-    memory:{automatic:'auto',excluded:[],temporary_days:30},models:{provider:'ollama',local_model:'qwen3:8b',cloud_model:'gemini-3.8-flash',cloud_fallback:'gemini-3.5-flash',fallback:true,mode:'balanced'},access:{disabled_tools:[],blocked_apps:[]},quiet:{enabled:false,start:'23:00',end:'07:00',weekdays:[0,1,2,3,4,5,6],mute:true,pause_initiative:true},notifications:{reminders:true,scenarios:false},about:{name:'Пользовательница',address:'',preferences:''}},
+    memory:{automatic:'auto',excluded:[],temporary_days:30},models:{provider:'ollama',local_model:'qwen3:8b',cloud_model:'gemini-3.8-flash',cloud_fallback:'gemini-3.5-flash',fallback:true,mode:'balanced'},access:{disabled_tools:[],blocked_apps:[]},server:{mode:'local',address:'https://100.117.129.107:8765',certificate_pem:'',device_name:'MacBook',paired_device_id:'',last_import_id:''},quiet:{enabled:false,start:'23:00',end:'07:00',weekdays:[0,1,2,3,4,5,6],mute:true,pause_initiative:true},notifications:{reminders:true,scenarios:false},about:{name:'Пользовательница',address:'',preferences:''}},
     memory:[],memory_pending:[],habits_opt_in:false,engine:'silero',voices:['eugene','aidar'],voice_support:{rate:true,pitch:true,expression:false},permissions:null,models:{installed:['qwen3:8b']},location:{name:'Общий',mode:'auto'},places:[{id:'home',revision:1,name:'Дом',cities:[]}],signals:{signals:[{kind:'wifi',key:'a'.repeat(64),name:'Тестовая сеть'}]},rules:[],integrations:[],actions:[],recent_actions:[],last_errors:[]};
   view.connection(true);view.receive(state);
   const button=(label:string)=>{const found=[...window.document.querySelectorAll('button')].find(b=>b.textContent===label);assert.ok(found,label);found.click();return found;};
   return {window,view,state,requests,button};
 }
 
+test('server memory preview is read-only until selected transfer and offers guarded rollback',async()=>{
+  const f=fixture();try{
+    f.state.server_status={paired:true,reachable:true,memory:{available:true,entries:0,schema_version:2},memory_preview:[{id:7,content:'A selected local fact',category:'preference',source:'explicit_user',eligible:true}],memory_preview_count:1};
+    f.view.receive(f.state);f.view.open('server');
+    assert.equal(f.requests.some(r=>r.op==='core_memory_import'),false);
+    f.button('Подготовить предварительный просмотр');
+    assert.equal(f.requests.at(-1)!.op,'core_memory_preview');
+
+    const checkbox=f.window.document.querySelector<HTMLInputElement>('[aria-label="Перенести: A selected local fact"]')!;
+    checkbox.checked=true;checkbox.dispatchEvent(new f.window.Event('change'));
+    f.button('Перенести отмеченные записи');
+    assert.deepEqual(f.requests.at(-1),{op:'core_memory_import',ids:[7],confirm:true});
+
+    f.state.values.server.last_import_id='5f3a808e-25db-4f10-9cf2-90cd892b89cb';
+    f.view.receive(f.state);f.view.open('server');f.button('Отменить последний перенос');
+    assert.deepEqual(f.requests.at(-1),{op:'core_memory_rollback',confirm:true});
+  }finally{await f.window.happyDOM.abort();}
+});
+
 test('settings categories open separately and back preserves legacy forms',async()=>{
   const f=fixture();try {
-    const pages=['personality','voice','commands','memory','models','access','places','integrations','advanced'];
+    const pages=['personality','voice','commands','memory','models','server','access','places','integrations','advanced'];
     for(const page of pages){f.view.open(page);assert.equal(f.window.document.getElementById('settings-home')!.hidden,true);assert.ok(f.window.document.getElementById('settings-content')!.childElementCount);f.button('‹ Все настройки');assert.equal(f.window.document.getElementById('settings-home')!.hidden,false);}
     f.view.open('voice');assert.ok(f.window.document.getElementById('settings-content')!.contains(f.window.document.getElementById('voice-settings')));
     f.view.open('advanced');assert.ok(f.window.document.getElementById('settings-content')!.contains(f.window.document.getElementById('ambient-settings')));
@@ -181,7 +200,7 @@ test('YouTube Music settings expose persisted application and explicit browser f
 test('all settings links keep the established icon text chevron grid structure',async()=>{
   const f=fixture();try{
     const links=[...f.window.document.querySelectorAll('#settings-categories .settings-category')];
-    assert.equal(links.length,15);
+    assert.equal(links.length,16);
     for(const link of links){
       assert.equal(link.children.length,3,link.textContent!);
       assert.ok(link.children[0].matches('.settings-category-icon'));
