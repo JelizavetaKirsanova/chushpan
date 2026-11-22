@@ -91,6 +91,21 @@ struct MobileStore {
     }
 }
 
+actor MobileStoreWriter {
+    private let store: MobileStore
+    private var latestRevision = 0
+
+    init(store: MobileStore) {
+        self.store = store
+    }
+
+    func save(_ database: MobileDatabase, revision: Int) throws {
+        guard revision >= latestRevision else { return }
+        latestRevision = revision
+        try store.save(database)
+    }
+}
+
 extension JSONEncoder {
     static var mobile: JSONEncoder {
         let encoder = JSONEncoder()

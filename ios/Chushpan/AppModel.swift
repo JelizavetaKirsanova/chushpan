@@ -27,7 +27,6 @@ struct MacActionFeedback {
 final class AppModel: ObservableObject {
     @Published var database: MobileDatabase
     @Published var selectedConversationID: String?
-    @Published var composer = ""
     @Published var isGenerating = false
     @Published var speakResponses: Bool
     @Published var voiceIdentifier: String
@@ -54,11 +53,11 @@ final class AppModel: ObservableObject {
     @Published var macConfirmationCode = ""
 
     let speech = SpeechService()
-    private let store: MobileStore
+    private let storeWriter: MobileStoreWriter
     private let keychain = KeychainVault()
-#if !CHUSHPAN_PERSONAL_DEBUG
-    private let cloud = CloudSyncService()
-#endif
+    #if !CHUSHPAN_PERSONAL_DEBUG
+        private let cloud = CloudSyncService()
+    #endif
     private let macBrowser = MacServiceBrowser()
     private var generationTask: Task<Void, Never>?
     private var localSaveTask: Task<Void, Never>?
@@ -66,6 +65,7 @@ final class AppModel: ObservableObject {
     private var cloudSyncTask: Task<Void, Never>?
     private var cloudSyncRequestedAgain = false
     private var cloudSyncGeneration = 0
+    private var persistenceRevision = 0
     private var macClient: MacBridgeClient?
     private var reconnectTask: Task<Void, Never>?
     private var pairingInProgress = false
@@ -99,7 +99,7 @@ final class AppModel: ObservableObject {
             resolvedStore = MobileStore(fileURL: fallback)
             database = MobileDatabase()
         }
-        store = resolvedStore
+        storeWriter = MobileStoreWriter(store: resolvedStore)
         if cloudSyncEnabled {
             cloudSyncStatus = "Синхронизация iCloud включена. Проверяю доступность…"
             requestCloudSync()
@@ -186,12 +186,12 @@ final class AppModel: ObservableObject {
         if selectedConversationID == id { selectedConversationID = nil }
     }
 
-    func sendMessage() {
-        let text = composer.trimmingCharacters(in: .whitespacesAndNewlines)
+    func sendMessage(_ draft: String) {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isGenerating else { return }
         if activeConversation == nil { createConversation() }
         guard let id = selectedConversationID,
-              let index = database.conversations.firstIndex(where: { $0.id == id }) else { return }
+            let index = database.conversations.firstIndex(where: { $0.id == id }) else { return }
         let userMessage = ChatMessage(role: .user, text: text, delivery: .complete)
         var assistant = ChatMessage(role: .assistant, text: "", delivery: .streaming)
         assistant.errorMessage = nil
@@ -208,7 +208,6 @@ final class AppModel: ObservableObject {
             stamp(&conversation, deviceID: data.deviceID)
             data.conversations[index] = conversation
         }
-        composer = ""
         runReply(conversationID: id, userID: userID, assistantID: assistantID)
     }
 
@@ -229,8 +228,6 @@ final class AppModel: ObservableObject {
         generationTask?.cancel()
         speech.stopListening()
     }
-
-    func clearComposer() { composer = "" }
 
     func setAppearance(_ value: String) {
         guard ["system", "light", "dark"].contains(value) else { return }
@@ -389,13 +386,15 @@ final class AppModel: ObservableObject {
             try Task.checkCancellation()
             guard cloudSyncEnabled, generation == cloudSyncGeneration else { return }
             var updated = database
-            try updated.applyCloudItems(merged)
-            database = updated
-            try store.save(updated)
-            cloudSyncStatus = "Синхронизация завершена · \(Date.now.formatted(date: .abbreviated, time: .shortened))"
-        } catch is CancellationError {
-            if cloudSyncEnabled && generation == cloudSyncGeneration {
-                cloudSyncStatus = "Синхронизация остановлена."
+                try updated.applyCloudItems(merged)
+                database = updated
+                persistenceRevision += 1
+                try await storeWriter.save(updated, revision: persistenceRevision)
+                cloudSyncStatus =
+                    "Синхронизация завершена · \(Date.now.formatted(date: .abbreviated, time: .shortened))"
+            } catch is CancellationError {
+                if cloudSyncEnabled && generation == cloudSyncGeneration {
+                    cloudSyncStatus = "Синхронизация остановлена."
             }
         } catch {
             if cloudSyncEnabled && generation == cloudSyncGeneration {
@@ -838,8 +837,6 @@ final class AppModel: ObservableObject {
         Task { await executeConfirm(client: client, code: code) }
     }
 
-    func setComposerFromSpeech(_ value: String) { composer = value }
-
     private func runReply(conversationID: String, userID: String, assistantID: String) {
         guard let conversation = database.conversations.first(where: { $0.id == conversationID }),
               let user = conversation.messages.first(where: { $0.id == userID }) else { return }
@@ -1040,9 +1037,35 @@ final class AppModel: ObservableObject {
 
     private func persist(scheduleCloud: Bool = true) {
         guard storageError == nil else { return }
-        do { try store.save(database) }
-        catch { storageError = error.localizedDescription; return }
+        persistenceRevision += 1
+        let revision = persistenceRevision
+        let snapshot = database
+        let writer = storeWriter
+        Task { [weak self] in
+            do {
+                try await writer.save(snapshot, revision: revision)
+            } catch {
+                let message = error.localizedDescription
+                await self?.reportStorageError(message, revision: revision)
+            }
+        }
         if scheduleCloud, cloudSyncEnabled { scheduleCloudSync() }
+    }
+
+    func flushPersistence() async {
+        guard storageError == nil else { return }
+        persistenceRevision += 1
+        let revision = persistenceRevision
+        do {
+            try await storeWriter.save(database, revision: revision)
+        } catch {
+            storageError = error.localizedDescription
+        }
+    }
+
+    private func reportStorageError(_ message: String, revision: Int) {
+        guard revision == persistenceRevision else { return }
+        storageError = message
     }
 
     private func scheduleSave() {

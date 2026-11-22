@@ -22,6 +22,16 @@ struct MemoryView: View {
 
     var body: some View {
         VStack(spacing: 12) {
+            MobilePageHeader(
+                eyebrow: source == "Копия Mac" ? "Только чтение" : "На iPhone",
+                title: "Память",
+                subtitle: source == "Копия Mac"
+                    ? "Разрешённая копия общей памяти Чушпана"
+                    : "Факты, сохранённые в локальном профиле",
+                symbol: "brain.head.profile"
+            )
+            .padding(.horizontal, 16)
+
             Picker("Источник памяти", selection: $source) {
                 Text("На устройстве").tag("На устройстве")
                 Text("Копия Mac").tag("Копия Mac")

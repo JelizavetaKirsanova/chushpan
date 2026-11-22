@@ -394,7 +394,7 @@ struct MacMediaProgress: Codable, Identifiable, Equatable {
     }
 }
 
-struct MobileDatabase: Codable {
+struct MobileDatabase: Codable, @unchecked Sendable {
     static let currentSchema = 3
 
     var schemaVersion = currentSchema

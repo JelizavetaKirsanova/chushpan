@@ -9,8 +9,15 @@ struct DevicesView: View {
     var body: some View {
         List {
             Section {
+                MobilePageHeader(
+                    eyebrow: "Подключённый Mac",
+                    title: "Устройства",
+                    subtitle: "Разрешённые устройства и команды через защищённый канал Mac",
+                    symbol: "lightbulb.2.fill"
+                )
                 HStack {
-                    Label(model.macStatus == nil ? "Mac недоступен" : "Подключено к Mac", systemImage: "desktopcomputer")
+                    Label(
+                        model.macStatus == nil ? "Mac недоступен" : "Подключено к Mac", systemImage: "desktopcomputer")
                     Spacer()
                     Button("Обновить") { Task { await model.refreshMac() } }
                 }
@@ -118,8 +125,15 @@ struct LightingView: View {
     var body: some View {
         List {
             Section {
+                MobilePageHeader(
+                    eyebrow: "Цвет и яркость",
+                    title: "Освещение",
+                    subtitle: "Управление разрешёнными лентами через Mac",
+                    symbol: "lightbulb.led.wide"
+                )
                 HStack {
-                    Label(model.macStatus == nil ? "Mac недоступен" : "Подсветка Mac", systemImage: "lightbulb.led.wide")
+                    Label(
+                        model.macStatus == nil ? "Mac недоступен" : "Подсветка Mac", systemImage: "lightbulb.led.wide")
                     Spacer()
                     Button("Обновить") { Task { await model.refreshMac() } }
                 }

@@ -17,6 +17,7 @@ struct ChushpanApp: App {
                         model.speech.stopListening()
                         model.cancelGeneration()
                         model.setSceneActive(false)
+                        Task { await model.flushPersistence() }
                     } else if phase == .active, model.cloudSyncEnabled {
                         model.requestCloudSync()
                     }

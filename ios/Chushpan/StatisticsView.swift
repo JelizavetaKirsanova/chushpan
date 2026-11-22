@@ -11,6 +11,12 @@ struct StatisticsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                MobilePageHeader(
+                    eyebrow: "Сводка Mac · 7 дней",
+                    title: "Статистика",
+                    subtitle: "Запросы, команды и задержки Чушпана",
+                    symbol: "chart.bar.xaxis"
+                )
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Статистика Чушпана")
@@ -106,8 +112,7 @@ struct StatisticsView: View {
             Text(title).font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
-        .padding(15)
-        .background(.background, in: RoundedRectangle(cornerRadius: 17))
+        .mobileCard()
     }
 
     private func stage(_ title: String, value: Double?) -> some View {

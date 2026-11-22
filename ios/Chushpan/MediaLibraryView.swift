@@ -20,6 +20,16 @@ struct MediaLibraryView: View {
 
     var body: some View {
         VStack(spacing: 10) {
+            MobilePageHeader(
+                eyebrow: "Твоя коллекция",
+                title: "Медиатека",
+                subtitle: model.database.macLibraryHasLoaded
+                    ? "\(model.database.macLibraryCache.count) фильмов и сериалов · общие списки Mac"
+                    : "Фильмы, избранное и прогресс из общей медиатеки Mac",
+                symbol: "play.rectangle.fill"
+            )
+            .padding(.horizontal, 16)
+
             if let updated = model.database.macCacheUpdatedAt {
                 HStack {
                     Label("Общая медиатека Mac", systemImage: "desktopcomputer")

@@ -14,6 +14,18 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                MobilePageHeader(
+                    eyebrow: "Чушпан на iPhone",
+                    title: "Настройки",
+                    subtitle: "GPT, голос, сопряжение, оформление и локальное хранение",
+                    symbol: "gearshape.fill"
+                )
+                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            }
+
             Section("ИИ и диагностика") {
                 Label("GPT через сервер Чушпана", systemImage: "brain.head.profile")
                     .font(.headline)

@@ -37,9 +37,7 @@ struct HomeView: View {
                                 .foregroundStyle(.secondary)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(18)
-                        .background(Color.accentPurple.opacity(0.11), in: RoundedRectangle(cornerRadius: 20))
-                        .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(Color.accentPurple.opacity(0.18)))
+                        .mobileCard(cornerRadius: 20)
                     }
                     .buttonStyle(.plain)
                 } else if model.database.macLibraryHasLoaded {
@@ -88,32 +86,14 @@ struct HomeView: View {
     }
 
     private var hero: some View {
-        HStack(spacing: 16) {
-            Image("ChushpanIcon")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 86, height: 86)
-                .padding(8)
-                .background(Color.accentPurple.opacity(0.12), in: RoundedRectangle(cornerRadius: 22))
-                .accessibilityLabel("Фирменный кот Чушпана")
-            VStack(alignment: .leading, spacing: 7) {
-                Text("Чушпан")
-                    .font(.largeTitle.weight(.bold))
-                Text("Твой мобильный клиент Чушпана")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                if let chat = model.macChatStatus {
-                    Text("\(chat.provider.uppercased()) · \(chat.model)")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(Color.accentPurple)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 22).strokeBorder(Color.accentPurple.opacity(0.18)))
+        MobilePageHeader(
+            eyebrow: "Личный помощник",
+            title: "Чушпан",
+            subtitle: model.macChatStatus.map { "\($0.provider.uppercased()) · \($0.model) · через Mac" }
+                ?? "Твой голосовой помощник на iPhone",
+            symbol: "cat.fill",
+            showsMascot: true
+        )
     }
 
     private func quickLink<Destination: View>(
@@ -125,8 +105,7 @@ struct HomeView: View {
             Label(title, systemImage: symbol)
                 .font(.subheadline.weight(.medium))
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(14)
-                .background(.background, in: RoundedRectangle(cornerRadius: 17))
+                .mobileCard()
         }
         .buttonStyle(.plain)
     }

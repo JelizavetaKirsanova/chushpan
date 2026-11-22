@@ -10,9 +10,16 @@ struct ScenariosView: View {
     var body: some View {
         List {
             Section {
+                MobilePageHeader(
+                    eyebrow: "Защищённые действия",
+                    title: "Сценарии",
+                    subtitle: "Запускай автоматизации, которые выполняет Mac",
+                    symbol: "sparkles"
+                )
                 StatusCard(
                     title: model.macStatus == nil ? "Mac недоступен" : "Сценарии выполняет Mac",
-                    detail: "Геопозиция iPhone/iPad не используется. Автоматический выбор места берётся только из текущего состояния Mac.",
+                    detail:
+                        "Геопозиция iPhone/iPad не используется. Автоматический выбор места берётся только из текущего состояния Mac.",
                     symbol: "location.circle",
                     tint: .accentPurple
                 )

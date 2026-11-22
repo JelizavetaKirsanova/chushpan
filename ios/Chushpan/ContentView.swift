@@ -65,7 +65,7 @@ struct ContentView: View {
             NavigationStack { HomeView() }
                 .tabItem { Label("Главная", systemImage: "house") }
                 .tag(AppSection.home)
-            NavigationStack { ChatView() }
+            NavigationStack { ChatView(onExitChat: { selection = .home }) }
                 .tabItem { Label("Чат", systemImage: "bubble.left.and.bubble.right") }
                 .tag(AppSection.chat)
             NavigationStack { DevicesView() }
@@ -156,6 +156,101 @@ extension Color {
             UIColor(red: 145.0 / 255, green: 54.0 / 255, blue: 194.0 / 255, alpha: 1)
         }
     })
+}
+
+struct MobilePageHeader: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    let eyebrow: String
+    let title: String
+    let subtitle: String
+    let symbol: String
+    var showsMascot = false
+
+    var body: some View {
+        HStack(spacing: 14) {
+            if showsMascot {
+                Image("ChushpanIcon")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 56, height: 56)
+                    .padding(7)
+                    .background(
+                        Color.accentPurple.opacity(0.13),
+                        in: RoundedRectangle(cornerRadius: 19, style: .continuous)
+                    )
+                    .accessibilityLabel("Фирменный кот Чушпана")
+            } else {
+                Image(systemName: symbol)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(Color.accentPurple)
+                    .frame(width: 48, height: 48)
+                    .background(
+                        Color.accentPurple.opacity(0.13),
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    )
+                    .accessibilityHidden(true)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(eyebrow.uppercased())
+                    .font(.caption2.weight(.bold))
+                    .tracking(1.2)
+                    .foregroundStyle(Color.accentPurple)
+                Text(title)
+                    .font(.title2.weight(.bold))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.82)
+                Text(subtitle)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.accentPurple.opacity(colorScheme == .dark ? 0.24 : 0.15),
+                            Color(uiColor: .secondarySystemGroupedBackground),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(Color.accentPurple.opacity(0.20))
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct MobileCardModifier: ViewModifier {
+    var cornerRadius: CGFloat = 18
+
+    func body(content: Content) -> some View {
+        content
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                Color(uiColor: .secondarySystemGroupedBackground),
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).strokeBorder(
+                    Color.accentPurple.opacity(0.13)))
+    }
+}
+
+extension View {
+    func mobileCard(cornerRadius: CGFloat = 18) -> some View {
+        modifier(MobileCardModifier(cornerRadius: cornerRadius))
+    }
 }
 
 struct StatusCard: View {

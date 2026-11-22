@@ -36,11 +36,16 @@ struct CalendarView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                MobilePageHeader(
+                    eyebrow: "События с Mac",
+                    title: "Календарь",
+                    subtitle: "Выбери день, чтобы посмотреть события из календаря Mac",
+                    symbol: "calendar"
+                )
                 DatePicker("День", selection: $selectedDate, displayedComponents: .date)
                     .datePickerStyle(.graphical)
                     .tint(Color.accentPurple)
-                    .padding(12)
-                    .background(.background, in: RoundedRectangle(cornerRadius: 20))
+                    .mobileCard(cornerRadius: 20)
 
                 HStack {
                     Label("Календарь Mac", systemImage: "desktopcomputer")
@@ -148,9 +153,7 @@ private struct CalendarEventCard: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(15)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background, in: RoundedRectangle(cornerRadius: 17))
+        .mobileCard()
     }
 
     private func time(_ raw: String) -> String {

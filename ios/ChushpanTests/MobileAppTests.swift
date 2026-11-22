@@ -21,6 +21,23 @@ final class MobileStoreTests: XCTestCase {
         XCTAssertTrue(loaded.conversations.first?.isPrivate == true)
     }
 
+    func testStoreWriterDoesNotReplaceNewerSnapshotWithOlderSave() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chushpan-store-order-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = MobileStore(fileURL: url)
+        let writer = MobileStoreWriter(store: store)
+        var newer = MobileDatabase()
+        newer.sharedSettings.appearance = "dark"
+        var older = MobileDatabase()
+        older.sharedSettings.appearance = "light"
+
+        try await writer.save(newer, revision: 2)
+        try await writer.save(older, revision: 1)
+
+        XCTAssertEqual(try store.load().sharedSettings.appearance, "dark")
+    }
+
     func testVersionOneStoreMigratesWithoutImportingMacData() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("chushpan-migration-\(UUID().uuidString).json")
