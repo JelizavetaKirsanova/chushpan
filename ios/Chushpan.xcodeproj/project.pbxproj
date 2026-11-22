@@ -224,6 +224,7 @@
 		93DD97B140564D49AFC2D0D7 /* appPersonalDebug */ = {isa = XCBuildConfiguration; buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Chushpan/Chushpan-PersonalDebug.entitlements;
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 2ZANF98JYB;
 				ENABLE_APP_INTENTS_METADATA_GENERATION = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_PREVIEWS = YES;
@@ -271,6 +272,7 @@
 		A80B4F35BA224A8D8DE7F7B1 /* testPersonalDebug */ = {isa = XCBuildConfiguration; buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 2ZANF98JYB;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks";
