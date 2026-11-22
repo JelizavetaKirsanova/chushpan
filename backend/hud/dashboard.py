@@ -62,6 +62,7 @@ def dashboard_settings(value: dict) -> dict:
 class Dashboard:
     def __init__(self, bus, settings, store, conv, weather, *, personal=None):
         self.bus, self.s, self.store, self.conv, self.weather = bus, settings, store, conv, weather
+        self.bus.dashboard = self
         self.personal = personal or PersonalContext(settings)
         self.loop = None
         self.jobs: dict[str, asyncio.Task] = {}
@@ -651,27 +652,26 @@ end run"""
                 ),
                 None,
             )
-        self.bus.publish(
-            {
-                "type": "dashboard_stats",
-                "days": days,
-                "conversations": counts[0],
-                "messages": counts[1],
-                "response_s": mean(samples) if samples else None,
-                "stages": {k: mean(v) if v else None for k, v in stages.items()},
-                "commands": commands,
-                "errors": failures,
-                "model": model,
-                "buckets": [
-                    {
-                        "label": b["label"],
-                        "requests": b["requests"],
-                        "response_s": mean(b["samples"]) if b["samples"] else None,
-                    }
-                    for b in buckets.values()
-                ],
-            }
-        )
+        result = {
+            "days": days,
+            "conversations": counts[0],
+            "messages": counts[1],
+            "response_s": mean(samples) if samples else None,
+            "stages": {k: mean(v) if v else None for k, v in stages.items()},
+            "commands": commands,
+            "errors": failures,
+            "model": model,
+            "buckets": [
+                {
+                    "label": b["label"],
+                    "requests": b["requests"],
+                    "response_s": mean(b["samples"]) if b["samples"] else None,
+                }
+                for b in buckets.values()
+            ],
+        }
+        self.bus.publish({"type": "dashboard_stats", **result})
+        return result
 
     def start(self, loop):
         self.loop = loop

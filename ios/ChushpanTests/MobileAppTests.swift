@@ -35,6 +35,64 @@ final class MobileStoreTests: XCTestCase {
         XCTAssertTrue(migrated.macMediaCache.isEmpty)
     }
 
+    func testMacLibraryCacheKeepsLoadedEmptyStateAcrossRestart() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chushpan-library-cache-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        var database = MobileDatabase()
+        database.macLibraryCache = []
+        database.macLibraryHasLoaded = true
+        database.macCacheUpdatedAt = Date(timeIntervalSince1970: 100)
+        try MobileStore(fileURL: url).save(database)
+
+        let loaded = try MobileStore(fileURL: url).load()
+        XCTAssertTrue(loaded.macLibraryHasLoaded)
+        XCTAssertTrue(loaded.macLibraryCache.isEmpty)
+        XCTAssertEqual(loaded.macCacheUpdatedAt, database.macCacheUpdatedAt)
+    }
+
+    func testMacLibraryPayloadMapsStatusFavoriteAndProgress() {
+        let item = MacMediaItem(
+            id: "title-1",
+            title: "Фильм",
+            kind: "series",
+            year: 2024,
+            posterURL: nil,
+            description: nil,
+            status: "watching",
+            favorite: true,
+            userRating: 8.5,
+            watchlist: false,
+            manualWatched: nil,
+            addedAt: nil,
+            libraryUpdatedAt: "2026-11-22T20:00:00.000+00:00",
+            episodeID: "episode-1",
+            season: 2,
+            episode: 4,
+            position: 120,
+            duration: 6000,
+            watched: false,
+            lastViewed: nil
+        )
+
+        let mobile = item.mobileItem
+        XCTAssertEqual(mobile.id, "title-1")
+        XCTAssertEqual(mobile.kind, .series)
+        XCTAssertEqual(mobile.status, .watching)
+        XCTAssertTrue(mobile.favorite)
+        XCTAssertEqual(mobile.rating, 8.5)
+        XCTAssertEqual(mobile.season, 2)
+        XCTAssertEqual(mobile.episode, 4)
+        XCTAssertEqual(mobile.positionSeconds, 120)
+    }
+
+    func testCalendarPayloadWithoutCachedDaysStillDecodes() throws {
+        let data = Data(#"{"today":"2026-11-22","status":"ready","message":"ok","timezone":"Europe/Tallinn","events":[]}"#.utf8)
+        let snapshot = try JSONDecoder().decode(MacCalendarSnapshot.self, from: data)
+        XCTAssertEqual(snapshot.today, "2026-11-22")
+        XCTAssertNil(snapshot.days)
+    }
+
     func testPrivateContentIsNotIncludedInCloudPayload() throws {
         var database = MobileDatabase()
         database.conversations = [
@@ -81,52 +139,6 @@ final class MobileStoreTests: XCTestCase {
     }
 }
 
-final class GeminiClientTests: XCTestCase {
-    func testHTTPErrorsAreMappedWithoutMakingALiveRequest() {
-        XCTAssertEqual(GeminiError.forHTTPStatus(401), .unauthorized)
-        XCTAssertEqual(GeminiError.forHTTPStatus(403), .forbidden)
-        XCTAssertEqual(GeminiError.forHTTPStatus(429), .rateLimited)
-        XCTAssertEqual(GeminiError.forHTTPStatus(404), .modelUnavailable)
-        XCTAssertEqual(GeminiError.forHTTPStatus(503), .serverUnavailable)
-    }
-
-    func testSSETextDeltaParserIgnoresNonTextEvents() {
-        let data = Data(#"{"candidates":[{"content":{"parts":[{"text":"Привет"}]}}]}"#.utf8)
-        XCTAssertEqual(GeminiClient.textDelta(from: data), "Привет")
-        XCTAssertNil(GeminiClient.textDelta(from: Data("not json".utf8)))
-        let blocked = Data(#"{"candidates":[{"content":{"parts":[{}]}}]}"#.utf8)
-        XCTAssertEqual(GeminiClient.textDelta(from: blocked), "")
-    }
-
-    @MainActor
-    func testCancellingStreamCancelsUnderlyingURLRequest() async throws {
-        let started = expectation(description: "stream request started")
-        HeldResponseURLProtocol.onStart = { started.fulfill() }
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [HeldResponseURLProtocol.self]
-        let session = URLSession(configuration: configuration)
-        let client = GeminiClient(session: session, baseURL: URL(string: "https://mock.chushpan.invalid")!)
-        let task = Task { @MainActor in
-            try await client.stream(
-                key: "test-key-never-sent-to-network",
-                model: "gemini-test",
-                messages: [GeminiInputMessage(role: .user, text: "Привет")],
-                memoryContext: "",
-                onText: { _ in }
-            )
-        }
-        await fulfillment(of: [started], timeout: 2)
-        task.cancel()
-        do {
-            try await task.value
-            XCTFail("Ожидалась отмена запроса")
-        } catch is CancellationError {
-            XCTAssertTrue(HeldResponseURLProtocol.wasStopped)
-        }
-        session.invalidateAndCancel()
-    }
-}
-
 final class MacPairingCodeTests: XCTestCase {
     func testPairingCodeBindsChallengeDeviceAndCertificate() {
         let challenge = "test-challenge-12345678901234567890"
@@ -148,34 +160,5 @@ final class MacPairingCodeTests: XCTestCase {
             ),
             "835016"
         )
-    }
-}
-
-private final class HeldResponseURLProtocol: URLProtocol {
-    static var onStart: (() -> Void)?
-    static var wasStopped = false
-    private var stopped = false
-
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        Self.wasStopped = false
-        Self.onStart?()
-        guard let response = HTTPURLResponse(
-            url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": "text/event-stream"]
-        ) else { return }
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [weak self] in
-            guard let self, !self.stopped else { return }
-            self.client?.urlProtocol(self, didLoad: Data("data: {\"candidates\":[]}\n\n".utf8))
-            self.client?.urlProtocolDidFinishLoading(self)
-        }
-    }
-
-    override func stopLoading() {
-        stopped = true
-        Self.wasStopped = true
     }
 }

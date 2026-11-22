@@ -6,28 +6,22 @@ struct HomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Чушпан")
-                        .font(.largeTitle.weight(.bold))
-                    Text("Локальная история, облачный ответ по твоей команде и отдельное управление Mac.")
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                }
+                hero
 
                 NavigationLink(destination: ChatView()) {
-                    Label("Голосовой разговор", systemImage: "mic.fill")
+                    Label("Поговорить с Чушпаном", systemImage: "bubble.left.and.bubble.right.fill")
                         .font(.headline)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 15)
+                        .padding(.vertical, 16)
                 }
                 .buttonStyle(.borderedProminent)
-                .accessibilityHint("Откроет чат, где можно говорить по кнопке или вводить текст")
+                .accessibilityHint("Откроет чат с ответами GPT через защищённое соединение с Mac")
 
                 StatusCard(
                     title: model.macStatus == nil ? "Mac недоступен" : "Mac на связи",
                     detail: model.macStatus == nil
-                        ? "Чат через Gemini и локально сохранённые данные работают отдельно от Mac. Подключение Mac настраивается явно."
-                        : "Подключение защищено TLS. Сценарии и устройства запускаются только после выбора команды на этом устройстве.",
+                        ? model.macConnectionMessage
+                        : "Защищённое сопряжение · \(model.macConnectionKind). Данные и команды доступны только по разрешениям, выданным на Mac.",
                     symbol: model.macStatus == nil ? "desktopcomputer.trianglebadge.exclamationmark" : "desktopcomputer",
                     tint: model.macStatus == nil ? .orange : .green
                 )
@@ -41,38 +35,47 @@ struct HomeView: View {
                             Text(progressText(item))
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
-                            Text("Время сохранено вручную. Открытие сайта не означает управление плеером или восстановление позиции.")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(18)
-                        .background(Color.accentPurple.opacity(0.10), in: RoundedRectangle(cornerRadius: 18))
+                        .background(Color.accentPurple.opacity(0.11), in: RoundedRectangle(cornerRadius: 20))
+                        .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(Color.accentPurple.opacity(0.18)))
                     }
                     .buttonStyle(.plain)
+                } else if model.database.macLibraryHasLoaded {
+                    StatusCard(
+                        title: "Медиатека синхронизирована",
+                        detail: "Нет записей со статусом «Смотрю». Открой медиатеку, чтобы посмотреть списки и избранное.",
+                        symbol: "play.rectangle"
+                    )
                 } else {
                     StatusCard(
-                        title: "Продолжить просмотр",
-                        detail: "Добавь фильм или сериал в медиатеку и укажи прогресс — карточка появится здесь.",
+                        title: "Медиатека Mac",
+                        detail: model.macMediaError ?? "Сохраняет фильмы, избранное и прогресс в общей базе Чушпана.",
                         symbol: "play.rectangle"
                     )
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Быстрый доступ").font(.headline)
+                    Text("Разделы Чушпана").font(.headline)
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 12)], spacing: 12) {
-                        quickLink("Чат", symbol: "bubble.left", destination: ChatView())
+                        quickLink("Медиатека", symbol: "play.rectangle", destination: MediaLibraryView())
                         quickLink("Устройства", symbol: "lightbulb.2", destination: DevicesView())
+                        quickLink("Освещение", symbol: "lightbulb.led.wide", destination: LightingView())
                         quickLink("Сценарии", symbol: "sparkles", destination: ScenariosView())
-                        quickLink("Память", symbol: "brain.head.profile", destination: MemoryView())
+                        quickLink("Календарь", symbol: "calendar", destination: CalendarView())
+                        quickLink("Статистика", symbol: "chart.bar.xaxis", destination: StatisticsView())
                     }
                 }
 
-                StatusCard(
-                    title: "Данные дня",
-                    detail: "Погода и календарь не подключены к мобильному приложению. Оно не выдаёт пустые карточки за полученную сводку.",
-                    symbol: "sun.max"
-                )
+                if let calendar = model.database.macCalendarCache {
+                    StatusCard(
+                        title: calendar.status == "ready" ? "Календарь Mac обновлён" : "Календарь Mac",
+                        detail: calendar.message,
+                        symbol: "calendar",
+                        tint: calendar.status == "ready" ? Color.accentPurple : .secondary
+                    )
+                }
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 22)
@@ -84,20 +87,55 @@ struct HomeView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private func quickLink<Destination: View>(_ title: String, symbol: String, destination: Destination) -> some View {
+    private var hero: some View {
+        HStack(spacing: 16) {
+            Image("ChushpanIcon")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 86, height: 86)
+                .padding(8)
+                .background(Color.accentPurple.opacity(0.12), in: RoundedRectangle(cornerRadius: 22))
+                .accessibilityLabel("Фирменный кот Чушпана")
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Чушпан")
+                    .font(.largeTitle.weight(.bold))
+                Text("Твой мобильный клиент Чушпана")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                if let chat = model.macChatStatus {
+                    Text("\(chat.provider.uppercased()) · \(chat.model)")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.accentPurple)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22).strokeBorder(Color.accentPurple.opacity(0.18)))
+    }
+
+    private func quickLink<Destination: View>(
+        _ title: String,
+        symbol: String,
+        destination: Destination
+    ) -> some View {
         NavigationLink(destination: destination) {
             Label(title, systemImage: symbol)
                 .font(.subheadline.weight(.medium))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(14)
-                .background(.background, in: RoundedRectangle(cornerRadius: 15))
+                .background(.background, in: RoundedRectangle(cornerRadius: 17))
         }
         .buttonStyle(.plain)
     }
 
     private func progressText(_ item: MobileMediaItem) -> String {
-        let seconds = Int(item.positionSeconds)
-        if item.kind == .series { return "Сезон \(item.season), серия \(item.episode) · \(seconds / 60) мин" }
-        return "\(seconds / 60) мин сохранено"
+        let minutes = Int(item.positionSeconds) / 60
+        if item.kind == .series {
+            return "Сезон \(item.season), серия \(item.episode) · \(minutes) мин"
+        }
+        return "\(minutes) мин сохранено"
     }
 }

@@ -2,12 +2,6 @@ import Combine
 import Foundation
 import UIKit
 
-enum ChatExecutionTarget: String, CaseIterable, Identifiable {
-    case thisDevice = "Этот iPhone/iPad"
-    case mac = "Mac"
-    var id: String { rawValue }
-}
-
 enum MacActionState {
     case submitted, running, completed, failed, confirmationRequired, unknown
 
@@ -35,10 +29,8 @@ final class AppModel: ObservableObject {
     @Published var selectedConversationID: String?
     @Published var composer = ""
     @Published var isGenerating = false
-    @Published var includeRelevantMemory: Bool
     @Published var speakResponses: Bool
     @Published var voiceIdentifier: String
-    @Published var hasAPIKey = false
     @Published var storageError: String?
     @Published var cloudSyncEnabled: Bool
     @Published var cloudSyncStatus = "Облачная синхронизация выключена."
@@ -50,7 +42,10 @@ final class AppModel: ObservableObject {
     @Published var macTrusted: Bool
     @Published var macAutoReconnectEnabled: Bool
     @Published var macStatus: MacRemoteStatus?
+    @Published var macChatStatus: MacChatProviderStatus?
     @Published var macConnectionMessage = "Mac не сопряжён."
+    @Published var macMediaLoading = false
+    @Published var macMediaError: String?
     @Published var macDiscoveryMessage = "Ищу Чушпан через Bonjour…"
     @Published var discoveredMacs: [DiscoveredMac] = []
     @Published var macLastConnectedAt: Date?
@@ -61,7 +56,6 @@ final class AppModel: ObservableObject {
     let speech = SpeechService()
     private let store: MobileStore
     private let keychain = KeychainVault()
-    private let gemini = GeminiClient()
 #if !CHUSHPAN_PERSONAL_DEBUG
     private let cloud = CloudSyncService()
 #endif
@@ -78,7 +72,6 @@ final class AppModel: ObservableObject {
     private var sceneIsActive = true
 
     init() {
-        includeRelevantMemory = UserDefaults.standard.bool(forKey: "mobile.includeRelevantMemory")
         speakResponses = UserDefaults.standard.bool(forKey: "mobile.speakResponses")
         voiceIdentifier = UserDefaults.standard.string(forKey: "mobile.voiceIdentifier") ?? ""
 #if CHUSHPAN_PERSONAL_DEBUG
@@ -107,7 +100,6 @@ final class AppModel: ObservableObject {
             database = MobileDatabase()
         }
         store = resolvedStore
-        hasAPIKey = (try? keychain.read("gemini-api-key")) != nil
         if cloudSyncEnabled {
             cloudSyncStatus = "Синхронизация iCloud включена. Проверяю доступность…"
             requestCloudSync()
@@ -141,8 +133,9 @@ final class AppModel: ObservableObject {
     }
 
     var visibleMedia: [MobileMediaItem] {
-        database.media.filter { $0.deletedAt == nil }
-            .sorted { $0.updatedAt > $1.updatedAt }
+        guard database.macLibraryHasLoaded else { return [] }
+        return database.macLibraryCache.map(\.mobileItem)
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
 
     var visibleLightPresets: [MobileLightPreset] {
@@ -156,7 +149,6 @@ final class AppModel: ObservableObject {
     }
 
     var appearance: String { database.sharedSettings.appearance }
-    var selectedModel: String { database.sharedSettings.model }
 
     func createConversation() {
         var conversation = MobileConversation()
@@ -240,27 +232,6 @@ final class AppModel: ObservableObject {
 
     func clearComposer() { composer = "" }
 
-    func saveAPIKey(_ raw: String) throws {
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty, value.count <= 512 else { return }
-        try keychain.write(Data(value.utf8), account: "gemini-api-key")
-        hasAPIKey = true
-    }
-
-    func clearAPIKey() throws {
-        try keychain.remove("gemini-api-key")
-        hasAPIKey = false
-    }
-
-    func setModel(_ model: String) {
-        guard ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"].contains(model) else { return }
-        updateDatabase { data in
-            data.sharedSettings.model = model
-            data.sharedSettings.updatedAt = .now
-            data.sharedSettings.modifiedBy = data.deviceID
-        }
-    }
-
     func setAppearance(_ value: String) {
         guard ["system", "light", "dark"].contains(value) else { return }
         updateDatabase { data in
@@ -268,11 +239,6 @@ final class AppModel: ObservableObject {
             data.sharedSettings.updatedAt = .now
             data.sharedSettings.modifiedBy = data.deviceID
         }
-    }
-
-    func setIncludeRelevantMemory(_ value: Bool) {
-        includeRelevantMemory = value
-        UserDefaults.standard.set(value, forKey: "mobile.includeRelevantMemory")
     }
 
     func setSpeakResponses(_ value: Bool) {
@@ -313,52 +279,34 @@ final class AppModel: ObservableObject {
     }
 
     func addMedia(_ value: MobileMediaItem) {
-        var item = value
-        item.title = String(item.title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(240))
-        guard !item.title.isEmpty else { return }
-        item.modifiedBy = database.deviceID
-        item.updatedAt = .now
-        updateDatabase { $0.media.append(item) }
+        let title = value.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+        performMacCommand("media_add", arguments: [
+            "title": String(title.prefix(200)),
+            "kind": value.kind == .series ? "series" : "movie",
+            "year": value.year ?? 0,
+        ], label: "Медиатека")
     }
 
     func updateMedia(_ value: MobileMediaItem) {
-        updateDatabase { data in
-            guard let index = data.media.firstIndex(where: { $0.id == value.id }) else { return }
-            var item = value
-            item.title = String(item.title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(240))
-            item.positionSeconds = max(0, min(item.positionSeconds, 604800))
-            item.durationSeconds = max(0, min(item.durationSeconds, 604800))
-            if let rating = item.rating { item.rating = max(1, min(rating, 10)) }
-            stamp(&item, deviceID: data.deviceID)
-            data.media[index] = item
-        }
+        guard database.macLibraryCache.contains(where: { $0.id == value.id }) else { return }
+        var values: [String: Any] = [
+            "status": value.status == .watching ? "watching" : value.status == .watched ? "watched" : "planned",
+            "favorite": value.favorite,
+            "position": max(0, min(value.positionSeconds, 604800)),
+            "duration": max(0, min(value.durationSeconds, 604800)),
+            "progress_status": value.status == .watched ? "watched" : value.status == .planned ? "unwatched" : "watching",
+            "season": value.kind == .series ? max(value.season, 1) : 0,
+            "episode": value.kind == .series ? max(value.episode, 1) : 0,
+        ]
+        if let rating = value.rating { values["user_rating"] = max(1, min(rating, 10)) }
+        else { values["user_rating"] = NSNull() }
+        performMacCommand("media_update", arguments: ["id": value.id, "values": values], label: "Медиатека")
     }
 
     func deleteMedia(_ id: String) {
-        updateDatabase { data in
-            guard let index = data.media.firstIndex(where: { $0.id == id }) else { return }
-            data.media[index].deletedAt = .now
-            stamp(&data.media[index], deviceID: data.deviceID)
-        }
-    }
-
-    func importMacProgress(_ progress: MacMediaProgress) {
-        if var item = visibleMedia.first(where: { $0.title.localizedCaseInsensitiveCompare(progress.title) == .orderedSame }) {
-            item.kind = .series
-            item.status = progress.watched ? .watched : .watching
-            item.season = progress.season
-            item.episode = progress.episode
-            item.positionSeconds = max(0, progress.position)
-            item.durationSeconds = max(0, progress.duration)
-            updateMedia(item)
-        } else {
-            var item = MobileMediaItem(title: progress.title, kind: .series, status: progress.watched ? .watched : .watching)
-            item.season = progress.season
-            item.episode = progress.episode
-            item.positionSeconds = max(0, progress.position)
-            item.durationSeconds = max(0, progress.duration)
-            addMedia(item)
-        }
+        guard database.macLibraryCache.contains(where: { $0.id == id }) else { return }
+        performMacCommand("media_delete", arguments: ["id": id], label: "Медиатека")
     }
 
     func addLightPreset(name: String, rgb: RGBColor, brightness: Int, favorite: Bool = false) {
@@ -637,8 +585,10 @@ final class AppModel: ObservableObject {
                 UserDefaults.standard.set(true, forKey: "mobile.macTrusted")
             }
             macStatus = try await client.status()
+            macChatStatus = macStatus?.mobileChat
             recordMacConnection(at: macBaseURL)
             macConnectionMessage = "Mac на связи по защищённому соединению."
+            Task { await syncFromMac() }
         } catch {
             macStatus = nil
             macConnectionMessage = error.localizedDescription
@@ -764,18 +714,44 @@ final class AppModel: ObservableObject {
             macConnectionMessage = "Сначала подключи и подтверди Mac."
             return
         }
+        guard !macMediaLoading else { return }
+        macMediaLoading = true
+        macMediaError = nil
         macConnectionMessage = "Запрашиваю только категории, разрешённые на Mac…"
+        defer { macMediaLoading = false }
         do {
             let response = try await macClient.synchronize()
+            macChatStatus = response.data.mobileChat ?? macStatus?.mobileChat
             updateDatabase(scheduleCloud: false) { data in
-                data.macMemoryCache = response.data.memory ?? []
-                data.macMediaCache = response.data.mediaProgress ?? []
+                if let memory = response.data.memory { data.macMemoryCache = memory }
+                if let progress = response.data.mediaProgress { data.macMediaCache = progress }
+                if let library = response.data.mediaLibrary {
+                    data.macLibraryCache = library
+                    data.macLibraryHasLoaded = true
+                }
+                if let history = response.data.history { data.macHistoryCache = history }
+                if let calendar = response.data.calendar { data.macCalendarCache = calendar }
+                if let statistics = response.data.statistics { data.macStatisticsCache = statistics }
                 data.macCacheUpdatedAt = Date(timeIntervalSince1970: response.serverTime)
             }
-            macConnectionMessage = "Получены разрешённые данные Mac. Они сохранены локально и не отправлены в iCloud."
+            if response.data.mediaLibrary != nil {
+                macMediaError = nil
+                macConnectionMessage = "Медиатека Mac загружена и сохранена для автономного просмотра."
+            } else if macStatus?.categories.contains("media_library") == true {
+                macMediaError = "Mac не вернул медиатеку. Обнови соединение и повтори синхронизацию."
+                macConnectionMessage = macMediaError ?? "Медиатека Mac недоступна."
+            } else {
+                macMediaError = "На Mac ещё не разрешена категория «Медиатека Mac». Выбери её в разрешениях этого iPhone на Mac."
+                macConnectionMessage = macMediaError ?? "Медиатека Mac не разрешена."
+            }
         } catch {
+            macMediaError = error.localizedDescription
             macConnectionMessage = error.localizedDescription
         }
+    }
+
+    func refreshCalendarDay(_ date: String) {
+        performMacCommand("calendar_day", arguments: ["date": date], label: "Календарь")
     }
 
     func forgetMacOnThisDevice() {
@@ -841,68 +817,40 @@ final class AppModel: ObservableObject {
     private func runReply(conversationID: String, userID: String, assistantID: String) {
         guard let conversation = database.conversations.first(where: { $0.id == conversationID }),
               let user = conversation.messages.first(where: { $0.id == userID }) else { return }
+        var historyBudget = 6000
+        let privateHistory = Array(conversation.messages
+            .filter { $0.id != userID && $0.id != assistantID && $0.delivery == .complete }
+            .suffix(12)
+            .reversed()
+            .compactMap { message -> [String: String]? in
+                guard historyBudget > 0 else { return nil }
+                let content = String(message.text.suffix(historyBudget))
+                guard !content.isEmpty else { return nil }
+                historyBudget -= content.count
+                return ["role": message.role.rawValue, "content": content]
+            }
+            .reversed())
         isGenerating = true
         persist()
-        let target = chatTarget
         generationTask = Task { [weak self] in
             guard let self else { return }
-            if target == .mac {
-                await self.runMacChat(text: user.text, conversationID: conversationID, assistantID: assistantID)
-            } else {
-                await self.runLocalChat(conversation: conversation, conversationID: conversationID, assistantID: assistantID)
-            }
+            await self.runMacChat(
+                text: user.text,
+                conversationID: conversationID,
+                assistantID: assistantID,
+                isPrivate: conversation.isPrivate,
+                history: privateHistory
+            )
         }
     }
 
-    @Published var chatTarget: ChatExecutionTarget = .thisDevice
-
-    private func runLocalChat(conversation: MobileConversation, conversationID: String, assistantID: String) async {
-        defer { isGenerating = false; generationTask = nil }
-        do {
-            guard let keyData = try keychain.read("gemini-api-key"),
-                  let key = String(data: keyData, encoding: .utf8) else { throw GeminiError.missingKey }
-            let messages = conversation.messages
-                .filter { $0.delivery == .complete && !$0.text.isEmpty }
-                .map { GeminiInputMessage(role: $0.role, text: $0.text) }
-            let memory = includeRelevantMemory && !conversation.isPrivate
-                ? relevantMemory(for: messages.last?.text ?? "") : ""
-            try await gemini.stream(
-                key: key,
-                model: selectedModel,
-                messages: messages,
-                memoryContext: memory
-            ) { [weak self] delta in
-                guard let self else { return }
-                self.updateMessage(conversationID: conversationID, messageID: assistantID) {
-                    $0.text += delta
-                    $0.delivery = .streaming
-                }
-                self.scheduleSave()
-            }
-            updateMessage(conversationID: conversationID, messageID: assistantID) {
-                $0.delivery = .complete
-                $0.errorMessage = nil
-            }
-            persist()
-            if speakResponses, let message = findMessage(conversationID: conversationID, id: assistantID) {
-                speech.speak(message.text, voiceIdentifier: voiceIdentifier.isEmpty ? nil : voiceIdentifier)
-            }
-        } catch is CancellationError {
-            updateMessage(conversationID: conversationID, messageID: assistantID) {
-                $0.delivery = .cancelled
-                $0.errorMessage = "Ответ остановлен."
-            }
-            persist()
-        } catch {
-            updateMessage(conversationID: conversationID, messageID: assistantID) {
-                $0.delivery = .failed
-                $0.errorMessage = error.localizedDescription
-            }
-            persist()
-        }
-    }
-
-    private func runMacChat(text: String, conversationID: String, assistantID: String) async {
+    private func runMacChat(
+        text: String,
+        conversationID: String,
+        assistantID: String,
+        isPrivate: Bool,
+        history: [[String: String]]
+    ) async {
         defer { isGenerating = false; generationTask = nil }
         guard macTrusted, let client = macClient, macStatus?.capabilities.contains("chat") == true else {
             updateMessage(conversationID: conversationID, messageID: assistantID) {
@@ -913,7 +861,13 @@ final class AppModel: ObservableObject {
             return
         }
         do {
-            let receipt = try await client.submit(operation: "chat", arguments: ["text": text])
+            var arguments: [String: Any] = [
+                "text": text,
+                "conversation_id": conversationID,
+                "private": isPrivate,
+            ]
+            if isPrivate { arguments["history"] = history }
+            let receipt = try await client.submit(operation: "chat", arguments: arguments)
             updateMessage(conversationID: conversationID, messageID: assistantID) {
                 $0.text = ""
                 $0.delivery = .streaming
@@ -932,12 +886,19 @@ final class AppModel: ObservableObject {
                     $0.text = answer
                     $0.delivery = .complete
                     $0.errorMessage = nil
+                    $0.provider = current.result?.provider
+                    $0.model = current.result?.model
+                }
+                if speakResponses {
+                    speech.speak(answer, voiceIdentifier: voiceIdentifier.isEmpty ? nil : voiceIdentifier)
                 }
             } else {
                 updateMessage(conversationID: conversationID, messageID: assistantID) {
-                    $0.delivery = current.status == "running" ? .failed : .failed
+                    $0.delivery = .failed
                     $0.errorMessage = current.result?.error
-                        ?? "Статус Mac: \(current.status). Переподключение не повторит запрос. Проверь журнал на Mac."
+                        ?? "Статус Mac: \(current.status). Запрос не повторяется автоматически."
+                    $0.provider = current.result?.provider
+                    $0.model = current.result?.model
                 }
             }
             persist()
@@ -1025,22 +986,9 @@ final class AppModel: ObservableObject {
         } else {
             macActionFeedback = MacActionFeedback(state: .unknown, message: "Статус Mac: \(receipt.status). Проверь журнал; команда автоматически не повторялась.", commandID: id)
         }
-    }
-
-    private func relevantMemory(for query: String) -> String {
-        let terms = Set(query.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init).filter { $0.count > 2 })
-        guard !terms.isEmpty else { return "" }
-        let ranked = visibleFacts.filter { !$0.isPrivate }.map { fact -> (MobileMemoryFact, Int) in
-            let text = (fact.category + " " + fact.content).lowercased()
-            return (fact, terms.reduce(0) { $0 + (text.contains($1) ? 1 : 0) })
-        }.filter { $0.1 > 0 }.sorted { $0.1 > $1.1 }.prefix(8)
-        var total = 0
-        return ranked.compactMap { fact, _ in
-            let line = "[\(fact.category)] \(fact.content)"
-            guard total + line.count <= 2400 else { return nil }
-            total += line.count
-            return line
-        }.joined(separator: "\n")
+        if ["Медиатека", "Календарь"].contains(label), receipt.status == "completed" {
+            await syncFromMac()
+        }
     }
 
     private func updateMessage(conversationID: String, messageID: String, change: (inout ChatMessage) -> Void) {

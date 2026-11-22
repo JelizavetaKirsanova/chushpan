@@ -7,6 +7,7 @@ import errno
 import hashlib
 import ipaddress
 import json
+import re
 import secrets
 import shutil
 import socket
@@ -459,6 +460,12 @@ class DeviceSync(Center):
             "name": peer["name"],
             "capabilities": peer["capabilities"],
             "categories": peer["categories"],
+            "mobile_chat": {
+                "provider": "openai",
+                "model": self.s.openai.model,
+                "fallback": False,
+                "desktop_provider": self.s.llm.provider,
+            },
             "scenarios": scenarios,
             "devices": devices,
             "history": rows(
@@ -476,11 +483,17 @@ class DeviceSync(Center):
             "scenario": "scenario",
             "device": "devices",
             "open_app": "open_app",
+            "media_add": "media_library",
+            "media_update": "media_library",
+            "media_delete": "media_library",
+            "calendar_day": None,
             "confirm": None,
             "cancel": None,
         }.get(operation, "unsupported")
         if required == "unsupported" or (required and required not in peer["capabilities"]):
             raise ValueError("Эта команда не разрешена на Mac.")
+        if operation == "calendar_day" and "calendar" not in peer["categories"]:
+            raise ValueError("Календарь Mac не разрешён этому устройству.")
         arguments = value.get("arguments", {})
         if not isinstance(arguments, dict) or len(json.dumps(arguments)) > 12000:
             raise ValueError("Некорректные аргументы команды.")
@@ -521,9 +534,14 @@ class DeviceSync(Center):
                     "scenario": "scenario",
                     "device": "devices",
                     "open_app": "open_app",
+                    "media_add": "media_library",
+                    "media_update": "media_library",
+                    "media_delete": "media_library",
                 }.get(operation)
                 if required and required not in peer["capabilities"]:
                     raise ValueError("Разрешение отозвано до начала выполнения.")
+                if operation == "calendar_day" and "calendar" not in peer["categories"]:
+                    raise ValueError("Календарь Mac не разрешён этому устройству.")
                 caps = set()
                 if "scenario" in peer["capabilities"]:
                     caps.update(MAC_CAPABILITIES)
@@ -537,27 +555,91 @@ class DeviceSync(Center):
                 context = RequestContext(device, "")
                 if operation == "chat":
                     from backend.brain.conversation import Conversation
-                    from backend.brain.providers import create_llm
+                    from backend.brain.providers import create_llm_async
                     from backend.memory.profile import ProfileMemory
                     from backend.tools.registry import ToolRegistry
 
+                    conversation_id = text(args.get("conversation_id"), 80)
+                    if not re.fullmatch(r"[a-fA-F0-9-]{16,80}", conversation_id):
+                        raise ValueError("Некорректный идентификатор диалога.")
+                    is_private = args.get("private") is True
+                    chat_device = DeviceContext(
+                        identity,
+                        peer["kind"],
+                        f"sync-{identity}-{conversation_id}",
+                        frozenset(caps),
+                        True,
+                        f"sync-{identity}-{conversation_id}",
+                    )
                     tools = ToolRegistry()  # Chat cannot turn model output into Mac actions.
-                    if "memory" in peer["categories"]:
+                    if not is_private and "memory" in peer["categories"]:
                         tools.memory = ProfileMemory(self.memory)
-                    model = (self.model_factory or create_llm)(self.s)
+                    conversation_store = self.memory
+                    if is_private:
+                        from backend.memory.store import MemoryStore
+
+                        conversation_store = MemoryStore(":memory:")
+                    mobile_settings = self.s.model_copy(deep=True)
+                    mobile_settings.llm.provider = "openai"
+                    mobile_settings.openai.fallback = False
+                    model = None
                     try:
+                        model = await create_llm_async(mobile_settings)
                         conversation = Conversation(
-                            self.s, model, self.memory, tools=tools, device=device
+                            mobile_settings,
+                            model,
+                            conversation_store,
+                            tools=tools,
+                            device=chat_device,
                         )
+                        if is_private:
+                            history = args.get("history", [])
+                            if not isinstance(history, list) or len(history) > 24:
+                                raise ValueError("Некорректная приватная история диалога.")
+                            total = 0
+                            for message in history:
+                                if not isinstance(message, dict):
+                                    raise ValueError("Некорректная приватная история диалога.")
+                                role, content = message.get("role"), message.get("content")
+                                if role not in {"user", "assistant"} or not isinstance(
+                                    content, str
+                                ):
+                                    raise ValueError("Некорректная приватная история диалога.")
+                                total += len(content)
+                                if total > 6000:
+                                    raise ValueError(
+                                        "Приватная история превышает допустимый размер."
+                                    )
+                                conversation_store.add(conversation.id, role, content)
                         answer = "".join(
                             [
                                 part
                                 async for part in conversation.reply(text(args.get("text"), 4000))
                             ]
                         )
-                        result = {"message": redact(answer)[:16000]}
+                        actual_provider = getattr(model, "last_provider", None)
+                        actual_model = getattr(model, "last_model", None)
+                        if actual_provider != "openai":
+                            raise ValueError("Мобильный чат не получил ответ от GPT.")
+                        actual_model = actual_model or mobile_settings.openai.model
+                        result = {
+                            "message": redact(answer)[:16000],
+                            "provider": actual_provider,
+                            "model": actual_model,
+                        }
+                        import logging
+
+                        logging.getLogger(__name__).info(
+                            "IOS_CHAT completed provider=%s model=%s device=%s",
+                            actual_provider,
+                            actual_model,
+                            identity[:12],
+                        )
                     finally:
-                        await model.aclose()
+                        if model is not None:
+                            await model.aclose()
+                        if is_private:
+                            conversation_store.close()
                 elif operation == "open_app":
                     name = text(args.get("name"), 120)
                     context = RequestContext(device, "открой " + name)
@@ -601,6 +683,62 @@ class DeviceSync(Center):
                     context = RequestContext(device, "Управляй выбранным устройством")
                     with request_scope(context):
                         result = json.loads(await self.tools.call("device_command", args))
+                elif operation in {"media_add", "media_update", "media_delete"}:
+                    cinema = getattr(self.tools, "cinema", None)
+                    if cinema is None or not cinema.available:
+                        raise ValueError("Медиатека Mac недоступна.")
+                    if operation == "media_add":
+                        from backend.cinema.models import Entry
+
+                        entry = Entry(
+                            title=text(args.get("title"), 200),
+                            kind=args.get("kind", "movie"),
+                            year=args.get("year", 0),
+                        )
+                        await cinema.db("add", entry.model_dump())
+                    elif operation == "media_update":
+                        title_id = text(args.get("id"), 80)
+                        changes = args.get("values")
+                        if not isinstance(changes, dict) or len(changes) > 8:
+                            raise ValueError("Некорректные изменения медиатеки.")
+                        if "position" in changes or "duration" in changes:
+                            progress_values = {
+                                "position": changes.pop("position", 0),
+                                "duration": changes.pop("duration", 0),
+                                "progress_status": changes.pop("progress_status", "watching"),
+                                "season": changes.pop("season", args.get("season", 0)),
+                                "episode": changes.pop("episode", args.get("episode", 0)),
+                            }
+                            await cinema.db(
+                                "manual_progress",
+                                title_id,
+                                progress_values["season"],
+                                progress_values["episode"],
+                                progress_values["position"],
+                                progress_values["duration"],
+                                progress_values["progress_status"],
+                            )
+                            if changes:
+                                await cinema.db("update_title", title_id, changes)
+                        else:
+                            await cinema.db("update_title", title_id, changes)
+                    else:
+                        title_id = text(args.get("id"), 80)
+                        await cinema.db("delete", title_id)
+                    result = {"message": "Медиатека Mac обновлена.", "provider": "macos"}
+                elif operation == "calendar_day":
+                    dashboard = getattr(self.bus, "dashboard", None)
+                    if dashboard is None:
+                        raise ValueError("Календарь Mac недоступен.")
+                    day = text(args.get("date"), 10)
+                    try:
+                        from datetime import date as calendar_date
+
+                        calendar_date.fromisoformat(day)
+                    except ValueError:
+                        raise ValueError("Укажи дату календаря в формате ГГГГ-ММ-ДД.") from None
+                    await dashboard.read_calendar(day, request_access=False)
+                    result = {"message": "Календарь Mac обновлён."}
                 elif operation == "confirm":
                     pending = self.tools.confirmations.pending.get(context.binding)
                     if not pending:
@@ -632,11 +770,20 @@ class DeviceSync(Center):
                 "interrupted",
                 {"error": "Выполнение прервано. Автоматического повтора нет."},
             )
-        except Exception:
-            status, result = (
-                "failed",
-                {"error": "Команда не подтверждена. Проверь разрешения и журнал на Mac."},
-            )
+        except Exception as exc:
+            from backend.brain.llm import LLMError
+
+            if isinstance(exc, LLMError):
+                status, result = "failed", {"error": redact(str(exc))[:500], "provider": "openai"}
+            elif isinstance(exc, ValueError) and str(exc).startswith(
+                ("Медиатека", "Календарь", "Укажи дату")
+            ):
+                status, result = "failed", {"error": str(exc)[:500]}
+            else:
+                status, result = (
+                    "failed",
+                    {"error": "Команда не подтверждена. Проверь разрешения и журнал на Mac."},
+                )
         # Mobile receipts never include adapter internals, endpoints or credentials.
         result = {
             key: redact(value) if isinstance(value, str) else value
@@ -650,6 +797,8 @@ class DeviceSync(Center):
                 "delivery_state",
                 "device_state_confirmed",
                 "physical_confirmed",
+                "provider",
+                "model",
             }
             and (value is None or isinstance(value, (str, bool, int, float)))
         }
@@ -659,6 +808,12 @@ class DeviceSync(Center):
     def sync_data(self, peer):
         result = {}
         categories = peer["categories"]
+        result["mobile_chat"] = {
+            "provider": "openai",
+            "model": self.s.openai.model,
+            "fallback": False,
+            "desktop_provider": self.s.llm.provider,
+        }
         if "memory" in categories:
             from backend.memory.profile import _SENSITIVE
 
@@ -698,24 +853,109 @@ class DeviceSync(Center):
         if "history" in categories:
             result["history"] = rows(
                 self.memory.db,
-                "SELECT role,content,created_at FROM messages WHERE device_id=? "
-                "AND role IN ('user','assistant') ORDER BY id DESC LIMIT 100",
-                (peer["id"],),
+                "SELECT id,role,content,created_at FROM messages WHERE device_id=? "
+                "AND session_id LIKE ? AND role IN ('user','assistant') "
+                "ORDER BY id DESC LIMIT 100",
+                (peer["id"], "sync-" + peer["id"] + "-%"),
             )
+        if "media_library" in categories:
+            media = (
+                rows(
+                    self.memory.db,
+                    "SELECT t.id,t.title,t.kind,t.year,t.poster_url,t.description,"
+                    "u.status,u.favorite,u.user_rating,u.watchlist,u.manual_watched,"
+                    "u.added_at,u.updated_at AS library_updated_at,"
+                    "e.id AS episode_id,e.season,e.episode,e.position,e.duration,e.watched,"
+                    "e.last_viewed "
+                    "FROM cinema_titles t JOIN cinema_library u ON u.title_id=t.id "
+                    "LEFT JOIN cinema_episodes e ON e.id=COALESCE(t.last_episode_id,"
+                    "(SELECT id FROM cinema_episodes WHERE title_id=t.id AND watched=0 "
+                    "ORDER BY season,episode LIMIT 1),"
+                    "(SELECT id FROM cinema_episodes WHERE title_id=t.id "
+                    "ORDER BY season,episode LIMIT 1)) "
+                    "ORDER BY u.favorite DESC,u.updated_at DESC LIMIT 2000",
+                )
+                if self.memory.db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cinema_titles'"
+                ).fetchone()
+                else []
+            )
+            for item in media:
+                for field in ("favorite", "watchlist", "manual_watched", "watched"):
+                    if item.get(field) is not None:
+                        item[field] = bool(item[field])
+            result["media_library"] = media
         if (
             "media_progress" in categories
             and self.memory.db.execute(
-                "SELECT 1 FROM sqlite_master WHERE name='cinema_episodes'"
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cinema_episodes'"
             ).fetchone()
         ):
-            result["media_progress"] = rows(
+            progress = rows(
                 self.memory.db,
-                "SELECT "
-                "e.id,t.title,e.season,e.episode,e.position,e.duration,e.watched,e.last_viewed"
-                " FROM cinema_episodes e JOIN cinema_titles t ON t.id=e.title_id "
-                "WHERE e.last_viewed IS NOT NULL ORDER BY e.last_viewed DESC LIMIT"
-                " 200",
+                "SELECT e.id,t.title,e.season,e.episode,e.position,e.duration,e.watched,"
+                "e.last_viewed "
+                "FROM cinema_episodes e JOIN cinema_titles t ON t.id=e.title_id "
+                "WHERE e.last_viewed IS NOT NULL ORDER BY e.last_viewed DESC LIMIT 200",
             )
+            for item in progress:
+                item["watched"] = bool(item["watched"])
+            result["media_progress"] = progress
+        if "calendar" in categories:
+            dashboard = getattr(self.bus, "dashboard", None)
+            today = dashboard.today() if dashboard else ""
+            days = list(dashboard.calendar.values())[-32:] if dashboard else []
+            day = dashboard.calendar.get(today, {}) if dashboard else {}
+            result["calendar"] = {
+                "today": today,
+                "status": day.get("status", "unknown"),
+                "message": day.get("message", "Календарь Mac пока не загружен."),
+                "timezone": day.get("timezone", getattr(dashboard, "timezone", "")),
+                "updated_at": day.get("updated_at"),
+                "days": [
+                    {
+                        "date": saved.get("date", ""),
+                        "status": saved.get("status", "unknown"),
+                        "message": saved.get("message", ""),
+                        "timezone": saved.get("timezone", ""),
+                        "updated_at": saved.get("updated_at"),
+                        "events": [
+                            {
+                                key: event.get(key)
+                                for key in (
+                                    "id",
+                                    "title",
+                                    "color",
+                                    "start",
+                                    "end",
+                                    "all_day",
+                                    "calendar",
+                                )
+                            }
+                            for event in saved.get("events", [])[:200]
+                        ],
+                    }
+                    for saved in days
+                ],
+                "events": [
+                    {
+                        key: event.get(key)
+                        for key in (
+                            "id",
+                            "title",
+                            "color",
+                            "start",
+                            "end",
+                            "all_day",
+                            "calendar",
+                        )
+                    }
+                    for event in day.get("events", [])[:200]
+                ],
+            }
+        if "statistics" in categories:
+            dashboard = getattr(self.bus, "dashboard", None)
+            result["statistics"] = dashboard.statistics(7) if dashboard else None
         with self.memory.memory_transaction():
             self.memory.db.execute(
                 "UPDATE sync_peers SET last_sync=? WHERE id=?", (time.time(), peer["id"])

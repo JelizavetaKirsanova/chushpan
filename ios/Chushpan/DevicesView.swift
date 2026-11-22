@@ -108,6 +108,66 @@ struct DevicesView: View {
     }
 }
 
+struct LightingView: View {
+    @EnvironmentObject private var model: AppModel
+
+    private var ledDevices: [MacRemoteDevice] {
+        (model.macStatus?.devices ?? []).filter { $0.kind == "led_strip" }
+    }
+
+    var body: some View {
+        List {
+            Section {
+                HStack {
+                    Label(model.macStatus == nil ? "Mac недоступен" : "Подсветка Mac", systemImage: "lightbulb.led.wide")
+                    Spacer()
+                    Button("Обновить") { Task { await model.refreshMac() } }
+                }
+                Text("Настройки цвета и яркости отправляются выбранному устройству через защищённый канал Mac.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+
+            if model.macStatus == nil {
+                Section {
+                    StatusCard(
+                        title: "Нет соединения с Mac",
+                        detail: "Подключи сопряжённый Mac, чтобы увидеть разрешённые световые устройства.",
+                        symbol: "wifi.slash",
+                        tint: .orange
+                    )
+                    NavigationLink(destination: SettingsView()) {
+                        Label("Настроить сопряжение", systemImage: "link")
+                    }
+                }
+            } else if ledDevices.isEmpty {
+                ContentUnavailableView(
+                    "Подсветка недоступна",
+                    systemImage: "lightbulb.led.wide",
+                    description: Text(model.macStatus?.capabilities.contains("devices") == true
+                        ? "Mac не передал ни одной доступной LED-ленты."
+                        : "Выдай этому iPhone разрешение «Устройства» в панели сопряжения Mac.")
+                )
+            } else {
+                Section("Световые устройства") {
+                    ForEach(ledDevices) { device in
+                        LEDDeviceCard(device: device)
+                    }
+                }
+            }
+
+            if let feedback = model.macActionFeedback {
+                Section(feedback.state.title) {
+                    Text(feedback.message).font(.footnote).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle("Освещение")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await model.refreshMac() }
+    }
+}
+
 private struct LEDDeviceCard: View {
     @EnvironmentObject private var model: AppModel
     let device: MacRemoteDevice

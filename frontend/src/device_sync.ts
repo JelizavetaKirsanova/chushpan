@@ -2,7 +2,7 @@ import type {HudEvent} from './types';
 import {ModulePage,card,date,el,empty,formFields,grid,metric,row,type ModuleChannel} from './module_ui';
 export interface SyncPeer {id:string;name:string;kind:string;online:boolean;revoked_at:number|null;disconnected:number;last_seen:number|null;last_sync:number|null;categories:string[];capabilities:string[];connection_type?:'local'|'tailscale';}
 export interface SyncData {running:boolean;error?:string|null;endpoint?:{host:string;port:number};tailnet_host?:string;url:string;fingerprint:string;invite:{url:string;expires:number;qr:string}|null;pending:{id:string;name:string;kind:string;code:string;expires:number}[];peers:SyncPeer[];categories:Record<string,string>;capabilities:string[];history:{peer_id:string;command_id:string;operation:string;created_at:number;status:string}[];conflicts:{id:number;peer_id:string;memory_id:number;revision:number;content:string;at:number}[];}
-const grants:Record<string,string>={chat:'Текстовый чат с настроенной моделью',scenario:'Запуск доступных сценариев Mac',devices:'Управление устройствами из центра устройств',open_app:'Открытие приложений на Mac'};
+const grants:Record<string,string>={chat:'Текстовый чат GPT через сервер Mac',scenario:'Запуск доступных сценариев Mac',devices:'Управление устройствами из центра устройств',open_app:'Открытие приложений на Mac',media_library:'Изменение общей медиатеки Mac'};
 
 export class DeviceSyncView extends ModulePage<SyncData> {
   private pairing:HTMLDialogElement|null=null;private pairingPhase:boolean|null=null;

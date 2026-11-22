@@ -28,9 +28,12 @@ CATEGORIES = {
     "scenarios": "Каталог сценариев",
     "devices": "Список разрешённых устройств",
     "history": "Разговоры этого устройства",
+    "media_library": "Медиатека Mac: названия, статусы, избранное и прогресс",
     "media_progress": "Прогресс медиатеки",
+    "calendar": "События календаря Mac",
+    "statistics": "Сводка статистики Чушпана",
 }
-CAPABILITIES = {"chat", "scenario", "devices", "open_app"}
+CAPABILITIES = {"chat", "scenario", "devices", "open_app", "media_library"}
 
 
 class SyncStore:

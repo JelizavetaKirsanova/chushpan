@@ -73,11 +73,19 @@ struct MobileStore {
             root["macMediaCache"] = root["macMediaCache"] ?? []
             root["sharedSettings"] = root["sharedSettings"] ?? [
                 "appearance": "system",
-                "model": "gemini-3.8-flash",
+                "model": "gpt-4.1-mini",
                 "updatedAt": ISO8601DateFormatter().string(from: Date()),
                 "modifiedBy": "",
             ]
             root["schemaVersion"] = 2
+        }
+        if version < 3 {
+            root["macLibraryCache"] = root["macLibraryCache"] ?? []
+            root["macLibraryHasLoaded"] = root["macLibraryHasLoaded"] ?? false
+            root["macHistoryCache"] = root["macHistoryCache"] ?? []
+            root["macCalendarCache"] = root["macCalendarCache"] ?? NSNull()
+            root["macStatisticsCache"] = root["macStatisticsCache"] ?? NSNull()
+            root["schemaVersion"] = 3
         }
         return try JSONSerialization.data(withJSONObject: root, options: [.fragmentsAllowed, .sortedKeys])
     }

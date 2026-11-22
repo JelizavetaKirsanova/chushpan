@@ -20,6 +20,25 @@ struct MediaLibraryView: View {
 
     var body: some View {
         VStack(spacing: 10) {
+            if let updated = model.database.macCacheUpdatedAt {
+                HStack {
+                    Label("Общая медиатека Mac", systemImage: "desktopcomputer")
+                    Spacer()
+                    Text(updated.formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .font(.caption.weight(.medium))
+                .padding(.horizontal, 18)
+            }
+            if model.database.macLibraryHasLoaded, let error = model.macMediaError {
+                StatusCard(
+                    title: "Показан сохранённый кеш",
+                    detail: error,
+                    symbol: "wifi.slash",
+                    tint: .orange
+                )
+                .padding(.horizontal, 16)
+            }
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("Поиск в медиатеке", text: $query)
@@ -42,11 +61,27 @@ struct MediaLibraryView: View {
                 .padding(.horizontal, 18)
                 .accessibilityHint("Показывает только отмеченные сердцем фильмы и сериалы")
 
-            if filtered.isEmpty {
+            if !model.database.macLibraryHasLoaded {
+                if model.macMediaLoading {
+                    ProgressView("Загружаю медиатеку Mac…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ContentUnavailableView(
+                        "Медиатека Mac ещё не загружена",
+                        systemImage: "lock.icloud",
+                        description: Text(model.macMediaError ?? "Подключи Mac и разреши синхронизацию медиатеки в настройках сопряжения.")
+                    )
+                    Button("Повторить синхронизацию", systemImage: "arrow.triangle.2.circlepath") {
+                        Task { await model.syncFromMac() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Spacer()
+                }
+            } else if filtered.isEmpty {
                 ContentUnavailableView(
                     query.isEmpty ? "Медиатека пуста" : "Ничего не найдено",
                     systemImage: "play.rectangle",
-                    description: Text("Добавляй фильмы и сериалы вручную. Прогресс можно изменить в любой момент.")
+                    description: Text(query.isEmpty ? "В общей медиатеке Mac пока нет фильмов и сериалов." : "Измени поисковый запрос.")
                 )
                 Spacer()
             } else {
@@ -66,24 +101,6 @@ struct MediaLibraryView: View {
                         }
                     }
 
-                    if !model.database.macMediaCache.isEmpty {
-                        Section {
-                            ForEach(model.database.macMediaCache) { item in
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text(item.title).font(.headline)
-                                    Text("Сезон \(item.season), серия \(item.episode) · \(Int(item.position) / 60) мин")
-                                        .font(.subheadline).foregroundStyle(.secondary)
-                                    Button("Скопировать в эту медиатеку") { model.importMacProgress(item) }
-                                        .font(.footnote)
-                                }
-                                .padding(.vertical, 4)
-                            }
-                        } header: {
-                            Text("Прогресс, скопированный с Mac")
-                        } footer: {
-                            Text("Это локальная копия с Mac. Запрос данных выполняется отдельно в настройках и подчиняется разрешениям Mac.")
-                        }
-                    }
                 }
                 .listStyle(.insetGrouped)
             }
@@ -91,14 +108,24 @@ struct MediaLibraryView: View {
         .navigationTitle("Медиатека")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("Добавить", systemImage: "plus") {
-                    editingItem = nil
-                    showingNew = true
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Обновить", systemImage: "arrow.triangle.2.circlepath") {
+                    Task { await model.syncFromMac() }
                 }
-                .accessibilityLabel("Добавить фильм или сериал")
+                .disabled(model.macMediaLoading)
+                .accessibilityLabel("Синхронизировать медиатеку с Mac")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                if model.macStatus?.capabilities.contains("media_library") == true {
+                    Button("Добавить", systemImage: "plus") {
+                        editingItem = nil
+                        showingNew = true
+                    }
+                    .accessibilityLabel("Добавить в общую медиатеку Mac")
+                }
             }
         }
+        .task { await model.syncFromMac() }
         .sheet(isPresented: $showingEditor) {
             if let editingItem {
                 MediaItemEditor(item: editingItem)
@@ -124,10 +151,8 @@ struct MediaLibraryView: View {
 
 private struct MediaItemRow: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.openURL) private var openURL
     let item: MobileMediaItem
     let edit: () -> Void
-    @State private var showingPlaybackLimit = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -148,7 +173,6 @@ private struct MediaItemRow: View {
                             model.updateMedia(updated)
                         }
                     }
-                    Button("Включить на Mac", systemImage: "desktopcomputer") { showingPlaybackLimit = true }
                     Button("Удалить", systemImage: "trash", role: .destructive) { model.deleteMedia(item.id) }
                 } label: {
                     Image(systemName: "ellipsis.circle").accessibilityLabel("Действия с медиазаписью")
@@ -166,35 +190,8 @@ private struct MediaItemRow: View {
                 Text("Прогресс: \(Int(item.positionSeconds) / 60) мин")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            HStack {
-                Button("Открыть на этом устройстве", systemImage: "safari") { openOnDevice() }
-                    .disabled(validWebURL == nil)
-                    .font(.footnote)
-                Spacer()
-                Button("Включить на Mac", systemImage: "desktopcomputer") { showingPlaybackLimit = true }
-                    .font(.footnote)
-            }
-            if !item.webURL.isEmpty {
-                Text("Откроется сайт. Управление встроенным плеером и восстановление позиции не подтверждены.")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
         }
         .padding(.vertical, 5)
-        .confirmationDialog("Воспроизведение недоступно", isPresented: $showingPlaybackLimit, titleVisibility: .visible) {
-            Button("Понятно", role: .cancel) { }
-        } message: {
-            Text("В мобильном клиенте нет проверенного playback endpoint для медиатеки Mac. Прогресс останется ручным; команда не отправлена.")
-        }
-    }
-
-    private var validWebURL: URL? {
-        guard let url = URL(string: item.webURL), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
-        return url
-    }
-
-    private func openOnDevice() {
-        guard let validWebURL else { return }
-        openURL(validWebURL)
     }
 }
 
@@ -212,7 +209,6 @@ private struct MediaItemEditor: View {
     @State private var episode: Int
     @State private var minutes: String
     @State private var durationMinutes: String
-    @State private var url: String
 
     init(item: MobileMediaItem?) {
         existing = item
@@ -226,18 +222,23 @@ private struct MediaItemEditor: View {
         _episode = State(initialValue: item?.episode ?? 0)
         _minutes = State(initialValue: item.map { String(Int($0.positionSeconds) / 60) } ?? "0")
         _durationMinutes = State(initialValue: item.map { String(Int($0.durationSeconds) / 60) } ?? "0")
-        _url = State(initialValue: item?.webURL ?? "")
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Произведение") {
-                    TextField("Название", text: $title)
-                    Picker("Тип", selection: $kind) {
-                        ForEach(MediaKind.allCases) { Text($0.rawValue).tag($0) }
+                    if let existing {
+                        Text(existing.title).font(.headline)
+                        Text([existing.kind.rawValue, existing.year.map(String.init)].compactMap { $0 }.joined(separator: " · "))
+                            .font(.footnote).foregroundStyle(.secondary)
+                    } else {
+                        TextField("Название", text: $title)
+                        Picker("Тип", selection: $kind) {
+                            ForEach(MediaKind.allCases) { Text($0.rawValue).tag($0) }
+                        }
+                        TextField("Год", text: $year).keyboardType(.numberPad)
                     }
-                    TextField("Год", text: $year).keyboardType(.numberPad)
                     Picker("Список", selection: $status) {
                         ForEach(MediaStatus.allCases) { Text($0.rawValue).tag($0) }
                     }
@@ -255,15 +256,6 @@ private struct MediaItemEditor: View {
                     Text("Время редактируется вручную. Чушпан не управляет мобильным плеером и не считывает его позицию.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
-
-                Section("Сайт (необязательно)") {
-                    TextField("https://…", text: $url)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                    Text("Кнопка откроет URL во внешнем браузере. Автоматизация Safari macOS здесь не используется.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
             }
             .navigationTitle(existing == nil ? "Добавить" : "Изменить")
             .navigationBarTitleDisplayMode(.inline)
@@ -271,23 +263,19 @@ private struct MediaItemEditor: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Отмена") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Сохранить", action: save)
-                        .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !validURL)
+                        .disabled(existing == nil && title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
     }
 
-    private var validURL: Bool {
-        guard !url.isEmpty else { return true }
-        guard let parsed = URL(string: url) else { return false }
-        return ["https", "http"].contains(parsed.scheme?.lowercased() ?? "") && parsed.host != nil
-    }
-
     private func save() {
         var item = existing ?? MobileMediaItem(title: title)
-        item.title = title
-        item.kind = kind
-        item.year = Int(year)
+        if existing == nil {
+            item.title = title
+            item.kind = kind
+            item.year = Int(year)
+        }
         item.status = status
         item.favorite = favorite
         item.rating = Double(rating.replacingOccurrences(of: ",", with: "."))
@@ -295,7 +283,6 @@ private struct MediaItemEditor: View {
         item.episode = episode
         item.positionSeconds = max(0, (Double(minutes.replacingOccurrences(of: ",", with: ".")) ?? 0) * 60)
         item.durationSeconds = max(0, (Double(durationMinutes.replacingOccurrences(of: ",", with: ".")) ?? 0) * 60)
-        item.webURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
         if existing == nil { model.addMedia(item) } else { model.updateMedia(item) }
         dismiss()
     }

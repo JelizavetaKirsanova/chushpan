@@ -49,9 +49,11 @@ struct ReceiptDetails: Decodable {
     var message: String?
     var error: String?
     var resultStatus: String?
+    var provider: String?
+    var model: String?
 
     enum CodingKeys: String, CodingKey {
-        case message, error
+        case message, error, provider, model
         case resultStatus = "result_status"
     }
 }

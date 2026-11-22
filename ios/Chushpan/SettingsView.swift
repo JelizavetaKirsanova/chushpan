@@ -4,8 +4,6 @@ import VisionKit
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var apiKey = ""
-    @State private var keyMessage: String?
     @State private var pairInvitation = ""
     @State private var pairFingerprint = ""
     @State private var remoteAddress = ""
@@ -16,43 +14,28 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section {
-                Picker("Модель", selection: Binding(get: { model.selectedModel }, set: model.setModel)) {
-                    Text("Gemini 3.8 Flash · по умолчанию").tag("gemini-3.8-flash")
-                    Text("Gemini 3.7 Flash").tag("gemini-3.7-flash")
-                    Text("Gemini 3.6 Flash").tag("gemini-3.6-flash")
+            Section("ИИ и диагностика") {
+                Label("GPT через сервер Чушпана", systemImage: "brain.head.profile")
+                    .font(.headline)
+                if let chat = model.macChatStatus {
+                    LabeledContent("Мобильный провайдер", value: "\(chat.provider.uppercased()) · \(chat.model)")
+                    LabeledContent("Резервная модель", value: chat.fallback ? "Включена" : "Выключена")
+                    LabeledContent("Провайдер macOS", value: chat.desktopProvider?.uppercased() ?? "Не сообщён")
+                } else {
+                    Text("Подключи Mac и обнови данные, чтобы получить модель сервера.")
+                        .foregroundStyle(.secondary)
                 }
-                SecureField("Личный API-ключ", text: $apiKey)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .textContentType(.password)
-                    .accessibilityLabel("Gemini API-ключ")
-                HStack {
-                    Button("Сохранить ключ") { saveKey() }
-                        .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    if model.hasAPIKey {
-                        Button("Удалить ключ", role: .destructive) { clearKey() }
-                    }
+                if let last = model.visibleConversations
+                    .flatMap(\.messages)
+                    .last(where: { $0.role == .assistant && $0.provider != nil && $0.model != nil }) {
+                    LabeledContent("Последний ответ", value: "\(last.provider!.uppercased()) · \(last.model!)")
                 }
-                Label(model.hasAPIKey ? "Ключ сохранён в Keychain этого устройства" : "Ключ не добавлен", systemImage: model.hasAPIKey ? "key.fill" : "key")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                if let keyMessage { Text(keyMessage).font(.footnote).foregroundStyle(.secondary) }
-                Text("При выборе «Этот iPhone/iPad» запрос к Google отправляется только после нажатия «Отправить»: сообщение, последние до 24 сообщений диалога (не более 32 000 знаков), системная инструкция и, при включённом переключателе ниже, до 8 подходящих фактов. При выборе Mac текст идёт по защищённому сопряжению в существующее приложение Mac. Ключ Gemini не включается в текст запроса и не передаётся Mac.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                Link("Модели Gemini API", destination: URL(string: "https://ai.google.dev/gemini-api/docs/models")!)
-                    .font(.footnote)
-                Text("Приложение не включает подписку и не запускает платные запросы при настройке. Стоимость и доступность зависят от проекта и квот ключа Google.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            } header: { Text("Облачный ИИ") }
+                Text("Сообщения идут по защищённому сопряжению на Mac. Мобильный маршрут закреплён за OpenAI GPT и не переключается на Gemini или локальную модель при ошибке. API-ключ на iPhone не хранится; сервер использует macOS Keychain.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
 
             Section("Приватность ИИ") {
-                Toggle("Добавлять подходящие факты памяти к запросу", isOn: Binding(
-                    get: { model.includeRelevantMemory }, set: model.setIncludeRelevantMemory
-                ))
-                Text("Поиск выполняется только по фактам этого устройства. Приватные факты и приватные диалоги не добавляются. Переключатель выключен по умолчанию.")
+                Text("Для обычных диалогов сервер использует только категории памяти, отдельно разрешённые этому iPhone на Mac. Приватные диалоги обрабатываются во временной памяти на время запроса и не сохраняются на Mac.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
 
@@ -227,7 +210,7 @@ struct SettingsView: View {
             }
 
             Section("Локальное хранение") {
-                Text("История, факты и медиатека сохраняются в Application Support приложения. Ключ Gemini и закрытый ключ сопряжения хранятся только в Keychain этого устройства. Уход приложения в фон останавливает распознавание и текущую генерацию.")
+                Text("История и пользовательские настройки сохраняются в Application Support; разрешённые данные Mac кэшируются для автономного чтения и не отправляются в iCloud. API-ключ хранится только на сервере Mac, закрытый ключ сопряжения — в Keychain этого устройства.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }
@@ -258,16 +241,4 @@ struct SettingsView: View {
         }
     }
 
-    private func saveKey() {
-        do {
-            try model.saveAPIKey(apiKey)
-            apiKey = ""
-            keyMessage = "Ключ сохранён. Он не показывается повторно и не синхронизируется."
-        } catch { keyMessage = error.localizedDescription }
-    }
-
-    private func clearKey() {
-        do { try model.clearAPIKey(); keyMessage = "Ключ удалён с этого устройства." }
-        catch { keyMessage = error.localizedDescription }
-    }
 }

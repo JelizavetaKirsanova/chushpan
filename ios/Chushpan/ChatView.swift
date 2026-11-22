@@ -15,22 +15,24 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Где отвечает Чушпан", selection: $model.chatTarget) {
-                ForEach(ChatExecutionTarget.allCases) { target in Text(target.rawValue).tag(target) }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-
-            if model.chatTarget == .mac && model.macStatus?.capabilities.contains("chat") != true {
+            if model.macStatus?.capabilities.contains("chat") != true {
                 StatusCard(
-                    title: "Чат Mac недоступен",
-                    detail: "Нужны сопряжение, доступ Mac к сети и выданное на Mac разрешение «Чат». Сообщение не переключится на iPhone автоматически.",
+                    title: "GPT на сервере Mac недоступен",
+                    detail: "Нужно защищённое соединение и отдельное разрешение «Текстовый чат» на Mac. Сообщение не отправится через другой провайдер.",
                     symbol: "desktopcomputer.trianglebadge.exclamationmark",
                     tint: .orange
                 )
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
+            } else if let chat = model.macChatStatus {
+                HStack(spacing: 7) {
+                    Image(systemName: "lock.shield.fill").foregroundStyle(Color.accentPurple)
+                    Text("\(chat.provider.uppercased()) · \(chat.model) · без fallback")
+                        .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 8)
             }
 
             ScrollViewReader { proxy in
@@ -40,7 +42,7 @@ struct ChatView: View {
                             ContentUnavailableView(
                                 "Начни разговор",
                                 systemImage: "bubble.left.and.bubble.right",
-                                description: Text("Выбери устройство выполнения. Ответ с iPhone/iPad требует интернет и личный API-ключ.")
+                                description: Text("Чушпан отвечает через настроенный GPT на сервере Mac. iPhone не хранит API-ключ.")
                             )
                             .padding(.top, 60)
                         }
@@ -49,6 +51,24 @@ struct ChatView: View {
                                 model.retryReply(message.id)
                             }
                             .id(message.id)
+                        }
+                        if !model.database.macHistoryCache.isEmpty {
+                            DisclosureGroup("История этого iPhone на Mac · \(model.database.macHistoryCache.count)") {
+                                ForEach(model.database.macHistoryCache.reversed()) { item in
+                                    ChatMessageRow(
+                                        message: ChatMessage(
+                                            id: "mac-\(item.id)",
+                                            role: item.role,
+                                            text: item.content
+                                        ),
+                                        retry: {}
+                                    )
+                                    .id("mac-\(item.id)")
+                                }
+                            }
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 4)
+                            .padding(.top, 8)
                         }
                     }
                     .padding(.horizontal, 16)
@@ -132,7 +152,7 @@ struct ChatView: View {
         .alert("Приватный диалог", isPresented: $showingPrivateModeInfo) {
             Button("Понятно", role: .cancel) { }
         } message: {
-            Text("Этот диалог исключён из iCloud и не добавляет факты памяти к контексту. Нажатие «Отправить» всё равно передаст его текущий текст и историю выбранному ИИ: Gemini при выборе этого устройства или настроенному провайдеру Mac.")
+            Text("Этот диалог не отправляет свои прошлые сообщения в iCloud и не добавляет факты памяти к контексту. При отправке текущий текст и контекст диалога передаются серверу Mac. Для приватного режима Mac хранит историю только во временной базе на время запроса.")
         }
         .task { await model.refreshMac() }
         .onDisappear { speech.stopListening() }
@@ -217,6 +237,11 @@ private struct ChatMessageRow: View {
                     }
                 }
                 if !message.text.isEmpty && !isUser {
+                    if let provider = message.provider, let modelName = message.model {
+                        Text("\(provider.uppercased()) · \(modelName)")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
                     HStack(spacing: 14) {
                         Button {
                             UIPasteboard.general.string = message.text

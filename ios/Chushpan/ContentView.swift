@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum AppSection: String, CaseIterable, Hashable, Identifiable {
-    case home, chat, devices, scenarios, library, memory, settings
+    case home, chat, devices, lighting, scenarios, library, calendar, statistics, memory, settings
 
     var id: String { rawValue }
     var title: String {
@@ -9,8 +9,11 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
         case .home: "Главная"
         case .chat: "Чат"
         case .devices: "Устройства"
+        case .lighting: "Освещение"
         case .scenarios: "Сценарии"
         case .library: "Медиатека"
+        case .calendar: "Календарь"
+        case .statistics: "Статистика"
         case .memory: "Память"
         case .settings: "Настройки"
         }
@@ -20,8 +23,11 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
         case .home: "house"
         case .chat: "bubble.left.and.bubble.right"
         case .devices: "lightbulb.2"
+        case .lighting: "lightbulb.led.wide"
         case .scenarios: "sparkles"
         case .library: "play.rectangle"
+        case .calendar: "calendar"
+        case .statistics: "chart.bar.xaxis"
         case .memory: "brain.head.profile"
         case .settings: "gearshape"
         }
@@ -105,8 +111,11 @@ struct ContentView: View {
         case .home: HomeView()
         case .chat: ChatView()
         case .devices: DevicesView()
+        case .lighting: LightingView()
         case .scenarios: ScenariosView()
         case .library: MediaLibraryView()
+        case .calendar: CalendarView()
+        case .statistics: StatisticsView()
         case .memory: MemoryView()
         case .settings: SettingsView()
         }
@@ -121,7 +130,14 @@ struct MoreView: View {
     var body: some View {
         List {
             Section("Чушпан") {
-                ForEach([AppSection.scenarios, .memory, .settings]) { section in
+                ForEach([
+                    AppSection.lighting,
+                    .scenarios,
+                    .calendar,
+                    .statistics,
+                    .memory,
+                    .settings,
+                ]) { section in
                     NavigationLink(value: section) {
                         Label(section.title, systemImage: section.symbol)
                     }
@@ -133,7 +149,13 @@ struct MoreView: View {
 }
 
 extension Color {
-    static let accentPurple = Color(red: 0.48, green: 0.31, blue: 0.69)
+    static let accentPurple = Color(uiColor: UIColor { traits in
+        if traits.userInterfaceStyle == .dark {
+            UIColor(red: 180.0 / 255, green: 135.0 / 255, blue: 199.0 / 255, alpha: 1)
+        } else {
+            UIColor(red: 145.0 / 255, green: 54.0 / 255, blue: 194.0 / 255, alpha: 1)
+        }
+    })
 }
 
 struct StatusCard: View {
@@ -157,7 +179,7 @@ struct StatusCard: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(tint.opacity(0.16)))
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(tint.opacity(0.20)))
     }
 }

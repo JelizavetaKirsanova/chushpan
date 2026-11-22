@@ -12,6 +12,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, utils
 
+from backend.cinema.store import CinemaStore
 from backend.config import Settings
 from backend.hud.bus import HudBus
 from backend.memory.store import MemoryStore
@@ -480,6 +481,66 @@ def test_selective_sync_excludes_secrets_sensitive_expired_project_and_other_dia
     assert [row["content"] for row in result["data"]["memory"]] == ["Люблю чай"]
     assert [row["content"] for row in result["data"]["preferences"]] == ["Люблю чай"]
     assert result["data"]["history"] == []
+    memory.close()
+
+
+def test_mobile_sync_reads_canonical_cinema_library_and_gates_categories(tmp_path):
+    memory, _, service = setup(tmp_path)
+    cinema = CinemaStore(tmp_path / "sync.sqlite")
+    movie = cinema.add({"title": "Shared film", "kind": "movie", "year": 2024})
+    cinema.update_title(movie["id"], {"status": "watching", "favorite": True, "user_rating": 8.5})
+    cinema.manual_progress(movie["id"], 0, 0, 120, 6000, "watching")
+    _, jwk, device = identity()
+    peer = trust(service, jwk, device, categories=["media_library"])
+
+    payload = service.sync_data(peer)["data"]
+
+    assert len(payload["media_library"]) == 1
+    item = payload["media_library"][0]
+    assert item["id"] == movie["id"]
+    assert item["title"] == "Shared film"
+    assert item["favorite"] is True
+    assert item["watchlist"] is False
+    assert item["status"] == "watching"
+    assert item["position"] == 120
+    assert "memory" not in payload
+    assert "calendar" not in payload
+
+    ungranted = trust(service, jwk, "ungranted-device", categories=[])
+    assert "media_library" not in service.sync_data(ungranted)["data"]
+    with pytest.raises(ValueError, match="не разрешён"):
+        service.submit(
+            ungranted,
+            {
+                "operation": "calendar_day",
+                "arguments": {"date": "2026-11-22"},
+                "id": secrets.token_hex(16),
+                "expires": time.time() + 60,
+            },
+        )
+    cinema.close()
+    memory.close()
+
+
+def test_mobile_history_is_scoped_to_pair_and_uses_session_id(tmp_path):
+    memory, _, service = setup(tmp_path)
+    _, jwk, device = identity()
+    peer = trust(service, jwk, device, categories=["history"])
+    conversation = memory.new_conversation()
+    with memory.memory_transaction():
+        memory.db.execute(
+            "INSERT INTO messages(conversation_id,role,content,created_at,device_id,session_id) "
+            "VALUES(?,?,?,?,?,?)",
+            (conversation, "user", "phone history", "2026-11-22", device, f"sync-{device}-abc"),
+        )
+        memory.db.execute(
+            "INSERT INTO messages(conversation_id,role,content,created_at,device_id,session_id) "
+            "VALUES(?,?,?,?,?,?)",
+            (conversation, "user", "other device", "2026-11-22", "another", "sync-other-abc"),
+        )
+
+    history = service.sync_data(peer)["data"]["history"]
+    assert [message["content"] for message in history] == ["phone history"]
     memory.close()
 
 
