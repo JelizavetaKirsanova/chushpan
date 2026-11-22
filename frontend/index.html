@@ -28,33 +28,35 @@
       <button data-view="devices"><span data-icon="lamp"></span><span>Устройства</span></button>
       <button data-view="lighting"><span data-icon="lamp"></span><span>Освещение</span></button>
       <button data-view="cinema"><span data-icon="film"></span><span>Медиатека</span></button>
-      <button data-view="memory"><span data-icon="note"></span><span>Память</span></button>
-      <button data-view="mac-control"><span data-icon="monitor"></span><span>Управление Mac</span></button>
-      <button data-view="my-devices"><span data-icon="link"></span><span>Мои устройства</span></button>
-      <button data-view="analytics"><span data-icon="chart"></span><span>Аналитика</span></button>
-      <button data-view="performance"><span data-icon="chart"></span><span>Статистика</span></button>
-      <button data-view="settings"><span data-icon="settings"></span><span>Настройки</span></button>
-      <div class="nav-spacer"></div><div class="nav-foot"><span class="connection-light"></span><span id="nav-state">Подключаюсь…</span><button data-action="ambient" title="Ambient" aria-label="Открыть Ambient"><span data-icon="moon"></span></button></div><label class="theme-control"><span data-icon="sparkles"></span><span>Тема</span><select id="theme-mode" aria-label="Оформление"><option value="system">Системная</option><option value="light">Светлая</option><option value="dark">Тёмная</option></select></label></nav>
+      <button data-view="history"><span data-icon="history"></span><span>Разговоры</span></button>
+      <button data-view="calendar"><span data-icon="calendar"></span><span>Календарь</span></button>
+      <details class="nav-more"><summary><span data-icon="layers"></span><span>Ещё</span></summary>
+        <button data-view="memory"><span data-icon="note"></span><span>Память</span></button>
+        <button data-view="mac-control"><span data-icon="monitor"></span><span>Управление Mac</span></button>
+        <button data-view="my-devices"><span data-icon="link"></span><span>Мои устройства</span></button>
+        <button data-view="analytics"><span data-icon="chart"></span><span>Аналитика</span></button>
+        <button data-view="performance"><span data-icon="chart"></span><span>Статистика</span></button>
+        <button data-view="settings"><span data-icon="settings"></span><span>Настройки</span></button>
+      </details>
+      <div class="nav-spacer"></div><div class="nav-foot"><span class="connection-light"></span><span id="nav-state" class="sr-only">Подключаюсь…</span><button data-action="ambient" title="Ambient" aria-label="Открыть Ambient"><span data-icon="moon"></span></button></div><label class="theme-control"><span data-icon="sparkles"></span><span>Тема</span><select id="theme-mode" aria-label="Оформление"><option value="system">Системная</option><option value="light">Светлая</option><option value="dark">Тёмная</option></select></label></nav>
 
-      <div class="backdrop" aria-hidden="true"></div><header class="top"><div class="brand"><b id="name">Чушпан</b><span id="model"></span></div><button id="route-back" type="button" hidden aria-label="Вернуться на предыдущую страницу">← Назад</button><nav class="chat-navigation" aria-label="Разговоры"><button data-go="history">Разговоры</button><button data-go="calendar">Календарь</button><button data-action="new-chat" aria-label="Новый разговор">+</button></nav><div class="clock"><span id="time">--:--</span><span id="date"></span></div><div class="status" role="status" aria-live="polite"><span class="dot"></span><span id="state-label">Подключение</span></div></header>
+      <div class="backdrop" aria-hidden="true"></div><header class="top"><div class="brand"><b id="name">Чушпан</b><span id="model"></span></div><button id="route-back" type="button" hidden aria-label="Вернуться на предыдущую страницу">← Назад</button><nav class="chat-navigation" aria-label="Разговоры"><button data-action="new-chat" aria-label="Новый разговор">+</button></nav><div class="clock"><span id="time">--:--</span><span id="date"></span></div><div class="status" role="status" aria-live="polite"><span class="dot"></span><span id="state-label" class="sr-only">Подключение</span></div></header>
       <div class="app-content">
       <section class="home-view" aria-label="Главная">
       <p id="dashboard-feedback" class="dashboard-feedback" role="status" hidden></p>
-      <main class="stage"><div class="room-art" role="img" aria-label="Уютная комната с видом на вечерний Таллин"></div><canvas id="core" hidden></canvas><div class="caption"><p id="greeting">Привет ♡</p><h1 class="home-invitation">Чем займёмся?</h1><p id="caption-state" class="caption-state">Я рядом</p><p id="caption-hint"></p><p id="session-status" class="session-meta"></p><p id="session-interrupted" hidden>Предыдущий ответ прерван.</p><p id="recipient-status" class="sr-only"></p><div id="tool" class="tool"></div></div><div id="character" class="character"></div>
+      <main class="stage"><div class="room-art" role="img" aria-label="Уютная комната с видом на вечерний Таллин"></div><canvas id="core" hidden></canvas><div class="caption"><p id="greeting">Привет ♡</p><h1 class="home-invitation">Чем займёмся?</h1><p id="caption-state" class="caption-state">Я рядом</p><p id="caption-hint"></p><p id="session-status" class="session-meta" hidden></p><p id="session-interrupted" hidden>Предыдущий ответ прерван.</p><p id="recipient-status" class="sr-only"></p><div id="tool" class="tool"></div></div><div id="character" class="character"></div><button id="home-configure" class="home-configure" type="button">Настроить главную</button>
         <div class="ambient-glance"><div id="ambient-weather"></div><div id="ambient-event"></div></div><button id="ambient-exit" class="ambient-exit" data-action="ambient-exit">Вернуться к разговору</button><small class="room-signature">МАЛЕНЬКИЙ УГОЛОК СПОКОЙСТВИЯ</small></main>
       <section class="talk"><div class="talk-tools"><span id="talk-note" role="status"></span><button id="export" class="tool-button"></button></div><div class="transcript" id="transcript" aria-live="polite"></div><form id="chat-composer" class="chat-composer"><button id="listen-control" type="button" class="mic-button" aria-label="Начать разговор"><span data-icon="mic"></span><span id="listen-control-label" class="sr-only">Начать разговор</span></button><button type="button" id="stop-response" class="tool-button" aria-label="Остановить ответ" disabled>■<span class="sr-only">Остановить ответ</span></button><textarea id="chat-input" rows="1" maxlength="4000" placeholder="Скажи или напиши Чушпану…" aria-label="Сообщение Чушпану"></textarea><label class="speak-toggle" title="Озвучить ответ"><input id="chat-speak" type="checkbox"><span data-icon="volume"></span><span class="sr-only">Озвучить ответ</span></label><button type="submit" id="chat-send" class="send-button" aria-label="Отправить сообщение"><span data-icon="send"></span></button></form></section>
       <aside class="col right" aria-label="Мой день">
-      <div class="home-dashboard" aria-label="Обзор дня">
-        <div class="home-shortcuts" aria-label="Быстрые действия"><button data-go="mac-control"><span data-icon="monitor"></span><span>Управление Mac</span></button><button data-go="my-devices"><span data-icon="link"></span><span>Мои устройства</span></button><button data-go="lighting"><span data-icon="lamp"></span><span>Освещение</span></button><button data-go="automations"><span data-icon="sparkles"></span><span>Сценарии</span></button></div>
-        <article class="home-resume dashboard-card"><div class="home-card-title"><span data-icon="play"></span><h2>Продолжить просмотр</h2></div><p>Прогресс появится здесь после просмотра из медиатеки.</p><button data-go="cinema" class="text-button">Открыть медиатеку <span aria-hidden="true">›</span></button></article>
-        <div class="home-feature-pair">
-          <article class="home-feature home-upcoming dashboard-card"><div class="section-heading"><div><h2>Ближайшие события</h2><p id="today-date" class="muted"></p></div><button class="text-button" data-go="calendar">Все события <span aria-hidden="true">›</span></button></div><div id="today-events" class="event-list"></div><button id="calendar-connect-card" class="text-button" data-op="calendar_connect">Подключить календарь</button></article>
-          <article class="home-feature home-conversations dashboard-card"><div class="section-heading"><h2>Недавние разговоры</h2><button class="text-button" data-go="history">Все разговоры <span aria-hidden="true">›</span></button></div><div id="home-recent-conversations" class="recent-conversations"><p class="muted">История появится после подключения.</p></div></article>
-        </div>
-      </div>
-        <div id="module-quick-links" aria-label="Быстрый доступ к новым разделам"></div>
-        <section class="dashboard-card location-card"><span class="location-icon" data-icon="pin"></span><div><p id="location-caption">Твой город</p><h2><span id="location-zone">Местоположение неизвестно</span> <i>♡</i></h2><small id="location-source"></small></div><button data-go="settings" aria-label="Настроить местоположение" class="icon-button" data-icon="settings"></button></section>
-        <section class="panel dashboard-card weather-card" id="weather">
+      <button id="home-configure-mobile" class="home-configure-mobile" type="button" aria-label="Настроить главную"><span data-icon="settings"></span></button>
+      <div class="home-dashboard" id="home-dashboard" aria-label="Моя главная">
+        <div class="home-shortcuts" data-home-widget="shortcuts" aria-label="Быстрые действия"><button data-home-action="mac-control" data-go="mac-control"><span data-icon="monitor"></span><span>Управление Mac</span></button><button data-home-action="my-devices" data-go="my-devices"><span data-icon="link"></span><span>Мои устройства</span></button><button data-home-action="lighting" data-go="lighting"><span data-icon="lamp"></span><span>Освещение</span></button><button data-home-action="automations" data-go="automations"><span data-icon="sparkles"></span><span>Сценарии</span></button><button data-home-action="cinema" data-go="cinema"><span data-icon="film"></span><span>Медиатека</span></button><button data-home-action="devices" data-go="devices"><span data-icon="lamp"></span><span>Устройства</span></button><button data-home-action="calendar" data-go="calendar"><span data-icon="calendar"></span><span>Календарь</span></button><button data-home-action="memory" data-go="memory"><span data-icon="note"></span><span>Память</span></button></div>
+        <article class="home-resume dashboard-card" data-home-widget="resume"><div class="home-card-title"><span data-icon="play"></span><h2>Продолжить просмотр</h2></div><p>Прогресс появится здесь после просмотра из медиатеки.</p><button data-go="cinema" class="text-button">Открыть медиатеку <span aria-hidden="true">›</span></button></article>
+        <article class="home-feature home-upcoming dashboard-card" data-home-widget="events"><div class="section-heading"><div><h2>Ближайшие события</h2><p id="today-date" class="muted"></p></div><button class="text-button" data-go="calendar">Все события <span aria-hidden="true">›</span></button></div><div id="today-events" class="event-list"></div><button id="calendar-connect-card" class="text-button" data-op="calendar_connect">Подключить календарь</button></article>
+        <article class="home-feature home-conversations dashboard-card" data-home-widget="conversations"><div class="section-heading"><h2>Недавние разговоры</h2><button class="text-button" data-go="history">Все разговоры <span aria-hidden="true">›</span></button></div><div id="home-recent-conversations" class="recent-conversations"><p class="muted">История появится после подключения.</p></div></article>
+        <div id="module-quick-links" data-home-widget="modules" aria-label="Быстрый доступ к разделам"></div>
+        <section class="dashboard-card location-card" data-home-widget="location"><span class="location-icon" data-icon="pin"></span><div><p id="location-caption">Твой город</p><h2><span id="location-zone">Местоположение неизвестно</span> <i>♡</i></h2><small id="location-source"></small></div><button data-go="settings" aria-label="Настроить местоположение" class="icon-button" data-icon="settings"></button></section>
+        <section class="panel dashboard-card weather-card" id="weather" data-home-widget="weather">
           <h2><span data-label="weather"></span><span class="sub" id="w-place"></span></h2>
           <div class="w-now"><span class="weather-art" id="weather-art" aria-hidden="true">☁</span>
             <div class="temp"><span id="w-temp">—</span><sup>°C</sup></div>
@@ -67,11 +69,16 @@
           <ul class="w-days" id="w-days"></ul>
         <p id="weather-forecast" class="weather-forecast"></p><p id="weather-feedback" class="card-feedback">Выбери город, чтобы узнать погоду.</p><button class="text-button weather-refresh" data-op="weather_refresh" aria-label="Обновить погоду">Обновить</button></section>
 
-        <section class="dashboard-card mini-calendar"><div class="month-heading"><button data-month="-1" aria-label="Предыдущий месяц">‹</button><h2 class="calendar-month-title"></h2><button data-month="1" aria-label="Следующий месяц">›</button></div><div class="weekday-row"><span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span></div><div class="month-grid" id="calendar-mini-grid"></div></section>
-        <div class="card-pair lower-cards"><section class="dashboard-card stats-card"><div class="section-heading"><h2><span data-icon="chart"></span>Чушпан сегодня</h2><button class="text-button" data-go="performance">Подробнее</button></div><dl id="dashboard-stats" class="dashboard-stats"><div><dt>Отклик</dt><dd>Нет данных</dd></div></dl></section><section class="dashboard-card goals-card"><div class="section-heading"><h2><span data-icon="target"></span>Фокус недели</h2><div class="button-row"><button class="text-button" data-action="add-task">Задача</button><button class="icon-button" data-action="add-goal" aria-label="Добавить цель">+</button></div></div><div id="dashboard-goals"></div></section></div>
-
+        <section class="dashboard-card mini-calendar" data-home-widget="calendar"><div class="month-heading"><button data-month="-1" aria-label="Предыдущий месяц">‹</button><h2 class="calendar-month-title"></h2><button data-month="1" aria-label="Следующий месяц">›</button></div><div class="weekday-row"><span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span></div><div class="month-grid" id="calendar-mini-grid"></div></section>
+        <section class="dashboard-card goals-card" data-home-widget="goals"><div class="section-heading"><h2><span data-icon="target"></span>Фокус недели</h2><div class="button-row"><button class="text-button" data-action="add-task">Задача</button><button class="icon-button" data-action="add-goal" aria-label="Добавить цель">+</button></div></div><div id="dashboard-goals"></div></section>
+        <section class="dashboard-card home-favorites" data-home-widget="favorite-scenarios"><h2>Избранные сценарии</h2><div id="home-favorite-scenarios" class="home-favorite-grid"></div></section>
+        <section class="dashboard-card home-favorites" data-home-widget="favorite-devices"><h2>Избранные устройства</h2><div id="home-favorite-devices" class="home-favorite-grid"></div></section>
+      </div>
+      <details class="diagnostics-inline">
+        <summary>Диагностика и состояние системы</summary>
+        <section class="dashboard-card stats-card"><div class="section-heading"><h2><span data-icon="chart"></span>Статистика за день</h2><button class="text-button" data-go="performance">Подробнее</button></div><dl id="dashboard-stats" class="dashboard-stats"><div><dt>Отклик</dt><dd>Нет данных</dd></div></dl></section>
         <section class="panel ai-panel">
-          <h2>AI · Соединение <span class="live-indicator" id="ai-provider">Не проверено</span></h2>
+          <h2>ИИ · Соединение <span class="live-indicator" id="ai-provider">Не проверено</span></h2>
           <strong id="ai-model">Ожидание подключения</strong>
           <p id="ai-reason" class="dim">Статус появится после подключения к ассистенту.</p>
           <div class="ai-summary"><span>Отклик <b id="summary-response">—</b></span><span>Генерация <b id="summary-model">—</b></span><button id="open-performance" class="trace-link" disabled>Диагностика ответа</button></div>
@@ -85,16 +92,13 @@
           <h2><span data-label="timers"></span></h2>
           <ul id="timer-list" class="timers"></ul>
         </section>
-        <section class="panel" id="latency">
-          <h2><span data-label="latency"></span><span class="sub" id="tps"></span></h2>
-          <div class="readouts" id="readouts"></div>
-          <div class="spark" id="spark" aria-hidden="true"></div>
-        </section>
+        <section class="panel" id="latency"><h2><span data-label="latency"></span><span class="sub" id="tps"></span></h2><div class="readouts" id="readouts"></div><div class="spark" id="spark" aria-hidden="true"></div></section>
+      </details>
       </aside>
       </section>
       <section class="workspace-page history-page" aria-label="История разговоров">
         <div class="page-heading"><small>ПАМЯТЬ ДИАЛОГА</small><h1>Разговоры</h1><button class="text-button" data-go="home">‹ Чат</button><p>Твои сохранённые диалоги. Без технических событий.</p></div>
-        <div class="page-toolbar"><label class="search-field"><span data-icon="search"></span><input id="history-search" type="search" placeholder="Поиск по сообщениям"></label><label class="check-label"><input id="history-trash" type="checkbox"> Корзина</label><button data-action="new-chat">Новый разговор</button></div><details class="recent-dialogues"><summary>Недавние разговоры</summary>      <div class="recent-heading"><span>Недавние разговоры</span><button data-action="new-chat" aria-label="Новый разговор">+</button></div><label class="recent-search"><span data-icon="search"></span><input id="recent-search" placeholder="Найти разговор" type="search" aria-label="Поиск разговоров"></label><div id="recent-conversations" class="recent-conversations"><p class="muted">История появится после подключения.</p></div></details><div class="history-layout"><div id="conversation-list" class="conversation-list"></div><div id="history-messages" class="history-messages"><p class="empty-state">Выбери разговор слева.</p></div></div>
+        <div class="page-toolbar"><label class="search-field"><span data-icon="search"></span><input id="history-search" type="search" placeholder="Поиск по сообщениям"></label><label class="check-label"><input id="history-trash" type="checkbox"> Корзина</label><button data-action="new-chat">Новый разговор</button></div><div class="history-layout"><div id="conversation-list" class="conversation-list"></div><div id="history-messages" class="history-messages"><p class="empty-state">Выбери разговор слева.</p></div></div>
       </section>
       <section class="workspace-page performance-page" aria-label="Производительность">
         <div id="statistics-root"></div>
@@ -211,7 +215,9 @@
         </span>
       </footer>
 <div id="action-confirmation" class="action-confirmation" hidden><strong>Нужно твоё подтверждение</strong><p id="confirmation-summary"></p><div class="button-row"><button id="confirm-action" class="primary"></button><button data-command="Отмена">Отмена</button></div></div>
-<dialog id="edit-dialog"><form id="edit-form"><h2 id="edit-heading"></h2><p id="edit-description" class="muted"></p><label id="edit-value-label">Текст<input id="edit-value" maxlength="80"></label><label id="edit-long-label" hidden>Текст<textarea id="edit-long" rows="5" maxlength="3000"></textarea></label><div class="button-row"><button type="submit" id="edit-submit" class="primary">Сохранить</button><button type="button" id="edit-cancel">Отмена</button></div></form></dialog>    </div>
+<dialog id="edit-dialog"><form id="edit-form"><h2 id="edit-heading"></h2><p id="edit-description" class="muted"></p><label id="edit-value-label">Текст<input id="edit-value" maxlength="80"></label><label id="edit-long-label" hidden>Текст<textarea id="edit-long" rows="5" maxlength="3000"></textarea></label><div class="button-row"><button type="submit" id="edit-submit" class="primary">Сохранить</button><button type="button" id="edit-cancel">Отмена</button></div></form></dialog>
+<dialog id="home-config-dialog" aria-labelledby="home-config-title"><div class="home-config-panel"><header><div><h2 id="home-config-title">Настроить главную</h2><p class="muted">Выбери нужные блоки, порядок и размер. Быстрые действия можно настроить отдельно.</p></div><button id="home-config-close" type="button" class="icon-button" aria-label="Закрыть">×</button></header><section><h3>Виджеты</h3><div id="home-widget-settings" class="home-editor-list"></div></section><section><h3>Быстрые действия</h3><div id="home-action-settings" class="home-editor-list"></div></section><footer><button id="home-config-reset" type="button">Вернуть стандартную компоновку</button><button id="home-config-done" type="button" class="primary">Готово</button></footer></div></dialog>
+    </div>
     <script>
       (() => {
         const report = (type, source = "", line = 0) => {

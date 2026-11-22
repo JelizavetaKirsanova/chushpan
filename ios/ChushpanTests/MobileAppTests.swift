@@ -3,6 +3,12 @@ import XCTest
 @testable import Chushpan
 
 final class MobileStoreTests: XCTestCase {
+    func testHomeFavoriteIDsRoundTripAndNormalizeDuplicates() {
+        let encoded = MobileHomeFavorites.encode(["device-b", "scenario-a"])
+        XCTAssertEqual(MobileHomeFavorites.decode(encoded), ["device-b", "scenario-a"])
+        XCTAssertEqual(MobileHomeFavorites.decode(#"["scenario-a","scenario-a","device-b"]"#), ["scenario-a", "device-b"])
+    }
+
     func testStoreRoundTripKeepsStableIDsAndPrivateMode() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("chushpan-store-\(UUID().uuidString).json")
@@ -153,6 +159,27 @@ final class MobileStoreTests: XCTestCase {
         let tombstone = CloudItem(id: "same", kind: "memory", payload: Data(), updatedAt: date, deletedAt: date, modifiedBy: "device-a")
         XCTAssertEqual(CloudConflictResolver.winner(local: live, remote: tombstone), tombstone)
         XCTAssertEqual(CloudConflictResolver.winner(local: tombstone, remote: live), tombstone)
+    }
+}
+
+final class MobileHomeLayoutTests: XCTestCase {
+    func testHomeLayoutRoundTripPreservesCustomizationOrder() {
+        let widgets: [MobileHomeWidget] = [.quickActions, .voice, .chat]
+        XCTAssertEqual(MobileHomeWidget.decode(MobileHomeWidget.encode(widgets)), widgets)
+
+        let actions: [MobileHomeAction] = [.memory, .lighting, .calendar]
+        XCTAssertEqual(MobileHomeAction.decode(MobileHomeAction.encode(actions)), actions)
+    }
+
+    func testHomeLayoutDropsUnknownAndDuplicateItems() {
+        XCTAssertEqual(
+            MobileHomeWidget.decode("[\"chat\",\"unknown\",\"voice\",\"chat\"]"),
+            [.chat, .voice]
+        )
+        XCTAssertEqual(
+            MobileHomeAction.decode("[\"calendar\",\"unknown\",\"memory\",\"calendar\"]"),
+            [.calendar, .memory]
+        )
     }
 }
 

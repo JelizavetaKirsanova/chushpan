@@ -11,17 +11,10 @@ struct ScenariosView: View {
         List {
             Section {
                 MobilePageHeader(
-                    eyebrow: "Защищённые действия",
+                    eyebrow: "ТВОИ КОМАНДЫ",
                     title: "Сценарии",
-                    subtitle: "Запускай автоматизации, которые выполняет Mac",
+                    subtitle: "Запускай привычные команды одним нажатием",
                     symbol: "sparkles"
-                )
-                StatusCard(
-                    title: model.macStatus == nil ? "Mac недоступен" : "Сценарии выполняет Mac",
-                    detail:
-                        "Геопозиция iPhone/iPad не используется. Автоматический выбор места берётся только из текущего состояния Mac.",
-                    symbol: "location.circle",
-                    tint: .accentPurple
                 )
                 Button("Обновить список") { Task { await model.refreshMac() } }
             }
@@ -101,7 +94,7 @@ struct ScenariosView: View {
     }
 }
 
-private struct ScenarioValuesSheet: View {
+struct ScenarioValuesSheet: View {
     let scenario: MacRemoteScenario
     let run: ([String: Any]) -> Void
     @Environment(\.dismiss) private var dismiss

@@ -154,6 +154,11 @@ export class AutomationsView {
     this.renderEditor();
   }
 
+  runFavoriteScenario(id: string): void {
+    const scenario = this.data?.scenarios.find(item => item.id === id);
+    if (scenario) this.runScenario(scenario);
+  }
+
   private updateListFilterState(): void {
     this.listFilters.forEach((button, index) => button.setAttribute('aria-pressed', String(['all', 'active', 'favorite', 'schedule', 'voice'][index] === this.listFilter)));
   }

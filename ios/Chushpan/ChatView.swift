@@ -10,6 +10,7 @@ struct ChatView: View {
     @State private var showingRename = false
     @State private var showingDelete = false
     @State private var showingPrivateModeInfo = false
+    var startVoiceOnOpen = false
 
     var onExitChat: (() -> Void)? = nil
 
@@ -19,23 +20,19 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             if model.macStatus?.capabilities.contains("chat") != true {
-                StatusCard(
-                    title: "GPT на сервере Mac недоступен",
-                    detail: "Нужно защищённое соединение и отдельное разрешение «Текстовый чат» на Mac. Сообщение не отправится через другой провайдер.",
-                    symbol: "desktopcomputer.trianglebadge.exclamationmark",
-                    tint: .orange
-                )
+                VStack(alignment: .leading, spacing: 8) {
+                    StatusCard(
+                        title: "Чат временно недоступен",
+                        detail: "Подключи Чушпан на Mac и разреши текстовый чат в настройках сопряжения.",
+                        symbol: "bubble.left.and.bubble.right",
+                        tint: .orange
+                    )
+                    NavigationLink(destination: SettingsView()) {
+                        Label("Настроить подключение", systemImage: "link")
+                    }
+                }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
-            } else if let chat = model.macChatStatus {
-                HStack(spacing: 7) {
-                    Image(systemName: "lock.shield.fill").foregroundStyle(Color.accentPurple)
-                    Text("\(chat.provider.uppercased()) · \(chat.model) · без fallback")
-                        .font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 8)
             }
 
             ScrollViewReader { proxy in
@@ -45,7 +42,7 @@ struct ChatView: View {
                             ContentUnavailableView(
                                 "Начни разговор",
                                 systemImage: "bubble.left.and.bubble.right",
-                                description: Text("Чушпан отвечает через настроенный GPT на сервере Mac. iPhone не хранит API-ключ.")
+                                description: Text("Напиши сообщение или начни голосовой ввод.")
                             )
                             .padding(.top, 60)
                         }
@@ -96,11 +93,14 @@ struct ChatView: View {
                 }
             }
         }
+        .frame(maxWidth: 960)
+        .frame(maxWidth: .infinity)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             ChatComposer(
                 focused: $composerFocused,
                 isGenerating: model.isGenerating,
                 voiceIdentifier: model.voiceIdentifier,
+                startVoiceOnOpen: startVoiceOnOpen,
                 onSend: model.sendMessage
             )
             .environmentObject(speech)
@@ -217,6 +217,7 @@ private struct ChatComposer: View {
 
     let isGenerating: Bool
     let voiceIdentifier: String
+    let startVoiceOnOpen: Bool
     let onSend: (String) -> Void
 
     var body: some View {
@@ -278,6 +279,10 @@ private struct ChatComposer: View {
             .padding(.bottom, 8)
             .background(.bar)
         }
+        .task {
+            guard startVoiceOnOpen else { return }
+            await speech.startListening(onPartial: { draft = $0 })
+        }
     }
 
     private func submit() {
@@ -324,11 +329,6 @@ private struct ChatMessageRow: View, Equatable {
                     }
                 }
                 if !message.text.isEmpty && !isUser {
-                    if let provider = message.provider, let modelName = message.model {
-                        Text("\(provider.uppercased()) · \(modelName)")
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
                     HStack(spacing: 14) {
                         Button {
                             UIPasteboard.general.string = message.text

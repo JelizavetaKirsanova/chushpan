@@ -1,8 +1,11 @@
 import type { HudEvent, WeatherEvent } from './types';
 import type { Character } from './character';
 import type { CinemaTitle } from './cinema';
+import type { Scenario } from './automation_state';
+import type { DeviceRecord } from './devices';
 import { continueWatchingItems, eventTime, measured, monthDays, safeColor, shouldAmbient, type AmbientSettings, type CalendarCard, type ConversationItem, type DashboardData, type DashboardStats } from './dashboard_state';
 import { phaseLabels } from './workspace_state';
+import { defaultHomeActions, defaultHomeWidgets, homeActions, homeWidgets, moveItem, parseHomeLayout, type HomeWidgetId, type HomeWidgetSize } from './home_layout';
 
 const node = (id: string) => document.getElementById(id)!;
 const paths: Record<string, string> = {
@@ -68,6 +71,11 @@ export class DashboardView {
   private nativeBusy = false;
   private battery = false;
   private cinemaItems: CinemaTitle[] = [];
+  private favoriteScenarios: Scenario[] = [];
+  private favoriteDevices: DeviceRecord[] = [];
+  private runFavoriteScenario: (id: string) => void = () => {};
+  private openFavoriteDevice: (id: string) => void = () => {};
+  private homeLayout = parseHomeLayout(null);
   hasLocation = false;
 
   toggleAmbient(): void {
@@ -80,15 +88,21 @@ export class DashboardView {
     private weather: (value: WeatherEvent) => void,
     private resumeCinema: (titleId: string, episodeId: string, edit?: boolean) => void) {
     this.icons();
+    this.homeLayout = this.readHomeLayout();
+    this.applyHomeLayout();
+    node('home-configure').addEventListener('click', () => this.openHomeCustomizer());
+    node('home-configure-mobile').addEventListener('click', () => this.openHomeCustomizer());
+    node('home-config-close').addEventListener('click', () => (node('home-config-dialog') as HTMLDialogElement).close());
+    node('home-config-done').addEventListener('click', () => (node('home-config-dialog') as HTMLDialogElement).close());
+    node('home-config-reset').addEventListener('click', () => this.resetHomeLayout());
     document.querySelectorAll<HTMLButtonElement>('.workspace-nav button[data-view]').forEach(control => { const label = control.querySelector('span:not([data-icon])')?.textContent ?? control.textContent ?? 'Раздел'; control.setAttribute('aria-label', label.trim()); control.title = label.trim(); });
     document.addEventListener('click', event => this.click(event));
     document.addEventListener('pointerdown', () => { this.lastInput = Date.now(); if (this.ambient) this.setAmbient(false); }, {capture: true});
     document.addEventListener('keydown', () => { this.lastInput = Date.now(); if (this.ambient) this.setAmbient(false); }, {capture: true});
     node('chat-composer').addEventListener('submit', event => { event.preventDefault(); this.submitChat(); });
     node('chat-input').addEventListener('keydown', event => { if ((event as KeyboardEvent).key === 'Enter' && !(event as KeyboardEvent).shiftKey) { event.preventDefault(); this.submitChat(); } });
-    for (const id of ['history-search', 'recent-search']) node(id).addEventListener('input', () => {
+    for (const id of ['history-search']) node(id).addEventListener('input', () => {
       const value = (node(id) as HTMLInputElement).value;
-      for (const other of ['history-search', 'recent-search']) if (other !== id) (node(other) as HTMLInputElement).value = value;
       clearTimeout(this.searchTimer); this.searchTimer = window.setTimeout(() => this.search({query: value, trash: (node('history-trash') as HTMLInputElement).checked}), 250);
     });
     node('history-trash').addEventListener('change', () => this.search({query: (node('history-search') as HTMLInputElement).value, trash: (node('history-trash') as HTMLInputElement).checked}));
@@ -102,6 +116,120 @@ export class DashboardView {
     document.addEventListener('visibilitychange', () => { if (!document.hidden && this.online) this.refresh(); });
     this.renderMonth();
     window.setInterval(() => void this.pollAmbient(), 5000);
+  }
+  private readHomeLayout(): ReturnType<typeof parseHomeLayout> {
+    try { return parseHomeLayout(localStorage.getItem('chushpan:home-layout')); }
+    catch { return parseHomeLayout(null); }
+  }
+  private saveHomeLayout(): void {
+    try { localStorage.setItem('chushpan:home-layout', JSON.stringify(this.homeLayout)); }
+    catch { this.feedback('Не удалось сохранить компоновку. Проверь доступ к локальному хранилищу.'); }
+    this.applyHomeLayout();
+  }
+  private resetHomeLayout(): void {
+    this.homeLayout = {widgets: [...defaultHomeWidgets], sizes: {}, actions: [...defaultHomeActions]};
+    this.saveHomeLayout();
+    this.renderHomeCustomizer();
+  }
+  private applyHomeLayout(): void {
+    const container = node('home-dashboard');
+    const widgets = new Map([...container.querySelectorAll<HTMLElement>('[data-home-widget]')].map(item => [item.dataset.homeWidget!, item]));
+    for (const definition of homeWidgets) {
+      const item = widgets.get(definition.id as HomeWidgetId);
+      if (!item) continue;
+      const hasResume = definition.id !== 'resume' || continueWatchingItems(this.cinemaItems).length > 0;
+      const hasFavorites = definition.id === 'favorite-scenarios' ? this.favoriteScenarios.some(scenario => scenario.favorite && scenario.enabled && scenario.triggers.some(trigger => trigger.kind === 'manual'))
+        : definition.id === 'favorite-devices' ? this.favoriteDevices.some(device => device.favorite && device.usable)
+          : true;
+      item.hidden = !this.homeLayout.widgets.includes(definition.id) || !hasResume || !hasFavorites;
+      item.dataset.homeSize = this.homeLayout.sizes[definition.id] ?? definition.size;
+      if (this.homeLayout.widgets.includes(definition.id)) container.append(item);
+    }
+    const shortcuts = container.querySelector<HTMLElement>('[data-home-widget="shortcuts"]');
+    const buttons = new Map([...container.querySelectorAll<HTMLElement>('[data-home-action]')].map(item => [item.dataset.homeAction!, item]));
+    for (const definition of homeActions) {
+      const item = buttons.get(definition.id);
+      if (!item) continue;
+      item.hidden = !this.homeLayout.actions.includes(definition.id);
+      if (this.homeLayout.actions.includes(definition.id)) shortcuts?.append(item);
+    }
+    if (shortcuts) shortcuts.hidden = !this.homeLayout.widgets.includes('shortcuts') || this.homeLayout.actions.length === 0;
+  }
+  private openHomeCustomizer(): void {
+    this.renderHomeCustomizer();
+    (node('home-config-dialog') as HTMLDialogElement).showModal();
+  }
+  private renderHomeCustomizer(): void {
+    const widgetList = node('home-widget-settings');
+    widgetList.replaceChildren(...homeWidgets.map(definition => {
+      const row = el('div', '', 'home-editor-row');
+      const enabled = this.homeLayout.widgets.includes(definition.id);
+      const toggleLabel = el('label', '', 'home-editor-toggle');
+      const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.checked = enabled;
+      toggle.onchange = () => {
+        this.homeLayout.widgets = toggle.checked
+          ? [...this.homeLayout.widgets, definition.id]
+          : this.homeLayout.widgets.filter(item => item !== definition.id);
+        this.saveHomeLayout(); this.renderHomeCustomizer();
+      };
+      toggleLabel.append(toggle, el('span', definition.label)); row.append(toggleLabel);
+      if (enabled) {
+        const index = this.homeLayout.widgets.indexOf(definition.id);
+        const order = el('div', '', 'home-editor-order');
+        const up = button('↑', () => { this.homeLayout.widgets = moveItem(this.homeLayout.widgets, index, index - 1); this.saveHomeLayout(); this.renderHomeCustomizer(); });
+        const down = button('↓', () => { this.homeLayout.widgets = moveItem(this.homeLayout.widgets, index, index + 1); this.saveHomeLayout(); this.renderHomeCustomizer(); });
+        up.disabled = index === 0; down.disabled = index === this.homeLayout.widgets.length - 1;
+        up.setAttribute('aria-label', `Переместить блок «${definition.label}» выше`); down.setAttribute('aria-label', `Переместить блок «${definition.label}» ниже`);
+        const size = document.createElement('select'); size.setAttribute('aria-label', `Размер блока «${definition.label}»`);
+        for (const [value, label] of [['compact', 'Компактный'], ['wide', 'Широкий']] as const) {
+          const option = document.createElement('option'); option.value = value; option.textContent = label; size.append(option);
+        }
+        size.value = this.homeLayout.sizes[definition.id] ?? definition.size;
+        size.onchange = () => { this.homeLayout.sizes[definition.id] = size.value as HomeWidgetSize; this.saveHomeLayout(); };
+        order.append(up, down, size); row.append(order);
+      }
+      return row;
+    }));
+    const actionList = node('home-action-settings');
+    actionList.replaceChildren(...homeActions.map(definition => {
+      const row = el('div', '', 'home-editor-row');
+      const enabled = this.homeLayout.actions.includes(definition.id);
+      const toggleLabel = el('label', '', 'home-editor-toggle');
+      const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.checked = enabled;
+      toggle.onchange = () => {
+        this.homeLayout.actions = toggle.checked
+          ? [...this.homeLayout.actions, definition.id]
+          : this.homeLayout.actions.filter(item => item !== definition.id);
+        this.saveHomeLayout(); this.renderHomeCustomizer();
+      };
+      toggleLabel.append(toggle, el('span', definition.label)); row.append(toggleLabel);
+      if (enabled) {
+        const index = this.homeLayout.actions.indexOf(definition.id);
+        const order = el('div', '', 'home-editor-order');
+        const up = button('↑', () => { this.homeLayout.actions = moveItem(this.homeLayout.actions, index, index - 1); this.saveHomeLayout(); this.renderHomeCustomizer(); });
+        const down = button('↓', () => { this.homeLayout.actions = moveItem(this.homeLayout.actions, index, index + 1); this.saveHomeLayout(); this.renderHomeCustomizer(); });
+        up.disabled = index === 0; down.disabled = index === this.homeLayout.actions.length - 1;
+        order.append(up, down); row.append(order);
+      }
+      return row;
+    }));
+  }
+  private renderHomeFavorites(): void {
+    const scenarios = this.favoriteScenarios.filter(scenario => scenario.favorite && scenario.enabled && scenario.triggers.some(trigger => trigger.kind === 'manual'));
+    const scenarioRoot = node('home-favorite-scenarios');
+    scenarioRoot.replaceChildren(...scenarios.map(scenario => button(`${scenario.icon || '✦'}  ${scenario.name}`, () => this.runFavoriteScenario(scenario.id), 'home-favorite-item')));
+    const devices = this.favoriteDevices.filter(device => device.favorite && device.usable);
+    const deviceRoot = node('home-favorite-devices');
+    deviceRoot.replaceChildren(...devices.map(device => {
+      const action = button('', () => this.openFavoriteDevice(device.id), 'home-favorite-item');
+      action.append(el('strong', device.name), el('small', device.room));
+      return action;
+    }));
+    this.applyHomeLayout();
+  }
+  setFavoriteActions(runScenario: (id: string) => void, openDevice: (id: string) => void): void {
+    this.runFavoriteScenario = runScenario;
+    this.openFavoriteDevice = openDevice;
   }
   private icons(): void { document.querySelectorAll<HTMLElement>('[data-icon]').forEach(target => target.innerHTML = icon(target.dataset.icon!)); }
   private available(): boolean { return this.online && !!this.data?.ready; }
@@ -148,10 +276,19 @@ export class DashboardView {
     this.currentStatus=text;
     if(this.online&&!this.busy&&this.microphone==='stopped')text='Микрофон выключен';
     else if(this.online&&!this.busy&&this.microphone==='starting')text='Подготовка микрофона';
-    node('nav-state').textContent=text;node('caption-state').textContent=text;
+    node('nav-state').textContent=text;
+    const caption: Record<string, string> = {
+      'Ошибка подключения': 'Сейчас не удаётся подключиться', 'Нет соединения': 'Связь прервалась',
+      'Готов к следующему запросу': 'Я рядом', 'Обрабатываю запрос': 'Думаю', 'Генерирую ответ': 'Готовлю ответ',
+      'Переключаю модель': 'Подбираю ответ', 'Выполняю команду': 'Выполняю', 'Распознаю речь': 'Слушаю',
+      'Слушаю': 'Слушаю', 'Отвечаю': 'Отвечаю', 'Подготовка микрофона': 'Готовлюсь слушать', 'Микрофон выключен': 'Я рядом',
+    };
+    node('caption-state').textContent=caption[text] ?? (this.online ? 'Я рядом' : 'Сейчас не удаётся подключиться');
   }
   receive(event: HudEvent): void {
     if (event.type === 'voice_settings') {this.microphone=event.microphone;this.status(this.currentStatus);}
+    else if (event.type === 'automations') { this.favoriteScenarios = event.scenarios; this.renderHomeFavorites(); }
+    else if (event.type === 'devices') { this.favoriteDevices = event.items; this.renderHomeFavorites(); }
     else if(event.type==='session' && event.active && event.listening && !this.busy){this.status(event.recording===false?'Ожидает продолжения':'Слушает');}
     else if (event.type === 'dashboard') { this.data = event; this.hasLocation = !!event.location.city; this.render(); if (this.pendingAmbientToggle) { this.pendingAmbientToggle = false; this.setAmbient(!this.ambient); } }
     else if (event.type === 'cinema') { this.cinemaItems = event.items; this.renderCinemaProgress(); }
@@ -231,6 +368,7 @@ export class DashboardView {
     const target = document.querySelector<HTMLElement>('.home-resume');
     if (!target) return;
     const items = continueWatchingItems(this.cinemaItems);
+    target.hidden = !items.length || !this.homeLayout.widgets.includes('resume');
     const heading = target.querySelector('.home-card-title');
     if (!heading) return;
     target.querySelector(':scope > p')?.remove();
@@ -238,11 +376,7 @@ export class DashboardView {
     let rail = target.querySelector<HTMLElement>('.home-resume-items');
     if (!rail) { rail = el('div', '', 'home-resume-items'); target.append(rail); }
     rail.replaceChildren();
-    if (!items.length) {
-      const empty = el('p', 'Прогресс появится здесь после просмотра из медиатеки.');
-      const open = button('Открыть медиатеку ›', () => this.navigate('cinema'), 'text-button');
-      rail.append(empty, open); return;
-    }
+    if (!items.length) return;
     for (const {item, episode} of items) {
       const card = el('article', '', 'home-resume-item');
       const poster = el('img') as HTMLImageElement; poster.alt = ''; poster.loading = 'lazy';
@@ -260,10 +394,10 @@ export class DashboardView {
   }
   private renderRecent(conversations: ConversationItem[]): void {
     const items = conversations.filter(c => !c.deleted_at).slice(0, 7);
-    for (const target of [node('recent-conversations'), node('home-recent-conversations')]) {
+    for (const target of [node('home-recent-conversations')]) {
       target.replaceChildren(...items.map(c => {
         const title = c.title || c.preview || `Разговор ${c.id}`;
-        const control = button(title, () => { this.navigate('history'); this.search({query: (node('recent-search') as HTMLInputElement).value, selected: c.id}); }, 'recent-conversation');
+        const control = button(title, () => { this.navigate('history'); this.search({query: (node('history-search') as HTMLInputElement).value, selected: c.id}); }, 'recent-conversation');
         const mark = el('span', c.pinned ? '⌁' : '♡'); control.prepend(mark); control.title = title; return control;
       }));
       if (!target.children.length) target.append(el('p', 'Пока нет разговоров', 'muted'));

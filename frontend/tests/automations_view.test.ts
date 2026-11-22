@@ -146,7 +146,8 @@ function disclosure(f: ReturnType<typeof fixture>, selector: string) {
 
 test('reference editor keeps navigation, inline controls, tags and advanced disclosure', async()=>{
   const f=fixture();try {
-    assert.deepEqual([...f.window.document.querySelectorAll('.workspace-nav > button[data-view]')].map(n=>n.getAttribute('data-view')),['home','automations','devices','lighting','cinema','memory','mac-control','my-devices','analytics','performance','settings']);
+    assert.deepEqual([...f.window.document.querySelectorAll('.workspace-nav > button[data-view]')].map(n=>n.getAttribute('data-view')),['home','automations','devices','lighting','cinema','history','calendar']);
+    assert.deepEqual([...f.window.document.querySelectorAll('.nav-more button[data-view]')].map(n=>n.getAttribute('data-view')),['memory','mac-control','my-devices','analytics','performance','settings']);
     assert.equal(f.window.document.querySelector('.permissions-page'),null);
     assert.ok(f.window.document.querySelector('.settings-page .permission-settings'));
     f.button('+ Создать сценарий');
@@ -284,10 +285,11 @@ test('primary navigation selects its parent and keeps chat history and memory re
       assert.equal(f.window.document.querySelector('.hud')!.getAttribute('data-view'),view);
       assert.equal(f.window.document.querySelector('.workspace-nav [aria-current]')!.getAttribute('data-view'),view);
     }
-    for(const [view,parent] of [['history','home'],['calendar','home'],['day','home'],['memory','memory'],['notes','memory'],['diagnostics','performance']]) {
+    for(const [view,parent] of [['history','history'],['calendar','calendar'],['day','home'],['memory','memory'],['notes','memory'],['diagnostics','performance']]) {
       f.workspace.navigate(view);assert.equal(f.window.document.querySelector('.workspace-nav [aria-current]')!.getAttribute('data-view'),parent);
     }
-    assert.ok(f.window.document.querySelector('.hud > .top .chat-navigation [data-go="history"]'));
+    assert.ok(f.window.document.querySelector('.workspace-nav [data-view="history"]'));
+    assert.equal(f.window.document.querySelector('.hud > .top .chat-navigation [data-go="history"]'),null);
     assert.ok(f.window.document.querySelector('.settings-page [data-go="memory"]'));
     assert.equal(f.window.document.querySelector('.talk .chat-navigation'),null);
   }finally{await f.window.happyDOM.close();}

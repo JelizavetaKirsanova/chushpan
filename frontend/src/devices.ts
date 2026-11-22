@@ -178,6 +178,7 @@ export class DevicesView {
   }
   private placeName(id:string):string {return id==='general'?'Общее':this.data?.places.find(p=>p.id===id)?.name??'Место не задано';}
   private choose(id:string):void {this.previousFocus=document.activeElement as HTMLElement;this.selected=id;this.tab='control';this.renderList();this.renderPanel();}
+  openFavoriteDevice(id:string):void {this.navigate?.('devices');this.choose(id);}
   private placePanel():void {
     if(this.narrow.matches&&this.selected){this.root.append(this.sheet);this.sheet.append(this.panel);if(!this.sheet.open)this.sheet.showModal();this.panel.setAttribute('role','region');}
     else {if(this.sheet.open)this.sheet.close();this.root.querySelector('.devices-layout')!.append(this.panel);this.sheet.remove();if(!this.selected)this.previousFocus?.focus();}

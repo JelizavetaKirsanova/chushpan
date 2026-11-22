@@ -55,6 +55,8 @@ export class Workspace {
     const savedRoute = window.location.hash.slice(1);
     const initialView = routeNames.has(savedRoute) ? savedRoute : "home";
     const hud = document.querySelector<HTMLElement>(".hud")!;
+    const moreSummary = document.querySelector<HTMLElement>('.nav-more > summary');
+    if (moreSummary) moreSummary.setAttribute('aria-label', 'Ещё разделы');
     hud.dataset.view = initialView;
     this.currentView = initialView;
     try {
@@ -105,7 +107,7 @@ export class Workspace {
         sessionStorage.setItem("chushpan:navigation", JSON.stringify({current:view,history:this.routeHistory}));
       } catch { /* Routing still works when browser storage is unavailable. */ }
     }
-    const parent = ({history: 'home', calendar: 'home', day: 'home', notes: 'memory', privacy: 'settings', diagnostics: 'performance'} as Record<string, string>)[view] ?? view;
+    const parent = ({day: 'home', notes: 'memory', privacy: 'settings', diagnostics: 'performance'} as Record<string, string>)[view] ?? view;
     document.querySelectorAll<HTMLButtonElement>(".workspace-nav button[data-view], .chat-navigation button[data-go]").forEach(button => {
       const selected = button.closest(".workspace-nav")
         ? button.dataset.view === parent
@@ -116,6 +118,12 @@ export class Workspace {
     if (view === "history") {
       if (this.online) this.requestHistory(this.selected);
       else node("history-messages").replaceChildren(text("p", "Для просмотра истории запусти Чушпана. Соединение с backend отсутствует.", "empty-state"));
+    }
+    const more = document.querySelector<HTMLDetailsElement>('.nav-more');
+    if (more && ['memory', 'mac-control', 'my-devices', 'analytics', 'performance', 'settings', 'privacy', 'diagnostics'].includes(view)) more.open = true;
+    if (view === 'diagnostics') {
+      const diagnostics = document.querySelector<HTMLDetailsElement>('.diagnostics-inline');
+      if (diagnostics) diagnostics.open = true;
     }
     if (view === "performance") this.performance?.();
     this.updateBackButton();
@@ -152,7 +160,7 @@ export class Workspace {
       .forEach(control => control.disabled = !online || !this.hasSession);
     (node("dialogue-close") as HTMLButtonElement).disabled = !online || !this.sessionActive;
     if (!online) {
-      node("session-status").textContent = "Нет соединения с голосовым ассистентом";
+      node("session-status").hidden = true;
       node("recipient-status").textContent = "Нет соединения";
       node("dialogue-feedback").textContent = this.saving ? "Соединение прервано; применение не подтверждено." : "";
       this.saving = false;
@@ -172,6 +180,7 @@ export class Workspace {
     } else if (event.type === "session") {
       this.hasSession = true;
       this.sessionActive = event.active;
+      node("session-status").hidden = !event.active;
       node("session-status").textContent = sessionCaption(event);
       if (!event.active) node("recipient-status").textContent = recipientLabels.waiting;
       node("session-interrupted").hidden = !event.interrupted;

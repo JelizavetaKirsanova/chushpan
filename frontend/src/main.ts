@@ -75,6 +75,7 @@ if (ambientHotkeyWindow.chushpanHotkeyPending) {
 }
 const automations = new AutomationsView(value => link.automations(value), view => workspace.navigate(view), () => link.send('wake'), text => link.chat({text}));
 const devices = new DevicesView(value=>link.devices(value),text=>link.chat({text}),()=>tap(),view=>workspace.navigate(view));
+dashboard.setFavoriteActions(id => automations.runFavoriteScenario(id), id => devices.openFavoriteDevice(id));
 const lighting = new LightingView(value=>link.devices(value),view=>workspace.navigate(view));
 cinema = new CinemaView(value=>link.cinema(value),text=>link.chat({text}),()=>workspace.navigate('cinema'),()=>byId('listen-control').click());
 const settingsCenter = new SettingsCenterUI(value => link.settings(value), value => link.automations(value), view => workspace.navigate(view));

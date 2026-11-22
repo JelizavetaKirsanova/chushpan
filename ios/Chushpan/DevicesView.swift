@@ -2,17 +2,19 @@ import SwiftUI
 
 struct DevicesView: View {
     @EnvironmentObject private var model: AppModel
+    var focusDeviceID: String? = nil
 
     private var devices: [MacRemoteDevice] { model.macStatus?.devices ?? [] }
     private var ledDevices: [MacRemoteDevice] { devices.filter { $0.kind == "led_strip" } }
 
     var body: some View {
+        ScrollViewReader { proxy in
         List {
             Section {
                 MobilePageHeader(
                     eyebrow: "Подключённый Mac",
                     title: "Устройства",
-                    subtitle: "Разрешённые устройства и команды через защищённый канал Mac",
+                    subtitle: "Управляй устройствами, добавленными в Чушпан",
                     symbol: "lightbulb.2.fill"
                 )
                 HStack {
@@ -21,7 +23,7 @@ struct DevicesView: View {
                     Spacer()
                     Button("Обновить") { Task { await model.refreshMac() } }
                 }
-                Text("Команды выполняются через существующие службы Mac. Телефон напрямую к BLE-ленте не подключается.")
+                Text("Выбери устройство, чтобы управлять им.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
 
@@ -49,21 +51,24 @@ struct DevicesView: View {
             } else {
                 Section("Устройства Mac") {
                     ForEach(devices) { device in
-                        switch device.kind {
-                        case "led_strip":
-                            LEDDeviceCard(device: device)
-                        case "mac":
-                            MacSystemDeviceCard(device: device)
-                        case "external_display":
-                            ExternalDisplayCard(device: device)
-                        default:
-                            VStack(alignment: .leading, spacing: 5) {
-                                Label(device.name, systemImage: "externaldrive.connected.to.line.below")
-                                Text("Тип «\(device.kind)» виден Mac, но мобильное приложение не показывает неподтверждённые команды для него.")
-                                    .font(.footnote).foregroundStyle(.secondary)
+                        Group {
+                            switch device.kind {
+                            case "led_strip":
+                                LEDDeviceCard(device: device)
+                            case "mac":
+                                MacSystemDeviceCard(device: device)
+                            case "external_display":
+                                ExternalDisplayCard(device: device)
+                            default:
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Label(device.name, systemImage: "externaldrive.connected.to.line.below")
+                                    Text("Тип «\(device.kind)» виден Mac, но мобильное приложение не показывает неподтверждённые команды для него.")
+                                        .font(.footnote).foregroundStyle(.secondary)
+                                }
+                                .padding(.vertical, 4)
                             }
-                            .padding(.vertical, 4)
                         }
+                        .id(device.id)
                     }
                 }
 
@@ -112,6 +117,11 @@ struct DevicesView: View {
         .navigationTitle("Устройства")
         .navigationBarTitleDisplayMode(.inline)
         .task { await model.refreshMac() }
+        .onAppear {
+            guard let focusDeviceID else { return }
+            DispatchQueue.main.async { proxy.scrollTo(focusDeviceID, anchor: .center) }
+        }
+        }
     }
 }
 
@@ -128,7 +138,7 @@ struct LightingView: View {
                 MobilePageHeader(
                     eyebrow: "Цвет и яркость",
                     title: "Освещение",
-                    subtitle: "Управление разрешёнными лентами через Mac",
+                    subtitle: "Настрой цвет и яркость света",
                     symbol: "lightbulb.led.wide"
                 )
                 HStack {
@@ -137,7 +147,7 @@ struct LightingView: View {
                     Spacer()
                     Button("Обновить") { Task { await model.refreshMac() } }
                 }
-                Text("Настройки цвета и яркости отправляются выбранному устройству через защищённый канал Mac.")
+                Text("Выбери световое устройство и установи нужный цвет.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
 

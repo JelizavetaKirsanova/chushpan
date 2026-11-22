@@ -6,6 +6,7 @@ import {stripTypeScriptTypes} from 'node:module';
 import {webcrypto} from 'node:crypto';
 import {Window} from 'happy-dom';
 import {continueWatchingItems,dayKey, eventTime, measured, monthDays, safeColor, shouldAmbient} from '../src/dashboard_state.ts';
+import {defaultHomeActions, defaultHomeWidgets, homeActions, homeWidgets, moveItem, parseHomeLayout} from '../src/home_layout.ts';
 import {phaseLabels} from '../src/workspace_state.ts';
 
 const dashboardHtml=readFileSync(new URL('../index.html',import.meta.url),'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'').replace(/<link\b[^>]*>/gi,'');
@@ -41,7 +42,7 @@ test('text composer stays available during thinking and correlates queued submis
   browser.document.write(dashboardHtml);browser.setInterval=()=>0;
   const sent:Array<Record<string,unknown>>=[];const chats:Array<Record<string,unknown>>=[];
   const source=stripTypeScriptTypes(readFileSync(new URL('../src/dashboard.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace('export function icon','function icon').replace('export class DashboardView','class DashboardView')+'\nexports.View=DashboardView;';
-  const sandbox={exports:{} as Record<string,unknown>,document:browser.document,window:browser,crypto:webcrypto,monthDays,continueWatchingItems,eventTime,measured,safeColor,shouldAmbient,phaseLabels,setTimeout:()=>0,clearTimeout:()=>{}};
+  const sandbox={exports:{} as Record<string,unknown>,document:browser.document,window:browser,localStorage:browser.localStorage,crypto:webcrypto,monthDays,continueWatchingItems,eventTime,measured,safeColor,shouldAmbient,phaseLabels,defaultHomeActions,defaultHomeWidgets,homeActions,homeWidgets,moveItem,parseHomeLayout,setTimeout:()=>0,clearTimeout:()=>{}};
   vm.runInNewContext(source,sandbox);
   const View=sandbox.exports.View as new (...args:unknown[])=>{connection:(online:boolean)=>void;receive:(event:unknown)=>void;submit?:()=>void;data:unknown};
   const view=new View((value:Record<string,unknown>)=>sent.push(value),(value:Record<string,unknown>)=>chats.push(value),()=>{},()=>{}, {error:()=>{},success:()=>{}},()=>{},()=>{});
@@ -61,6 +62,39 @@ test('text composer stays available during thinking and correlates queued submis
   browser.document.getElementById('chat-composer')!.dispatchEvent(new browser.Event('submit',{cancelable:true}));
   assert.equal(chats.length,2);
   assert.notEqual(chats[0].client_request_id,chats[1].client_request_id);
+  (browser.document.getElementById('home-configure') as HTMLButtonElement).click();
+  assert.equal((browser.document.getElementById('home-config-dialog') as HTMLDialogElement).open,true);
+  const conversationRow=[...browser.document.querySelectorAll<HTMLElement>('#home-widget-settings .home-editor-row')].find(row=>row.textContent?.includes('Недавние разговоры'))!;
+  const conversationToggle=conversationRow.querySelector('input')!;conversationToggle.checked=false;conversationToggle.dispatchEvent(new browser.Event('change'));
+  const shortcutsRow=[...browser.document.querySelectorAll<HTMLElement>('#home-widget-settings .home-editor-row')].find(row=>row.textContent?.includes('Быстрые действия'))!;
+  const size=shortcutsRow.querySelector('select')!;size.value='compact';size.dispatchEvent(new browser.Event('change'));
+  const lightingRow=[...browser.document.querySelectorAll<HTMLElement>('#home-action-settings .home-editor-row')].find(row=>row.textContent?.includes('Освещение'))!;
+  const lightingToggle=lightingRow.querySelector('input')!;lightingToggle.checked=true;lightingToggle.dispatchEvent(new browser.Event('change'));
+  const saved=parseHomeLayout(browser.localStorage.getItem('chushpan:home-layout'));
+  assert.equal(saved.widgets.includes('conversations'),false);
+  assert.equal(saved.sizes.shortcuts,'compact');
+  assert.deepEqual(saved.actions,['lighting']);
+  await browser.happyDOM.abort();
+});
+test('home can show favorited scenarios and devices and routes them through existing actions',async()=>{
+  const browser=new Window({settings:{disableJavaScriptEvaluation:true,disableCSSFileLoading:true,disableJavaScriptFileLoading:true}});
+  browser.document.write(dashboardHtml);browser.setInterval=()=>0;
+  browser.localStorage.setItem('chushpan:home-layout',JSON.stringify({widgets:['favorite-scenarios','favorite-devices'],actions:[]}));
+  const launched:string[]=[];const opened:string[]=[];
+  const source=stripTypeScriptTypes(readFileSync(new URL('../src/dashboard.ts',import.meta.url),'utf8'),{mode:'transform'}).replace(/^import .*;\n/gm,'').replace('export function icon','function icon').replace('export class DashboardView','class DashboardView')+'\nexports.View=DashboardView;';
+  const sandbox={exports:{} as Record<string,unknown>,document:browser.document,window:browser,localStorage:browser.localStorage,crypto:webcrypto,monthDays,continueWatchingItems,eventTime,measured,safeColor,shouldAmbient,phaseLabels,defaultHomeActions,defaultHomeWidgets,homeActions,homeWidgets,moveItem,parseHomeLayout,setTimeout:()=>0,clearTimeout:()=>{}};
+  vm.runInNewContext(source,sandbox);
+  const View=sandbox.exports.View as new (...args:unknown[])=>{receive:(event:unknown)=>void;setFavoriteActions:(run:(id:string)=>void,open:(id:string)=>void)=>void};
+  const view=new View(()=>{},()=>{},()=>{},()=>{}, {error:()=>{},success:()=>{}},()=>{},()=>{});
+  view.setFavoriteActions(id=>launched.push(id),id=>opened.push(id));
+  view.receive({type:'automations',scenarios:[{id:'morning',name:'Доброе утро',icon:'☀',favorite:true,enabled:true,triggers:[{kind:'manual'}]},{id:'off',name:'Выключено',favorite:true,enabled:false,triggers:[{kind:'manual'}]}]});
+  assert.equal(browser.document.querySelectorAll('#home-favorite-scenarios button').length,1);
+  (browser.document.querySelector('#home-favorite-scenarios button') as HTMLButtonElement).click();
+  assert.deepEqual(launched,['morning']);
+  view.receive({type:'devices',items:[{id:'lamp-1',name:'Лампа',kind:'led_strip',favorite:true,usable:true,room:'Спальня'},{id:'unknown',name:'Недоступное',favorite:true,usable:false}]});
+  assert.equal(browser.document.querySelectorAll('#home-favorite-devices button').length,1);
+  (browser.document.querySelector('#home-favorite-devices button') as HTMLButtonElement).click();
+  assert.deepEqual(opened,['lamp-1']);
   await browser.happyDOM.abort();
 });
 test('home resume rail sorts saved progress, skips completed movies and advances completed series',()=>{

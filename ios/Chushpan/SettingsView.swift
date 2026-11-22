@@ -26,24 +26,26 @@ struct SettingsView: View {
                 .listRowSeparator(.hidden)
             }
 
-            Section("ИИ и диагностика") {
-                Label("GPT через сервер Чушпана", systemImage: "brain.head.profile")
-                    .font(.headline)
-                if let chat = model.macChatStatus {
-                    LabeledContent("Мобильный провайдер", value: "\(chat.provider.uppercased()) · \(chat.model)")
-                    LabeledContent("Резервная модель", value: chat.fallback ? "Включена" : "Выключена")
-                    LabeledContent("Провайдер macOS", value: chat.desktopProvider?.uppercased() ?? "Не сообщён")
-                } else {
-                    Text("Подключи Mac и обнови данные, чтобы получить модель сервера.")
-                        .foregroundStyle(.secondary)
+            Section {
+                DisclosureGroup("ИИ и подключение") {
+                    Label("GPT через сервер Чушпана", systemImage: "brain.head.profile")
+                        .font(.headline)
+                    if let chat = model.macChatStatus {
+                        LabeledContent("Мобильный провайдер", value: "\(chat.provider.uppercased()) · \(chat.model)")
+                        LabeledContent("Резервная модель", value: chat.fallback ? "Включена" : "Выключена")
+                        LabeledContent("Провайдер macOS", value: chat.desktopProvider?.uppercased() ?? "Не сообщён")
+                    } else {
+                        Text("Подключи Mac и обнови данные, чтобы увидеть модель сервера.")
+                            .foregroundStyle(.secondary)
+                    }
+                    if let last = model.visibleConversations
+                        .flatMap(\.messages)
+                        .last(where: { $0.role == .assistant && $0.provider != nil && $0.model != nil }) {
+                        LabeledContent("Последний ответ", value: "\(last.provider!.uppercased()) · \(last.model!)")
+                    }
+                    Text("Мобильный чат использует настроенную модель на Mac. API-ключ остаётся в macOS Keychain.")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
-                if let last = model.visibleConversations
-                    .flatMap(\.messages)
-                    .last(where: { $0.role == .assistant && $0.provider != nil && $0.model != nil }) {
-                    LabeledContent("Последний ответ", value: "\(last.provider!.uppercased()) · \(last.model!)")
-                }
-                Text("Сообщения идут по защищённому сопряжению на Mac. Мобильный маршрут закреплён за OpenAI GPT и не переключается на Gemini или локальную модель при ошибке. API-ключ на iPhone не хранится; сервер использует macOS Keychain.")
-                    .font(.footnote).foregroundStyle(.secondary)
             }
 
             Section("Приватность ИИ") {
@@ -122,7 +124,6 @@ struct SettingsView: View {
                     Label("Найденные устройства", systemImage: "dot.radiowaves.left.and.right")
                     if model.discoveredMacs.isEmpty {
                         HStack(alignment: .top, spacing: 10) {
-                            if model.macDiscoveryMessage.hasPrefix("Ищу") { ProgressView() }
                             Text(model.macDiscoveryMessage).font(.footnote).foregroundStyle(.secondary)
                         }
                     } else {
