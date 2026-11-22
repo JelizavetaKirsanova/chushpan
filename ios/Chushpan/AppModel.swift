@@ -545,7 +545,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func refreshMac() async {
+    func refreshMac(synchronizeAfterConnect: Bool = true) async {
         if macClient == nil {
             guard macTrusted || macPairCode != nil else {
                 macConnectionMessage = "Выбери найденный Mac, чтобы подключиться."
@@ -588,7 +588,9 @@ final class AppModel: ObservableObject {
             macChatStatus = macStatus?.mobileChat
             recordMacConnection(at: macBaseURL)
             macConnectionMessage = "Mac на связи по защищённому соединению."
-            Task { await syncFromMac() }
+            if synchronizeAfterConnect {
+                Task { await syncFromMac() }
+            }
         } catch {
             macStatus = nil
             macConnectionMessage = error.localizedDescription
@@ -710,7 +712,7 @@ final class AppModel: ObservableObject {
     }
 
     func syncFromMac() async {
-        guard macTrusted, let macClient else {
+        guard macTrusted, macClient != nil else {
             macConnectionMessage = "Сначала подключи и подтверди Mac."
             return
         }
@@ -719,34 +721,58 @@ final class AppModel: ObservableObject {
         macMediaError = nil
         macConnectionMessage = "Запрашиваю только категории, разрешённые на Mac…"
         defer { macMediaLoading = false }
-        do {
-            let response = try await macClient.synchronize()
-            macChatStatus = response.data.mobileChat ?? macStatus?.mobileChat
-            updateDatabase(scheduleCloud: false) { data in
-                if let memory = response.data.memory { data.macMemoryCache = memory }
-                if let progress = response.data.mediaProgress { data.macMediaCache = progress }
-                if let library = response.data.mediaLibrary {
-                    data.macLibraryCache = library
-                    data.macLibraryHasLoaded = true
+        for attempt in 0...1 {
+            guard let client = self.macClient else {
+                macMediaError = macConnectionMessage
+                return
+            }
+            do {
+                let response = try await client.synchronize()
+                macChatStatus = response.data.mobileChat ?? macStatus?.mobileChat
+                updateDatabase(scheduleCloud: false) { data in
+                    if let memory = response.data.memory { data.macMemoryCache = memory }
+                    if let progress = response.data.mediaProgress { data.macMediaCache = progress }
+                    if let library = response.data.mediaLibrary {
+                        data.macLibraryCache = library
+                        data.macLibraryHasLoaded = true
+                    }
+                    if let history = response.data.history { data.macHistoryCache = history }
+                    if let calendar = response.data.calendar { data.macCalendarCache = calendar }
+                    if let statistics = response.data.statistics { data.macStatisticsCache = statistics }
+                    data.macCacheUpdatedAt = Date(timeIntervalSince1970: response.serverTime)
                 }
-                if let history = response.data.history { data.macHistoryCache = history }
-                if let calendar = response.data.calendar { data.macCalendarCache = calendar }
-                if let statistics = response.data.statistics { data.macStatisticsCache = statistics }
-                data.macCacheUpdatedAt = Date(timeIntervalSince1970: response.serverTime)
+                if response.data.mediaLibrary != nil {
+                    macMediaError = nil
+                    macConnectionMessage = "Медиатека Mac загружена и сохранена для автономного просмотра."
+                } else if macStatus?.categories.contains("media_library") == true {
+                    macMediaError = "Mac не вернул медиатеку. Обнови соединение и повтори синхронизацию."
+                    macConnectionMessage = macMediaError ?? "Медиатека Mac недоступна."
+                } else {
+                    macMediaError = "На Mac ещё не разрешена категория «Медиатека Mac». Выбери её в разрешениях этого iPhone на Mac."
+                    macConnectionMessage = macMediaError ?? "Медиатека Mac не разрешена."
+                }
+                return
+            } catch {
+                if attempt == 0, let bridgeError = error as? MacBridgeError,
+                   case .transport = bridgeError {
+                    if self.macClient === client {
+                        client.close()
+                        self.macClient = nil
+                        macStatus = nil
+                    }
+                    await refreshMac(synchronizeAfterConnect: false)
+                    if self.macClient != nil { continue }
+                    macMediaError = "Не удалось восстановить защищённое соединение. \(macConnectionMessage)"
+                } else {
+                    macMediaError = error.localizedDescription
+                    if let bridgeError = error as? MacBridgeError,
+                       case .transport = bridgeError {
+                        macStatus = nil
+                        macConnectionMessage = error.localizedDescription
+                    }
+                }
+                return
             }
-            if response.data.mediaLibrary != nil {
-                macMediaError = nil
-                macConnectionMessage = "Медиатека Mac загружена и сохранена для автономного просмотра."
-            } else if macStatus?.categories.contains("media_library") == true {
-                macMediaError = "Mac не вернул медиатеку. Обнови соединение и повтори синхронизацию."
-                macConnectionMessage = macMediaError ?? "Медиатека Mac недоступна."
-            } else {
-                macMediaError = "На Mac ещё не разрешена категория «Медиатека Mac». Выбери её в разрешениях этого iPhone на Mac."
-                macConnectionMessage = macMediaError ?? "Медиатека Mac не разрешена."
-            }
-        } catch {
-            macMediaError = error.localizedDescription
-            macConnectionMessage = error.localizedDescription
         }
     }
 
