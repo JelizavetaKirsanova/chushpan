@@ -18,6 +18,7 @@ from backend.personality import TRAITS, PersonalityProfile, personalities
 from backend.settings_center import SettingsCenter
 from backend.settings_models import Models, apply_persisted, quiet_now
 from backend.tools import build_registry
+from tests.test_core_client import certificate_pem
 
 
 class Model:
@@ -106,6 +107,45 @@ def test_core_memory_preview_filters_without_sending_or_changing_local_records()
 
     asyncio.run(center.close())
     store.close()
+
+
+def test_core_mode_is_restored_and_failed_health_check_is_visible(monkeypatch):
+    async def run():
+        s, store, bus, _, conv, center = fixture()
+        saved = {
+            "mode": "auto",
+            "paired_device_id": "a" * 64,
+            "certificate_pem": certificate_pem(),
+        }
+        store.set_preference("settings", "server", saved)
+        restored = SettingsCenter(s, store, conv, bus)
+        assert restored.server_status["mode"] == "auto"
+
+        class CoreClient:
+            identity = {"device_id": "a" * 64}
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def status(self):
+                raise RuntimeError("Huawei is unavailable")
+
+            async def aclose(self):
+                pass
+
+        monkeypatch.setattr("backend.core_client.CoreAPIClient", CoreClient)
+        with pytest.raises(RuntimeError, match="unavailable"):
+            await restored.check_core()
+        assert restored.server_status["mode"] == "auto"
+        assert restored.server_status["paired"] is True
+        assert restored.server_status["reachable"] is False
+        assert restored.server_status["last_error"] == "Huawei is unavailable"
+
+        await restored.close()
+        await center.close()
+        store.close()
+
+    asyncio.run(run())
 
 
 def test_profiles_migrate_legacy_independently_and_survive_restart(tmp_path):

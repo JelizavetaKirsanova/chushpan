@@ -59,10 +59,15 @@ class SettingsCenter:
             "storage": "keychain",
         }
         self.openai_credentials_task = None
+        saved_server = store.preference("settings", "server") or {}
+        saved_mode = saved_server.get("mode", "local")
         self.server_status = {
-            "paired": bool((store.preference("settings", "server") or {}).get("paired_device_id")),
+            "paired": bool(saved_server.get("paired_device_id")),
+            "mode": saved_mode if saved_mode in {"local", "server", "auto"} else "local",
             "reachable": None,
             "latency_ms": None,
+            "last_error": None,
+            "provider": None,
             "devices": [],
         }
         self.defaults = {
@@ -948,6 +953,7 @@ class SettingsCenter:
             self.conv.llm = client
             self.server_status["mode"] = selected.mode
             self.server_status["paired"] = bool(selected.paired_device_id)
+            self.server_status["last_error"] = None
             self.attach_openai_usage(client)
             if hasattr(client, "on_status"):
                 client.on_status = self.bus.publish
@@ -1012,6 +1018,8 @@ class SettingsCenter:
             "paired": True,
             "reachable": True,
             "latency_ms": None,
+            "mode": "local",
+            "last_error": None,
             "devices": [],
             "fingerprint": result["fingerprint"],
         }
@@ -1031,18 +1039,37 @@ class SettingsCenter:
                 identity_store=CoreKeychainIdentity(),
             )
 
-        client = await asyncio.to_thread(create_client)
         try:
-            if not client.identity or client.identity["device_id"] != selected.paired_device_id:
-                raise ValueError("Идентичность Mac в Keychain не совпадает с настройкой сервера.")
-            status = await client.status()
-            devices = await client.devices()
-        finally:
-            await client.aclose()
+            client = await asyncio.to_thread(create_client)
+            try:
+                if not client.identity or client.identity["device_id"] != selected.paired_device_id:
+                    raise ValueError(
+                        "Идентичность Mac в Keychain не совпадает с настройкой сервера."
+                    )
+                status = await client.status()
+                devices = await client.devices()
+            finally:
+                await client.aclose()
+        except Exception as exc:
+            message = str(exc)
+            self.server_status.update(
+                mode=selected.mode,
+                paired=True,
+                reachable=False,
+                last_error=(
+                    message
+                    if message and not contains_secret(message)
+                    else "Проверка Huawei Core не прошла."
+                ),
+            )
+            raise
         self.server_status = {
             **status,
             "paired": True,
             "reachable": True,
+            "mode": selected.mode,
+            "last_error": None,
+            "provider": (status.get("llm") or {}).get("provider"),
             "devices": devices,
             "last_success_at": time.time(),
             "fingerprint": client.fingerprint,
@@ -1099,7 +1126,14 @@ class SettingsCenter:
         await asyncio.to_thread(CoreKeychainIdentity().delete)
         unpaired = selected.model_copy(update={"mode": "local", "paired_device_id": ""})
         await self.save("server", unpaired.model_dump())
-        self.server_status = {"paired": False, "reachable": True, "devices": []}
+        self.server_status = {
+            "paired": False,
+            "reachable": None,
+            "mode": "local",
+            "last_error": None,
+            "provider": None,
+            "devices": [],
+        }
         self.publish(message="MacBook отключён от Core. Локальный режим восстановлен.")
 
     def preview_core_memory(self):

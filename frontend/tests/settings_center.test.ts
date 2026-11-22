@@ -58,6 +58,16 @@ test('settings categories open separately and back preserves legacy forms',async
   } finally {await f.window.happyDOM.abort();}
 });
 
+test('Huawei status always shows the saved mode, connection and last error',async()=>{
+  const f=fixture();try{
+    f.state.values.server.mode='auto';f.view.receive({...f.state,server_status:{paired:true,mode:'auto',reachable:false,latency_ms:83,last_error:'Huawei недоступен',llm:{provider:'OpenAI',configured:true}}});f.view.open('server');
+    const text=f.window.document.getElementById('settings-content')!.textContent!;
+    assert.match(text,/Отключён · Режим: Автоматически · 83 мс/);assert.match(text,/Последняя ошибка: Huawei недоступен/);assert.match(text,/Провайдер Huawei: OpenAI · настроен/);
+    f.view.receive({...f.state,server_status:{paired:false,mode:'local'}});f.view.open('server');
+    assert.match(f.window.document.getElementById('settings-content')!.textContent!,/Не сопряжён · Режим: Локально/);
+  }finally{await f.window.happyDOM.abort();}
+});
+
 test('command controls save device policy and show truthful session history',async()=>{
   const f=fixture();try {
     f.view.receive({...f.state,command_history:[{at:1700000000,devices:['led_strip'],tools:['led_control'],result_status:'unverified'}]});

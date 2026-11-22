@@ -16,7 +16,7 @@ export interface SettingsState {type:'settings_center'; version:number; storage_
   permission_onboarding?:{visible:boolean;missing:string[];fingerprint:string}|null;
   music_application?:{name?:string;path?:string;bundle_id?:string;kind?:string;mode?:string;allow_browser:boolean}|null;
   models:{installed?:string[];ollama?:string;tts?:string;gemini?:{models?:{model:string;provider:string;status:string;latency_s?:number|null;error?:string|null}[]};openai?:{models?:string[];status?:string;credentials?:{configured:boolean;state:string;storage:string}};openai_usage?:{estimated_spend_usd:number|null;unknown_price_requests:number;limit_usd:number;warning:boolean};openai_pricing?:{checked_at?:string;models?:number};streaming?:boolean};
-  server_status?:{paired:boolean;reachable?:boolean|null;latency_ms?:number|null;devices?:{device_id:string;device_name:string;device_type:string;active:boolean}[];memory?:{available:boolean;entries:number;schema_version:number};llm?:{provider:string;configured:boolean};last_success_at?:number|null;fingerprint?:string;last_import?:{migration_id:string;created:number;duplicates:number;already_imported:boolean}|null;memory_preview?:{id:number;content:string;category:string;source:string;eligible:boolean;reason?:string|null}[];memory_preview_count?:number;memory_preview_truncated?:boolean};
+  server_status?:{paired:boolean;mode?:'local'|'server'|'auto';reachable?:boolean|null;latency_ms?:number|null;last_error?:string|null;provider?:string|null;devices?:{device_id:string;device_name:string;device_type:string;active:boolean}[];memory?:{available:boolean;entries:number;schema_version:number};llm?:{provider:string;configured:boolean};last_success_at?:number|null;fingerprint?:string;last_import?:{migration_id:string;created:number;duplicates:number;already_imported:boolean}|null;memory_preview?:{id:number;content:string;category:string;source:string;eligible:boolean;reason?:string|null}[];memory_preview_count?:number;memory_preview_truncated?:boolean};
   location:{name?:string|null;place_id?:string|null;mode?:string;message?:string;reason?:string}; places:Place[];
   signals:{signals?:Signal[];error?:string}; rules:Scenario[];
   integrations:{id:string;name:string;tools:string[];enabled:boolean;supported:boolean;status:string;error:string|null;details:string[]}[];
@@ -261,13 +261,20 @@ export class SettingsCenterUI {
     const pair=this.button('Сопрячь MacBook',()=>{if(!code.value||!cert.value){this.feedback('Вставь одноразовый код и публичный сертификат Huawei.',true);return;}this.send({op:'core_pair',address:address.value,certificate_pem:cert.value,code:code.value});code.value='';this.feedback('Проверяю TLS-сертификат и одноразовое приглашение…');},true);
     pairing.append(this.label('HTTPS-адрес Huawei',address),this.label('Публичный TLS-сертификат',cert,'Его можно получить командой SSH, указанной в документации Core Server.'),this.label('Одноразовый код из SSH-приглашения',code),pair);
     root.append(pairing);
+    const mode=String(status.mode??config.mode??'local');
+    const modeLabels:Record<string,string>={local:'Локально',server:'Сервер Huawei',auto:'Автоматически'};
+    const current=this.section('Состояние сервера');
+    const connection=status.paired?(status.reachable===true?'Подключён':status.reachable===false?'Отключён':'Статус не проверен'):'Не сопряжён';
+    current.append(el('p',`${connection} · Режим: ${modeLabels[mode]??'Локально'}${status.latency_ms==null?'':` · ${Math.round(status.latency_ms)} мс`}`,'settings-help'));
+    if(status.llm)current.append(el('p',`Провайдер Huawei: ${status.llm.provider} · ${status.llm.configured?'настроен':'не настроен'}`,'settings-help'));
+    else if(status.provider)current.append(el('p',`Последний провайдер: ${status.provider}`,'settings-help'));
+    if(status.last_error)current.append(el('p',`Последняя ошибка: ${status.last_error}`,'settings-error'));
+    root.append(current);
     if(status.paired){
-      const connected=status.reachable===true?'Подключено':status.reachable===false?'Недоступен':'Статус ещё не проверен';
-      const detail=this.section('Состояние сервера');detail.append(el('p',`${connected}${status.latency_ms==null?'':` · ${Math.round(status.latency_ms)} мс`}`,'settings-help'));
+      const detail=this.section('Диагностика и управление');
       if(status.fingerprint)detail.append(el('p',`SHA-256 сертификата: ${status.fingerprint}`,'settings-help'));
       if(status.last_success_at)detail.append(el('p',`Последняя успешная проверка: ${new Date(status.last_success_at*1000).toLocaleString('ru-RU')}`,'settings-help'));
       if(status.memory)detail.append(el('p',`Центральная память: ${status.memory.available?'доступна':'недоступна'} · записей ${status.memory.entries} · схема ${status.memory.schema_version}`,'settings-help'));
-      if(status.llm)detail.append(el('p',`Провайдер Huawei: ${status.llm.provider} · ${status.llm.configured?'настроен':'не настроен'}`,'settings-help'));
       detail.append(this.button('Проверить сервер и устройства',()=>this.send({op:'core_check'}),true));
       for(const device of status.devices??[]){const row=el('div','','settings-row');row.append(el('span',`${device.device_name} · ${device.device_type} · ${device.active?'доступ разрешён':'отозван'}`));if(device.active&&device.device_id!==config.paired_device_id)row.append(this.button('Отозвать доступ',()=>{if(window.confirm(`Отозвать доступ устройства «${device.device_name}»?`))this.send({op:'core_revoke',id:device.device_id});},true));detail.append(row);}
       detail.append(this.button('Отвязать MacBook',()=>{if(window.confirm('Отозвать доступ Mac на Huawei и удалить его идентичность из Keychain? Текущие локальные данные сохранятся.'))this.send({op:'core_unpair',confirm:true});},true));root.append(detail);

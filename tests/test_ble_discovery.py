@@ -9,6 +9,7 @@ import pytest
 from bleak.exc import BleakBluetoothNotAvailableError, BleakBluetoothNotAvailableReason
 
 from backend import led
+from backend.devices.classification import ELK_FFF0
 from backend.devices.models import Device
 from backend.devices.store import DeviceStore
 from backend.led import LEDState, LEDStrip
@@ -29,10 +30,10 @@ def advertisement(name, *, cached_name=None, rssi=-58, services=()):
 def test_discovery_includes_elk_families_service_candidates_and_unknowns(rig, monkeypatch):
     async def run():
         found = {
-            "new": advertisement("ELK-BLEDDM 39", cached_name="Cached"),
-            "old": advertisement("ELK-BLEDOB", rssi=-70),
-            "future": advertisement("elk-ble-next 7", rssi=-65),
-            "service": advertisement("Other controller", services=[str(rig.settings.led.service)]),
+            "new": advertisement("ELK-BLEDDM 39", cached_name="Cached", services=[ELK_FFF0]),
+            "old": advertisement("ELK-BLEDOB", rssi=-70, services=[ELK_FFF0]),
+            "future": advertisement("elk-ble-next 7", rssi=-65, services=[ELK_FFF0]),
+            "service": advertisement("Other controller", services=[ELK_FFF0]),
             "unknown": advertisement("Sensor", rssi=-40),
             "unnamed": advertisement(None, rssi=None),
         }
@@ -42,11 +43,12 @@ def test_discovery_includes_elk_families_service_candidates_and_unknowns(rig, mo
         assert scan.call_args.kwargs == {"timeout": 4, "return_adv": True}
         candidates = {v["name"]: v for v in result["candidates"]}
         assert len(candidates) == 6
-        for name in ("ELK-BLEDDM 39", "ELK-BLEDOB", "elk-ble-next 7", "Other controller"):
+        for name in ("ELK-BLEDDM 39", "ELK-BLEDOB"):
             assert candidates[name]["compatibility"] == "candidate"
         assert candidates["ELK-BLEDDM 39"]["rssi"] == -58
         assert candidates["ELK-BLEDDM 39"]["connection"] == "not_checked"
-        assert candidates["Sensor"]["compatibility"] == "unknown"
+        for name in ("elk-ble-next 7", "Other controller", "Sensor"):
+            assert candidates[name]["compatibility"] == "unknown"
         assert candidates["Без имени"]["rssi"] is None
         assert result["candidates"][-1]["name"] == "Без имени"
         assert rig.strip._load().confirmed == {"color:255,0,0"}
