@@ -62,7 +62,9 @@ final class AppModel: ObservableObject {
     private let store: MobileStore
     private let keychain = KeychainVault()
     private let gemini = GeminiClient()
+#if !CHUSHPAN_PERSONAL_DEBUG
     private let cloud = CloudSyncService()
+#endif
     private let macBrowser = MacServiceBrowser()
     private var generationTask: Task<Void, Never>?
     private var localSaveTask: Task<Void, Never>?
@@ -79,7 +81,12 @@ final class AppModel: ObservableObject {
         includeRelevantMemory = UserDefaults.standard.bool(forKey: "mobile.includeRelevantMemory")
         speakResponses = UserDefaults.standard.bool(forKey: "mobile.speakResponses")
         voiceIdentifier = UserDefaults.standard.string(forKey: "mobile.voiceIdentifier") ?? ""
+#if CHUSHPAN_PERSONAL_DEBUG
+        cloudSyncEnabled = false
+        cloudSyncStatus = "Синхронизация iCloud отключена в локальной сборке."
+#else
         cloudSyncEnabled = UserDefaults.standard.bool(forKey: "mobile.cloudSyncEnabled")
+#endif
         macBaseURL = UserDefaults.standard.string(forKey: "mobile.macBaseURL") ?? ""
         macRemoteURL = UserDefaults.standard.string(forKey: "mobile.macRemoteURL") ?? ""
         macFingerprint = UserDefaults.standard.string(forKey: "mobile.macFingerprint") ?? ""
@@ -379,10 +386,16 @@ final class AppModel: ObservableObject {
     }
 
     func enableCloudSync() {
+#if CHUSHPAN_PERSONAL_DEBUG
+        cloudSyncEnabled = false
+        cloudSyncStatus = "Синхронизация iCloud отключена в локальной сборке."
+        return
+#else
         cloudSyncEnabled = true
         UserDefaults.standard.set(true, forKey: "mobile.cloudSyncEnabled")
         cloudSyncStatus = "iCloud включён. Синхронизирую выбранные данные с личной базой iCloud."
         requestCloudSync()
+#endif
     }
 
     func disableCloudSync() {
@@ -396,14 +409,19 @@ final class AppModel: ObservableObject {
     }
 
     func requestCloudSync() {
+#if CHUSHPAN_PERSONAL_DEBUG
+        return
+#else
         guard cloudSyncEnabled else { return }
         if isCloudSyncing || cloudSyncTask != nil {
             cloudSyncRequestedAgain = true
             return
         }
         cloudSyncTask = Task { await synchronizeCloud() }
+#endif
     }
 
+#if !CHUSHPAN_PERSONAL_DEBUG
     private func synchronizeCloud() async {
         guard cloudSyncEnabled, !isCloudSyncing else { return }
         isCloudSyncing = true
@@ -437,6 +455,7 @@ final class AppModel: ObservableObject {
             }
         }
     }
+#endif
 
     func pairWithMac(invitation: String, fingerprint: String) async {
         macConnectionMessage = "Проверяю TLS-сертификат и одноразовое приглашение…"

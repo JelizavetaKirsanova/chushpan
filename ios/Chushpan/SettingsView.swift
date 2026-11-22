@@ -73,6 +73,12 @@ struct SettingsView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
 
+#if CHUSHPAN_PERSONAL_DEBUG
+            Section("Синхронизация iCloud") {
+                Text("Синхронизация iCloud отключена в локальной сборке. Обычная Debug- и Release-сборки сохраняют CloudKit.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+#else
             Section("Синхронизация iCloud") {
                 Toggle("Синхронизировать данные Чушпана", isOn: Binding(
                     get: { model.cloudSyncEnabled },
@@ -93,6 +99,7 @@ struct SettingsView: View {
                 Link("Настройка CloudKit в Xcode", destination: URL(string: "https://developer.apple.com/documentation/cloudkit/enabling-cloudkit-in-your-app")!)
                     .font(.footnote)
             }
+#endif
 
             Section("Подключение к Чушпану") {
                 if model.macTrusted {

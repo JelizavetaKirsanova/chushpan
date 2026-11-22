@@ -55,6 +55,8 @@
 		AFF0F59DC854B5E3E1C83FBB /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechService.swift; sourceTree = "<group>"; };
 		80CB9E14EDA1B0BE10E4059D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		BC125C822C96B6818790B6AB /* Chushpan.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Chushpan.entitlements; sourceTree = "<group>"; };
+		3D22F1E83C974E86B012A4DD /* Info-PersonalDebug.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info-PersonalDebug.plist; sourceTree = "<group>"; };
+		79F57E5A37B343CB9B16E220 /* Chushpan-PersonalDebug.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Chushpan-PersonalDebug.entitlements"; sourceTree = "<group>"; };
 		6023C122028C4F22A5D90B16 /* MobileAppTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileAppTests.swift; sourceTree = "<group>"; };
 		B6CDB6E5D160E013280D3C68 /* Chushpan.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Chushpan.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A8D8270AA6DB8732282C9541 /* ChushpanTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ChushpanTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -67,7 +69,7 @@
 
 /* Begin PBXGroup section */
 		E50290A24C49A459B43487C5 = {isa = PBXGroup; children = (1BDBD24583AAF7F81F76B976, 68DE481A39400A49757EB7B7, 328EC33DF3954DC9B83FA285,); sourceTree = "<group>"; };
-		1BDBD24583AAF7F81F76B976 = {isa = PBXGroup; children = (AE40D7B224B92EBAC4525AAE, 4ABD4766091E901BC10C2E6C, 32876CBD01D7B3D37E8DECF8, 174E9D6F44FA0515E89C3387, 3F486AAC6448D58373B6427F, 4A450EAA5542E14C6DE944E3, 641C198A0DF1DA1DE258CB4F, DF44EC4CCCE180FDD48A1BFE, 06E230A894F34D999EA28B97, 4E25950ED00042C833B21535, FEFE2215BD8984BC4FA3DABA, 6B13B492A8C56775BAAA147C, A1BBD16482B6D25C0CCAC477, 256E4DC819B9369286029213, FC9A7B3F822B66F863C25D3A, C6B4B0B0B043E48D515B1FB6, D604EA1DBC84D977E223123F, A02281CE7EFF3AC5E0F5E20E, AFF0F59DC854B5E3E1C83FBB, 80CB9E14EDA1B0BE10E4059D, BC125C822C96B6818790B6AB,); path = Chushpan; sourceTree = "<group>"; };
+		1BDBD24583AAF7F81F76B976 = {isa = PBXGroup; children = (AE40D7B224B92EBAC4525AAE, 4ABD4766091E901BC10C2E6C, 32876CBD01D7B3D37E8DECF8, 174E9D6F44FA0515E89C3387, 3F486AAC6448D58373B6427F, 4A450EAA5542E14C6DE944E3, 641C198A0DF1DA1DE258CB4F, DF44EC4CCCE180FDD48A1BFE, 06E230A894F34D999EA28B97, 4E25950ED00042C833B21535, FEFE2215BD8984BC4FA3DABA, 6B13B492A8C56775BAAA147C, A1BBD16482B6D25C0CCAC477, 256E4DC819B9369286029213, FC9A7B3F822B66F863C25D3A, C6B4B0B0B043E48D515B1FB6, D604EA1DBC84D977E223123F, A02281CE7EFF3AC5E0F5E20E, AFF0F59DC854B5E3E1C83FBB, 80CB9E14EDA1B0BE10E4059D, BC125C822C96B6818790B6AB, 3D22F1E83C974E86B012A4DD, 79F57E5A37B343CB9B16E220,); path = Chushpan; sourceTree = "<group>"; };
 		68DE481A39400A49757EB7B7 = {isa = PBXGroup; children = (6023C122028C4F22A5D90B16,); path = ChushpanTests; sourceTree = "<group>"; };
 		328EC33DF3954DC9B83FA285 = {isa = PBXGroup; children = (B6CDB6E5D160E013280D3C68, A8D8270AA6DB8732282C9541,); name = Products; sourceTree = "<group>"; };
 /* End PBXGroup section */
@@ -134,6 +136,44 @@
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = -Onone;
 			}; name = Debug; };
+		AFA843C0D37D45D4B12FB66D /* projectPersonalDebug */ = {isa = XCBuildConfiguration; buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG CHUSHPAN_PERSONAL_DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = -Onone;
+			}; name = DebugPersonal; };
 		E6DE6C99132752C914FEF632 /* projectRelease */ = {isa = XCBuildConfiguration; buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -181,6 +221,24 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			}; name = Debug; };
+		93DD97B140564D49AFC2D0D7 /* appPersonalDebug */ = {isa = XCBuildConfiguration; buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Chushpan/Chushpan-PersonalDebug.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				ENABLE_APP_INTENTS_METADATA_GENERATION = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Chushpan/Info-PersonalDebug.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = ee.chushpan.mobile.personal;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			}; name = DebugPersonal; };
 		5A8C91857F674E16E2724F47 /* appRelease */ = {isa = XCBuildConfiguration; buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Chushpan/Chushpan.entitlements;
 				CODE_SIGN_STYLE = Automatic;
@@ -210,6 +268,18 @@
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Chushpan.app/Chushpan";
 				BUNDLE_LOADER = "$(TEST_HOST)";
 			}; name = Debug; };
+		A80B4F35BA224A8D8DE7F7B1 /* testPersonalDebug */ = {isa = XCBuildConfiguration; buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = ee.chushpan.mobile.personal.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Chushpan.app/Chushpan";
+			}; name = DebugPersonal; };
 		942EEBBACD6C88CAE7F29B29 /* testRelease */ = {isa = XCBuildConfiguration; buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -222,9 +292,9 @@
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Chushpan.app/Chushpan";
 				BUNDLE_LOADER = "$(TEST_HOST)";
 			}; name = Release; };
-		1E767542A16A0FA4024B6ED0 = {isa = XCConfigurationList; buildConfigurations = (89E1FD6268CC0F221A2BE178, E6DE6C99132752C914FEF632,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-		11C2535ADF6A94D9731D3C0D = {isa = XCConfigurationList; buildConfigurations = (E9B2E96ABC5F6856F2BE79CF, 5A8C91857F674E16E2724F47,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-		742652E37599236CB43A2930 = {isa = XCConfigurationList; buildConfigurations = (FCB48D8F88BCDB0ED9FADFD7, 942EEBBACD6C88CAE7F29B29,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		1E767542A16A0FA4024B6ED0 = {isa = XCConfigurationList; buildConfigurations = (89E1FD6268CC0F221A2BE178, AFA843C0D37D45D4B12FB66D, E6DE6C99132752C914FEF632,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		11C2535ADF6A94D9731D3C0D = {isa = XCConfigurationList; buildConfigurations = (E9B2E96ABC5F6856F2BE79CF, 93DD97B140564D49AFC2D0D7, 5A8C91857F674E16E2724F47,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		742652E37599236CB43A2930 = {isa = XCConfigurationList; buildConfigurations = (FCB48D8F88BCDB0ED9FADFD7, A80B4F35BA224A8D8DE7F7B1, 942EEBBACD6C88CAE7F29B29,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 /* End XCBuildConfiguration section */
 
 	};

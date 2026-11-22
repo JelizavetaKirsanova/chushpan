@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>ru</string>
+	<key>CFBundleDisplayName</key>
+	<string>Чушпан Debug</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Чушпан Debug</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Камера используется только по нажатию кнопки для сканирования одноразового QR-приглашения Mac.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Нужен поиск Чушпана на Mac и защищённая связь с выбранным устройством в локальной сети. Приложение не открывает порты роутера.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_chushpan._tcp</string>
+	</array>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Микрофон используется только во время голосового ввода по кнопке.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Распознавание преобразует голосовой ввод по кнопке в текст сообщения.</string>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<true/>
+	</dict>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIRequiresFullScreen</key>
+	<false/>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~iphone</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>ee.chushpan.mobile.personal-debug</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>chushpan-personal-debug</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>
