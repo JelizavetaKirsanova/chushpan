@@ -5,6 +5,7 @@ import VisionKit
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @State private var pairInvitation = ""
+    @State private var coreInvitationJSON = ""
     @State private var pairFingerprint = ""
     @State private var remoteAddress = ""
     @State private var pairMessage: String?
@@ -35,7 +36,9 @@ struct SettingsView: View {
                         LabeledContent("Резервная модель", value: chat.fallback ? "Включена" : "Выключена")
                         LabeledContent("Провайдер macOS", value: chat.desktopProvider?.uppercased() ?? "Не сообщён")
                     } else {
-                        Text("Подключи Mac и обнови данные, чтобы увидеть модель сервера.")
+                        Text(model.coreAPIState == .connected
+                             ? "В автономном режиме GPT может идти через защищённый Core API."
+                             : "GPT работает через Mac, если он подключён. Для автономного GPT настрой Core API ниже.")
                             .foregroundStyle(.secondary)
                     }
                     if let last = model.visibleConversations
@@ -43,13 +46,46 @@ struct SettingsView: View {
                         .last(where: { $0.role == .assistant && $0.provider != nil && $0.model != nil }) {
                         LabeledContent("Последний ответ", value: "\(last.provider!.uppercased()) · \(last.model!)")
                     }
-                    Text("Мобильный чат использует настроенную модель на Mac. API-ключ остаётся в macOS Keychain.")
+                    Text("При подключённом Mac чат использует его провайдер. Если Mac недоступен, отдельный маршрут Core API отправляет только текст диалога; команды Mac через него не выполняются. Ключ GPT хранится на сервере.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
 
+            Section("GPT без Mac · Core API") {
+                LabeledContent("Состояние", value: model.coreAPIState.title)
+                if let provider = model.coreAPIProvider {
+                    LabeledContent("Провайдер", value: provider.uppercased())
+                }
+                if model.coreAPIState == .connected {
+                    LabeledContent("GPT на сервере", value: model.coreAPIConfigured ? "Настроен" : "Не настроен")
+                }
+                if let last = model.coreAPILastConnectedAt {
+                    LabeledContent("Последнее соединение", value: last.formatted(date: .abbreviated, time: .shortened))
+                }
+                Text(model.coreAPIMessage).font(.footnote).foregroundStyle(.secondary)
+                TextField("Одноразовое приглашение Core API в JSON", text: $coreInvitationJSON, axis: .vertical)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.footnote.monospaced())
+                    .lineLimit(2...5)
+                    .accessibilityLabel("Одноразовое приглашение Core API")
+                HStack {
+                    Button("Сопрячь Core API") {
+                        Task { await model.pairWithCoreAPI(invitationJSON: coreInvitationJSON) }
+                    }
+                    .disabled(coreInvitationJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Проверить") { Task { await model.refreshCoreAPIStatus() } }
+                        .disabled(model.coreAPIState == .unconfigured)
+                    if model.coreAPIState != .unconfigured {
+                        Button("Забыть", role: .destructive) { model.forgetCoreAPI() }
+                    }
+                }
+                Text("Приглашение создаётся администратором Core API в Tailscale и должно содержать только разрешение llm.chat. Оно одноразовое и не сохраняется приложением. Настройка сервера и его GPT-ключа выполняется отдельно; ключ не вводится на iPhone.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+
             Section("Приватность ИИ") {
-                Text("Для обычных диалогов сервер использует только категории памяти, отдельно разрешённые этому iPhone на Mac. Приватные диалоги обрабатываются во временной памяти на время запроса и не сохраняются на Mac.")
+                Text("История и пользовательские данные остаются локально на iPhone и доступны офлайн. Запрос к GPT отправляет текст и ограниченный контекст диалога выбранному серверу. Автономный маршрут Core API не получает разрешений на память или команды Mac.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
 
@@ -101,12 +137,16 @@ struct SettingsView: View {
             Section("Подключение к Чушпану") {
                 if model.macTrusted {
                     Label(
-                        model.macStatus.map { "\($0.name ?? "Mac") — Подключено" } ?? "Mac переподключается",
-                        systemImage: model.macStatus == nil ? "wifi.slash" : "lock.shield.fill"
+                        model.macStatus.map { "\($0.name ?? "Mac") — Подключено" } ?? model.macConnectionState.title,
+                        systemImage: model.macStatus == nil ? model.macConnectionState.symbol : "lock.shield.fill"
                     )
-                    .foregroundStyle(model.macStatus == nil ? Color.gray : Color.green)
-                    Text(model.macStatus == nil ? model.macDiscoveryMessage : model.macConnectionKind)
+                    .foregroundStyle(model.macConnectionState == .connected ? Color.green : Color.secondary)
+                    Text(model.macStatus == nil ? model.macConnectionMessage : model.macConnectionKind)
                         .font(.footnote).foregroundStyle(.secondary)
+                    if !model.macAutoReconnectEnabled {
+                        Text("Автопереподключение выключено. Проверка вручную доступна кнопкой ниже.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                     if let last = model.macLastConnectedAt {
                         Text("Последнее подключение · \(last.formatted(date: .abbreviated, time: .shortened))")
                             .font(.footnote).foregroundStyle(.secondary)

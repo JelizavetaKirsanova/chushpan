@@ -7,6 +7,7 @@ import errno
 import hashlib
 import ipaddress
 import json
+import logging
 import re
 import secrets
 import shutil
@@ -281,14 +282,24 @@ class DeviceSync(Center):
 
         @app.post("/api/{operation}")
         async def api(operation: str, request: Request):
+            safe_operation = operation if re.fullmatch(r"[a-z_]{1,32}", operation) else "unknown"
+            phase = "rate_limit"
             try:
                 client_address = request.client.host if request.client else "unknown"
                 self.rate(client_address)
+                phase = "request_headers"
                 if (
                     request.headers.get("origin") not in self.allowed_origins | {self.url}
                     or request.headers.get("content-type", "").split(";")[0] != "application/json"
                 ):
-                    raise HTTPException(403)
+                    return JSONResponse(
+                        {
+                            "error": "Запрос отклонён политикой защищённого сервиса.",
+                            "code": "request_rejected",
+                        },
+                        status_code=403,
+                    )
+                phase = "request_body"
                 raw = bytearray()
                 async for chunk in request.stream():
                     raw.extend(chunk)
@@ -303,8 +314,10 @@ class DeviceSync(Center):
                     request.headers.get("x-time", ""),
                     request.headers.get("x-nonce", ""),
                 )
+                phase = "request_clock"
                 if len(timestamp) > 16 or abs(time.time() - int(timestamp)) > 60:
                     raise ValueError("Время запроса устарело. Проверь часы устройства.")
+                phase = "device_identity"
                 if operation == "pair":
                     key, jwk, identity = public_key(data.get("key"))
                     if device != identity:
@@ -313,12 +326,15 @@ class DeviceSync(Center):
                     jwk = self.pending[device]["key"]
                 else:
                     jwk = self.store.peer(device, connected=operation != "reconnect")["public_key"]
+                phase = "device_signature"
                 verify(
                     jwk,
                     request.headers.get("x-signature", ""),
                     f"/api/{operation}\n{timestamp}\n{nonce}\n{body}",
                 )
+                phase = "request_replay_check"
                 self.store.nonce(device, nonce)
+                phase = "dispatch"
                 if operation == "pair":
                     return self.pair(data, device, jwk)
                 if operation == "pair_status":
@@ -343,6 +359,11 @@ class DeviceSync(Center):
                     )
                 if operation in {"status", "reconnect"}:
                     await self.refresh_mobile_device_state(peer)
+                    logging.getLogger(__name__).info(
+                        "DEVICE_SYNC accepted operation=%s route=%s",
+                        safe_operation,
+                        connection_type(client_address),
+                    )
                     return self.remote_status(peer)
                 if operation == "command":
                     return self.submit(peer, data)
@@ -365,16 +386,37 @@ class DeviceSync(Center):
             except HTTPException:
                 raise
             except (ValueError, TypeError, KeyError, UnicodeError):
+                auth_failure = phase in {
+                    "request_clock",
+                    "device_identity",
+                    "device_signature",
+                    "request_replay_check",
+                }
+                code = "device_auth_failed" if auth_failure else "invalid_request"
+                logging.getLogger(__name__).warning(
+                    "DEVICE_SYNC rejected operation=%s phase=%s code=%s",
+                    safe_operation,
+                    phase,
+                    code,
+                )
                 return JSONResponse(
                     {
                         "error": "Запрос отклонён: проверь доверие устройства, подпись, срок "
-                        "действия и выбранные разрешения."
+                        "действия и выбранные разрешения.",
+                        "code": code,
                     },
-                    status_code=403,
+                    status_code=401 if auth_failure else 422,
                 )
             except Exception:
+                logging.getLogger(__name__).exception(
+                    "DEVICE_SYNC failed operation=%s phase=%s", safe_operation, phase
+                )
                 return JSONResponse(
-                    {"error": "Локальный сервис временно недоступен."}, status_code=503
+                    {
+                        "error": "Локальный сервис временно недоступен.",
+                        "code": "service_unavailable",
+                    },
+                    status_code=503,
                 )
 
         return app
@@ -554,6 +596,7 @@ class DeviceSync(Center):
                 devices.append(remote)
         return {
             "status": "online",
+            "protocol_version": 1,
             "name": peer["name"],
             "capabilities": peer["capabilities"],
             "categories": peer["categories"],

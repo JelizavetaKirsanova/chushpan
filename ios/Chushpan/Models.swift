@@ -333,6 +333,7 @@ private extension String {
 
 struct MacRemoteStatus: Codable, Equatable {
     var status: String
+    var protocolVersion: Int?
     var name: String?
     var capabilities: [String] = []
     var categories: [String] = []
@@ -342,7 +343,20 @@ struct MacRemoteStatus: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case status, name, capabilities, categories, scenarios, devices
+        case protocolVersion = "protocol_version"
         case mobileChat = "mobile_chat"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        status = try values.decode(String.self, forKey: .status)
+        protocolVersion = try values.decodeIfPresent(Int.self, forKey: .protocolVersion)
+        name = try values.decodeIfPresent(String.self, forKey: .name)
+        capabilities = try values.decodeIfPresent([String].self, forKey: .capabilities) ?? []
+        categories = try values.decodeIfPresent([String].self, forKey: .categories) ?? []
+        scenarios = try values.decodeIfPresent([MacRemoteScenario].self, forKey: .scenarios) ?? []
+        devices = try values.decodeIfPresent([MacRemoteDevice].self, forKey: .devices) ?? []
+        mobileChat = try values.decodeIfPresent(MacChatProviderStatus.self, forKey: .mobileChat)
     }
 }
 
@@ -355,6 +369,14 @@ struct MacChatProviderStatus: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case provider, model, fallback
         case desktopProvider = "desktop_provider"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try values.decode(String.self, forKey: .provider)
+        model = try values.decode(String.self, forKey: .model)
+        fallback = try values.decodeIfPresent(Bool.self, forKey: .fallback) ?? false
+        desktopProvider = try values.decodeIfPresent(String.self, forKey: .desktopProvider)
     }
 }
 

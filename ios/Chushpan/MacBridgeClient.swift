@@ -1,6 +1,7 @@
 import CryptoKit
 import Combine
 import Foundation
+import OSLog
 import Security
 
 enum MacBridgeError: LocalizedError {
@@ -10,6 +11,9 @@ enum MacBridgeError: LocalizedError {
     case untrustedCertificate
     case notPaired
     case pairingEnded
+    case authorization(String)
+    case timeout
+    case protocolMismatch(String)
     case server(String)
     case transport
 
@@ -21,6 +25,9 @@ enum MacBridgeError: LocalizedError {
         case .untrustedCertificate: "Сертификат Mac не прошёл проверку TLS."
         case .notPaired: "Сначала подтверди сопряжение на Mac."
         case .pairingEnded: "Запрос сопряжения отклонён или истёк. Можно начать его снова."
+        case .authorization(let message): "Mac отклонил авторизацию: \(message)"
+        case .timeout: "Mac не ответил за отведённое время."
+        case .protocolMismatch(let detail): "Ответ Mac несовместим с протоколом (\(detail)). Обнови Чушпан на обоих устройствах."
         case .server(let message): message
         case .transport: "Mac недоступен по защищённой сети. Команда не повторялась."
         }
@@ -117,6 +124,7 @@ private final class PinnedCertificateDelegate: NSObject, URLSessionDelegate {
 }
 
 final class MacBridgeClient {
+    private static let logger = Logger(subsystem: "ee.chushpan.mobile.personal", category: "MacBridge")
     private static let privateKeyAccount = "mac-device-signing-key"
     private let origin: String
     private let baseURL: URL
@@ -160,8 +168,10 @@ final class MacBridgeClient {
         let bootstrap = URLSession(configuration: .ephemeral, delegate: bootstrapDelegate, delegateQueue: nil)
         defer { bootstrap.finishTasksAndInvalidate() }
         let (certificateData, response): (Data, URLResponse)
-        do { (certificateData, response) = try await bootstrap.data(from: certificateURLValue) }
-        catch { throw MacBridgeError.transport }
+        var certificateRequest = URLRequest(url: certificateURLValue)
+        certificateRequest.timeoutInterval = 6
+        do { (certificateData, response) = try await bootstrap.data(for: certificateRequest) }
+        catch { throw Self.networkError(error) }
         guard (response as? HTTPURLResponse)?.statusCode == 200,
               let certificate = SecCertificateCreateWithData(nil, certificateData as CFData) else {
             throw MacBridgeError.untrustedCertificate
@@ -221,8 +231,10 @@ final class MacBridgeClient {
         let bootstrap = URLSession(configuration: .ephemeral, delegate: bootstrapDelegate, delegateQueue: nil)
         defer { bootstrap.finishTasksAndInvalidate() }
         let (certificateData, response): (Data, URLResponse)
-        do { (certificateData, response) = try await bootstrap.data(from: certificateURLValue) }
-        catch { throw MacBridgeError.transport }
+        var certificateRequest = URLRequest(url: certificateURLValue)
+        certificateRequest.timeoutInterval = 6
+        do { (certificateData, response) = try await bootstrap.data(for: certificateRequest) }
+        catch { throw Self.networkError(error) }
         guard (response as? HTTPURLResponse)?.statusCode == 200,
               let certificate = SecCertificateCreateWithData(nil, certificateData as CFData) else {
             throw MacBridgeError.untrustedCertificate
@@ -283,8 +295,10 @@ final class MacBridgeClient {
         let bootstrap = URLSession(configuration: .ephemeral, delegate: bootstrapDelegate, delegateQueue: nil)
         defer { bootstrap.finishTasksAndInvalidate() }
         let (data, response): (Data, URLResponse)
-        do { (data, response) = try await bootstrap.data(from: certificateURLValue) }
-        catch { throw MacBridgeError.transport }
+        var certificateRequest = URLRequest(url: certificateURLValue)
+        certificateRequest.timeoutInterval = 6
+        do { (data, response) = try await bootstrap.data(for: certificateRequest) }
+        catch { throw Self.networkError(error) }
         guard (response as? HTTPURLResponse)?.statusCode == 200,
               let certificate = SecCertificateCreateWithData(nil, data as CFData) else {
             throw MacBridgeError.untrustedCertificate
@@ -366,19 +380,76 @@ final class MacBridgeClient {
         let data: Data
         let response: URLResponse
         do { (data, response) = try await session.data(for: request) }
+        catch let error as URLError where error.code == .timedOut { throw MacBridgeError.timeout }
+        catch let error as URLError {
+            switch error.code {
+            case .cancelled: throw CancellationError()
+            case .timedOut: throw MacBridgeError.timeout
+            default: throw MacBridgeError.transport
+            }
+        }
         catch { throw MacBridgeError.transport }
         guard let http = response as? HTTPURLResponse else { throw MacBridgeError.transport }
         if !(200..<300).contains(http.statusCode) {
             if http.statusCode == 403, allowPairing, operation == "pair_status" {
                 throw MacBridgeError.pairingEnded
             }
-            if http.statusCode == 403, !allowPairing { throw MacBridgeError.notPaired }
             let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            let message = parsed?["error"] as? String ?? "Mac вернул HTTP \(http.statusCode)."
+            let message = (parsed?["error"] as? String)
+                ?? (parsed?["detail"] as? String)
+                ?? "Mac вернул HTTP \(http.statusCode)."
+            let code = parsed?["code"] as? String
+            Self.logger.error("Mac API rejected operation=\(operation, privacy: .public) http=\(http.statusCode) code=\((code ?? "unclassified"), privacy: .public)")
+            if http.statusCode == 401 || code == "device_auth_failed" {
+                throw MacBridgeError.authorization(message)
+            }
+            if http.statusCode == 403, code == "request_rejected" {
+                throw MacBridgeError.protocolMismatch("сервер отклонил формат или Origin запроса")
+            }
+            if http.statusCode == 403 {
+                throw MacBridgeError.authorization(message)
+            }
+            if [404, 406, 415, 422].contains(http.statusCode) {
+                throw MacBridgeError.protocolMismatch("HTTP \(http.statusCode): \(message)")
+            }
             throw MacBridgeError.server(message)
         }
+        let contentType = http.value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
+        Self.logger.info("Mac API response operation=\(operation, privacy: .public) http=\(http.statusCode) content_type=\(contentType, privacy: .public)")
+        guard contentType.split(separator: ";", maxSplits: 1).first?.trimmingCharacters(in: .whitespaces)
+                == "application/json" else {
+            Self.logger.error("Mac API protocol mismatch operation=\(operation, privacy: .public) reason=content_type")
+            throw MacBridgeError.protocolMismatch("\(operation): Content-Type \(contentType.isEmpty ? "отсутствует" : contentType)")
+        }
         do { return try JSONDecoder.mobile.decode(T.self, from: data) }
-        catch { throw MacBridgeError.server("Ответ защищённого сервиса Mac имеет неизвестный формат.") }
+        catch let error as DecodingError {
+            let diagnostic = Self.decodingSummary(error)
+            Self.logger.error("Mac API protocol mismatch operation=\(operation, privacy: .public) decoding=\(diagnostic, privacy: .public)")
+            throw MacBridgeError.protocolMismatch("\(operation): \(diagnostic)")
+        }
+        catch {
+            Self.logger.error("Mac API protocol mismatch operation=\(operation, privacy: .public) reason=invalid_json")
+            throw MacBridgeError.protocolMismatch("\(operation): некорректный JSON")
+        }
+    }
+
+    static func decodingSummary(_ error: DecodingError) -> String {
+        func path(_ keys: [any CodingKey]) -> String {
+            let value = keys.map(\.stringValue).joined(separator: ".")
+            return value.isEmpty ? "$" : value
+        }
+        return switch error {
+        case .keyNotFound(let key, let context):
+            "нет поля \(path(context.codingPath + [key]))"
+        case .typeMismatch(let type, let context):
+            "неверный тип в \(path(context.codingPath)); ожидался \(type)"
+        case .valueNotFound(let type, let context):
+            "пустое значение в \(path(context.codingPath)); ожидался \(type)"
+        case .dataCorrupted(let context):
+            "повреждённое значение в \(path(context.codingPath))"
+        @unknown default:
+            "неизвестная ошибка декодирования"
+        }
     }
 
     private static func jwk(for key: P256.Signing.PublicKey) -> [String: String] {
@@ -409,6 +480,15 @@ final class MacBridgeClient {
         let left = Array(lhs.utf8), right = Array(rhs.utf8)
         guard left.count == right.count else { return false }
         return zip(left, right).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) } == 0
+    }
+
+    private static func networkError(_ error: Error) -> Error {
+        guard let urlError = error as? URLError else { return MacBridgeError.transport }
+        switch urlError.code {
+        case .timedOut: return MacBridgeError.timeout
+        case .cancelled: return CancellationError()
+        default: return MacBridgeError.transport
+        }
     }
 
     static func pairingCode(challenge: String, identity: String, fingerprint: String) -> String {
@@ -544,4 +624,323 @@ final class MacServiceBrowser: NSObject, ObservableObject, NetServiceBrowserDele
         return value
     }
 }
+
+enum CoreAPIError: LocalizedError {
+    case invalidInvitation(String)
+    case certificateMismatch
+    case authorization(String)
+    case protocolMismatch(String)
+    case unavailable(String)
+    case server(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidInvitation(let detail): "Приглашение Core API не подходит: \(detail)"
+        case .certificateMismatch: "Отпечаток Core API не совпадает с приглашением. Сопряжение остановлено."
+        case .authorization(let detail): "Core API отклонил авторизацию: \(detail)"
+        case .protocolMismatch(let detail): "Core API вернул несовместимый ответ: \(detail)"
+        case .unavailable(let detail): "Core API недоступен: \(detail)"
+        case .server(let detail): detail
+        }
+    }
+}
+
+struct CoreAPIInvitation: Decodable {
+    var code: String
+    var host: String
+    var tlsFingerprint: String
+    var scopes: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case code, host, scopes
+        case tlsFingerprint = "tls_fingerprint"
+    }
+}
+
+struct CoreAPIStatus: Decodable {
+    struct LLM: Decodable {
+        var provider: String
+        var configured: Bool
+    }
+
+    var llm: LLM
+}
+
+private final class CorePinnedCertificateDelegate: NSObject, URLSessionDelegate {
+    private let host: String
+    private let fingerprint: String
+
+    init(host: String, fingerprint: String) {
+        self.host = host
+        self.fingerprint = fingerprint.lowercased()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              challenge.protectionSpace.host == host,
+              let trust = challenge.protectionSpace.serverTrust,
+              let certificate = SecTrustGetCertificateAtIndex(trust, 0),
+              let der = SecCertificateCopyData(certificate) as Data? else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        let actual = SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
+        guard CoreAPIClient.constantTimeEqual(actual, fingerprint) else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        completionHandler(.useCredential, URLCredential(trust: trust))
+    }
+}
+
+final class CoreAPIClient {
+    private static let privateKeyAccount = "core-api-device-signing-key"
+    private let host: String
+    private let fingerprint: String
+    private let signer: P256.Signing.PrivateKey
+    private let deviceID: String
+    private let session: URLSession
+
+    private init(host: String, fingerprint: String, signer: P256.Signing.PrivateKey) {
+        self.host = host
+        self.fingerprint = fingerprint.lowercased()
+        self.signer = signer
+        deviceID = Self.identity(for: signer.publicKey)
+        let delegate = CorePinnedCertificateDelegate(host: host, fingerprint: fingerprint)
+        session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+    }
+
+    static func pair(invitationJSON: String) async throws -> CoreAPIClient {
+        let invite = try validatedInvitation(invitationJSON)
+        let vault = KeychainVault()
+        let signer: P256.Signing.PrivateKey
+        if let stored = try vault.read(privateKeyAccount) {
+            signer = try P256.Signing.PrivateKey(rawRepresentation: stored)
+        } else {
+            signer = P256.Signing.PrivateKey()
+            try vault.write(signer.rawRepresentation, account: privateKeyAccount)
+        }
+        let client = CoreAPIClient(host: invite.host, fingerprint: invite.tlsFingerprint, signer: signer)
+        _ = try await client.get("/health", authenticated: false, responseType: CoreHealth.self)
+        let pairBody: [String: Any] = ["code": invite.code, "public_jwk": publicJWK(signer.publicKey)]
+        let paired: CorePairedDevice = try await client.post("/v1/pair", body: pairBody, authenticated: false)
+        guard paired.deviceID == client.deviceID, paired.scopes == ["llm.chat"] else {
+            throw CoreAPIError.protocolMismatch("сервер выдал неожиданные разрешения или идентификатор")
+        }
+        UserDefaults.standard.set(invite.host, forKey: "mobile.coreAPIHost")
+        UserDefaults.standard.set(invite.tlsFingerprint.lowercased(), forKey: "mobile.coreAPIFingerprint")
+        UserDefaults.standard.set(paired.deviceID, forKey: "mobile.coreAPIDeviceID")
+        UserDefaults.standard.set(true, forKey: "mobile.coreAPITrusted")
+        return client
+    }
+
+    static func restore() throws -> CoreAPIClient? {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: "mobile.coreAPITrusted"),
+              let host = defaults.string(forKey: "mobile.coreAPIHost"), validTailnetIPv4(host),
+              let fingerprint = defaults.string(forKey: "mobile.coreAPIFingerprint"),
+              fingerprint.range(of: "^[A-Fa-f0-9]{64}$", options: .regularExpression) != nil,
+              let keyData = try KeychainVault().read(privateKeyAccount) else { return nil }
+        let signer = try P256.Signing.PrivateKey(rawRepresentation: keyData)
+        let client = CoreAPIClient(host: host, fingerprint: fingerprint, signer: signer)
+        guard defaults.string(forKey: "mobile.coreAPIDeviceID") == client.deviceID else {
+            throw CoreAPIError.authorization("закрытый ключ не соответствует сохранённому устройству")
+        }
+        return client
+    }
+
+    func status() async throws -> CoreAPIStatus {
+        try await get("/v1/core/status", responseType: CoreAPIStatus.self)
+    }
+
+    func chat(messages: [[String: String]]) async throws -> String {
+        guard !messages.isEmpty, messages.count <= 32,
+              messages.allSatisfy({ ($0["content"]?.count ?? 0) <= 20_000 }),
+              messages.compactMap({ $0["content"] }).joined().count <= 60_000 else {
+            throw CoreAPIError.protocolMismatch("диалог превышает допустимый размер")
+        }
+        let payload: [String: Any] = [
+            "request_id": UUID().uuidString.lowercased(),
+            "messages": messages.map { ["role": $0["role"] ?? "user", "content": $0["content"] ?? ""] },
+            "tools": [],
+        ]
+        let body = try Self.jsonData(payload)
+        var request = signedRequest(path: "/v1/chat", method: "POST", body: body)
+        request.timeoutInterval = 125
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        let (bytes, response): (URLSession.AsyncBytes, URLResponse)
+        do { (bytes, response) = try await session.bytes(for: request) }
+        catch let error as URLError where error.code == .timedOut {
+            throw CoreAPIError.unavailable("истёк тайм-аут запроса GPT")
+        } catch let error as URLError where error.code == .cancelled { throw CancellationError() }
+        catch { throw CoreAPIError.unavailable("ошибка сетевого запроса GPT") }
+        try validate(response, expectedContentType: "text/event-stream")
+
+        var eventName = ""
+        var answer = ""
+        var sawDone = false
+        for try await line in bytes.lines {
+            if line.isEmpty {
+                eventName = ""
+                continue
+            }
+            if line.hasPrefix("event:") { eventName = line.dropFirst(6).trimmingCharacters(in: .whitespaces) }
+            else if line.hasPrefix("data:") {
+                let data = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+                switch eventName {
+                case "token":
+                    guard let event = try? JSONDecoder().decode(CoreTokenEvent.self, from: Data(data.utf8)),
+                          answer.count + event.text.count <= 80_000 else {
+                        throw CoreAPIError.protocolMismatch("событие token повреждено или слишком велико")
+                    }
+                    answer += event.text
+                case "error":
+                    let detail = (try? JSONDecoder().decode(CoreErrorEvent.self, from: Data(data.utf8)))?.detail
+                        ?? "сервер вернул неразбираемую ошибку"
+                    throw CoreAPIError.server(detail)
+                case "done": sawDone = true
+                case "tool_calls":
+                    throw CoreAPIError.protocolMismatch("Core API запросил инструмент; прямой маршрут не разрешает команды Mac")
+                default: break
+                }
+            }
+        }
+        guard sawDone else { throw CoreAPIError.unavailable("поток GPT завершился без события done") }
+        return answer
+    }
+
+    func close() { session.invalidateAndCancel() }
+
+    private func get<T: Decodable>(_ path: String, authenticated: Bool = true, responseType: T.Type) async throws -> T {
+        var request = signedRequest(path: path, method: "GET", body: Data(), authenticated: authenticated)
+        request.timeoutInterval = 10
+        let (data, response) = try await fetch(request)
+        try validate(response, expectedContentType: "application/json", data: data)
+        do { return try JSONDecoder().decode(T.self, from: data) }
+        catch { throw CoreAPIError.protocolMismatch("ответ JSON не соответствует схеме \(path)") }
+    }
+
+    private func post<T: Decodable>(_ path: String, body: [String: Any], authenticated: Bool) async throws -> T {
+        var request = signedRequest(path: path, method: "POST", body: try Self.jsonData(body), authenticated: authenticated)
+        request.timeoutInterval = 12
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await fetch(request)
+        try validate(response, expectedContentType: "application/json", data: data)
+        do { return try JSONDecoder().decode(T.self, from: data) }
+        catch { throw CoreAPIError.protocolMismatch("ответ сопряжения имеет неизвестный формат") }
+    }
+
+    private func fetch(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        do { return try await session.data(for: request) }
+        catch let error as URLError where error.code == .timedOut { throw CoreAPIError.unavailable("истёк тайм-аут") }
+        catch let error as URLError where error.code == .cancelled { throw CancellationError() }
+        catch { throw CoreAPIError.unavailable("сервер недоступен по Tailscale") }
+    }
+
+    private func validate(_ response: URLResponse, expectedContentType: String, data: Data? = nil) throws {
+        guard let http = response as? HTTPURLResponse else {
+            throw CoreAPIError.protocolMismatch("ответ не является HTTP")
+        }
+        if http.statusCode == 401 || http.statusCode == 403 {
+            let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            throw CoreAPIError.authorization(object?["detail"] as? String ?? "HTTP \(http.statusCode)")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            throw CoreAPIError.server((object?["detail"] as? String) ?? "Сервер вернул HTTP \(http.statusCode).")
+        }
+        let contentType = http.value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
+        guard contentType.hasPrefix(expectedContentType) else {
+            throw CoreAPIError.protocolMismatch("ожидался Content-Type \(expectedContentType), получен \(contentType.isEmpty ? "пустой" : contentType)")
+        }
+    }
+
+    private func signedRequest(path: String, method: String, body: Data, authenticated: Bool = true) -> URLRequest {
+        var request = URLRequest(url: URL(string: "https://\(host):8765\(path)")!)
+        request.httpMethod = method
+        request.httpBody = method == "GET" ? nil : body
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        guard authenticated else { return request }
+        let timestamp = String(Int(Date().timeIntervalSince1970))
+        let nonce = Self.base64URL(Data(UUID().uuidString.lowercased().utf8))
+        let payload = Self.requestPayload(method: method, target: path, timestamp: timestamp, nonce: nonce, body: body)
+        let signature = (try? signer.signature(for: payload).rawRepresentation) ?? Data()
+        request.setValue(deviceID, forHTTPHeaderField: "X-Chushpan-Device")
+        request.setValue(timestamp, forHTTPHeaderField: "X-Chushpan-Timestamp")
+        request.setValue(nonce, forHTTPHeaderField: "X-Chushpan-Nonce")
+        request.setValue(Self.base64URL(signature), forHTTPHeaderField: "X-Chushpan-Signature")
+        return request
+    }
+
+    private static func jsonData(_ value: [String: Any]) throws -> Data {
+        do { return try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .fragmentsAllowed]) }
+        catch { throw CoreAPIError.protocolMismatch("не удалось сформировать JSON запроса") }
+    }
+
+    static func validatedInvitation(_ raw: String) throws -> CoreAPIInvitation {
+        guard let data = raw.data(using: .utf8),
+              let invite = try? JSONDecoder().decode(CoreAPIInvitation.self, from: data),
+              invite.code.range(of: "^[A-Za-z0-9_-]{32,64}$", options: .regularExpression) != nil,
+              validTailnetIPv4(invite.host),
+              invite.tlsFingerprint.range(of: "^[A-Fa-f0-9]{64}$", options: .regularExpression) != nil,
+              Set(invite.scopes) == ["llm.chat"], invite.scopes.count == 1 else {
+            throw CoreAPIError.invalidInvitation("нужны адрес Tailscale, SHA-256 отпечаток и только разрешение llm.chat")
+        }
+        return invite
+    }
+
+    static func requestPayload(method: String, target: String, timestamp: String, nonce: String, body: Data) -> Data {
+        let hash = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+        return Data("v1\n\(timestamp)\n\(nonce)\n\(method.uppercased())\n\(target)\n\(hash)".utf8)
+    }
+
+    static func validTailnetIPv4(_ value: String) -> Bool {
+        let octets = value.split(separator: ".").compactMap { UInt8($0) }
+        return octets.count == 4 && octets[0] == 100 && (64...127).contains(Int(octets[1]))
+    }
+
+    private static func publicJWK(_ key: P256.Signing.PublicKey) -> [String: String] {
+        let raw = Array(key.x963Representation)
+        return ["kty": "EC", "crv": "P-256", "x": base64URL(Data(raw[1..<33])), "y": base64URL(Data(raw[33..<65]))]
+    }
+
+    private static func identity(for key: P256.Signing.PublicKey) -> String {
+        let prefix = Data([0x30,0x59,0x30,0x13,0x06,0x07,0x2A,0x86,0x48,0xCE,0x3D,0x02,0x01,0x06,0x08,0x2A,0x86,0x48,0xCE,0x3D,0x03,0x01,0x07,0x03,0x42,0x00])
+        return SHA256.hash(data: prefix + key.x963Representation).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func base64URL(_ data: Data) -> String {
+        data.base64EncodedString().replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+
+    static func constantTimeEqual(_ lhs: String, _ rhs: String) -> Bool {
+        let left = Array(lhs.utf8), right = Array(rhs.utf8)
+        guard left.count == right.count else { return false }
+        return zip(left, right).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) } == 0
+    }
+}
+
+private struct CoreHealth: Decodable {
+    var status: String
+    var service: String
+}
+
+private struct CorePairedDevice: Decodable {
+    var deviceID: String
+    var scopes: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case scopes
+        case deviceID = "device_id"
+    }
+}
+
+private struct CoreTokenEvent: Decodable { var text: String }
+private struct CoreErrorEvent: Decodable { var detail: String }
 

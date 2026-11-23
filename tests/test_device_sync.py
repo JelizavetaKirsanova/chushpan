@@ -109,7 +109,7 @@ def test_pairing_requires_both_devices_expires_and_starts_with_no_grants(tmp_pat
             )
             assert result.status_code == 200 and result.json()["status"] == "pending"
             assert service.invite is None
-            assert (await signed(client, key, device, "status", {})).status_code == 403
+            assert (await signed(client, key, device, "status", {})).status_code == 401
             code = result.json()["code"]
             with pytest.raises(ValueError):
                 await service.handle(
@@ -127,7 +127,7 @@ def test_pairing_requires_both_devices_expires_and_starts_with_no_grants(tmp_pat
                     "pair",
                     {"invite": invite, "key": jwk, "name": "iPad", "kind": "ipad"},
                 )
-            ).status_code == 403
+            ).status_code == 422
             tools.call.assert_not_awaited()
         await service.close()
         memory.close()
@@ -178,7 +178,7 @@ def test_discovery_pairing_checks_certificate_bound_code_and_handles_two_devices
                 second_challenge, second_id, service.fingerprint
             )
             assert len(service.pending) == 2
-            assert (await signed(client, first_key, first_id, "status", {})).status_code == 403
+            assert (await signed(client, first_key, first_id, "status", {})).status_code == 401
 
             await service.handle(
                 {
@@ -201,7 +201,7 @@ def test_discovery_pairing_checks_certificate_bound_code_and_handles_two_devices
             assert trusted.json()["capabilities"] == []
             assert trusted.json()["categories"] == []
             assert service.store.peer(first_id)["connection_type"] == "tailscale"
-            assert rejected.status_code == 403
+            assert rejected.status_code == 401
             peers = service.store.peers()
             assert len(peers) == 1 and peers[0]["kind"] == "iphone"
         await service.close()
@@ -248,23 +248,30 @@ def test_authentication_replay_origin_stale_request_disconnect_and_revoke(tmp_pa
         ) as client:
             nonce = secrets.token_hex(16)
             assert (await signed(client, key, device, "status", {}, nonce=nonce)).status_code == 200
-            assert (await signed(client, key, device, "status", {}, nonce=nonce)).status_code == 403
+            replay = await signed(client, key, device, "status", {}, nonce=nonce)
+            assert replay.status_code == 401
+            assert replay.json()["code"] == "device_auth_failed"
             assert (
                 await signed(client, key, device, "status", {}, signature=encode(b"0" * 64))
-            ).status_code == 403
+            ).status_code == 401
             assert (
-                await signed(client, key, device, "status", {}, origin="https://attacker.invalid")
-            ).status_code == 403
+                await signed(client, key, device, "status", {}, signature=encode(b"0" * 64))
+            ).json()["code"] == "device_auth_failed"
+            rejected_origin = await signed(
+                client, key, device, "status", {}, origin="https://attacker.invalid"
+            )
+            assert rejected_origin.status_code == 403
+            assert rejected_origin.json()["code"] == "request_rejected"
             assert (
                 await signed(
                     client, key, device, "status", {}, timestamp=str(int(time.time() - 120))
                 )
-            ).status_code == 403
+            ).status_code == 401
             await service.handle({"op": "disconnect", "id": device})
-            assert (await signed(client, key, device, "status", {})).status_code == 403
+            assert (await signed(client, key, device, "status", {})).status_code == 401
             assert (await signed(client, key, device, "reconnect", {})).status_code == 200
             await service.handle({"op": "revoke", "id": device})
-            assert (await signed(client, key, device, "reconnect", {})).status_code == 403
+            assert (await signed(client, key, device, "reconnect", {})).status_code == 401
         await service.close()
         memory.close()
 
@@ -379,6 +386,7 @@ def test_remote_status_exposes_only_scenario_input_names_and_kinds(tmp_path):
             "name": "iPhone",
         }
     )
+    assert status["protocol_version"] == 1
     assert status["scenarios"] == [
         {
             "id": scenario.id,

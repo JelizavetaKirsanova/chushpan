@@ -1,6 +1,70 @@
 import Combine
 import Foundation
+import Network
 import UIKit
+
+enum MacConnectionState: Equatable {
+    case disconnected
+    case connecting
+    case connected
+    case reconnecting
+    case unavailable
+    case authorizationError
+    case protocolError
+
+    var title: String {
+        switch self {
+        case .disconnected: "Не подключён"
+        case .connecting: "Подключение"
+        case .connected: "Подключено"
+        case .reconnecting: "Переподключение"
+        case .unavailable: "Mac недоступен"
+        case .authorizationError: "Ошибка авторизации"
+        case .protocolError: "Ошибка протокола"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .disconnected: "wifi.slash"
+        case .connecting, .reconnecting: "arrow.clockwise"
+        case .connected: "lock.shield.fill"
+        case .unavailable: "wifi.exclamationmark"
+        case .authorizationError: "lock.trianglebadge.exclamationmark"
+        case .protocolError: "exclamationmark.2"
+        }
+    }
+}
+
+enum CoreAPIConnectionState: Equatable {
+    case unconfigured
+    case connecting
+    case connected
+    case unavailable
+    case authorizationError
+    case protocolError
+
+    var title: String {
+        switch self {
+        case .unconfigured: "Не настроено"
+        case .connecting: "Подключение"
+        case .connected: "Подключено"
+        case .unavailable: "Сервер недоступен"
+        case .authorizationError: "Ошибка авторизации"
+        case .protocolError: "Ошибка протокола"
+        }
+    }
+}
+
+struct MacReconnectBackoff {
+    private(set) var attempt = 0
+
+    mutating func nextDelaySeconds() -> UInt64 {
+        let delay = min(UInt64(1) << min(attempt, 6), 60)
+        attempt += 1
+        return delay
+    }
+}
 
 enum MacActionState: Equatable {
     case submitted, running, completed, failed, confirmationRequired, unknown
@@ -40,6 +104,7 @@ final class AppModel: ObservableObject {
     @Published var macPairCode: String?
     @Published var macTrusted: Bool
     @Published var macAutoReconnectEnabled: Bool
+    @Published var macConnectionState: MacConnectionState = .disconnected
     @Published var macStatus: MacRemoteStatus?
     @Published var macChatStatus: MacChatProviderStatus?
     @Published var macConnectionMessage = "Mac не сопряжён."
@@ -49,6 +114,11 @@ final class AppModel: ObservableObject {
     @Published var discoveredMacs: [DiscoveredMac] = []
     @Published var macLastConnectedAt: Date?
     @Published var macConnectionKind = "Локальная сеть"
+    @Published var coreAPIState: CoreAPIConnectionState = .unconfigured
+    @Published var coreAPIMessage = "Для GPT без Mac настрой Core API в Tailscale."
+    @Published var coreAPIConfigured = false
+    @Published var coreAPIProvider: String?
+    @Published var coreAPILastConnectedAt: Date?
     @Published var macActionFeedback: MacActionFeedback?
     @Published var macConfirmationCode = ""
 
@@ -59,6 +129,8 @@ final class AppModel: ObservableObject {
         private let cloud = CloudSyncService()
     #endif
     private let macBrowser = MacServiceBrowser()
+    private let macPathMonitor = NWPathMonitor()
+    private let macPathQueue = DispatchQueue(label: "ee.chushpan.mobile.mac-path")
     private var generationTask: Task<Void, Never>?
     private var localSaveTask: Task<Void, Never>?
     private var cloudSaveTask: Task<Void, Never>?
@@ -67,7 +139,11 @@ final class AppModel: ObservableObject {
     private var cloudSyncGeneration = 0
     private var persistenceRevision = 0
     private var macClient: MacBridgeClient?
+    private var coreAPIClient: CoreAPIClient?
     private var reconnectTask: Task<Void, Never>?
+    private var connectionAttemptInFlight = false
+    private var reconnectGeneration = 0
+    private var macNetworkAvailable = true
     private var pairingInProgress = false
     private var sceneIsActive = true
 
@@ -83,10 +159,25 @@ final class AppModel: ObservableObject {
         macBaseURL = UserDefaults.standard.string(forKey: "mobile.macBaseURL") ?? ""
         macRemoteURL = UserDefaults.standard.string(forKey: "mobile.macRemoteURL") ?? ""
         macFingerprint = UserDefaults.standard.string(forKey: "mobile.macFingerprint") ?? ""
-        macTrusted = UserDefaults.standard.bool(forKey: "mobile.macTrusted")
-        macAutoReconnectEnabled = UserDefaults.standard.object(forKey: "mobile.macAutoReconnect") as? Bool ?? true
+        let defaults = UserDefaults.standard
+        let hasTrustedMac = defaults.bool(forKey: "mobile.macTrusted")
+        macTrusted = hasTrustedMac
+        let didMigrateReconnectPreference = defaults.bool(forKey: "mobile.macReconnectPreferenceMigrated")
+        let savedReconnectPreference = defaults.object(forKey: "mobile.macAutoReconnect") as? Bool ?? true
+        if hasTrustedMac && !didMigrateReconnectPreference {
+            macAutoReconnectEnabled = true
+            defaults.set(true, forKey: "mobile.macAutoReconnect")
+            defaults.set(true, forKey: "mobile.macReconnectPreferenceMigrated")
+        } else {
+            macAutoReconnectEnabled = savedReconnectPreference
+        }
+        macConnectionState = hasTrustedMac ? .connecting : .disconnected
         let lastConnected = UserDefaults.standard.double(forKey: "mobile.macLastConnectedAt")
         macLastConnectedAt = lastConnected > 0 ? Date(timeIntervalSince1970: lastConnected) : nil
+        let coreLastConnected = UserDefaults.standard.double(forKey: "mobile.coreAPILastConnectedAt")
+        coreAPILastConnectedAt = coreLastConnected > 0 ? Date(timeIntervalSince1970: coreLastConnected) : nil
+        coreAPIConfigured = UserDefaults.standard.bool(forKey: "mobile.coreAPIConfigured")
+        coreAPIProvider = UserDefaults.standard.string(forKey: "mobile.coreAPIProvider")
         let resolvedStore: MobileStore
         do {
             let applicationStore = try MobileStore.applicationDefault()
@@ -113,6 +204,30 @@ final class AppModel: ObservableObject {
         }
         macBrowser.onMessage = { [weak self] message in self?.macDiscoveryMessage = message }
         macBrowser.start()
+        macPathMonitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor in
+                guard let self else { return }
+                self.macNetworkAvailable = path.status == .satisfied
+                if !self.macNetworkAvailable {
+                    self.macClient?.close()
+                    self.macClient = nil
+                    self.macStatus = nil
+                    self.macConnectionState = .unavailable
+                    self.macConnectionMessage = "Нет сетевого подключения. Проверю Mac при возвращении сети."
+                    self.cancelMacReconnect()
+                } else if self.sceneIsActive && self.macTrusted {
+                    Task { await self.refreshMac(synchronizeAfterConnect: false) }
+                }
+            }
+        }
+        macPathMonitor.start(queue: macPathQueue)
+        do {
+            coreAPIClient = try CoreAPIClient.restore()
+            if coreAPIClient != nil { Task { await refreshCoreAPIStatus() } }
+        } catch {
+            coreAPIState = .authorizationError
+            coreAPIMessage = error.localizedDescription
+        }
         if macTrusted, !macBaseURL.isEmpty, !macFingerprint.isEmpty {
             Task { await refreshMac() }
         }
@@ -545,32 +660,43 @@ final class AppModel: ObservableObject {
     }
 
     func refreshMac(synchronizeAfterConnect: Bool = true) async {
-        if macClient == nil {
-            guard macTrusted || macPairCode != nil else {
-                macConnectionMessage = "Выбери найденный Mac, чтобы подключиться."
-                return
-            }
-            let candidates = connectionCandidates()
-            var restored: MacBridgeClient?
+        guard !connectionAttemptInFlight else { return }
+        guard macTrusted || macPairCode != nil else {
+            macConnectionState = .disconnected
+            macConnectionMessage = "Выбери найденный Mac, чтобы подключиться."
+            return
+        }
+        guard macNetworkAvailable else {
+            setMacUnavailable("Нет сетевого подключения. Проверю Mac при возвращении сети.")
+            return
+        }
+        connectionAttemptInFlight = true
+        macConnectionState = reconnectTask == nil ? .connecting : .reconnecting
+        defer { connectionAttemptInFlight = false }
+
+        var client = macClient
+        if client == nil {
             var lastError: Error = MacBridgeError.transport
-            for candidate in candidates {
+            for candidate in connectionCandidates() {
                 do {
-                    restored = try await MacBridgeClient.restore(
+                    client = try await MacBridgeClient.restore(
                         baseURL: candidate,
                         fingerprint: macFingerprint
                     )
                     macBaseURL = candidate
+                    macClient = client
                     break
-                } catch { lastError = error }
+                } catch {
+                    lastError = error
+                    if isTerminalMacError(error) { break }
+                }
             }
-            guard let restored else {
-                macConnectionMessage = lastError.localizedDescription
-                macStatus = nil
+            guard client != nil else {
+                handleMacConnectionError(lastError)
                 return
             }
-            macClient = restored
         }
-        guard let client = macClient else { return }
+        guard let client else { return }
         do {
             if !macTrusted {
                 let pairing = try await client.pairStatus()
@@ -583,21 +709,26 @@ final class AppModel: ObservableObject {
                 macTrusted = true
                 UserDefaults.standard.set(true, forKey: "mobile.macTrusted")
             }
-            macStatus = try await client.status()
+            let status = try await client.status()
+            guard status.protocolVersion == nil || status.protocolVersion == 1 else {
+                throw MacBridgeError.protocolMismatch("версия \(status.protocolVersion!)")
+            }
+            macStatus = status
             macChatStatus = macStatus?.mobileChat
+            macConnectionState = .connected
             recordMacConnection(at: macBaseURL)
             macConnectionMessage = "Mac на связи по защищённому соединению."
+            cancelMacReconnect()
             if synchronizeAfterConnect {
                 Task { await syncFromMac() }
             }
         } catch {
-            macStatus = nil
-            macConnectionMessage = error.localizedDescription
             if let bridgeError = error as? MacBridgeError, case .pairingEnded = bridgeError {
                 macPairCode = nil
                 macClient?.close()
                 macClient = nil
             }
+            handleMacConnectionError(error)
         }
     }
 
@@ -605,21 +736,100 @@ final class AppModel: ObservableObject {
         sceneIsActive = active
         if active {
             macBrowser.start()
-            if macTrusted && macAutoReconnectEnabled { scheduleMacReconnect() }
+            if macTrusted { Task { await refreshMac(synchronizeAfterConnect: false) } }
+            if coreAPIClient != nil { Task { await refreshCoreAPIStatus() } }
         } else {
             macBrowser.stop()
-            reconnectTask?.cancel()
-            reconnectTask = nil
+            cancelMacReconnect()
+            macClient?.close()
+            macClient = nil
+            macStatus = nil
+            if macTrusted {
+                macConnectionState = .disconnected
+                macConnectionMessage = "Приложение в фоне. Проверю соединение при возвращении."
+            }
         }
     }
 
+    func pairWithCoreAPI(invitationJSON: String) async {
+        coreAPIState = .connecting
+        coreAPIMessage = "Проверяю адрес и отпечаток защищённого сервера…"
+        do {
+            let client = try await CoreAPIClient.pair(
+                invitationJSON: invitationJSON
+            )
+            coreAPIClient?.close()
+            coreAPIClient = client
+            await refreshCoreAPIStatus()
+        } catch {
+            if let coreError = error as? CoreAPIError {
+                switch coreError {
+                case .authorization: coreAPIState = .authorizationError
+                case .protocolMismatch, .certificateMismatch, .invalidInvitation: coreAPIState = .protocolError
+                case .unavailable, .server: coreAPIState = .unavailable
+                }
+                coreAPIMessage = coreError.localizedDescription
+            } else {
+                coreAPIState = .unavailable
+                coreAPIMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func refreshCoreAPIStatus() async {
+        guard let client = coreAPIClient else {
+            coreAPIState = .unconfigured
+            coreAPIMessage = "Для GPT без Mac добавь одноразовое приглашение Core API."
+            coreAPIConfigured = false
+            return
+        }
+        coreAPIState = .connecting
+        do {
+            let status = try await client.status()
+            coreAPIConfigured = status.llm.configured
+            coreAPIProvider = status.llm.provider
+            UserDefaults.standard.set(status.llm.configured, forKey: "mobile.coreAPIConfigured")
+            UserDefaults.standard.set(status.llm.provider, forKey: "mobile.coreAPIProvider")
+            coreAPIState = .connected
+            coreAPILastConnectedAt = Date()
+            UserDefaults.standard.set(coreAPILastConnectedAt?.timeIntervalSince1970, forKey: "mobile.coreAPILastConnectedAt")
+            coreAPIMessage = status.llm.configured
+                ? "Защищённый Core API доступен; GPT выполняется на сервере, ключ остаётся там."
+                : "Сервер доступен, но провайдер GPT на нём ещё не настроен."
+        } catch {
+            coreAPIConfigured = false
+            coreAPIMessage = error.localizedDescription
+            if let coreError = error as? CoreAPIError {
+                switch coreError {
+                case .authorization: coreAPIState = .authorizationError
+                case .protocolMismatch, .certificateMismatch, .invalidInvitation: coreAPIState = .protocolError
+                case .unavailable, .server: coreAPIState = .unavailable
+                }
+            } else { coreAPIState = .unavailable }
+        }
+    }
+
+    func forgetCoreAPI() {
+        coreAPIClient?.close()
+        coreAPIClient = nil
+        for key in ["mobile.coreAPIHost", "mobile.coreAPIFingerprint", "mobile.coreAPIDeviceID", "mobile.coreAPITrusted", "mobile.coreAPILastConnectedAt", "mobile.coreAPIConfigured", "mobile.coreAPIProvider"] {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+        try? KeychainVault().remove("core-api-device-signing-key")
+        coreAPIState = .unconfigured
+        coreAPIConfigured = false
+        coreAPIProvider = nil
+        coreAPILastConnectedAt = nil
+        coreAPIMessage = "Сопряжение Core API удалено с этого iPhone."
+    }
+
     func disconnectMac() {
-        reconnectTask?.cancel()
-        reconnectTask = nil
+        cancelMacReconnect()
         macClient?.close()
         macClient = nil
         macStatus = nil
         macAutoReconnectEnabled = false
+        macConnectionState = .disconnected
         UserDefaults.standard.set(false, forKey: "mobile.macAutoReconnect")
         macConnectionMessage = "Отключено. Нажми «Подключить» для следующего соединения."
     }
@@ -628,10 +838,7 @@ final class AppModel: ObservableObject {
         macAutoReconnectEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "mobile.macAutoReconnect")
         if enabled { scheduleMacReconnect() }
-        else {
-            reconnectTask?.cancel()
-            reconnectTask = nil
-        }
+        else { cancelMacReconnect() }
     }
 
     private func pollPairingApproval() {
@@ -650,36 +857,94 @@ final class AppModel: ObservableObject {
     }
 
     private func scheduleMacReconnect() {
-        guard macTrusted, macAutoReconnectEnabled, sceneIsActive else { return }
-        reconnectTask?.cancel()
+        guard macTrusted, macAutoReconnectEnabled, sceneIsActive, macNetworkAvailable else { return }
+        guard reconnectTask == nil else { return }
+        reconnectGeneration += 1
+        let generation = reconnectGeneration
         reconnectTask = Task { [weak self] in
             guard let self else { return }
-            let delays: [UInt64] = [0, 1, 2, 4, 8, 16, 30]
-            for delay in delays {
-                if delay > 0 { try? await Task.sleep(nanoseconds: delay * 1_000_000_000) }
-                guard !Task.isCancelled else { return }
-                for candidate in self.connectionCandidates() {
-                    do {
-                        let client = try await MacBridgeClient.restore(
-                            baseURL: candidate,
-                            fingerprint: self.macFingerprint
-                        )
-                        let status = try await client.status()
-                        self.macClient?.close()
-                        self.macClient = client
-                        self.macStatus = status
-                        self.macBaseURL = candidate
-                        self.recordMacConnection(at: candidate)
-                        self.macConnectionMessage = "Соединение с Mac восстановлено."
-                        return
-                    } catch {
-                        self.macStatus = nil
-                    }
+            var backoff = MacReconnectBackoff()
+            while !Task.isCancelled,
+                  generation == self.reconnectGeneration,
+                  self.macTrusted,
+                  self.macAutoReconnectEnabled,
+                  self.sceneIsActive {
+                self.macConnectionState = .reconnecting
+                let delay = backoff.nextDelaySeconds()
+                do { try await Task.sleep(for: .seconds(delay)) }
+                catch { return }
+                guard !Task.isCancelled, self.macNetworkAvailable else { continue }
+                await self.refreshMac(synchronizeAfterConnect: false)
+                if self.macConnectionState == .connected {
+                    self.reconnectTask = nil
+                    return
+                }
+                if self.macConnectionState == .authorizationError || self.macConnectionState == .protocolError {
+                    self.reconnectTask = nil
+                    return
                 }
             }
-            if !Task.isCancelled {
-                self.macConnectionMessage = "Mac пока недоступен. Повторю подключение при следующем обнаружении сети."
+            if generation == self.reconnectGeneration { self.reconnectTask = nil }
+        }
+    }
+
+    private func cancelMacReconnect() {
+        reconnectGeneration += 1
+        reconnectTask?.cancel()
+        reconnectTask = nil
+    }
+
+    private func setMacUnavailable(_ message: String) {
+        macClient?.close()
+        macClient = nil
+        macStatus = nil
+        macConnectionState = macTrusted ? .unavailable : .disconnected
+        macConnectionMessage = message
+    }
+
+    private func isTerminalMacError(_ error: Error) -> Bool {
+        guard let bridgeError = error as? MacBridgeError else { return false }
+        switch bridgeError {
+        case .authorization, .notPaired, .pairingEnded, .certificateMismatch, .untrustedCertificate,
+             .protocolMismatch:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func handleMacConnectionError(_ error: Error) {
+        macClient?.close()
+        macClient = nil
+        macStatus = nil
+        macConnectionMessage = error.localizedDescription
+        if let bridgeError = error as? MacBridgeError {
+            switch bridgeError {
+            case .authorization, .notPaired, .pairingEnded:
+                macConnectionState = .authorizationError
+                cancelMacReconnect()
+            case .protocolMismatch, .certificateMismatch, .untrustedCertificate:
+                macConnectionState = .protocolError
+                cancelMacReconnect()
+            default:
+                macConnectionState = .unavailable
+                if macAutoReconnectEnabled && sceneIsActive { scheduleMacReconnect() }
             }
+        } else {
+            macConnectionState = .unavailable
+            if macAutoReconnectEnabled && sceneIsActive { scheduleMacReconnect() }
+        }
+    }
+
+    private func handleMacRequestFailure(_ error: Error) {
+        guard !(error is CancellationError), let bridgeError = error as? MacBridgeError else { return }
+        handleMacConnectionError(bridgeError)
+    }
+
+    private func isTransientMacFailure(_ error: MacBridgeError) -> Bool {
+        switch error {
+        case .timeout, .transport: return true
+        default: return false
         }
     }
 
@@ -752,23 +1017,14 @@ final class AppModel: ObservableObject {
                 }
                 return
             } catch {
+                handleMacRequestFailure(error)
                 if attempt == 0, let bridgeError = error as? MacBridgeError,
-                   case .transport = bridgeError {
-                    if self.macClient === client {
-                        client.close()
-                        self.macClient = nil
-                        macStatus = nil
-                    }
+                   isTransientMacFailure(bridgeError) {
                     await refreshMac(synchronizeAfterConnect: false)
                     if self.macClient != nil { continue }
                     macMediaError = "Не удалось восстановить защищённое соединение. \(macConnectionMessage)"
                 } else {
                     macMediaError = error.localizedDescription
-                    if let bridgeError = error as? MacBridgeError,
-                       case .transport = bridgeError {
-                        macStatus = nil
-                        macConnectionMessage = error.localizedDescription
-                    }
                 }
                 return
             }
@@ -857,14 +1113,88 @@ final class AppModel: ObservableObject {
         persist()
         generationTask = Task { [weak self] in
             guard let self else { return }
-            await self.runMacChat(
-                text: user.text,
-                conversationID: conversationID,
-                assistantID: assistantID,
-                isPrivate: conversation.isPrivate,
-                history: privateHistory
-            )
+            if self.macTrusted, self.macClient != nil, self.macStatus?.capabilities.contains("chat") == true {
+                await self.runMacChat(
+                    text: user.text,
+                    conversationID: conversationID,
+                    assistantID: assistantID,
+                    isPrivate: conversation.isPrivate,
+                    history: privateHistory
+                )
+            } else {
+                await self.runCoreChat(
+                    text: user.text,
+                    conversationID: conversationID,
+                    assistantID: assistantID,
+                    history: privateHistory
+                )
+            }
         }
+    }
+
+    private func runCoreChat(
+        text: String,
+        conversationID: String,
+        assistantID: String,
+        history: [[String: String]]
+    ) async {
+        defer { isGenerating = false; generationTask = nil }
+        guard let client = coreAPIClient else {
+            updateMessage(conversationID: conversationID, messageID: assistantID) {
+                $0.delivery = .failed
+                $0.errorMessage = "Mac недоступен. GPT без Mac не настроен: подключи защищённый Core API в настройках. История сохранена локально."
+            }
+            persist()
+            return
+        }
+        if !coreAPIConfigured { await refreshCoreAPIStatus() }
+        guard coreAPIConfigured else {
+            updateMessage(conversationID: conversationID, messageID: assistantID) {
+                $0.delivery = .failed
+                $0.errorMessage = "Mac недоступен. Core API не сообщил о настроенном GPT-провайдере. История сохранена локально."
+            }
+            persist()
+            return
+        }
+
+        var messages: [[String: String]] = [[
+            "role": "system",
+            "content": "Ты Чушпан, помощник пользователя на iPhone. В этом автономном маршруте Mac недоступен: ты не можешь управлять Mac, устройствами, медиатекой или выполнять локальные команды. Объясни это, если запрос требует такого действия.",
+        ]]
+        messages.append(contentsOf: history.filter { ["user", "assistant"].contains($0["role"] ?? "") })
+        messages.append(["role": "user", "content": text])
+        do {
+            let answer = try await client.chat(messages: messages)
+            updateMessage(conversationID: conversationID, messageID: assistantID) {
+                $0.text = answer
+                $0.delivery = .complete
+                $0.errorMessage = nil
+                $0.provider = coreAPIProvider ?? "Core API"
+                $0.model = "GPT через защищённый сервер"
+            }
+            if speakResponses { speech.speak(answer, voiceIdentifier: voiceIdentifier.isEmpty ? nil : voiceIdentifier) }
+        } catch is CancellationError {
+            updateMessage(conversationID: conversationID, messageID: assistantID) {
+                $0.delivery = .cancelled
+                $0.errorMessage = "Ожидание ответа Core API остановлено. Запрос мог уже попасть на сервер."
+            }
+        } catch {
+            if let coreError = error as? CoreAPIError {
+                switch coreError {
+                case .authorization: coreAPIState = .authorizationError
+                case .protocolMismatch, .certificateMismatch, .invalidInvitation: coreAPIState = .protocolError
+                case .unavailable, .server: coreAPIState = .unavailable
+                }
+                coreAPIMessage = coreError.localizedDescription
+            }
+            updateMessage(conversationID: conversationID, messageID: assistantID) {
+                $0.delivery = .failed
+                $0.errorMessage = "Не удалось получить ответ GPT через Core API. \(error.localizedDescription) Сообщение сохранено локально; повтори вручную, если нужно."
+                $0.provider = coreAPIProvider
+                $0.model = "Core API"
+            }
+        }
+        persist()
     }
 
     private func runMacChat(
@@ -932,6 +1262,7 @@ final class AppModel: ObservableObject {
             }
             persist()
         } catch {
+            handleMacRequestFailure(error)
             updateMessage(conversationID: conversationID, messageID: assistantID) {
                 $0.delivery = .failed
                 $0.errorMessage = "Результат неизвестен. \(error.localizedDescription) Проверь журнал Mac перед повтором."
@@ -942,7 +1273,10 @@ final class AppModel: ObservableObject {
 
     private func performMacCommand(_ operation: String, arguments: [String: Any], label: String) {
         guard macTrusted, let client = macClient else {
-            macActionFeedback = MacActionFeedback(state: .failed, message: "Mac не сопряжён. Команда не отправлена.", commandID: nil)
+            let message = macTrusted
+                ? "Mac сейчас недоступен. Команда не отправлена."
+                : "Mac не сопряжён. Команда не отправлена."
+            macActionFeedback = MacActionFeedback(state: .failed, message: message, commandID: nil)
             return
         }
         macActionFeedback = MacActionFeedback(state: .submitted, message: "Отправляю выбранную команду на Mac…", commandID: nil)
@@ -960,6 +1294,7 @@ final class AppModel: ObservableObject {
                     await refreshMac(synchronizeAfterConnect: false)
                 }
             } catch {
+                self.handleMacRequestFailure(error)
                 macActionFeedback = MacActionFeedback(
                     state: .unknown,
                     message: "\(label): результат неизвестен. \(error.localizedDescription) Не отправляла повторно.",
@@ -976,6 +1311,7 @@ final class AppModel: ObservableObject {
             macActionFeedback = MacActionFeedback(state: .submitted, message: "Подтверждение принято; проверяю результат.", commandID: id)
             await pollMacCommand(client: client, id: id, label: "Подтверждённое действие", current: receipt)
         } catch {
+            handleMacRequestFailure(error)
             macActionFeedback = MacActionFeedback(state: .unknown, message: "Результат подтверждения неизвестен. \(error.localizedDescription)", commandID: nil)
         }
     }
@@ -989,6 +1325,7 @@ final class AppModel: ObservableObject {
                 try await Task.sleep(for: .seconds(1.5))
                 receipt = try await client.result(id: id)
             } catch {
+                handleMacRequestFailure(error)
                 macActionFeedback = MacActionFeedback(state: .unknown, message: "Связь оборвалась во время выполнения. Проверь журнал Mac; повторной отправки нет.", commandID: id)
                 return
             }

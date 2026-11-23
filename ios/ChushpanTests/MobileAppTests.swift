@@ -233,4 +233,64 @@ final class MacPairingCodeTests: XCTestCase {
             "835016"
         )
     }
+
+    func testMacReconnectBackoffIsExponentialAndCapped() {
+        var backoff = MacReconnectBackoff()
+        XCTAssertEqual((0..<9).map { _ in backoff.nextDelaySeconds() }, [1, 2, 4, 8, 16, 32, 60, 60, 60])
+    }
+
+    func testRemoteStatusAcceptsOlderServerWithoutOptionalCollections() throws {
+        let status = try JSONDecoder.mobile.decode(
+            MacRemoteStatus.self,
+            from: Data(#"{"status":"ok","name":"Mac"}"#.utf8)
+        )
+
+        XCTAssertEqual(status.status, "ok")
+        XCTAssertNil(status.protocolVersion)
+        XCTAssertEqual(status.capabilities, [])
+        XCTAssertEqual(status.categories, [])
+        XCTAssertEqual(status.scenarios, [])
+        XCTAssertEqual(status.devices, [])
+    }
+
+    func testMalformedMacStatusDiagnosticShowsFieldPathWithoutResponseBody() {
+        do {
+            _ = try JSONDecoder.mobile.decode(
+                MacRemoteStatus.self,
+                from: Data(#"{"status":7,"secret":"must-not-appear"}"#.utf8)
+            )
+            XCTFail("Expected a decoding failure")
+        } catch let error as DecodingError {
+            let diagnostic = MacBridgeClient.decodingSummary(error)
+            XCTAssertTrue(diagnostic.contains("status"))
+            XCTAssertFalse(diagnostic.contains("must-not-appear"))
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
+
+    func testCoreInvitationRequiresTailnetAndChatOnlyScope() throws {
+        let fingerprint = String(repeating: "a", count: 64)
+        let invite = #"{"code":"abcdefghijklmnopqrstuvwxyz0123456789_ABCD","host":"100.100.10.5","tls_fingerprint":"\#(fingerprint)","scopes":["llm.chat"]}"#
+        XCTAssertEqual(try CoreAPIClient.validatedInvitation(invite).host, "100.100.10.5")
+
+        let overprivileged = invite.replacingOccurrences(of: "[\"llm.chat\"]", with: "[\"llm.chat\",\"memory.read\"]")
+        XCTAssertThrowsError(try CoreAPIClient.validatedInvitation(overprivileged))
+        let publicHost = invite.replacingOccurrences(of: "100.100.10.5", with: "192.0.2.8")
+        XCTAssertThrowsError(try CoreAPIClient.validatedInvitation(publicHost))
+    }
+
+    func testCoreAPIRequestSignaturePayloadMatchesServerFormat() {
+        let payload = CoreAPIClient.requestPayload(
+            method: "get",
+            target: "/v1/core/status",
+            timestamp: "1700000000",
+            nonce: "nonce-1234567890",
+            body: Data()
+        )
+        XCTAssertEqual(
+            String(decoding: payload, as: UTF8.self),
+            "v1\n1700000000\nnonce-1234567890\nGET\n/v1/core/status\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        )
+    }
 }
