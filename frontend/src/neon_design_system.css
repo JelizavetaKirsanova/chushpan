@@ -1012,6 +1012,16 @@ html[data-theme="light"] #settings-center :is(.settings-heading p, .settings-det
 html[data-theme="light"] #settings-center :is(input:not([type="checkbox"]):not([type="range"]), select, textarea) { border-color: var(--line-strong); background: #fff; color: var(--text); }
 html[data-theme="light"] #settings-center .settings-category:hover { background: var(--panel-hover); }
 html[data-theme="light"] #settings-center .settings-category-icon { background: var(--accent-soft); color: var(--accent); }
+html[data-theme="light"] #settings-center .settings-sidebar .settings-category {
+  border-color: var(--line) !important;
+  background: linear-gradient(145deg, #fff, #faf6fd 90%) !important;
+  color: var(--text) !important;
+}
+html[data-theme="light"] #settings-center .settings-sidebar .settings-category strong { color: var(--text) !important; }
+html[data-theme="light"] #settings-center .settings-sidebar .settings-category:hover {
+  border-color: var(--accent) !important;
+  background: var(--panel-hover) !important;
+}
 html[data-theme="light"] #settings-center .settings-tabs { background: var(--panel-soft); }
 html[data-theme="light"] #settings-center .settings-tabs button[aria-selected="true"] { border-color: var(--line-strong) !important; background: #ead7f6 !important; color: var(--text) !important; }
 html[data-theme="light"] #settings-center .settings-feedback[data-error="true"],
