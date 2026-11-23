@@ -51,22 +51,32 @@ struct DevicesView: View {
             } else {
                 Section("Устройства Mac") {
                     ForEach(devices) { device in
-                        Group {
-                            switch device.kind {
-                            case "led_strip":
-                                LEDDeviceCard(device: device)
-                            case "mac":
-                                MacSystemDeviceCard(device: device)
-                            case "external_display":
-                                ExternalDisplayCard(device: device)
-                            default:
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Label(device.name, systemImage: "externaldrive.connected.to.line.below")
-                                    Text("Тип «\(device.kind)» виден Mac, но мобильное приложение не показывает неподтверждённые команды для него.")
-                                        .font(.footnote).foregroundStyle(.secondary)
-                                }
-                                .padding(.vertical, 4)
+                        VStack(alignment: .leading, spacing: 8) {
+                            if let location = device.locationText {
+                                Label(location, systemImage: "mappin.and.ellipse")
+                                    .font(.caption).foregroundStyle(.secondary)
                             }
+                            Label(device.availabilityText, systemImage: device.availabilitySymbol)
+                                .font(.caption)
+                                .foregroundStyle(device.availability == "offline" ? Color.orange : Color.secondary)
+                            Group {
+                                switch device.kind {
+                                case "led_strip":
+                                    LEDDeviceCard(device: device)
+                                case "mac":
+                                    MacSystemDeviceCard(device: device)
+                                case "external_display":
+                                    ExternalDisplayCard(device: device)
+                                default:
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Label(device.name, systemImage: "externaldrive.connected.to.line.below")
+                                        Text("Тип «\(device.kind)» виден Mac, но мобильное приложение не показывает неподтверждённые команды для него.")
+                                            .font(.footnote).foregroundStyle(.secondary)
+                                    }
+                                    .padding(.vertical, 4)
+                                }
+                            }
+                            .disabled(device.availability == "offline" || device.availability == "remote-unavailable")
                         }
                         .id(device.id)
                     }
@@ -302,20 +312,24 @@ private struct LEDDeviceCard: View {
 private struct MacSystemDeviceCard: View {
     @EnvironmentObject private var model: AppModel
     let device: MacRemoteDevice
-    @State private var brightness = 50.0
-    @State private var volume = 40.0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label(device.name, systemImage: "desktopcomputer").font(.headline)
-            labeledSlider("Яркость", value: $brightness, max: 100)
-            Button("Установить яркость на Mac") {
-                model.runMacDevice(deviceID: device.id, action: "brightness", parameters: ["level": Int(brightness)], label: "Яркость Mac")
-            }
-            labeledSlider("Громкость", value: $volume, max: 100)
-            Button("Установить громкость на Mac") {
-                model.runMacDevice(deviceID: device.id, action: "volume", parameters: ["level": Int(volume)], label: "Громкость Mac")
-            }
+            RemoteDeviceLevelControl(
+                device: device,
+                title: "Яркость Mac",
+                action: "brightness",
+                stateKey: "brightness",
+                featureKey: "brightness"
+            )
+            RemoteDeviceLevelControl(
+                device: device,
+                title: "Громкость Mac",
+                action: "volume",
+                stateKey: "volume_percent",
+                featureKey: "volume"
+            )
             HStack {
                 Button("Пауза музыки") { model.runMacDevice(deviceID: device.id, action: "playback", parameters: ["playback": "pause"], label: "Музыка Mac") }
                 Button("Продолжить") { model.runMacDevice(deviceID: device.id, action: "playback", parameters: ["playback": "resume"], label: "Музыка Mac") }
@@ -324,33 +338,133 @@ private struct MacSystemDeviceCard: View {
         }
         .padding(.vertical, 6)
     }
-
-    private func labeledSlider(_ title: String, value: Binding<Double>, max: Double) -> some View {
-        HStack {
-            Text(title).frame(width: 72, alignment: .leading)
-            Slider(value: value, in: 0...max, step: 1).accessibilityLabel("\(title), процентов")
-            Text("\(Int(value.wrappedValue))%").monospacedDigit().frame(width: 43, alignment: .trailing)
-        }
-    }
 }
 
 private struct ExternalDisplayCard: View {
-    @EnvironmentObject private var model: AppModel
     let device: MacRemoteDevice
-    @State private var brightness = 50.0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label(device.name, systemImage: "display")
-            HStack {
-                Slider(value: $brightness, in: 0...100, step: 1).accessibilityLabel("Яркость дисплея")
-                Text("\(Int(brightness))%")
-            }
-            Button("Применить на Mac") {
-                model.runMacDevice(deviceID: device.id, action: "brightness", parameters: ["level": Int(brightness)], label: "Внешний дисплей")
-            }
-            .buttonStyle(.bordered)
+            RemoteDeviceLevelControl(
+                device: device,
+                title: "Яркость внешнего дисплея",
+                action: "brightness",
+                stateKey: "brightness",
+                featureKey: "brightness"
+            )
         }
         .padding(.vertical, 6)
+    }
+}
+
+private struct RemoteDeviceLevelControl: View {
+    @EnvironmentObject private var model: AppModel
+    let device: MacRemoteDevice
+    let title: String
+    let action: String
+    let stateKey: String
+    let featureKey: String
+    @State private var value: Double?
+    @State private var isEditing = false
+    @State private var lastSubmitted: Int?
+    @State private var debounceTask: Task<Void, Never>?
+
+    private var confirmedLevel: Int? {
+        if stateKey == "volume_percent" { return device.volumePercent }
+        return device.brightness
+    }
+
+    private var displayedLevel: Int? {
+        value.map { Int($0.rounded()) } ?? confirmedLevel
+    }
+
+    var body: some View {
+        Group {
+            if device.features?[featureKey] == false {
+                Label(device.controlReason ?? "\(title): управление недоступно в настройках Mac.", systemImage: "lock.slash")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } else if device.kind == "external_display",
+                      device.connection == "error" || device.connection == "disconnected" {
+                Label(device.connectionError ?? "Внешний дисплей сейчас недоступен.", systemImage: "display.trianglebadge.exclamationmark")
+                    .font(.footnote).foregroundStyle(.orange)
+            } else if let level = displayedLevel {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(title)
+                        Spacer()
+                        Text("\(displayedLevel ?? level)%")
+                            .monospacedDigit()
+                    }
+                    Slider(
+                        value: Binding(
+                            get: { value ?? Double(level) },
+                            set: { value = $0 }
+                        ),
+                        in: 0...100,
+                        step: 1,
+                        onEditingChanged: { editing in
+                            isEditing = editing
+                            if !editing { scheduleSend(immediately: true) }
+                        }
+                    )
+                    .accessibilityLabel("\(title), процентов")
+                    .onChange(of: value) { _, newValue in
+                        guard isEditing, newValue != nil else { return }
+                        scheduleSend(immediately: false)
+                    }
+                    if stateKey == "volume_percent", device.isMuted == true {
+                        Label("Системный звук выключен", systemImage: "speaker.slash.fill")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            } else {
+                Label("\(title): Mac не подтвердил текущее значение; шкала скрыта.", systemImage: "exclamationmark.triangle")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+        .onAppear {
+            if value == nil { value = confirmedLevel.map(Double.init) }
+        }
+        .onChange(of: device.state) { _, _ in
+            guard !isEditing else { return }
+            value = confirmedLevel.map(Double.init)
+            lastSubmitted = nil
+        }
+        .onChange(of: model.macActionFeedback?.message) { _, _ in
+            if model.macActionFeedback?.state == .failed || model.macActionFeedback?.state == .unknown {
+                lastSubmitted = nil
+            }
+        }
+        .onDisappear { debounceTask?.cancel() }
+    }
+
+    private func scheduleSend(immediately: Bool) {
+        debounceTask?.cancel()
+        guard let level = displayedLevel, level != lastSubmitted else { return }
+        debounceTask = Task {
+            if !immediately {
+                try? await Task.sleep(for: .milliseconds(450))
+            }
+            guard !Task.isCancelled else { return }
+            lastSubmitted = level
+            model.runMacDevice(
+                deviceID: device.id,
+                action: action,
+                parameters: ["level": level],
+                label: title
+            )
+        }
+    }
+}
+
+private extension MacRemoteDevice {
+    var availabilitySymbol: String {
+        switch availability ?? "unknown" {
+        case "online": "checkmark.circle.fill"
+        case "offline": "wifi.slash"
+        case "remote-unavailable": "exclamationmark.triangle.fill"
+        default: "questionmark.circle"
+        }
     }
 }

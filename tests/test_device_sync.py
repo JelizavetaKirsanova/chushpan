@@ -393,6 +393,88 @@ def test_remote_status_exposes_only_scenario_input_names_and_kinds(tmp_path):
     memory.close()
 
 
+def test_remote_status_keeps_saved_offline_devices_and_their_metadata(tmp_path):
+    memory, _, service = setup(tmp_path)
+    local = {
+        "id": "saved-led",
+        "name": "Потолочная лента",
+        "kind": "led_strip",
+        "protocol": "ble",
+        "endpoint": "3a4f5301-2291-2e56-628d-83567e951876",
+        "place_id": "home",
+        "room": "Кухня",
+        "state": {"brightness": 42, "color": "#123456"},
+        "sent": {"brightness": 55},
+        "favorites": ["warm"],
+        "favorite": True,
+        "ble_name": "ELK-BLEDDM 39",
+        "result_status": "unverified",
+        "features": {"brightness": True},
+        "connection": "disconnected",
+        "usable": True,
+    }
+    unavailable = {
+        "id": "saved-display",
+        "name": "Внешний экран",
+        "kind": "external_display",
+        "protocol": "betterdisplay",
+        "place_id": "office",
+        "state": {"brightness": 70},
+        "connection": "unknown",
+        "usable": False,
+        "reason": "Местоположение не выбрано.",
+    }
+    duplicate = {**local, "name": "Дубликат с тем же ID"}
+    service.tools.devices = SimpleNamespace(
+        snapshot=lambda: {"items": [local, unavailable, duplicate]}
+    )
+
+    result = service.remote_status(
+        {
+            "id": "d" * 64,
+            "capabilities": ["devices"],
+            "categories": [],
+            "name": "iPhone",
+        }
+    )["devices"]
+
+    assert [device["id"] for device in result] == ["saved-led", "saved-display"]
+    assert result[0]["availability"] == "offline"
+    assert result[0]["endpoint"] == local["endpoint"]
+    assert result[0]["state"] == local["state"]
+    assert result[0]["sent"] == local["sent"]
+    assert result[0]["favorites"] == ["warm"]
+    assert result[0]["ble_name"] == "ELK-BLEDDM 39"
+    assert result[1]["availability"] == "remote-unavailable"
+    assert result[1]["place_id"] == "office"
+    assert result[1]["reason"] == unavailable["reason"]
+
+    asyncio.run(service.close())
+    memory.close()
+
+
+def test_mobile_status_refresh_reads_system_state_through_mac_tools(tmp_path):
+    async def go():
+        memory, tools, service = setup(tmp_path)
+        _, jwk, identity_value = identity()
+        peer = trust(service, jwk, identity_value, capabilities=["devices"])
+        tools.enabled = lambda _: True
+        tools.devices = SimpleNamespace(
+            store=SimpleNamespace(list=lambda: []),
+        )
+
+        await service.refresh_mobile_device_state(peer)
+
+        assert [call.args for call in tools.call.await_args_list] == [
+            ("get_system_status", {"topic": "volume"}),
+            ("get_brightness", {}),
+        ]
+        await service.close()
+        memory.close()
+
+    asyncio.run(go())
+
+
 def test_remote_led_action_uses_existing_device_command_without_direct_ble(tmp_path):
     async def go():
         memory, tools, service = setup(tmp_path)
@@ -487,7 +569,15 @@ def test_selective_sync_excludes_secrets_sensitive_expired_project_and_other_dia
 def test_mobile_sync_reads_canonical_cinema_library_and_gates_categories(tmp_path):
     memory, _, service = setup(tmp_path)
     cinema = CinemaStore(tmp_path / "sync.sqlite")
-    movie = cinema.add({"title": "Shared film", "kind": "movie", "year": 2024})
+    poster_url = "https://image.tmdb.org/t/p/w500/shared.jpg"
+    movie = cinema.add(
+        {
+            "title": "Shared film",
+            "kind": "movie",
+            "year": 2024,
+            "poster_url": poster_url,
+        }
+    )
     cinema.update_title(movie["id"], {"status": "watching", "favorite": True, "user_rating": 8.5})
     cinema.manual_progress(movie["id"], 0, 0, 120, 6000, "watching")
     _, jwk, device = identity()
@@ -500,6 +590,7 @@ def test_mobile_sync_reads_canonical_cinema_library_and_gates_categories(tmp_pat
     assert item["id"] == movie["id"]
     assert item["title"] == "Shared film"
     assert item["favorite"] is True
+    assert item["poster_url"] == poster_url
     assert item["watchlist"] is False
     assert item["status"] == "watching"
     assert item["position"] == 120

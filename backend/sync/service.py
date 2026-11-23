@@ -342,6 +342,7 @@ class DeviceSync(Center):
                         (time.time(), connection_type(client_address), device),
                     )
                 if operation in {"status", "reconnect"}:
+                    await self.refresh_mobile_device_state(peer)
                     return self.remote_status(peer)
                 if operation == "command":
                     return self.submit(peer, data)
@@ -422,6 +423,48 @@ class DeviceSync(Center):
         )
         return {"status": "pending", "id": identity, "code": code}
 
+    async def refresh_mobile_device_state(self, peer):
+        """Refresh safe readbacks through the Mac before returning mobile controls."""
+        if "devices" not in peer["capabilities"] or not self.tools.devices:
+            return
+        enabled = getattr(self.tools, "enabled", None)
+        if not callable(enabled):
+            return
+        device = DeviceContext(
+            peer["id"],
+            peer["kind"],
+            "sync-" + peer["id"],
+            frozenset({"mac.system", "mac.media"}),
+            True,
+            "local-mac",
+        )
+        with request_scope(RequestContext(device, "Покажи состояние Mac")):
+            for name, arguments in (
+                ("get_system_status", {"topic": "volume"}),
+                ("get_brightness", {}),
+            ):
+                if enabled(name):
+                    try:
+                        await self.tools.call(name, arguments)
+                    except Exception:
+                        # A failed read must not hide saved devices or erase last known state.
+                        pass
+            device_service = self.tools.devices
+            if enabled("device_command"):
+                for item in device_service.store.list():
+                    if item.kind != "external_display":
+                        continue
+                    try:
+                        with request_scope(
+                            RequestContext(device, "Управляй выбранным устройством")
+                        ):
+                            await self.tools.call(
+                                "device_command", {"target": item.id, "action": "inspect"}
+                            )
+                    except Exception:
+                        # Inspection is read-only; retain metadata and the last saved state.
+                        pass
+
     def remote_status(self, peer):
         scenarios = []
         if "scenario" in peer["capabilities"] and self.tools.automations:
@@ -450,11 +493,65 @@ class DeviceSync(Center):
             ]
         devices = []
         if "devices" in peer["capabilities"] and self.tools.devices:
-            devices = [
-                {k: d[k] for k in ("id", "name", "kind")}
-                for d in self.tools.devices.snapshot()["items"]
-                if d["usable"]
-            ]
+            fields = (
+                "id",
+                "revision",
+                "name",
+                "kind",
+                "protocol",
+                "endpoint",
+                "place_id",
+                "room",
+                "state",
+                "sent",
+                "last_contact",
+                "state_at",
+                "result_status",
+                "favorites",
+                "aliases",
+                "favorite",
+                "auto_connect",
+                "ble_name",
+                "features",
+                "ble",
+                "preview_color",
+                "connection",
+                "connection_error",
+                "control_reason",
+                "usable",
+                "reason",
+                "busy",
+            )
+            snapshot = self.tools.devices.snapshot()
+            places = {
+                place.get("id"): place.get("name")
+                for place in snapshot.get("places", [])
+                if isinstance(place, dict)
+            }
+            seen = set()
+            for item in snapshot["items"]:
+                identifier = item.get("id")
+                if not isinstance(identifier, str) or identifier in seen:
+                    continue
+                seen.add(identifier)
+                remote = {key: item[key] for key in fields if key in item}
+                if item.get("place_id") in places:
+                    remote["place_name"] = places[item["place_id"]]
+                connection = item.get("connection", "unknown")
+                state = item.get("state") if isinstance(item.get("state"), dict) else {}
+                has_mac_readback = item.get("kind") == "mac" and any(
+                    type(state.get(key)) is int for key in ("brightness", "volume_percent")
+                )
+                if item.get("usable") is False or (connection == "error" and not has_mac_readback):
+                    availability = "remote-unavailable"
+                elif connection == "disconnected":
+                    availability = "offline"
+                elif connection == "observed" or has_mac_readback:
+                    availability = "online"
+                else:
+                    availability = "unknown"
+                remote["availability"] = availability
+                devices.append(remote)
         return {
             "status": "online",
             "name": peer["name"],

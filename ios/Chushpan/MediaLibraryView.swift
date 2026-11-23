@@ -1,4 +1,6 @@
+import CryptoKit
 import SwiftUI
+import UIKit
 
 struct MediaLibraryView: View {
     @EnvironmentObject private var model: AppModel
@@ -166,7 +168,9 @@ private struct MediaItemRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .top) {
+            HStack(alignment: .top, spacing: 12) {
+                MediaPosterThumbnail(posterURL: item.posterURL)
+                    .frame(width: 62, height: 92)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.title).font(.headline).fixedSize(horizontal: false, vertical: true)
                     Text([item.kind.rawValue, item.year.map(String.init)].compactMap { $0 }.joined(separator: " · "))
@@ -202,6 +206,103 @@ private struct MediaItemRow: View {
             }
         }
         .padding(.vertical, 5)
+    }
+}
+
+private actor MediaPosterCache {
+    static let shared = MediaPosterCache()
+    private let maximumBytes = 150 * 1024 * 1024
+
+    func load(_ value: String) async -> Data? {
+        guard let url = URL(string: value),
+              url.scheme?.lowercased() == "https",
+              url.host?.lowercased() == "image.tmdb.org",
+              url.user == nil,
+              url.password == nil,
+              url.port == nil || url.port == 443 else { return nil }
+        let key = SHA256.hash(data: Data(url.absoluteString.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ChushpanPosters", isDirectory: true)
+        let file = directory.appendingPathComponent(key).appendingPathExtension("img")
+        if let cached = try? Data(contentsOf: file), !cached.isEmpty {
+            try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: file.path)
+            return cached
+        }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            var request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 20)
+            request.setValue("image/avif,image/webp,image/*", forHTTPHeaderField: "Accept")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let response = response as? HTTPURLResponse,
+                  (200..<300).contains(response.statusCode),
+                  response.mimeType?.hasPrefix("image/") == true,
+                  !data.isEmpty,
+                  data.count <= 8 * 1024 * 1024 else { return nil }
+            try data.write(to: file, options: .atomic)
+            try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: file.path)
+            #if os(iOS)
+            try? FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                ofItemAtPath: file.path
+            )
+            #endif
+            trim(directory)
+            return data
+        } catch {
+            return nil
+        }
+    }
+
+    private func trim(_ directory: URL) {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        let entries = files.compactMap { file -> (URL, Int, Date)? in
+            guard let values = try? file.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+                  let size = values.fileSize else { return nil }
+            return (file, size, values.contentModificationDate ?? .distantPast)
+        }.sorted { $0.2 < $1.2 }
+        var total = entries.reduce(0) { $0 + $1.1 }
+        for (file, size, _) in entries where total > maximumBytes {
+            try? FileManager.default.removeItem(at: file)
+            total -= size
+        }
+    }
+}
+
+private struct MediaPosterThumbnail: View {
+    let posterURL: String?
+    @State private var data: Data?
+    @State private var failed = false
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(uiColor: .secondarySystemGroupedBackground))
+            if let data, let image = UIImage(data: data) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else if posterURL != nil, !failed, data == nil {
+                ProgressView().controlSize(.small)
+            } else {
+                Image(systemName: "film")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityHidden(true)
+        .task(id: posterURL) {
+            data = nil
+            failed = false
+            guard let posterURL else { return }
+            data = await MediaPosterCache.shared.load(posterURL)
+            failed = data == nil
+        }
     }
 }
 

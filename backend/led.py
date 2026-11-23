@@ -1192,7 +1192,23 @@ class LEDStrip:
                     classification = classify_ble(
                         name, services, getattr(adv, "manufacturer_data", {})
                     )
-                    family = not show_all_ble and classification.kind == "led_strip"
+                    profile_candidate = candidate_profile(
+                        self.cfg.model_copy(update={"name": name})
+                    )
+                    family = not show_all_ble and (
+                        classification.kind == "led_strip" or profile_candidate is not None
+                    )
+                    if classification.kind == "led_strip":
+                        compatibility_reason = (
+                            "Семейство ELK BLE; требуется проверка GATT и протокола."
+                        )
+                    elif profile_candidate is not None:
+                        compatibility_reason = (
+                            "Имя совпало с профилем ELK, но реклама не содержит UUID сервиса. "
+                            "Команды заблокированы до проверки GATT."
+                        )
+                    else:
+                        compatibility_reason = classification.reason
                     candidates.append(
                         {
                             "name": name,
@@ -1207,9 +1223,7 @@ class LEDStrip:
                             "compatibility_reason": (
                                 "Диагностический режим: совместимость не определялась."
                                 if show_all_ble
-                                else "Семейство ELK BLE; требуется проверка GATT и протокола."
-                                if family
-                                else classification.reason
+                                else compatibility_reason
                             ),
                         }
                     )

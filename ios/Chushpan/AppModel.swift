@@ -2,7 +2,7 @@ import Combine
 import Foundation
 import UIKit
 
-enum MacActionState {
+enum MacActionState: Equatable {
     case submitted, running, completed, failed, confirmationRequired, unknown
 
     var title: String {
@@ -956,6 +956,9 @@ final class AppModel: ObservableObject {
                     commandID: id
                 )
                 await pollMacCommand(client: client, id: id, label: label, current: receipt)
+                if operation == "device" {
+                    await refreshMac(synchronizeAfterConnect: false)
+                }
             } catch {
                 macActionFeedback = MacActionFeedback(
                     state: .unknown,

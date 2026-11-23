@@ -337,10 +337,11 @@ class Devices(DeviceCenter):
             return
         if outcome == "failed":
             self.connections[device.id] = "error"
-            if device.kind == "led_strip":
+            if device.kind in {"led_strip", "external_display"}:
                 self.connection_errors[device.id] = result.get("error") or result.get("message")
         elif name != "led_control":
             self.connections[device.id] = "observed"
+            self.connection_errors.pop(device.id, None)
         values = {}
         if outcome == "success":
             if (
@@ -873,6 +874,7 @@ class Devices(DeviceCenter):
             device.last_contact = device.state_at = stamp()
             self.store.observe(device)
             self.connections[device.id] = "observed"
+            self.connection_errors.pop(device.id, None)
             return {
                 "result_status": "success",
                 "message": "Доступность подтверждена; воспроизведение не проверялось.",

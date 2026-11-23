@@ -178,9 +178,10 @@ def test_sync_offline_snapshot_and_remote_device_catalogue_use_actual_device_sch
                     ]
                 }
             )
-            assert service.remote_status(peer)["devices"] == [
-                {"id": "local-led", "name": "Лента", "kind": "led_strip"}
-            ]
+            devices = service.remote_status(peer)["devices"]
+            assert [item["id"] for item in devices] == ["local-led", "remote-led"]
+            assert devices[0]["availability"] == "unknown"
+            assert devices[1]["availability"] == "remote-unavailable"
             await service.stop()
             persisted = service.store.peer(device)
             assert persisted["categories"] == ["memory"]

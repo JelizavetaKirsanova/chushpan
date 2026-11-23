@@ -415,6 +415,8 @@ class DeviceCenter:
                     and (
                         device.kind == "led_strip"
                         and action == "led"
+                        or device.kind == "external_display"
+                        and action == "inspect"
                         or device.kind
                         in {
                             "smartphone",
@@ -432,7 +434,8 @@ class DeviceCenter:
                     "Проверь возможности, место и подключение.",
                 }
                 if (
-                    device.kind == "led_strip"
+                    action == "inspect"
+                    or device.kind == "led_strip"
                     and action == "led"
                     and isinstance(exc, (ToolError, TimeoutError, OSError))
                 ):

@@ -80,7 +80,7 @@ final class MobileStoreTests: XCTestCase {
             title: "Фильм",
             kind: "series",
             year: 2024,
-            posterURL: nil,
+            posterURL: "https://image.tmdb.org/t/p/w500/poster.jpg",
             description: nil,
             status: "watching",
             favorite: true,
@@ -107,6 +107,34 @@ final class MobileStoreTests: XCTestCase {
         XCTAssertEqual(mobile.season, 2)
         XCTAssertEqual(mobile.episode, 4)
         XCTAssertEqual(mobile.positionSeconds, 120)
+        XCTAssertEqual(mobile.posterURL, "https://image.tmdb.org/t/p/w500/poster.jpg")
+    }
+
+    func testRemoteDevicePayloadPreservesOfflineStateAndLocation() throws {
+        let data = Data(#"{"id":"device-a","name":"Лента","kind":"led_strip","protocol":"ble","endpoint":"device-uuid","place_id":"home","place_name":"Дом","room":"Кухня","state":{"brightness":42,"muted":false},"sent":{"brightness":55},"favorites":["warm"],"favorite":true,"ble_name":"ELK-BLEDDM 39","connection":"disconnected","usable":true,"availability":"offline"}"#.utf8)
+
+        let device = try JSONDecoder.mobile.decode(MacRemoteDevice.self, from: data)
+
+        XCTAssertEqual(device.id, "device-a")
+        XCTAssertEqual(device.kind, "led_strip")
+        XCTAssertEqual(device.protocolName, "ble")
+        XCTAssertEqual(device.endpoint, "device-uuid")
+        XCTAssertEqual(device.locationText, "Кухня · Дом")
+        XCTAssertEqual(device.brightness, 42)
+        XCTAssertEqual(device.isMuted, false)
+        XCTAssertEqual(device.sent?["brightness"]?.intValue, 55)
+        XCTAssertEqual(device.favorites, ["warm"])
+        XCTAssertEqual(device.bleName, "ELK-BLEDDM 39")
+        XCTAssertEqual(device.availabilityText, "Оффлайн · команды не отправляются")
+    }
+
+    func testOlderMobileMediaPayloadDecodesWithoutPosterURL() throws {
+        let data = Data(#"{"id":"local","title":"Фильм","kind":"Фильм","status":"Хочу посмотреть","favorite":false,"season":0,"episode":0,"positionSeconds":0,"durationSeconds":0,"webURL":"","updatedAt":"2026-11-22T20:00:00Z","modifiedBy":""}"#.utf8)
+
+        let item = try JSONDecoder.mobile.decode(MobileMediaItem.self, from: data)
+
+        XCTAssertEqual(item.id, "local")
+        XCTAssertNil(item.posterURL)
     }
 
     func testCalendarPayloadWithoutCachedDaysStillDecodes() throws {

@@ -77,6 +77,7 @@ struct MobileMediaItem: Codable, Identifiable, Equatable {
     var updatedAt: Date = .now
     var deletedAt: Date?
     var modifiedBy = ""
+    var posterURL: String?
 }
 
 struct MacMediaItem: Codable, Identifiable, Equatable {
@@ -138,7 +139,8 @@ struct MacMediaItem: Codable, Identifiable, Equatable {
             positionSeconds: position ?? 0,
             durationSeconds: duration ?? 0,
             webURL: "",
-            updatedAt: timestamp
+            updatedAt: timestamp,
+            posterURL: posterURL
         )
     }
 }
@@ -206,10 +208,127 @@ struct MacScenarioVariable: Codable, Identifiable, Equatable {
     var id: String { name }
 }
 
+indirect enum MobileJSONValue: Codable, Equatable {
+    case null
+    case bool(Bool)
+    case integer(Int)
+    case number(Double)
+    case string(String)
+    case array([MobileJSONValue])
+    case object([String: MobileJSONValue])
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        if value.decodeNil() { self = .null }
+        else if let decoded = try? value.decode(Bool.self) { self = .bool(decoded) }
+        else if let decoded = try? value.decode(Int.self) { self = .integer(decoded) }
+        else if let decoded = try? value.decode(Double.self) { self = .number(decoded) }
+        else if let decoded = try? value.decode(String.self) { self = .string(decoded) }
+        else if let decoded = try? value.decode([MobileJSONValue].self) { self = .array(decoded) }
+        else if let decoded = try? value.decode([String: MobileJSONValue].self) { self = .object(decoded) }
+        else {
+            throw DecodingError.dataCorruptedError(in: value, debugDescription: "Unsupported JSON value")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var value = encoder.singleValueContainer()
+        switch self {
+        case .null: try value.encodeNil()
+        case .bool(let decoded): try value.encode(decoded)
+        case .integer(let decoded): try value.encode(decoded)
+        case .number(let decoded): try value.encode(decoded)
+        case .string(let decoded): try value.encode(decoded)
+        case .array(let decoded): try value.encode(decoded)
+        case .object(let decoded): try value.encode(decoded)
+        }
+    }
+
+    var intValue: Int? {
+        switch self {
+        case .integer(let value): value
+        case .number(let value): Int(exactly: value)
+        default: nil
+        }
+    }
+
+    var stringValue: String? {
+        guard case .string(let value) = self else { return nil }
+        return value
+    }
+}
+
 struct MacRemoteDevice: Codable, Identifiable, Equatable {
     var id: String
+    var revision: Int?
     var name: String
     var kind: String
+    var protocolName: String?
+    var endpoint: String?
+    var placeID: String?
+    var placeName: String?
+    var room: String?
+    var state: [String: MobileJSONValue]?
+    var sent: [String: MobileJSONValue]?
+    var lastContact: String?
+    var stateAt: String?
+    var resultStatus: String?
+    var favorites: [String]?
+    var aliases: [String]?
+    var favorite: Bool?
+    var autoConnect: Bool?
+    var bleName: String?
+    var features: [String: Bool]?
+    var ble: [String: MobileJSONValue]?
+    var connection: String?
+    var connectionError: String?
+    var controlReason: String?
+    var usable: Bool?
+    var reason: String?
+    var busy: Bool?
+    var availability: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, revision, name, kind, endpoint, room, state, sent, favorites, aliases
+        case favorite, features, ble, usable, reason, busy, availability, connection
+        case protocolName = "protocol"
+        case placeID = "place_id"
+        case placeName = "place_name"
+        case lastContact = "last_contact"
+        case stateAt = "state_at"
+        case resultStatus = "result_status"
+        case autoConnect = "auto_connect"
+        case bleName = "ble_name"
+        case connectionError = "connection_error"
+        case controlReason = "control_reason"
+    }
+
+    var brightness: Int? { state?["brightness"]?.intValue }
+    var volumePercent: Int? { state?["volume_percent"]?.intValue }
+    var isMuted: Bool? {
+        guard case .bool(let value) = state?["muted"] else { return nil }
+        return value
+    }
+
+    var locationText: String? {
+        [room, placeName ?? placeID].compactMap { value in
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed?.isEmpty == false ? trimmed : nil
+        }.joined(separator: " · ").nilIfEmpty
+    }
+
+    var availabilityText: String {
+        switch availability ?? "unknown" {
+        case "online": "На связи"
+        case "offline": "Оффлайн · команды не отправляются"
+        case "remote-unavailable": reason ?? connectionError ?? "Сейчас недоступно через Mac"
+        default: connection == "observed" ? "Подключение проверено" : "Подключение не проверено"
+        }
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
 struct MacRemoteStatus: Codable, Equatable {

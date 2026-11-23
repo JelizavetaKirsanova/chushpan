@@ -3,6 +3,7 @@
 import asyncio
 import json
 import stat
+from dataclasses import dataclass
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -45,6 +46,33 @@ def test_model_names_never_grant_compatibility(rig):
         with pytest.raises(ToolError, match="Протокол LED неизвестен"):
             asyncio.run(rig.strip.execute(action="on", experiment=True))
     rig.factory.assert_not_called()
+
+
+def test_exact_ddm_advertisement_without_service_is_candidate_not_classified(rig, monkeypatch):
+    @dataclass(frozen=True)
+    class Peripheral:
+        name: str
+        address: str
+
+    peripheral = Peripheral("ELK-BLEDDM 39", "3efb6a4b-f105-72b1-c451-e56e3feb9b30")
+    advertisement = SimpleNamespace(
+        local_name="ELK-BLEDDM 39",
+        service_uuids=[],
+        manufacturer_data={},
+        rssi=-77,
+    )
+    scanner = AsyncMock(return_value={peripheral: (peripheral, advertisement)})
+    monkeypatch.setattr("backend.led.BleakScanner.discover", scanner)
+
+    async def run():
+        result = await rig.strip.discover(timeout_s=1)
+        candidate = result["candidates"][0]
+        assert candidate["kind"] == "unknown"
+        assert candidate["compatibility"] == "candidate"
+        assert "UUID сервиса" in candidate["compatibility_reason"]
+        rig.factory.assert_not_called()
+
+    asyncio.run(run())
 
 
 def test_ddm_power_needs_gatt_but_not_physical_state_and_restarts_without_replay(rig):
